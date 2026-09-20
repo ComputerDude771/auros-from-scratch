@@ -1,0 +1,6 @@
+name=console
+description=Login prompt on the serial console
+after=theme
+exec=/sbin/agetty --noclear -n -l /usr/lib/auros/login -L ttyS0 115200 vt100
+tty=/dev/ttyS0
+restart=always

@@ -1,0 +1,6 @@
+name=devices
+description=Populate /dev and handle hotplug
+type=oneshot
+after=hostname
+exec=/bin/sh /usr/lib/auros/device-setup.sh
+restart=never

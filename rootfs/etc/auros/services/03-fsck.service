@@ -1,0 +1,6 @@
+name=filesystems
+description=Mount local filesystems
+type=oneshot
+after=devices
+exec=/bin/sh -c "mount -a 2>/dev/null; exit 0"
+restart=never

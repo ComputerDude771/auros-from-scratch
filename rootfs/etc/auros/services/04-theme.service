@@ -1,0 +1,6 @@
+name=theme
+description=Apply the active theme to the console
+type=oneshot
+after=filesystems
+exec=/bin/sh /etc/auros/console.sh
+restart=never

@@ -1,0 +1,6 @@
+name=getty1
+description=Login prompt on tty1
+after=theme
+exec=/sbin/agetty --noclear -n -l /usr/lib/auros/login tty1 linux
+tty=/dev/tty1
+restart=always

@@ -1,0 +1,5 @@
+name=hostname
+description=Set the system hostname
+type=oneshot
+exec=/bin/sh -c "hostname -F /etc/hostname 2>/dev/null || hostname auros"
+restart=never
