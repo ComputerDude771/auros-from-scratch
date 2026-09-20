@@ -1,0 +1,299 @@
+#!/bin/bash
+# ═══════════════════════════════════════════════════════════════════
+#  forge — the AurOS image builder
+#
+#  Reads a profile and produces a bootable system. One profile file is
+#  the entire customization surface: branding, theme, locale, app set,
+#  lockdown policy. Changing what an organisation ships should never
+#  mean changing code.
+#
+#    forge build   PROFILE      run every stage
+#    forge stage   PROFILE N    run one stage (for iterating)
+#    forge list                 list profiles
+#    forge shell   PROFILE      chroot into the built rootfs
+#    forge clean   PROFILE
+# ═══════════════════════════════════════════════════════════════════
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PROFILE_DIR="$ROOT/profiles"
+WORK="$ROOT/work/forge"
+OUT="$ROOT/out"
+
+C_OK=$'\033[38;2;125;211;192m'; C_ERR=$'\033[38;2;242;120;141m'
+C_DIM=$'\033[38;2;110;120;134m'; C_RST=$'\033[0m'
+say()  { printf '%s::%s %s\n' "$C_OK"  "$C_RST" "$*"; }
+step() { printf '\n%s▸%s %s\n' "$C_OK" "$C_RST" "$*"; }
+note() { printf '%s   %s%s\n' "$C_DIM" "$*" "$C_RST"; }
+die()  { printf '%s::%s %s\n' "$C_ERR" "$C_RST" "$*" >&2; exit 1; }
+
+# ── profile loading, with single-parent inheritance ────────────────
+load_profile() {
+    local name=$1 chain="" cur=$1 depth=0 f
+    while [ -n "$cur" ]; do
+        f="$PROFILE_DIR/$cur.profile"
+        [ -f "$f" ] || f="$cur"
+        [ -f "$f" ] || die "no such profile: $cur"
+        case " $chain " in *" $f "*) die "profile inherit cycle at $cur" ;; esac
+        chain="$f $chain"
+        cur=$(sed -n 's/^[[:space:]]*inherit="\{0,1\}\([A-Za-z0-9_-]*\)"\{0,1\}.*/\1/p' "$f" | head -1)
+        depth=$((depth+1)); [ $depth -gt 8 ] && die "inherit chain too deep"
+    done
+    for f in $chain; do
+        # shellcheck disable=SC1090
+        source "$f"
+    done
+    unset inherit 2>/dev/null || true
+    PROFILE="$name"
+    RFS="$WORK/$profile_id/rootfs"
+}
+
+# Every chroot command runs with the API filesystems mounted and
+# services prevented from starting (policy-rc.d), which is what stops a
+# package's postinst from trying to talk to a systemd that isn't there.
+chroot_prep() {
+    mkdir -p "$RFS"/{proc,sys,dev,dev/pts,run}
+    mountpoint -q "$RFS/proc"    || mount -t proc  proc    "$RFS/proc"
+    mountpoint -q "$RFS/sys"     || mount -t sysfs sysfs   "$RFS/sys"
+    mountpoint -q "$RFS/dev"     || mount --bind /dev      "$RFS/dev"
+    mountpoint -q "$RFS/dev/pts" || mount -t devpts devpts "$RFS/dev/pts"
+    printf '#!/bin/sh\nexit 101\n' > "$RFS/usr/sbin/policy-rc.d"
+    chmod +x "$RFS/usr/sbin/policy-rc.d"
+    cp /etc/resolv.conf "$RFS/etc/resolv.conf" 2>/dev/null || true
+}
+chroot_done() {
+    # Guard: the EXIT trap fires even on paths that never loaded a
+    # profile (forge list), where RFS is unset.
+    [ -n "${RFS:-}" ] || return 0
+    rm -f "$RFS/usr/sbin/policy-rc.d"
+    for m in dev/pts dev sys proc; do
+        mountpoint -q "$RFS/$m" && umount -lf "$RFS/$m" || true
+    done
+}
+trap 'chroot_done 2>/dev/null || true' EXIT
+
+inchroot() {
+    chroot "$RFS" /usr/bin/env -i \
+        HOME=/root PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+        DEBIAN_FRONTEND=noninteractive LC_ALL=C \
+        ${http_proxy:+http_proxy="$http_proxy"} \
+        ${https_proxy:+https_proxy="$https_proxy"} \
+        /bin/bash -c "$*"
+}
+
+# ── stage 1: bootstrap the base ────────────────────────────────────
+stage_bootstrap() {
+    step "stage 1/7  bootstrap $base_suite"
+    if [ -f "$RFS/.forge-bootstrapped" ]; then
+        note "already bootstrapped; skipping"; return 0
+    fi
+    rm -rf "$RFS"; mkdir -p "$RFS"
+    debootstrap --arch=amd64 --variant=minbase \
+        --components="$(echo "$base_components" | tr ' ' ',')" \
+        "$base_suite" "$RFS" "$base_mirror"
+
+    cat > "$RFS/etc/apt/sources.list" <<EOL
+deb $base_mirror $base_suite $base_components
+deb $base_mirror $base_suite-updates $base_components
+deb http://security.ubuntu.com/ubuntu $base_suite-security $base_components
+EOL
+    touch "$RFS/.forge-bootstrapped"
+    note "base is $(du -sh "$RFS" | cut -f1)"
+}
+
+# ── stage 2: packages ──────────────────────────────────────────────
+stage_packages() {
+    step "stage 2/7  packages"
+    chroot_prep
+    local pkgs="$packages_hardware $packages_boot $packages_base $packages_desktop $packages_apps $packages_extra"
+    pkgs=$(echo "$pkgs" | tr -s ' \n' ' ')
+    note "installing: $(echo "$pkgs" | wc -w) packages"
+    inchroot "apt-get update -qq"
+    inchroot "apt-get install -y --no-install-recommends $pkgs" \
+        || die "package install failed — see the log above"
+    [ -n "${packages_exclude:-}" ] && \
+        inchroot "apt-get purge -y $packages_exclude 2>/dev/null || true"
+    inchroot "apt-get clean; rm -rf /var/lib/apt/lists/*"
+    chroot_done
+}
+
+# ── stage 3: overlay our own stack ─────────────────────────────────
+stage_overlay() {
+    step "stage 3/7  overlay the AurOS stack"
+
+    install -Dm755 "$ROOT/src/aurora/aurora"       "$RFS/usr/bin/aurora"
+    install -d "$RFS/usr/share/auros/themes" "$RFS/usr/share/auros/templates"
+    cp "$ROOT/themes"/*.theme          "$RFS/usr/share/auros/themes/"
+    cp "$ROOT/themes/templates"/*.tpl  "$RFS/usr/share/auros/templates/"
+
+    # Our binaries, built against the target's glibc via the chroot so
+    # they link the same way every other package on the system does.
+    install -d "$RFS/usr/src/auros"
+    cp -r "$ROOT/src/common" "$ROOT/src/aurinit" "$ROOT/src/aurwall" \
+          "$ROOT/src/aurfetch" "$RFS/usr/src/auros/" 2>/dev/null || true
+
+    chroot_prep
+    inchroot "apt-get update -qq && apt-get install -y --no-install-recommends gcc libc6-dev make" >/dev/null 2>&1 || true
+    inchroot "cd /usr/src/auros && \
+        gcc -O2 -std=gnu11 -o /usr/sbin/aurinit aurinit/aurinit.c && \
+        gcc -O2 -std=gnu11 -o /usr/bin/aurctl  aurinit/aurctl.c && \
+        gcc -O2 -std=gnu11 -o /usr/bin/aurwall aurwall/main.c common/theme.c common/wall.c common/png.c -lm" \
+        || die "building the AurOS stack inside the image failed"
+    inchroot "apt-get purge -y gcc libc6-dev make >/dev/null 2>&1; apt-get autoremove -y >/dev/null 2>&1" || true
+    chroot_done
+    rm -rf "$RFS/usr/src/auros"
+
+    install -d "$RFS/etc/auros/services"
+    cp "$ROOT/rootfs/etc/auros/services"/*.service "$RFS/etc/auros/services/" 2>/dev/null || true
+    note "aurinit, aurctl, aurwall, aurora installed"
+}
+
+# ── stage 4: identity, locale, users, policy ───────────────────────
+stage_configure() {
+    step "stage 4/7  configure"
+    chroot_prep
+
+    cat > "$RFS/etc/os-release" <<EOL
+NAME="$brand_name"
+PRETTY_NAME="$brand_name $os_version"
+ID=$brand_short
+ID_LIKE=ubuntu
+VERSION="$os_version ($os_codename)"
+VERSION_ID="$os_version"
+VERSION_CODENAME=$os_codename
+HOME_URL="$brand_url"
+LOGO=auros
+EOL
+    echo "$brand_short" > "$RFS/etc/hostname"
+    printf '127.0.0.1\tlocalhost\n127.0.1.1\t%s\n' "$brand_short" > "$RFS/etc/hosts"
+
+    inchroot "ln -sf /usr/share/zoneinfo/$timezone /etc/localtime" || true
+    echo "$locale UTF-8" > "$RFS/etc/locale.gen"
+    for l in ${extra_locales:-}; do echo "$l UTF-8" >> "$RFS/etc/locale.gen"; done
+    inchroot "locale-gen >/dev/null 2>&1" || true
+    echo "LANG=$locale" > "$RFS/etc/default/locale"
+    cat > "$RFS/etc/default/keyboard" <<EOL
+XKBMODEL="pc105"
+XKBLAYOUT="$keyboard_layout"
+XKBVARIANT="${keyboard_variant:-}"
+BACKSPACE="guess"
+EOL
+
+    inchroot "id -u $default_user >/dev/null 2>&1 || useradd -m -s /bin/bash -G sudo,audio,video,netdev $default_user"
+    # Placeholder credential. First boot forces a change; a shipped
+    # image must never carry a usable password.
+    inchroot "echo '$default_user:auros' | chpasswd; passwd -e $default_user" || true
+    inchroot "passwd -l root" || true
+
+    # The policy file is what aurshell and the settings app consult.
+    # Lockdown is enforced by the shell reading this, not by hiding menus.
+    install -d "$RFS/etc/auros"
+    cat > "$RFS/etc/auros/policy.conf" <<EOL
+# Generated by forge from profile '$profile_id'. Machine-readable policy.
+profile              = $profile_id
+kiosk_mode           = $kiosk_mode
+allowed_apps         = ${allowed_apps:-}
+blocked_apps         = ${blocked_apps:-}
+allow_user_install   = $allow_user_install
+allow_settings_change= $allow_settings_change
+allow_theme_change   = $allow_theme_change
+allow_tty            = $allow_tty
+auto_login           = $auto_login
+default_user         = $default_user
+enrollment_url       = ${enrollment_url:-}
+update_channel       = ${update_channel:-stable}
+telemetry            = ${telemetry:-off}
+EOL
+
+    if [ "$allow_tty" = "no" ]; then
+        inchroot "systemctl mask getty@tty2.service getty@tty3.service getty@tty4.service \
+                  getty@tty5.service getty@tty6.service >/dev/null 2>&1" || true
+        note "virtual consoles disabled (kiosk policy)"
+    fi
+    if [ "$allow_user_install" = "no" ]; then
+        cat > "$RFS/etc/sudoers.d/90-auros-lockdown" <<'EOL'
+# Kiosk policy: users may not install or remove software.
+%users ALL=(ALL) !/usr/bin/apt, !/usr/bin/apt-get, !/usr/bin/dpkg, !/usr/bin/aur
+EOL
+        chmod 440 "$RFS/etc/sudoers.d/90-auros-lockdown"
+    fi
+
+    chroot_done
+    note "identity: $brand_name $os_version ($os_codename), locale $locale, kiosk=$kiosk_mode"
+}
+
+# ── stage 5: theme ─────────────────────────────────────────────────
+stage_theme() {
+    step "stage 5/7  theme: $theme"
+    chroot_prep
+    inchroot "aurora set $theme" || die "aurora could not apply '$theme'"
+    inchroot "aurwall --conf /etc/auros/shell.conf --out /usr/share/auros/wallpaper.png \
+              --width 1920 --height 1080 >/dev/null 2>&1" || note "wallpaper deferred to first boot"
+    inchroot "grep -q auros /etc/profile || echo '[ -f /etc/auros/prompt.sh ] && . /etc/auros/prompt.sh' >> /etc/profile" || true
+    inchroot "grep -q auros-motd /etc/profile || echo '[ -f /etc/auros/motd ] && cat /etc/auros/motd  # auros-motd' >> /etc/profile" || true
+    chroot_done
+}
+
+# ── stage 6: squashfs ──────────────────────────────────────────────
+stage_squash() {
+    step "stage 6/7  compress"
+    mkdir -p "$OUT"
+    local sq="$OUT/$profile_id-$os_version.squashfs"
+    rm -f "$sq"
+    mksquashfs "$RFS" "$sq" -comp zstd -Xcompression-level 15 -noappend -quiet \
+        -e "$RFS/.forge-bootstrapped"
+    note "$(basename "$sq")  $(du -h "$sq" | cut -f1)"
+}
+
+# ── stage 7: bootable artifacts ────────────────────────────────────
+stage_image() {
+    step "stage 7/7  bootable image"
+    note "handled by build/mkimage (raw image for AurBridge) — see docs/AURBRIDGE.md"
+}
+
+run_stage() {
+    case $1 in
+        1) stage_bootstrap ;; 2) stage_packages ;; 3) stage_overlay ;;
+        4) stage_configure ;; 5) stage_theme ;; 6) stage_squash ;;
+        7) stage_image ;;
+        *) die "no such stage: $1" ;;
+    esac
+}
+
+case "${1:-}" in
+    build)
+        load_profile "${2:?usage: forge build PROFILE}"
+        say "forging '$profile_name' ($profile_id)"
+        for s in 1 2 3 4 5 6 7; do run_stage $s; done
+        printf '\n%s::%s %s is built.\n' "$C_OK" "$C_RST" "$brand_name $os_version" ;;
+    stage)
+        load_profile "${2:?usage: forge stage PROFILE N}"
+        run_stage "${3:?which stage?}" ;;
+    shell)
+        load_profile "${2:?usage: forge shell PROFILE}"
+        chroot_prep; chroot "$RFS" /bin/bash || true; chroot_done ;;
+    clean)
+        load_profile "${2:?usage: forge clean PROFILE}"
+        chroot_done 2>/dev/null || true
+        rm -rf "${WORK:?}/$profile_id"; say "cleaned $profile_id" ;;
+    list)
+        for f in "$PROFILE_DIR"/*.profile; do
+            [ -f "$f" ] || continue
+            n=$(basename "$f" .profile)
+            d=$(sed -n 's/^profile_description="\(.*\)"/\1/p' "$f" | head -1)
+            printf '  %-16s %s\n' "$n" "$d"
+        done ;;
+    *)
+        cat <<EOU
+forge — the AurOS image builder
+
+  forge build PROFILE       build a complete image
+  forge stage PROFILE N     run a single stage (1-7)
+  forge shell PROFILE       chroot into the built rootfs
+  forge clean PROFILE       remove the work tree
+  forge list                list profiles
+
+Profiles live in $PROFILE_DIR
+EOU
+        ;;
+esac
