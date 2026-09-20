@@ -1,0 +1,180 @@
+#!/bin/sh
+# ═══════════════════════════════════════════════════════════════════
+#  aurb — the AurOS package builder
+#
+#  Reads a recipe, fetches and verifies its source, builds it in an
+#  isolated tree, and stages the result into a .aurpkg. Recipes are
+#  plain shell with build()/package() functions, so a recipe is
+#  readable by anyone who can read a shell script.
+#
+#    aurb build NAME      build one package
+#    aurb order NAME...   print the dependency-resolved build order
+#    aurb all             build everything in dependency order
+#    aurb clean NAME      discard a package's work tree
+#    aurb list            list available recipes
+# ═══════════════════════════════════════════════════════════════════
+set -eu
+. "$(dirname "$0")/config.sh"
+
+say()  { printf '\033[38;2;125;211;192m::\033[0m %s\n' "$*"; }
+warn() { printf '\033[38;2;242;184;128m::\033[0m %s\n' "$*" >&2; }
+die()  { printf '\033[38;2;242;120;141m::\033[0m %s\n' "$*" >&2; exit 1; }
+
+find_recipe() {
+    for d in "$PKGDIR"/*/"$1"/recipe.sh; do
+        [ -f "$d" ] && { printf '%s\n' "$d"; return 0; }
+    done
+    return 1
+}
+
+# Read one field from a recipe without executing its build functions.
+# Recipes are trusted (they live in this repo), but sourcing them just
+# to read `depends` would run top-level code for every query.
+recipe_field() {
+    sed -n "s/^$2=[\"']\\{0,1\\}\\([^\"']*\\)[\"']\\{0,1\\}[[:space:]]*\$/\\1/p" "$1" | head -1
+}
+
+# ── Dependency resolution: depth-first post-order, so a package is
+#    emitted only after everything it needs. Detects cycles.
+_order_seen=""
+_order_stack=""
+_order_out=""
+resolve() {
+    _n=$1
+    case " $_order_seen " in *" $_n "*) return 0 ;; esac
+    case " $_order_stack " in
+        *" $_n "*) die "dependency cycle: $_order_stack -> $_n" ;;
+    esac
+    _r=$(find_recipe "$_n") || die "no recipe for '$_n'"
+    _order_stack="$_order_stack $_n"
+    for _d in $(recipe_field "$_r" depends); do
+        resolve "$_d"
+    done
+    _order_stack=$(printf '%s' "$_order_stack" | sed "s/ $_n\$//")
+    _order_seen="$_order_seen $_n"
+    _order_out="$_order_out $_n"
+}
+
+verify_sha() {
+    _f=$1 _want=$2
+    [ -n "$_want" ] || { warn "$(basename "$_f"): no sha256 in recipe, not verified"; return 0; }
+    _got=$(sha256sum "$_f" | cut -d' ' -f1)
+    [ "$_got" = "$_want" ] || die "checksum mismatch for $(basename "$_f")
+  expected $_want
+  got      $_got"
+}
+
+extract() {
+    _f=$1 _dest=$2
+    case "$_f" in
+        *.tar.gz|*.tgz)   tar -xzf "$_f" -C "$_dest" ;;
+        *.tar.bz2)        tar -xjf "$_f" -C "$_dest" ;;
+        *.tar.xz)         tar -xJf "$_f" -C "$_dest" ;;
+        *.tar.zst)        tar --zstd -xf "$_f" -C "$_dest" ;;
+        *.tar)            tar -xf  "$_f" -C "$_dest" ;;
+        *) die "don't know how to extract $_f" ;;
+    esac
+}
+
+build_one() {
+    name=$1
+    recipe=$(find_recipe "$name") || die "no recipe for '$name'"
+    rdir=$(dirname "$recipe")
+
+    # Reset recipe-provided values so a stale one can't leak between
+    # packages when `aurb all` sources several in the same shell.
+    pkgname= pkgver= pkgdesc= license= url= source= sha256= depends= provides=
+    unset -f build package prepare 2>/dev/null || true
+
+    # shellcheck disable=SC1090
+    . "$recipe"
+
+    [ -n "$pkgname" ] || die "$recipe: pkgname unset"
+    [ -n "$pkgver" ]  || die "$recipe: pkgver unset"
+
+    out="$OUT/pkgs/${pkgname}-${pkgver}.aurpkg"
+    if [ -f "$out" ] && [ "$recipe" -ot "$out" ]; then
+        say "$pkgname-$pkgver is up to date"
+        return 0
+    fi
+
+    srcdir="$WORK/$pkgname/src"
+    pkgdir="$WORK/$pkgname/pkg"
+    rm -rf "$WORK/$pkgname"
+    mkdir -p "$srcdir" "$pkgdir" "$OUT/pkgs"
+
+    say "building $pkgname-$pkgver"
+    for s in $source; do
+        f="$SOURCES/$s"
+        [ -f "$f" ] || die "missing source $s (expected at $f)"
+        verify_sha "$f" "$sha256"
+        case "$s" in
+            *.tar*|*.tgz) extract "$f" "$srcdir" ;;
+            *)            cp -a "$f" "$srcdir/" ;;
+        esac
+    done
+
+    export srcdir pkgdir rdir JOBS SYSROOT ROOT OUT
+    export AUROS_VERSION AUROS_CODENAME AUROS_ARCH
+
+    ( cd "$srcdir"; command -v prepare >/dev/null 2>&1 && prepare || true )
+    ( cd "$srcdir"; build )
+    ( cd "$srcdir"; package )
+
+    # ── Package metadata. .FILES is what lets `aur owns` answer which
+    #    package a path came from, and what makes removal exact.
+    mkdir -p "$pkgdir/.meta"
+    cat > "$pkgdir/.meta/PKGINFO" <<EOP
+pkgname = $pkgname
+pkgver = $pkgver
+pkgdesc = $pkgdesc
+license = $license
+url = $url
+depends = $depends
+provides = $provides
+arch = $AUROS_ARCH
+builddate = $(date -u +%Y-%m-%dT%H:%M:%SZ)
+EOP
+    ( cd "$pkgdir" && find . -path ./.meta -prune -o -type f -print -o -type l -print \
+        | sed 's|^\./||' | LC_ALL=C sort > .meta/FILES )
+    ( cd "$pkgdir" && find . -path ./.meta -prune -o -type d -print \
+        | sed 's|^\./||' | grep -v '^\.$' | LC_ALL=C sort > .meta/DIRS ) || true
+
+    ( cd "$pkgdir" && tar --zstd -cf "$out" . )
+    say "  -> $(basename "$out")  ($(du -h "$out" | cut -f1), $(wc -l < "$pkgdir/.meta/FILES") files)"
+}
+
+case "${1:-}" in
+    build)
+        shift; [ $# -gt 0 ] || die "usage: aurb build NAME..."
+        for n in "$@"; do build_one "$n"; done ;;
+    order)
+        shift; for n in "$@"; do resolve "$n"; done
+        printf '%s\n' $_order_out ;;
+    all)
+        for r in "$PKGDIR"/*/*/recipe.sh; do
+            [ -f "$r" ] || continue
+            resolve "$(basename "$(dirname "$r")")"
+        done
+        say "build order:$_order_out"
+        for n in $_order_out; do build_one "$n"; done ;;
+    clean)
+        shift; for n in "$@"; do rm -rf "${WORK:?}/$n"; say "cleaned $n"; done ;;
+    list)
+        for r in "$PKGDIR"/*/*/recipe.sh; do
+            [ -f "$r" ] || continue
+            printf '  %-16s %-10s %s\n' "$(recipe_field "$r" pkgname)" \
+                "$(recipe_field "$r" pkgver)" "$(recipe_field "$r" pkgdesc)"
+        done ;;
+    *)
+        cat <<EOU
+aurb — the AurOS package builder
+
+  aurb build NAME...   build the named packages
+  aurb order NAME...   print dependency-resolved build order
+  aurb all             build every recipe, in order
+  aurb clean NAME...   discard work trees
+  aurb list            list recipes
+EOU
+        ;;
+esac
