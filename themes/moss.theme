@@ -1,0 +1,28 @@
+# AurOS Theme — Moss.  Quiet forest floor: desaturated greens, soft light.
+inherit="nocturne"
+
+theme_name="Moss"
+theme_variant="dark"
+theme_description="A quiet forest floor — desaturated greens and warm stone."
+
+bg="#0E1310"      bg_alt="#141A16"   surface="#1A221C"
+surface_hi="#232D25"  overlay="#2F3B31"
+muted="#5A6A5C"   subtle="#8FA292"   fg="#D3DED4"  fg_hi="#F0F6F0"
+
+accent="#8FBF7F"  accent_alt="#C9A86C"  accent_warm="#E0B88A"
+ok="#8FBF7F"      warn="#E0B88A"  err="#D2807C"  info="#87AFC0"
+
+ansi0="#1A221C"  ansi8="#5A6A5C"
+ansi1="#D2807C"  ansi9="#E59A96"
+ansi2="#8FBF7F"  ansi10="#A9D69A"
+ansi3="#C9A86C"  ansi11="#E0C58A"
+ansi4="#87AFC0"  ansi12="#A3C7D6"
+ansi5="#B29BC4"  ansi13="#C9B5D9"
+ansi6="#7FC0B4"  ansi14="#9AD6C9"
+ansi7="#D3DED4"  ansi15="#F0F6F0"
+
+radius="18"  radius_sm="10"  gap="14"
+wall_style="mesh"
+wall_c1="#0A0F0C"  wall_c2="#1B2C1F"  wall_c3="#8FBF7F"  wall_c4="#C9A86C"
+wall_intensity="0.40"  wall_grain="0.06"  wall_vignette="0.50"
+brand_glyph="✦"

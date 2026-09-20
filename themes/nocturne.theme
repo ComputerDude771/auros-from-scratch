@@ -1,0 +1,95 @@
+# ═══════════════════════════════════════════════════════════════════
+#  AurOS Theme — Nocturne
+#  The default. Deep atmospheric blue-black with an aurora-teal glow.
+#
+#  This file is the ONLY thing you need to edit to reskin AurOS.
+#  Run `aurora set nocturne` and every surface in the system —
+#  wallpaper, bar, palette, terminal, TTY, bootloader, splash —
+#  is regenerated from these values.
+#
+#  Format: plain `key="value"` pairs. No parser, no dependencies.
+#  See docs/THEMING.md for the full schema reference.
+# ═══════════════════════════════════════════════════════════════════
+
+# ── Identity ───────────────────────────────────────────────────────
+theme_name="Nocturne"
+theme_author="AurOS"
+theme_variant="dark"
+theme_description="Deep atmospheric blue-black with an aurora-teal glow."
+
+# ── Core palette ───────────────────────────────────────────────────
+# Layered from deepest to brightest. Every surface in the system
+# picks one of these; nothing hardcodes a colour.
+bg="#0B0E14"           # desktop void / deepest background
+bg_alt="#10151F"       # panels, bar background
+surface="#161C28"      # cards, windows, menus
+surface_hi="#1F2735"   # hover / selected row
+overlay="#2B3542"      # borders, dividers, separators
+muted="#55606E"        # disabled text, inactive glyphs
+subtle="#8793A4"       # secondary text, captions
+fg="#D4DCEA"           # primary text
+fg_hi="#F3F7FD"        # emphasis, active title
+
+# ── Accents ────────────────────────────────────────────────────────
+accent="#7DD3C0"       # primary: focus rings, active workspace, cursor
+accent_alt="#A78BFA"   # secondary: highlights, selection glow
+accent_warm="#F2B880"  # tertiary: badges, warm emphasis
+
+# ── Semantic ───────────────────────────────────────────────────────
+ok="#7DD3C0"
+warn="#F2B880"
+err="#F2788D"
+info="#82AAFF"
+
+# ── ANSI 16 (terminal + TTY console) ───────────────────────────────
+ansi0="#161C28"   ansi8="#55606E"
+ansi1="#F2788D"   ansi9="#FF9AAB"
+ansi2="#7DD3C0"   ansi10="#9BE8D8"
+ansi3="#F2B880"   ansi11="#FFD2A3"
+ansi4="#82AAFF"   ansi12="#A5C4FF"
+ansi5="#A78BFA"   ansi13="#C4ADFF"
+ansi6="#6FD8DC"   ansi14="#93EEF2"
+ansi7="#D4DCEA"   ansi15="#F3F7FD"
+
+# ── Geometry (pixels) ──────────────────────────────────────────────
+radius="14"            # window + panel corner radius
+radius_sm="8"          # buttons, pills, small chips
+gap="12"               # gap between tiled windows
+margin="14"            # gap from screen edge
+border="2"             # focus border thickness
+bar_height="38"        # top bar height
+padding="14"           # internal padding of panels
+
+# ── Typography ─────────────────────────────────────────────────────
+font_sans="Inter"
+font_mono="JetBrainsMono"
+font_size="14"         # base UI size (px)
+font_size_sm="12"
+font_size_lg="19"
+line_height="1.45"
+
+# ── Effects ────────────────────────────────────────────────────────
+blur="1"               # 1 = blur behind panels
+blur_radius="20"
+shadow="1"
+shadow_opacity="0.50"
+shadow_radius="28"
+opacity_panel="0.88"   # bar / palette translucency
+opacity_inactive="0.94"
+animation_ms="170"
+animation_curve="spring"   # spring | ease | linear
+
+# ── Wallpaper (procedurally generated, no image files) ─────────────
+wall_style="aurora"    # aurora | mesh | waves | gradient | noise | solid
+wall_c1="#080B11"      # deep base
+wall_c2="#10303A"      # mid wash
+wall_c3="#7DD3C0"      # ribbon 1
+wall_c4="#A78BFA"      # ribbon 2
+wall_intensity="0.55"  # 0.0-1.0 ribbon brightness
+wall_grain="0.05"      # film grain, hides banding
+wall_vignette="0.45"
+
+# ── Branding ───────────────────────────────────────────────────────
+brand_glyph="◆"
+brand_text="AurOS"
+cursor_size="24"

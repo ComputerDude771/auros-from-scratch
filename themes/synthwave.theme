@@ -1,0 +1,30 @@
+# AurOS Theme — Synthwave.  Neon grid, hot magenta, 1984 at 3am.
+# Inherits Nocturne and overrides only what differs.
+inherit="nocturne"
+
+theme_name="Synthwave"
+theme_variant="dark"
+theme_description="Neon grid, hot magenta and cyan over a violet horizon."
+
+bg="#160A26"      bg_alt="#1D0E32"   surface="#26123F"
+surface_hi="#33194F"  overlay="#452266"
+muted="#6E4E91"   subtle="#A98CC9"   fg="#EBDCFA"  fg_hi="#FFFFFF"
+
+accent="#FF4FD8"  accent_alt="#4FE9FF"  accent_warm="#FFC95C"
+ok="#4FFFB0"      warn="#FFC95C"  err="#FF5C7A"  info="#4FE9FF"
+
+ansi0="#26123F"  ansi8="#6E4E91"
+ansi1="#FF5C7A"  ansi9="#FF8FA5"
+ansi2="#4FFFB0"  ansi10="#8CFFD0"
+ansi3="#FFC95C"  ansi11="#FFDE9B"
+ansi4="#7A8CFF"  ansi12="#A8B4FF"
+ansi5="#FF4FD8"  ansi13="#FF93E7"
+ansi6="#4FE9FF"  ansi14="#96F3FF"
+ansi7="#EBDCFA"  ansi15="#FFFFFF"
+
+radius="6"  radius_sm="3"  border="2"
+shadow_opacity="0.65"  blur_radius="26"
+wall_style="waves"
+wall_c1="#0D0518"  wall_c2="#3D1160"  wall_c3="#FF4FD8"  wall_c4="#4FE9FF"
+wall_intensity="0.78"  wall_grain="0.07"  wall_vignette="0.55"
+brand_glyph="▲"

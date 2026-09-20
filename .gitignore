@@ -1,0 +1,11 @@
+# Build artifacts — everything here is reproducible from source.
+/work/
+/out/
+/sources/
+/sysroot/
+*.o
+*.a
+*.img
+*.iso
+*.tar.*
+*.log

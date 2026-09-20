@@ -1,0 +1,320 @@
+#!/bin/sh
+# ═══════════════════════════════════════════════════════════════════
+#  aurora — the AurOS theme engine
+#
+#  One theme file drives every pixel in the system. `aurora set NAME`
+#  sources the theme, renders every template in the template dir, and
+#  reloads the live components. No daemon, no dependencies beyond a
+#  POSIX shell and awk.
+#
+#  Templates use @token@ substitution with a small colour algebra:
+#     @accent@              #7DD3C0
+#     @accent|hex@          7DD3C0
+#     @accent|0x@           0x7DD3C0
+#     @accent|rgb@          125,211,192
+#     @accent|rgba:0.4@     rgba(125,211,192,0.40)
+#     @accent|lighten:20@   lighter by 20%
+#     @accent|darken:35@    darker by 35%
+#     @accent|mix:bg:50@    50% blend toward bg
+#     @accent|fade:bg:80@   80% toward bg (alpha-over-opaque)
+#     @accent|on@           readable fg colour to sit on accent
+#     @bar_height|int@      38
+# ═══════════════════════════════════════════════════════════════════
+set -eu
+
+: "${AUROS_PREFIX:=}"
+THEME_DIR="${AURORA_THEMES:-$AUROS_PREFIX/usr/share/auros/themes}"
+TPL_DIR="${AURORA_TEMPLATES:-$AUROS_PREFIX/usr/share/auros/templates}"
+STATE="${AURORA_STATE:-$AUROS_PREFIX/etc/auros}"
+CACHE="${AURORA_CACHE:-$AUROS_PREFIX/var/cache/auros}"
+ACTIVE="$STATE/theme"
+
+die() { printf '\033[38;2;242;120;141maurora:\033[0m %s\n' "$*" >&2; exit 1; }
+info() { printf '\033[38;2;125;211;192m  ->\033[0m %s\n' "$*" >&2; }
+
+# ── Required keys. `validate` checks a theme supplies all of them
+#    (directly or via inherit) so a half-written theme fails loudly
+#    instead of rendering a black-on-black desktop.
+REQUIRED="theme_name theme_variant bg bg_alt surface surface_hi overlay
+muted subtle fg fg_hi accent accent_alt accent_warm ok warn err info
+radius radius_sm gap margin border bar_height padding
+font_sans font_mono font_size line_height
+blur blur_radius shadow shadow_opacity opacity_panel animation_ms
+wall_style wall_c1 wall_c2 wall_c3 wall_c4 wall_intensity wall_grain"
+
+# ── Source a theme, following `inherit` chains parent-first so the
+#    child's assignments win. Guards against inheritance cycles.
+load_theme() {
+    # Resolve the inherit chain iteratively, parent-first, then source in
+    # that order so a child's assignments win. (Deliberately NOT recursive:
+    # POSIX sh has no lexical scope, so a recursive version clobbers its
+    # own locals on the way back up and re-sources the parent.)
+    _chain=""
+    _cur=$1
+    _depth=0
+    while [ -n "$_cur" ]; do
+        _f="$THEME_DIR/$_cur.theme"
+        [ -f "$_f" ] || _f="$_cur"
+        [ -f "$_f" ] || die "no such theme: $_cur"
+        case " $_chain " in *" $_f "*) die "inherit cycle at '$_cur'" ;; esac
+        _chain="$_f $_chain"
+        _cur=$(sed -n 's/^[[:space:]]*inherit="\{0,1\}\([A-Za-z0-9_-]*\)"\{0,1\}.*/\1/p' "$_f" | head -1)
+        _depth=$((_depth+1))
+        [ "$_depth" -gt 16 ] && die "inherit chain deeper than 16"
+    done
+    for _f in $_chain; do
+        # shellcheck disable=SC1090
+        . "$_f"
+    done
+    unset inherit 2>/dev/null || :
+}
+
+# Export every theme key so awk can read it from ENVIRON.
+export_theme() {
+    for _k in $(set | sed -n 's/^\([a-z_][a-z0-9_]*\)=.*/\1/p'); do
+        case "$_k" in
+            theme_*|bg*|surface*|overlay|muted|subtle|fg*|accent*|ok|warn|err|info|\
+            ansi*|radius*|gap|margin|border|bar_height|padding|font_*|line_height|\
+            blur*|shadow*|opacity_*|animation_*|wall_*|brand_*|cursor_*)
+                export "$_k" ;;
+        esac
+    done
+}
+
+# ── The renderer. All colour algebra lives here.
+RENDER_AWK='
+function clamp(v){ return v<0?0:(v>255?255:int(v+0.5)) }
+function hx(s,  t){ t=s; sub(/^#/,"",t); if(length(t)==3){t=substr(t,1,1) substr(t,1,1) substr(t,2,1) substr(t,2,1) substr(t,3,1) substr(t,3,1)} return toupper(t) }
+function R(s){ return strtonum("0x" substr(hx(s),1,2)) }
+function G(s){ return strtonum("0x" substr(hx(s),3,2)) }
+function B(s){ return strtonum("0x" substr(hx(s),5,2)) }
+function mk(r,g,b){ return sprintf("#%02X%02X%02X", clamp(r), clamp(g), clamp(b)) }
+function lighten(c,p,  f){ f=p/100.0; return mk(R(c)+(255-R(c))*f, G(c)+(255-G(c))*f, B(c)+(255-B(c))*f) }
+function darken(c,p,   f){ f=1-p/100.0; return mk(R(c)*f, G(c)*f, B(c)*f) }
+function mix(a,b,p,    f){ f=p/100.0; return mk(R(a)*(1-f)+R(b)*f, G(a)*(1-f)+G(b)*f, B(a)*(1-f)+B(b)*f) }
+function lum(c){ return (0.2126*R(c) + 0.7152*G(c) + 0.0722*B(c))/255.0 }
+# Pick whichever of the theme fg / bg reads better on top of c.
+function on(c){ return lum(c) > 0.55 ? ENVIRON["bg"] : ENVIRON["fg_hi"] }
+
+function resolve(key,  v){
+    v = ENVIRON[key]
+    return v
+}
+
+function apply(key, op, arg1, arg2,   v, other) {
+    v = resolve(key)
+    if (v == "") return "@@MISSING:" key "@@"
+    if (op == "")        return v
+    if (op == "hex")     return hx(v)
+    if (op == "lhex")    return tolower(hx(v))
+    if (op == "0x")      return "0x" hx(v)
+    if (op == "int")     return v+0
+    if (op == "rgb")     return R(v) "," G(v) "," B(v)
+    if (op == "rgbsp")   return R(v) " " G(v) " " B(v)
+    if (op == "rgba")    return sprintf("rgba(%d,%d,%d,%.2f)", R(v), G(v), B(v), arg1+0)
+    if (op == "argb")    return sprintf("0x%02X%s", clamp((arg1+0)*255), hx(v))
+    if (op == "float")   return sprintf("%.4ff, %.4ff, %.4ff", R(v)/255.0, G(v)/255.0, B(v)/255.0)
+    if (op == "lighten") return lighten(v, arg1+0)
+    if (op == "darken")  return darken(v, arg1+0)
+    if (op == "mix")     { other = resolve(arg1); return mix(v, other, arg2+0) }
+    if (op == "fade")    { other = resolve(arg1); return mix(v, other, arg2+0) }
+    if (op == "on")      return on(v)
+    if (op == "lum")     return sprintf("%.3f", lum(v))
+    return "@@BADOP:" op "@@"
+}
+
+{
+    line = $0
+    out  = ""
+    while (match(line, /@[a-z_][a-z0-9_]*(\|[a-z0-9]+(:[A-Za-z0-9_.]+)*)?@/)) {
+        out = out substr(line, 1, RSTART-1)
+        tok = substr(line, RSTART+1, RLENGTH-2)
+        line = substr(line, RSTART+RLENGTH)
+        n = split(tok, parts, "|")
+        key = parts[1]
+        if (n == 1) { out = out apply(key, "", "", "") }
+        else {
+            m = split(parts[2], a, ":")
+            out = out apply(key, a[1], (m>1?a[2]:""), (m>2?a[3]:""))
+        }
+    }
+    print out line
+}'
+
+render_stream() { awk "$RENDER_AWK"; }
+
+# ── Render every template. Each template declares its destination on
+#    a first line of the form:   #@!out=/path/to/file mode=0644
+render_all() {
+    _count=0
+    [ -d "$TPL_DIR" ] || die "no template dir: $TPL_DIR"
+    for _t in "$TPL_DIR"/*.tpl; do
+        [ -f "$_t" ] || continue
+        _hdr=$(head -1 "$_t")
+        case "$_hdr" in
+            *'@!out='*) : ;;
+            *) info "skip $(basename "$_t") (no @!out header)"; continue ;;
+        esac
+        _out=$(printf '%s\n' "$_hdr" | sed -n 's/.*@!out=\([^ ]*\).*/\1/p')
+        _mode=$(printf '%s\n' "$_hdr" | sed -n 's/.*mode=\([0-7]*\).*/\1/p')
+        [ -n "$_mode" ] || _mode=0644
+        _out="$AUROS_PREFIX$_out"
+        mkdir -p "$(dirname "$_out")"
+        tail -n +2 "$_t" | render_stream > "$_out.tmp"
+        if grep -q '@@MISSING:' "$_out.tmp"; then
+            grep -o '@@MISSING:[a-z_]*@@' "$_out.tmp" | sort -u | while read -r m; do
+                info "WARNING $(basename "$_t"): unresolved $m"
+            done
+        fi
+        mv "$_out.tmp" "$_out"
+        chmod "$_mode" "$_out"
+        _count=$((_count+1))
+    done
+    info "rendered $_count templates"
+}
+
+cmd_list() {
+    _cur=$(cat "$ACTIVE" 2>/dev/null || echo "")
+    for f in "$THEME_DIR"/*.theme; do
+        [ -f "$f" ] || continue
+        n=$(basename "$f" .theme)
+        d=$(sed -n 's/^theme_description="\(.*\)"/\1/p' "$f" | head -1)
+        v=$(sed -n 's/^theme_variant="\(.*\)"/\1/p' "$f" | head -1)
+        [ "$n" = "$_cur" ] && mark="●" || mark=" "
+        printf '  %s %-14s %-6s %s\n' "$mark" "$n" "[${v:-dark}]" "$d"
+    done
+}
+
+cmd_show() {
+    _n=${1:-$(cat "$ACTIVE" 2>/dev/null || echo nocturne)}
+    ( load_theme "$_n"
+      printf '\n  \033[1m%s\033[0m — %s\n\n' "$theme_name" "$theme_description"
+      for grp in "bg bg_alt surface surface_hi overlay" \
+                 "muted subtle fg fg_hi" \
+                 "accent accent_alt accent_warm" \
+                 "ok warn err info"; do
+        printf '   '
+        for k in $grp; do
+            eval "c=\$$k"
+            r=$(printf '%d' "0x${c#\#}"); rr=$(( (r>>16)&255 )); gg=$(( (r>>8)&255 )); bb=$(( r&255 ))
+            printf '\033[48;2;%d;%d;%dm      \033[0m ' "$rr" "$gg" "$bb"
+        done
+        printf '\n   '
+        for k in $grp; do printf '%-7.7s' "$k"; done
+        printf '\n\n'
+      done
+      printf '   ANSI  '
+      for i in 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+        eval "c=\${ansi$i:-#000000}"
+        r=$(printf '%d' "0x${c#\#}"); rr=$(( (r>>16)&255 )); gg=$(( (r>>8)&255 )); bb=$(( r&255 ))
+        printf '\033[48;2;%d;%d;%dm   \033[0m' "$rr" "$gg" "$bb"
+        [ "$i" = 7 ] && printf '\n         '
+      done
+      printf '\n\n'
+    )
+}
+
+cmd_validate() {
+    _n=${1:-$(cat "$ACTIVE" 2>/dev/null || echo nocturne)}
+    ( load_theme "$_n"
+      _miss=""
+      for k in $REQUIRED; do
+          eval "v=\${$k:-}"
+          [ -n "$v" ] || _miss="$_miss $k"
+      done
+      for i in 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+          eval "v=\${ansi$i:-}"
+          [ -n "$v" ] || _miss="$_miss ansi$i"
+      done
+      if [ -n "$_miss" ]; then
+          printf 'theme "%s" is missing:%s\n' "$_n" "$_miss" >&2
+          exit 1
+      fi
+      printf '  theme "%s" is complete (%d keys)\n' "$_n" "$(echo $REQUIRED | wc -w)"
+    )
+}
+
+cmd_set() {
+    _n=${1:?usage: aurora set NAME}
+    cmd_validate "$_n" >/dev/null || die "refusing to apply an incomplete theme"
+    ( load_theme "$_n"
+      export_theme
+      mkdir -p "$STATE" "$CACHE"
+      render_all
+      # Procedural wallpaper — generated from the theme, never a file on disk.
+      if command -v aurwall >/dev/null 2>&1; then
+          aurwall --theme "$THEME_DIR/$_n.theme" --out "$CACHE/wallpaper.png" \
+              >/dev/null 2>&1 && info "wallpaper regenerated"
+      fi
+    )
+    printf '%s\n' "$_n" > "$ACTIVE"
+    # Live reload: repaint the TTY palette and poke the shell if running.
+    [ -f "$STATE/console.sh" ] && . "$STATE/console.sh" 2>/dev/null || :
+    if [ -S /run/auros/shell.sock ]; then
+        printf 'reload-theme\n' > /run/auros/shell.sock 2>/dev/null || :
+        info "live-reloaded aurshell"
+    fi
+    info "theme set to '$_n'"
+}
+
+cmd_new() {
+    _n=${1:?usage: aurora new NAME [--from BASE]}
+    _base=nocturne
+    [ "${2:-}" = "--from" ] && _base=${3:?--from needs a theme}
+    _f="$THEME_DIR/$_n.theme"
+    [ -e "$_f" ] && die "$_f already exists"
+    mkdir -p "$THEME_DIR"
+    cat > "$_f" <<EOT
+# AurOS Theme — $_n
+# Scaffolded from '$_base'. Override only what you want to change;
+# everything else is inherited. Run: aurora set $_n
+inherit="$_base"
+
+theme_name="$_n"
+theme_variant="dark"
+theme_description="TODO: one line describing the mood."
+
+# accent="#RRGGBB"
+# bg="#RRGGBB"
+# wall_style="aurora"   # aurora | mesh | waves | gradient | noise | solid
+EOT
+    info "created $_f"
+}
+
+cmd_current() { cat "$ACTIVE" 2>/dev/null || echo nocturne; }
+
+cmd_get() {
+    _k=${1:?usage: aurora get KEY [THEME]}
+    ( load_theme "${2:-$(cmd_current)}"; eval "printf '%s\n' \"\${$_k:-}\"" )
+}
+
+usage() {
+cat <<EOT
+aurora — the AurOS theme engine
+
+  aurora list                    list installed themes
+  aurora show [NAME]             preview a palette in the terminal
+  aurora set NAME                apply a theme system-wide
+  aurora current                 print the active theme
+  aurora get KEY [NAME]          read one value
+  aurora new NAME [--from BASE]  scaffold a new theme
+  aurora validate [NAME]         check a theme for missing keys
+  aurora render < in > out       run the substitution filter on stdin
+
+Themes live in $THEME_DIR
+Templates in    $TPL_DIR
+EOT
+}
+
+case "${1:-}" in
+    list)     shift; cmd_list "$@" ;;
+    show)     shift; cmd_show "$@" ;;
+    set)      shift; cmd_set "$@" ;;
+    current)  shift; cmd_current "$@" ;;
+    get)      shift; cmd_get "$@" ;;
+    new)      shift; cmd_new "$@" ;;
+    validate) shift; cmd_validate "$@" ;;
+    render)   shift; ( load_theme "$(cmd_current)"; export_theme; render_stream ) ;;
+    ""|-h|--help|help) usage ;;
+    *) die "unknown command '$1' (try: aurora help)" ;;
+esac
