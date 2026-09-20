@@ -1,0 +1,127 @@
+# AurOS kernel configuration fragment, merged over x86_64 defconfig.
+# Everything here is either required to boot, required by the desktop
+# shell, or required by the migration path off Windows.
+
+# ── Boot ───────────────────────────────────────────────────────────
+CONFIG_BLK_DEV_INITRD=y
+CONFIG_RD_GZIP=y
+CONFIG_RD_XZ=y
+CONFIG_RD_ZSTD=y
+CONFIG_DEVTMPFS=y
+CONFIG_DEVTMPFS_MOUNT=y
+CONFIG_EFI=y
+CONFIG_EFI_STUB=y
+CONFIG_EFI_MIXED=y
+CONFIG_FB_EFI=y
+
+# ── Filesystems ────────────────────────────────────────────────────
+CONFIG_EXT4_FS=y
+CONFIG_EXT4_USE_FOR_EXT2=y
+CONFIG_VFAT_FS=y
+CONFIG_FAT_DEFAULT_UTF8=y
+CONFIG_NLS_CODEPAGE_437=y
+CONFIG_NLS_ISO8859_1=y
+CONFIG_NLS_UTF8=y
+CONFIG_TMPFS=y
+CONFIG_TMPFS_POSIX_ACL=y
+CONFIG_SQUASHFS=y
+CONFIG_SQUASHFS_ZSTD=y
+CONFIG_SQUASHFS_XZ=y
+CONFIG_OVERLAY_FS=y
+CONFIG_BLK_DEV_LOOP=y
+CONFIG_ISO9660_FS=y
+CONFIG_JOLIET=y
+
+# NTFS3 is how Ferry reads the user's Windows partition after the
+# switch. Without it the entire migration story does not work.
+CONFIG_NTFS3_FS=y
+CONFIG_NTFS3_LZX_XPRESS=y
+CONFIG_NTFS3_FS_POSIX_ACL=y
+
+# ── Storage ────────────────────────────────────────────────────────
+CONFIG_BLK_DEV_NVME=y
+CONFIG_SATA_AHCI=y
+CONFIG_ATA_PIIX=y
+CONFIG_BLK_DEV_SD=y
+CONFIG_BLK_DEV_SR=y
+CONFIG_CHR_DEV_SG=y
+CONFIG_SCSI_VIRTIO=y
+CONFIG_USB_STORAGE=y
+CONFIG_USB_UAS=y
+
+# ── virtio (QEMU / VM install targets) ─────────────────────────────
+CONFIG_VIRTIO=y
+CONFIG_VIRTIO_PCI=y
+CONFIG_VIRTIO_BLK=y
+CONFIG_VIRTIO_NET=y
+CONFIG_VIRTIO_CONSOLE=y
+CONFIG_VIRTIO_BALLOON=y
+CONFIG_HW_RANDOM_VIRTIO=y
+
+# ── Graphics: the shell renders directly to DRM/KMS ────────────────
+CONFIG_DRM=y
+CONFIG_DRM_FBDEV_EMULATION=y
+CONFIG_DRM_SIMPLEDRM=y
+CONFIG_DRM_VIRTIO_GPU=y
+CONFIG_DRM_BOCHS=y
+CONFIG_DRM_CIRRUS_QEMU=y
+CONFIG_DRM_I915=y
+CONFIG_DRM_AMDGPU=y
+CONFIG_DRM_RADEON=y
+CONFIG_DRM_NOUVEAU=y
+CONFIG_FB=y
+CONFIG_FRAMEBUFFER_CONSOLE=y
+CONFIG_FRAMEBUFFER_CONSOLE_DETECT_PRIMARY=y
+CONFIG_SYSFB_SIMPLEFB=y
+
+# ── Input ──────────────────────────────────────────────────────────
+CONFIG_INPUT_EVDEV=y
+CONFIG_KEYBOARD_ATKBD=y
+CONFIG_MOUSE_PS2=y
+CONFIG_SERIO_I8042=y
+CONFIG_HID=y
+CONFIG_HID_GENERIC=y
+CONFIG_USB_HID=y
+CONFIG_INPUT_MOUSEDEV=y
+
+# ── USB ────────────────────────────────────────────────────────────
+CONFIG_USB=y
+CONFIG_USB_XHCI_HCD=y
+CONFIG_USB_EHCI_HCD=y
+CONFIG_USB_OHCI_HCD=y
+CONFIG_USB_UHCI_HCD=y
+
+# ── Console / serial (QEMU headless boot proof) ────────────────────
+CONFIG_SERIAL_8250=y
+CONFIG_SERIAL_8250_CONSOLE=y
+CONFIG_VT=y
+CONFIG_VT_CONSOLE=y
+CONFIG_UNIX98_PTYS=y
+
+# ── Networking (common on old consumer hardware) ───────────────────
+CONFIG_NET=y
+CONFIG_INET=y
+CONFIG_PACKET=y
+CONFIG_UNIX=y
+CONFIG_E1000=y
+CONFIG_E1000E=y
+CONFIG_R8169=y
+CONFIG_8139TOO=y
+CONFIG_IGB=y
+
+# ── Misc ───────────────────────────────────────────────────────────
+CONFIG_CGROUPS=y
+CONFIG_SIGNALFD=y
+CONFIG_EVENTFD=y
+CONFIG_EPOLL=y
+CONFIG_MAGIC_SYSRQ=y
+CONFIG_PRINTK=y
+CONFIG_BINFMT_ELF=y
+CONFIG_BINFMT_SCRIPT=y
+
+# ── Off: we do not need these and they cost build time ─────────────
+CONFIG_MODULE_SIG=n
+CONFIG_DEBUG_INFO_NONE=y
+CONFIG_DEBUG_INFO_DWARF5=n
+CONFIG_SYSTEM_TRUSTED_KEYRING=n
+CONFIG_SYSTEM_REVOCATION_LIST=n
