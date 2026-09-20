@@ -113,8 +113,50 @@ stage_packages() {
         || die "package install failed — see the log above"
     [ -n "${packages_exclude:-}" ] && \
         inchroot "apt-get purge -y $packages_exclude 2>/dev/null || true"
+
+    stage_browser
     inchroot "apt-get clean; rm -rf /var/lib/apt/lists/*"
     chroot_done
+}
+
+# ── browser: never let a desktop ship without one, silently ───────
+stage_browser() {
+    case "${browser_source:-none}" in
+      none|"") note "no browser requested"; return 0 ;;
+      snap)
+        inchroot "apt-get install -y --no-install-recommends snapd $browser" \
+            && note "$browser installed via snap" \
+            || die "browser install failed"
+        return 0 ;;
+      mozilla-apt) ;;
+      *) die "unknown browser_source: $browser_source" ;;
+    esac
+
+    note "installing $browser from packages.mozilla.org"
+    inchroot "install -d -m 0755 /etc/apt/keyrings"
+    if ! inchroot "curl -fsSL --max-time 30 https://packages.mozilla.org/apt/repo-signing-key.gpg \
+                   -o /etc/apt/keyrings/packages.mozilla.org.asc" 2>/dev/null; then
+        # A silently browserless desktop is worse than a failed build:
+        # it would be discovered by the user, after the install.
+        MISSING_BROWSER=1
+        printf '%s\n' "browser=MISSING" >> "$RFS/etc/auros/build-warnings"
+        say "${C_ERR}WARNING${C_RST}: packages.mozilla.org is unreachable from this build host."
+        note "The image will have NO BROWSER. This is a build-environment"
+        note "limitation, not a design choice. Do not ship this image."
+        return 0
+    fi
+    cat > "$RFS/etc/apt/sources.list.d/mozilla.list" <<'EOL'
+deb [signed-by=/etc/apt/keyrings/packages.mozilla.org.asc] https://packages.mozilla.org/apt mozilla main
+EOL
+    # Pin so Ubuntu's snap transitional package can never win.
+    cat > "$RFS/etc/apt/preferences.d/mozilla" <<'EOL'
+Package: firefox*
+Pin: origin packages.mozilla.org
+Pin-Priority: 1000
+EOL
+    inchroot "apt-get update -qq && apt-get install -y --no-install-recommends $browser" \
+        || die "browser install from the Mozilla repo failed"
+    note "$browser installed from the Mozilla apt repo (real .deb, no snap)"
 }
 
 # ── stage 3: overlay our own stack ─────────────────────────────────

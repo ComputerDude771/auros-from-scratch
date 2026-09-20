@@ -67,7 +67,19 @@ packages_desktop="xwayland libinput10 libdrm2 libgbm1 mesa-vulkan-drivers
                   fontconfig"
 
 # What the user actually opens.
-packages_apps="firefox"
+#
+# Ubuntu ships Firefox and Chromium ONLY as snap transitional packages,
+# so purging snapd (below) removes the browser with them. A desktop
+# without a browser is not a product, so the browser comes from a real
+# apt repository instead.
+#
+#   mozilla-apt  Mozilla's official .deb repo (packages.mozilla.org)
+#   snap         Ubuntu's default; requires snapd, slow on old hardware
+#   none         headless / appliance builds
+browser="firefox"
+browser_source="mozilla-apt"
+
+packages_apps=""
 
 packages_extra=""
 packages_exclude="snapd ubuntu-advantage-tools popularity-contest"

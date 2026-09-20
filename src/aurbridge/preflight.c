@@ -292,6 +292,7 @@ static void check_disks(pf_report *r)
     /* Which physical disk holds the system volume? It must be exactly
      * one extent -- a spanned or striped C: is not safely shrinkable. */
     int sys_disk = -1;
+    int ioctl_failed = 0, spanned_reported = 0;
     {
         char path[16];
         snprintf(path, sizeof path, "\\\\.\\%s", sysdrive);
@@ -305,6 +306,7 @@ static void check_disks(pf_report *r)
                 if (ext->NumberOfDiskExtents == 1) {
                     sys_disk = (int)ext->Extents[0].DiskNumber;
                 } else {
+                    spanned_reported = 1;
                     add(r, "spanned-system-volume", "R10", PF_BLOCK,
                         "Windows is spread across more than one disk",
                         "This Windows installation spans multiple physical disks "
@@ -312,10 +314,28 @@ static void check_disks(pf_report *r)
                         "changed safely.",
                         "AurOS cannot install on this configuration.");
                 }
+            } else {
+                ioctl_failed = 1;
             }
             CloseHandle(v);
+        } else {
+            ioctl_failed = 1;
         }
     }
+
+    /* Safety invariant: UNKNOWN IS NEVER OK. If we cannot say with
+     * certainty which physical disk holds Windows, we must not touch any
+     * disk -- a wrong answer here is the wrong-target write (R11). */
+    if (sys_disk < 0 && !spanned_reported)
+        add(r, "system-disk-unknown", "R11", PF_BLOCK,
+            "Could not determine which drive Windows is on",
+            ioctl_failed
+              ? "The query that maps the Windows drive to a physical disk did not "
+                "succeed, so AurBridge cannot be certain which disk it would change."
+              : "The Windows drive did not map to exactly one physical disk.",
+            "This can happen on unusual storage setups (RAID, storage pools, some "
+            "virtual machines). AurOS will not guess which disk to write to, so it "
+            "stops here. Nothing has been changed.");
     r->system_disk = sys_disk;
 
     for (int i = 0; i < PF_MAX_DISKS; i++) {
@@ -375,6 +395,13 @@ static void check_disks(pf_report *r)
                     "AurBridge will not do that.");
             }
         }
+
+        if (d->is_system && d->size_bytes == 0)
+            add(r, "system-disk-unreadable", "R11", PF_BLOCK,
+                "The Windows drive could not be read properly",
+                "AurBridge could not read the size of the disk Windows is installed on.",
+                "AurOS will not change a disk it cannot fully read. Nothing has been "
+                "changed.");
 
         /* R11: an attached external drive is how installers write to the
          * wrong target. Cheap to refuse, prevents a whole category. */
