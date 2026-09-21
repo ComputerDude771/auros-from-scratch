@@ -727,10 +727,13 @@ static int draw_button(int id, const wchar_t *label, int x, int y, int w, int h,
         text_in(label, g_f_bodyb, C_MUTED, box,
                 DT_SINGLELINE | DT_CENTER | DT_VCENTER);
     } else if (primary) {
-        /* a soft glow under the primary action: the one thing on the page
-         * the eye should land on */
-        fill_rr((float)x - 1.f, (float)y + 2.f, (float)w + 2.f, (float)h,
-                r + 2.f, tone, hot ? 0.20f : 0.12f);
+        /* No glow. The primary action is already the only filled shape
+         * on the page -- a solid block of the accent against a flat
+         * ground -- and that is what makes the eye land on it. A
+         * coloured halo bled under the edge was the button asking to be
+         * noticed twice, and it is the exact "arbitrary drop-shadow"
+         * this design is meant to be free of. The press state is the
+         * fill going down a step, which is how a real button behaves. */
         fill_rr((float)x, (float)y, (float)w, (float)h, r, tone,
                 down ? 0.80f : (hot ? 1.0f : 0.92f));
         text_in(label, g_f_bodyb, C_BG, box, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
@@ -983,7 +986,7 @@ static const struct {
  { L"Look at this PC once more",
    L"Every safety check runs again, right before we start. Nothing is written.", 0 },
  { L"Write down what you agreed to",
-   L"Your answers, and a copy of this PC's unlock key if it has one.", 0 },
+   L"Your answers, and a copy of this PC\u2019s unlock key if it has one.", 0 },
  { L"Build a way back",
    L"A rescue USB stick, and a rescue area on the drive. Windows is untouched by this step.", 0 },
  { L"Make room",
@@ -1380,7 +1383,7 @@ static int page_welcome(int x, int y, int w)
     int y0 = y;
     int narrow = w > S(660) ? S(660) : w;
 
-    y += text_draw(L"Let's put AurOS on this PC", g_f_title, C_FG_HI,
+    y += text_draw(L"Let\u2019s put AurOS on this PC", g_f_title, C_FG_HI,
                    x, y, w, DT_WORDBREAK) + S(16);
     y += text_draw(L"AurOS is another desktop for your computer. It starts quickly, "
                    L"it stays out of your way, and it is free. This program puts it "
@@ -1395,7 +1398,13 @@ static int page_welcome(int x, int y, int w)
                      L"Before anything at all is changed, we build a rescue area on "
                      L"the drive and a rescue USB stick. One button puts Windows back "
                      L"the way it was.",
-                     x, y, narrow, C_ACCENT_ALT);
+                     x, y, narrow, C_ACCENT);
+    /* The first two rows are reassurances and share one colour, because
+     * they are the same kind of statement. The third is a refusal, and
+     * the caution colour there is MEANING rather than variety -- which
+     * is the difference between a palette and a cycle. These three rows
+     * used to run accent, accent-alt, warm, so the eye was told the
+     * three claims differed in kind when only the last one does. */
     y += feature_row(2, L"We look at this PC first, and we will say no",
                      L"If there is anything here we cannot do safely, we stop and tell "
                      L"you why in plain words. Nothing is changed when we stop.",
@@ -2715,11 +2724,41 @@ static void dark_titlebar(HWND h)
     FreeLibrary(m);
 }
 
-static HFONT mkfont(int px, int weight)
+/* Two faces, which IS the hierarchy.
+ *
+ * This had one face at essentially one weight: title, h2 and h3 were
+ * all Segoe UI SemiBold at 30/20/17, so the only thing separating a
+ * page title from a subheading was three points of size. That is not a
+ * hierarchy, it is a size ramp.
+ *
+ * The display face is Georgia. It is on every Windows since 2000 and
+ * every Mac, so nothing is downloaded and nothing falls back; Matthew
+ * Carter drew it to hold up on bad screens, which is exactly the
+ * hardware this installer runs on; and it is the same face the website
+ * uses, so the thing a person downloads looks like the page they
+ * downloaded it from. Segoe UI stays for text, where its job is to
+ * disappear.
+ *
+ * The weights are deliberately uneven: the serif carries its emphasis
+ * through SIZE at weight 400, and the sans carries its through WEIGHT
+ * at a small size. Big-and-quiet against small-and-loud is contrast
+ * that one face at 600/620/650 cannot produce. */
+#define FACE_DISPLAY L"Georgia"
+#define FACE_TEXT    L"Segoe UI"
+
+static HFONT mkfont_face(int px, int weight, const wchar_t *face, int family)
 {
     return CreateFontW(-S(px), 0, 0, 0, weight, 0, 0, 0, DEFAULT_CHARSET,
                        OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-                       VARIABLE_PITCH | FF_SWISS, L"Segoe UI");
+                       (BYTE)(VARIABLE_PITCH | family), face);
+}
+static HFONT mkfont(int px, int weight)
+{
+    return mkfont_face(px, weight, FACE_TEXT, FF_SWISS);
+}
+static HFONT mkdisplay(int px, int weight)
+{
+    return mkfont_face(px, weight, FACE_DISPLAY, FF_ROMAN);
 }
 static void fonts_free(void)
 {
@@ -2731,9 +2770,11 @@ static void fonts_free(void)
 static void fonts_make(void)
 {
     fonts_free();
-    g_f_title  = mkfont(30, FW_SEMIBOLD);
-    g_f_h2     = mkfont(20, FW_SEMIBOLD);
-    g_f_h3     = mkfont(17, FW_SEMIBOLD);
+    /* Display, large and quiet. */
+    g_f_title  = mkdisplay(34, FW_NORMAL);
+    g_f_h2     = mkdisplay(23, FW_NORMAL);
+    /* Text, small and loud. The jump between the two IS the hierarchy. */
+    g_f_h3     = mkfont(15, FW_BOLD);
     g_f_body   = mkfont(15, FW_NORMAL);
     g_f_bodyb  = mkfont(15, FW_SEMIBOLD);
     g_f_small  = mkfont(13, FW_NORMAL);
