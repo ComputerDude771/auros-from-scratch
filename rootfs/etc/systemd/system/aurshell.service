@@ -56,9 +56,21 @@ PAMName=aurshell
 # application will not start at all without one: the first thing a
 # browser does on a machine with no session bus is fail with "Cannot
 # autolaunch D-Bus without X11 $DISPLAY" -- an error about X11, on a
-# machine that has no X11 and never will. Wrapping here gives the shell
-# and every application it starts the same bus, which is also what makes
-# single-instance applications and "open this link" work between them.
+# machine that has no X11 and never will.
+#
+# This is a FLOOR, not the bus the desktop ends up on. logind gives
+# this user a bus of its own at $XDG_RUNTIME_DIR/bus, and everything
+# `systemd --user` starts -- wireplumber, pipewire-pulse, any portal --
+# is on that one. Two buses means the shell's applications cannot see
+# the rest of the desktop.
+#
+# It cannot be fixed by ordering, and that is worth writing down: the
+# user manager is started BY the logind session, and the logind session
+# is created by the PAMName= line above. Nothing can be ordered before
+# the thing that causes it. So aurshell adopts $XDG_RUNTIME_DIR/bus
+# itself the moment it appears -- a second or so into the boot, long
+# before anything is clicked -- and this wrapper is what a machine
+# whose user manager never starts falls back to. See run.c.
 ExecStart=/usr/bin/dbus-run-session -- /usr/bin/aurshell
 
 # A Wayland socket has to live somewhere a client can find it, and a
@@ -96,11 +108,21 @@ RuntimeDirectoryMode=0700
 #
 # The User= itself is written by build/forge into a drop-in, because the
 # account name is a profile setting and this file is not templated.
-#   bluetooth  talking to bluez, whose D-Bus policy names this group
-#   lpadmin    setting up a printer, which is cups's whole idea of
-#              authorisation -- neither of those two goes through
-#              polkit at all
-SupplementaryGroups=video input audio bluetooth lpadmin
+#
+# ONLY THE GROUPS THAT ALWAYS EXIST ARE NAMED HERE. systemd resolves
+# supplementary groups BEFORE ExecStart, and one it cannot resolve
+# aborts the unit with status=216/GROUP -- no desktop, and no aursorry
+# either, because the unit never ran. video, input and audio are
+# created by base packages and are always present.
+#
+# `bluetooth` and `lpadmin` are not: they exist only because bluez's
+# and cups-daemon's postinsts create them. Naming them here made the
+# desktop unbootable on any profile that trims those packages -- a
+# profile change, in a file that says nothing about systemd, producing
+# a black screen with no explanation anywhere. forge writes those into
+# the same drop-in that carries User=, filtered by which of them the
+# image actually has.
+SupplementaryGroups=video input audio
 TTYPath=/dev/tty1
 TTYReset=yes
 TTYVHangup=yes

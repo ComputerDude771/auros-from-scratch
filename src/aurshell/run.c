@@ -9,6 +9,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/wait.h>
+#include <sys/stat.h>
 #include <time.h>
 
 #include "run.h"
@@ -80,6 +81,52 @@ int run_detached(const char *const argv[])
     if (pid == 0) { child(argv, -1); }
     remember(pid);
     return 0;
+}
+
+/* ONE SESSION BUS, NOT TWO.
+ *
+ * aurshell.service runs under `dbus-run-session`, which makes a bus
+ * and exports DBUS_SESSION_BUS_ADDRESS pointing at it. That is there
+ * because a program with no bus and no X11 $DISPLAY cannot autolaunch
+ * one, and every GTK application on this machine wants a session bus.
+ *
+ * But logind ALSO gives this user a bus, at $XDG_RUNTIME_DIR/bus, and
+ * that is the one everything started by `systemd --user` is on --
+ * wireplumber, pipewire-pulse, any portal. So the shell's own
+ * applications sat on one bus and the rest of the desktop on another.
+ *
+ * The obvious fix -- order the unit after the user's bus -- is
+ * impossible, and worth writing down: the user manager is started BY
+ * the logind session, and the logind session is created by THIS
+ * unit's PAM stack. Nothing can be ordered before the thing that
+ * causes it.
+ *
+ * So the shell adopts the real bus when it turns up, which is a
+ * second or so into the boot and long before she clicks anything. The
+ * wrapper stays, because a machine where the user manager never
+ * starts must still have a bus rather than none.
+ *
+ * Returns 1 the first time it switches, so the caller can say so.
+ */
+int run_adopt_user_bus(void)
+{
+    static int done = 0;
+    if (done) return 0;
+    const char *rd = getenv("XDG_RUNTIME_DIR");
+    if (!rd || !*rd) return 0;
+
+    char path[320];
+    snprintf(path, sizeof path, "%s/bus", rd);
+    struct stat st;
+    if (stat(path, &st) != 0 || !S_ISSOCK(st.st_mode)) return 0;
+
+    char addr[384];
+    snprintf(addr, sizeof addr, "unix:path=%s", path);
+    done = 1;
+    const char *cur = getenv("DBUS_SESSION_BUS_ADDRESS");
+    if (cur && !strcmp(cur, addr)) return 0;      /* already the one */
+    if (setenv("DBUS_SESSION_BUS_ADDRESS", addr, 1) != 0) return 0;
+    return 1;
 }
 
 int run_status(const char *const argv[], int timeout_ms)

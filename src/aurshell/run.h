@@ -60,4 +60,12 @@ int  run_status(const char *const argv[], int timeout_ms);
  * child ended or to signal it safely. */
 void run_reap(void);
 
+/* Point everything this shell starts at the session bus logind made,
+ * once it exists, instead of at the private one the unit's wrapper
+ * made at boot. Cheap (one stat) and a no-op after it has succeeded.
+ * Call it from the main loop; see run.c for why it cannot simply be
+ * an ordering dependency in the unit file. Returns 1 the one time it
+ * changes anything. */
+int  run_adopt_user_bus(void);
+
 #endif

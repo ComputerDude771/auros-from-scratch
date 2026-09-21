@@ -1142,6 +1142,12 @@ int main(int argc, char **argv)
             set_open_last = c.settings_open;
             dirty = 1;
         }
+        /* One session bus, not two: logind's, once it appears. See
+         * run.c -- this cannot be an ordering dependency, because the
+         * thing to be ordered after is created by this unit's own PAM
+         * stack. */
+        if (run_adopt_user_bus())
+            fprintf(stderr, "aurshell: using the session bus logind made\n");
         power_step();
         if (settings_step(&c)) dirty = 1;
         /* The handful of things this computer should speak up about

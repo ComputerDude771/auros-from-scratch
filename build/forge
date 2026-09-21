@@ -711,26 +711,98 @@ EOL
     #              rootfs/usr/lib/udev/rules.d/60-auros-backlight.rules
     #   input      the keyboard, mouse and touchpad, read directly
     #   netdev     the network
-    #   bluetooth  talking to bluez. Its D-Bus policy names this group
-    #              explicitly -- Bluetooth does NOT go through polkit,
-    #              which is worth writing down because five polkit
-    #              grants were added for it from memory and every one
-    #              of them named an action that does not exist
+    #   bluetooth  talking to bluez. This one is NOT load-bearing on
+    #              this image, and the commit that added it said it was.
+    #              bluetooth.conf does name the group -- and the stanza
+    #              after the one that was read is
+    #                <policy context="default">
+    #                  <allow send_destination="org.bluez"/>
+    #              so on bluez 5.72 every user may talk to org.bluez
+    #              already. It is kept because it costs nothing and is
+    #              what a distribution with a stricter policy would
+    #              need; it is not asserted anywhere, because failing a
+    #              build over a condition nothing requires is its own
+    #              kind of false alarm.
+    #              What IS worth writing down: Bluetooth does not go
+    #              through polkit at all. Five polkit grants were added
+    #              for it from memory and every one named an action
+    #              that does not exist.
     #   lpadmin    adding a printer. cups-files.conf says
     #              "SystemGroup lpadmin root", and that is the whole of
     #              its authorisation: without this she can print to a
     #              printer somebody else set up and can never set one
     #              up herself
-    AUROS_GROUPS="sudo,audio,video,input,netdev,bluetooth,lpadmin"
+    #
+    # Not all of them exist on every image. bluetooth and lpadmin are
+    # created by bluez's and cups-daemon's postinsts, so a profile that
+    # trims packages_hardware has neither -- and `usermod -aG` is
+    # all-or-nothing: one missing group means ZERO groups added, exit
+    # 6. That was being run with `>/dev/null 2>&1 || true`, which threw
+    # away the output, the error and the status, in the ONE case the
+    # line exists for (a rebuild into a rootfs whose account already
+    # exists -- useradd below is guarded by `id -u`).
+    #
+    # So: ask which ones exist, add those, and say what was missing.
+    AUROS_GROUPS_WANT="sudo audio video input netdev bluetooth lpadmin"
+    AUROS_GROUPS=""
+    AUROS_GROUPS_MISSING=""
+    for _g in $AUROS_GROUPS_WANT; do
+        if inchroot "getent group $_g >/dev/null 2>&1"; then
+            AUROS_GROUPS="${AUROS_GROUPS:+$AUROS_GROUPS,}$_g"
+        else
+            AUROS_GROUPS_MISSING="${AUROS_GROUPS_MISSING:+$AUROS_GROUPS_MISSING }$_g"
+        fi
+    done
+    [ -n "$AUROS_GROUPS" ] || die "not one of the groups the desktop needs exists in this image"
+    if [ -n "$AUROS_GROUPS_MISSING" ]; then
+        warn "these groups are not in this image: $AUROS_GROUPS_MISSING"
+        warn "whatever each one gates is unavailable. If that was not"
+        warn "intended, the package that creates it has been trimmed."
+    fi
     inchroot "id -u $default_user >/dev/null 2>&1 || \
-              useradd -m -s /bin/bash -G $AUROS_GROUPS $default_user"
+              useradd -m -s /bin/bash -G '$AUROS_GROUPS' '$default_user'" \
+        || die "could not create the account $default_user"
     # And on an image whose account already existed from an earlier
-    # build, the groups are added rather than assumed.
-    inchroot "usermod -aG $AUROS_GROUPS $default_user" >/dev/null 2>&1 || true
+    # build, the groups are added rather than assumed. NOT silenced:
+    # this failing is the thing that leaves a desktop with no sound, no
+    # screen brightness and no keyboard.
+    inchroot "usermod -aG '$AUROS_GROUPS' '$default_user'" \
+        || die "could not put $default_user in: $AUROS_GROUPS"
     # Placeholder credential. First boot forces a change; a shipped
     # image must never carry a usable password.
     inchroot "echo '$default_user:auros' | chpasswd; passwd -e $default_user" || true
     inchroot "passwd -l root" || true
+
+    # NO `splash`. A DATED TRAP, DEFUSED WHERE THE ROOTFS IS BUILT.
+    #
+    # /etc/grub.d/10_linux keys `vt.handoff=7` off the word `splash` on
+    # the kernel command line. vt.handoff means "plymouth owns VT7 and
+    # will hand it back". This image has no plymouth -- 0 packages --
+    # so nothing hands anything back: the ACTIVE VT after boot is 7,
+    # the desktop's logind session is on VT1 and therefore INACTIVE,
+    # and every `allow_active` in every policy file on the machine
+    # starts refusing in silence. Sleep, Thunar's "safely remove",
+    # unlocking an encrypted stick, logind's own SetBrightness.
+    #
+    # build/mkimage already writes a grub.cfg by hand without it. But
+    # the base bootstrap leaves "quiet splash" in /etc/default/grub,
+    # and the first kernel upgrade runs zz-update-grub, which
+    # regenerates grub.cfg FROM THAT FILE. So the machine would work
+    # perfectly until the day it was updated, and then quietly stop
+    # being able to sleep, with nothing to connect the two events.
+    if [ -f "$RFS/etc/default/grub" ]; then
+        sed -i 's/^\(GRUB_CMDLINE_LINUX_DEFAULT="[^"]*\)splash\([^"]*"\)/\1\2/; \
+                s/^\(GRUB_CMDLINE_LINUX_DEFAULT="\)[[:space:]]*/\1/; \
+                s/[[:space:]]*"$/"/' "$RFS/etc/default/grub"
+        if grep -q 'splash' "$RFS/etc/default/grub"; then
+            warn "splash is still on the kernel command line and this image"
+            warn "has no plymouth: after the first kernel upgrade the active"
+            warn "VT will be 7 and the desktop's session will be inactive."
+        else
+            note "no splash on the kernel command line (there is no plymouth"
+            note "to hand VT7 back, and vt.handoff would deactivate the session)"
+        fi
+    fi
 
     # THE DESKTOP DOES NOT RUN AS ROOT.
     #
@@ -745,10 +817,26 @@ EOL
     # templated, so the User= goes in a drop-in written here. The groups
     # it needs are in the unit itself, where the requirement belongs.
     install -d "$RFS/etc/systemd/system/aurshell.service.d"
+    #
+    # The unit names only the groups that always exist (see its own
+    # comment). The optional two go here, where the build knows whether
+    # this image has them -- because a SupplementaryGroups= entry that
+    # does not resolve aborts the unit with 216/GROUP before ExecStart,
+    # which is a black screen that nothing on the machine can explain.
+    AUROS_UNIT_GROUPS=""
+    for _g in bluetooth lpadmin; do
+        case ",$AUROS_GROUPS," in
+            *",$_g,"*) AUROS_UNIT_GROUPS="${AUROS_UNIT_GROUPS:+$AUROS_UNIT_GROUPS }$_g" ;;
+        esac
+    done
     cat > "$RFS/etc/systemd/system/aurshell.service.d/user.conf" <<EOL
 [Service]
 User=$default_user
 EOL
+    if [ -n "$AUROS_UNIT_GROUPS" ]; then
+        printf 'SupplementaryGroups=%s\n' "$AUROS_UNIT_GROUPS" \
+            >> "$RFS/etc/systemd/system/aurshell.service.d/user.conf"
+    fi
 
     # The archetype. This one symlink decides how the whole computer
     # behaves; everything else in this stage only decides how it looks.
@@ -929,9 +1017,22 @@ polkit.addRule(function(action, subject) {
     case "org.freedesktop.login1.power-off-multiple-sessions":
     case "org.freedesktop.login1.reboot":
     case "org.freedesktop.login1.reboot-multiple-sessions":
+    // The third button on the same screen. Its shipped default is
+    // allow_active=yes, which is why it appeared to work -- and which
+    // means it stops working the moment the session is not active,
+    // with no agent to ask and nothing on screen to explain it. The
+    // other two on that screen are granted outright; so is this.
+    case "org.freedesktop.login1.suspend":
+    case "org.freedesktop.login1.suspend-multiple-sessions":
     case "org.freedesktop.udisks2.filesystem-mount":
     case "org.freedesktop.udisks2.filesystem-mount-system":
     case "org.freedesktop.udisks2.eject-media":
+    // Thunar's "safely remove", which is the honest way to take a USB
+    // stick out and is the one a person is told to use. Ungranted, it
+    // is an allow_active grant like suspend was: fine until it is not,
+    // and silent when it is not.
+    case "org.freedesktop.udisks2.power-off-drive":
+    case "org.freedesktop.udisks2.encrypted-unlock":
     case "org.freedesktop.timedate1.set-timezone":
 $install_cases
 $net_cases
