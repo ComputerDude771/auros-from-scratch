@@ -238,6 +238,17 @@ static aurwl_win *window_under(shell_ctx *c, int x, int y, int *sx, int *sy)
     return NULL;
 }
 
+aurwl_win *session_win(shell_ctx *c, uint32_t wid)
+{
+    if (!c || !c->wl || !wid) return NULL;
+    int n = aurwl_window_count(c->wl);
+    for (int k = 0; k < n; k++) {
+        aurwl_win *w = aurwl_window_at(c->wl, k);
+        if (w && aurwl_win_id(w) == wid) return w;
+    }
+    return NULL;
+}
+
 int session_motion(shell_ctx *c, int x, int y)
 {
     if (!c->wl) return 0;

@@ -56,7 +56,14 @@ void power_battery_read(power_battery *out);
 int  power_brightness(void);
 /* Clamped to a floor above zero. Zero is a black screen, and a person
  * who reaches it has no way to see the control that would undo it. */
+/* Returns the percentage ACTUALLY reached, which is not always the one
+ * asked for: a panel with nine steps cannot be set to 57. */
 int  power_brightness_set(int percent);
+/* One press of the key, up (dir >= 0) or down. Steps by a share of
+ * whatever range this panel has and never by less than one of its own
+ * units, so the key works on a panel that counts to 9 and on one that
+ * counts to 96000. Returns the percentage reached, or -1. */
+int  power_brightness_step(int dir);
 
 /* ── the sound ──────────────────────────────────────────────────── */
 
@@ -74,5 +81,10 @@ void power_mute_set(int muted);
 /* Ask the machine again, rather than trusting what we last set. Called
  * when a panel opens. */
 void power_refresh(void);
+
+/* Once per pass of the main loop. Sends the volume she has landed on
+ * if it has not been sent yet -- dragging a slider must not be two
+ * hundred program starts a second. */
+void power_step(void);
 
 #endif

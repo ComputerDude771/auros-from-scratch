@@ -41,6 +41,19 @@ int  run_detached(const char *const argv[]);
  * number that is briefly missing. */
 int  run_capture(const char *const argv[], char *out, size_t n, int timeout_ms);
 
+/* Start it, wait for it, and say how it ENDED. Returns the program's
+ * exit status -- 0 for "it worked" -- or -1 if it could not be started
+ * or did not finish inside `timeout_ms`.
+ *
+ * This exists because run_detached() returning 0 means "a process was
+ * created", and three buttons in this shell were reading that as "the
+ * machine is turning off". A `systemctl suspend` that policy refuses
+ * forks perfectly, exits 1, and nobody looks -- which is word for word
+ * the bug aurshell.service was written to fix, re-committed one layer
+ * up. Use it only where the failure has to be SAID and the wait is not
+ * in a frame loop. */
+int  run_status(const char *const argv[], int timeout_ms);
+
 /* Collect the ones run_detached() started. Swept once per pass of the
  * main loop. Each subsystem in this shell waits for its own children;
  * one that reaps another's leaves that one unable to learn how its

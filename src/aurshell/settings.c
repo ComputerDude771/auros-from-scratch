@@ -987,7 +987,7 @@ int settings_click(shell_ctx *c, int x, int y)
              * screens that do the same kind of job must not behave
              * differently. Settings is the index; the panel is the
              * thing. */
-            if (which == R_BT) { c->settings_open = 0; c->bt_open = 1; }
+            if (which == R_BT) foot_open_only(c, &c->bt_open);
             if (which == R_TIME)  { S.page = SET_PAGE_TIME;  S.first_row = 0;
                                     S.sel = -1; fill_page(c); }
             if (which == R_SHELL) { S.page = SET_PAGE_SHELL; S.first_row = 0;
@@ -1033,7 +1033,7 @@ int settings_key(shell_ctx *c, int k)
     }
     if (k == 28 && S.sel >= 0) {                              /* Enter */
         int which = row_at(&v, S.sel);
-        if (which == R_BT) { c->settings_open = 0; c->bt_open = 1; }
+        if (which == R_BT) foot_open_only(c, &c->bt_open);
         if (which == R_TIME)  { S.page = SET_PAGE_TIME;  S.first_row = 0;
                                 S.sel = -1; fill_page(c); }
         if (which == R_SHELL) { S.page = SET_PAGE_SHELL; S.first_row = 0;

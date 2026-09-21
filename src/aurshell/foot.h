@@ -82,6 +82,12 @@ int  foot_power_buttons(const shell_ctx *c, int sw, int sh,
                         rect *out, int *which);
 int  foot_power_open(const shell_ctx *c);
 
+/* Open one panel and close every other, in one place, so that a panel
+ * nobody remembered to list cannot end up open underneath the one she
+ * is looking at. Used by the band and by anything that opens a panel
+ * from inside another. */
+void foot_open_only(shell_ctx *c, int *flag);
+
 /* Paint into the FULL-height surface, after the archetype has painted
  * into its shorter one. */
 void foot_paint(shell_ctx *c, surface *full, shell_fonts *f);
@@ -94,6 +100,12 @@ void foot_motion(shell_ctx *c, int x, int y);
 /* True while the help panel is showing; the host dims input to the
  * archetype underneath it. */
 int  foot_help_open(const shell_ctx *c);
+
+/* A key, while the band's own overlays are up. Returns 1 if it was
+ * taken -- which is EVERY key while one of them is showing, because
+ * they cover the screen and a key that fell through would land in an
+ * application she cannot see. Escape is always the way out. */
+int  foot_key(shell_ctx *c, int k);
 
 /* Her chosen text size, as a multiplier over the theme's sizes. Read at
  * start-up from her own settings and written back when she changes it,

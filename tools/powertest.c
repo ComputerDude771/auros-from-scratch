@@ -197,6 +197,50 @@ int main(void)
     ok("setting 100% works", power_brightness_set(100) == 100);
     ok("and lands on the top step", power_brightness() == 100);
 
+    /* THE KEY MUST MOVE A COARSE PANEL.
+     *
+     * This panel has seven steps. The first version of the brightness
+     * key read the percentage, added five to it, and wrote it back --
+     * so from step 4 (57%) it asked for 62%, which rounds to step 4.
+     * The key was dead, and the indicator obligingly drew "62%" while
+     * the screen did not change. Plenty of real panels count this low.
+     *
+     * The witness for the old bug is kept below, so that a future
+     * change back to percentage-point arithmetic fails here rather
+     * than on somebody's laptop. */
+    put(dev("backlight", "acpi_video0"), "brightness", "4");
+    ok("percent arithmetic is why this used to be dead",
+       power_brightness_set(57 + 5) == power_brightness_set(57));
+    put(dev("backlight", "acpi_video0"), "brightness", "4");
+    {
+        int before = power_brightness();
+        int after  = power_brightness_step(+1);
+        ok("one press up actually moves a 7-step panel", after > before);
+        ok("and it reports what it REACHED, not what was asked",
+           after == power_brightness());
+        int down = power_brightness_step(-1);
+        ok("one press down puts it back", down == before);
+    }
+    /* And the same key on the 96000-step panel, where a whole step is
+     * invisible and the move has to be a share of the range. */
+    {
+        const char *raw = dev("backlight", "intel_backlight");
+        put(raw, "type", "raw");
+        put(raw, "max_brightness", "96000");
+        put(raw, "brightness", "48000");
+        int before = power_brightness();
+        int after  = power_brightness_step(+1);
+        ok("one press up moves a 96000-step panel by something she can see",
+           after >= before + 5);
+    }
+    /* It must never walk down into a black screen no matter how many
+     * times she presses the key. */
+    {
+        int v = 100;
+        for (int i = 0; i < 60; i++) v = power_brightness_step(-1);
+        ok("holding the dark key down never reaches a black screen", v > 0);
+    }
+
     char cmd[320];
     snprintf(cmd, sizeof cmd, "rm -rf '%s'", root);
     if (system(cmd) != 0) { /* a leftover temp directory is not a failure */ }

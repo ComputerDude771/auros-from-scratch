@@ -5,6 +5,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/stat.h>
+#include <time.h>
 
 #include "power.h"
 #include "run.h"
@@ -188,34 +190,77 @@ int power_brightness(void)
     return (int)((now * 100 + max / 2) / max);
 }
 
-int power_brightness_set(int percent)
-{
-    char dir[512];
-    if (backlight_dir(dir, sizeof dir) < 0) return -1;
-    long max = slurp_long(dir, "max_brightness", -1);
-    if (max <= 0) return -1;
+/* How far one press of the key moves it. A PERCENTAGE OF THE RANGE,
+ * not a percentage point, because those are the same thing only on a
+ * panel whose range happens to be 100.
+ *
+ * The first version added 5 to the percentage and wrote it back. On a
+ * panel that counts to 9 -- and plenty do -- 56%+5% rounds to the step
+ * it started on, so the key was dead while the indicator counted
+ * cheerfully upward. A control that shows a number going up while
+ * nothing changes is worse than no control: it tells her the machine
+ * is broken in a way she cannot describe. */
+#define BRIGHT_STEP 10
 
-    if (percent < BRIGHT_FLOOR) percent = BRIGHT_FLOOR;
-    if (percent > 100) percent = 100;
-    long want = (max * percent + 50) / 100;
-    if (want < 1) want = 1;
+/* The one place that opens the panel and reads its two numbers, so no
+ * caller can hold a range and a value that came from different reads
+ * (a screen can be hot-plugged between them). */
+static int bright_read(char *dir, size_t n, long *max, long *now)
+{
+    if (backlight_dir(dir, n) < 0) return -1;
+    *max = slurp_long(dir, "max_brightness", -1);
+    *now = slurp_long(dir, "brightness", -1);
+    if (*max <= 0 || *now < 0) return -1;
+    return 0;
+}
+
+static int bright_write(const char *dir, long max, long want)
+{
+    /* The floor in the panel's own units, so a coarse panel gets at
+     * least one step of light rather than being rounded to black. */
+    long lo = (max * BRIGHT_FLOOR + 50) / 100;
+    if (lo < 1) lo = 1;
+    if (want < lo)  want = lo;
+    if (want > max) want = max;
 
     char path[576];
     snprintf(path, sizeof path, "%s/brightness", dir);
     FILE *f = fopen(path, "w");
     if (!f) {
         /* The file is root's unless a rule has been laid down for the
-         * video group. build/forge writes one; say which, because the
+         * video group. rootfs ships one; say which, because the
          * symptom otherwise is a control that moves and does nothing. */
         static int moaned = 0;
         if (!moaned++)
-            fprintf(stderr, "aurshell: cannot write %s — is the udev rule "
-                            "for the video group installed?\n", path);
+            fprintf(stderr, "aurshell: cannot write %s — is "
+                            "60-auros-backlight.rules installed and has "
+                            "udev replayed it?\n", path);
         return -1;
     }
     fprintf(f, "%ld\n", want);
-    fclose(f);
-    return percent;
+    if (fclose(f) != 0) return -1;
+    /* What was ACHIEVED, read back out of the same arithmetic the
+     * getter uses. Returning what was asked for is how the indicator
+     * came to disagree with the screen. */
+    return (int)((want * 100 + max / 2) / max);
+}
+
+int power_brightness_set(int percent)
+{
+    char dir[512]; long max, now;
+    if (bright_read(dir, sizeof dir, &max, &now) < 0) return -1;
+    if (percent < 0)   percent = 0;
+    if (percent > 100) percent = 100;
+    return bright_write(dir, max, (max * percent + 50) / 100);
+}
+
+int power_brightness_step(int dir_sign)
+{
+    char dir[512]; long max, now;
+    if (bright_read(dir, sizeof dir, &max, &now) < 0) return -1;
+    long step = (max * BRIGHT_STEP + 50) / 100;
+    if (step < 1) step = 1;            /* never nothing */
+    return bright_write(dir, max, now + (dir_sign >= 0 ? step : -step));
 }
 
 /* ── the sound ──────────────────────────────────────────────────── */
@@ -226,47 +271,133 @@ int power_brightness_set(int percent)
  * thing changing it is us. */
 static int vol_pct = -1;
 static int vol_muted = 0;
-/* Whether the question has been asked at all. Asking costs a program
- * start, and on a machine with no sound server it costs the whole
- * timeout -- so it is asked once, and a machine that answered "there
- * is none" is never asked again. Opening Settings used to pay that
- * every time, which on a machine with no sound was a visible stall on
- * the one screen that is supposed to feel immediate. */
-static int vol_known = 0;
+
+/* "NOT YET" AND "THIS COMPUTER HAS NO SOUND" ARE NOT THE SAME SENTENCE.
+ *
+ * The first version collapsed them: one failed probe set a "we asked,
+ * there is none" flag and nothing ever asked again, for the life of
+ * the boot. The sound row vanished from Settings and both volume keys
+ * went dead -- on a perfectly healthy machine, because the shell and
+ * the sound server start at the same moment and nothing orders one
+ * after the other, or because a cold `wpctl` on 2013 hardware took
+ * longer than the deadline once.
+ *
+ * The fact is the socket, not the program. It is either in the
+ * runtime directory or it is not, which costs a stat() rather than a
+ * process, and which answers the stall the cache was invented to
+ * avoid without answering it WRONGLY. A missing socket only becomes
+ * "this machine has no sound" after it has stayed missing past the
+ * grace period below -- long enough for a slow boot, short enough
+ * that she is still looking at the same screen. */
+#define VOL_GRACE_S 25
+
+static int    vol_have = 0;    /* a real number has been read, once   */
+static int    vol_gone = 0;    /* latched: there is no sound server   */
+static time_t vol_t0   = 0;    /* when we first went looking          */
 
 #define SINK "@DEFAULT_AUDIO_SINK@"
 
+static int sound_socket(void)
+{
+    const char *rd = getenv("XDG_RUNTIME_DIR");
+    if (!rd || !*rd) return 0;
+    char p[320];
+    struct stat st;
+    snprintf(p, sizeof p, "%s/pipewire-0", rd);
+    if (stat(p, &st) == 0) return 1;
+    /* A machine running plain PulseAudio instead. wpctl will not talk
+     * to it, but pactl might, and either way this is not a machine
+     * with no sound -- so do not latch. */
+    snprintf(p, sizeof p, "%s/pulse/native", rd);
+    return stat(p, &st) == 0;
+}
+
 static void volume_ask(void)
 {
-    vol_known = 1;
+    if (vol_gone) return;
+    if (!vol_t0) vol_t0 = time(NULL);
+
+    if (!sound_socket()) {
+        if (!vol_have && time(NULL) - vol_t0 > VOL_GRACE_S) {
+            vol_gone = 1;
+            vol_pct  = -1;
+        }
+        return;                       /* no exec, no stall, no lie */
+    }
+
     char out[128];
     const char *argv[] = { "wpctl", "get-volume", SINK, NULL };
     /* Short. This is on the path of opening a panel, and a person who
-     * pressed Settings is watching the screen. */
-    if (run_capture(argv, out, sizeof out, 400) <= 0) { vol_pct = -1; return; }
+     * pressed Settings is watching the screen. A miss is not an
+     * answer, so nothing is recorded and the next refresh asks again. */
+    if (run_capture(argv, out, sizeof out, 400) <= 0) return;
     /* "Volume: 0.43" or "Volume: 0.43 [MUTED]" */
     const char *p = strstr(out, "Volume:");
-    if (!p) { vol_pct = -1; return; }
+    if (!p) return;
     double v = atof(p + 7);
     if (v < 0) v = 0;
     if (v > 1.5) v = 1.5;
     vol_pct = (int)(v * 100.0 + 0.5);
     if (vol_pct > 100) vol_pct = 100;
     vol_muted = strstr(out, "MUTED") != NULL;
+    vol_have  = 1;
 }
 
-/* Ask again -- but only on a machine that has already said it has
- * sound. On one that has not, this is the difference between a panel
- * that opens at once and a panel that waits for a program to time
- * out. */
+/* ONE press of a key is one change. ONE DRAG is not two hundred.
+ *
+ * Dragging the volume slider called set() on every pointer motion --
+ * about 125 times a second on a normal touchpad, each one a fork and
+ * an exec of wpctl. That is the whole reap table filled in an eighth
+ * of a second, then a kill on every further step, on the hardware
+ * this product exists to rescue.
+ *
+ * So: what she asked for is believed and drawn AT ONCE, and the sound
+ * server is told at most this often, plus once more when she lets go.
+ * The number she stops on is always the number that gets sent. */
+#define VOL_SEND_MS 60
+
+static int  vol_want = -1;        /* asked for, not yet sent          */
+static long vol_sent_ms = 0;
+
+static long mono_ms(void)
+{
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return t.tv_sec * 1000L + t.tv_nsec / 1000000L;
+}
+
+static void volume_send(int percent)
+{
+    char arg[32];
+    snprintf(arg, sizeof arg, "%d%%", percent);
+    const char *argv[] = { "wpctl", "set-volume", SINK, arg, NULL };
+    if (run_detached(argv) == 0) vol_sent_ms = mono_ms();
+}
+
+/* Called once per pass of the main loop. Flushes whatever she landed
+ * on, so letting go of the slider is always heard even if the last
+ * motion arrived inside the window above. */
+void power_step(void)
+{
+    if (vol_want < 0) return;
+    if (mono_ms() - vol_sent_ms < VOL_SEND_MS) return;
+    int v = vol_want;
+    vol_want = -1;
+    volume_send(v);
+}
+
+/* Ask the machine again. Cheap on a machine with no sound (a stat),
+ * one short program start on a machine with sound. */
 void power_refresh(void)
 {
-    if (!vol_known || vol_pct >= 0) volume_ask();
+    volume_ask();
 }
 
 int power_volume(void)
 {
-    if (!vol_known) volume_ask();
+    /* Nobody has looked yet: look now, so the first thing drawn with
+     * this number is drawn with a real one. */
+    if (!vol_have && !vol_gone && !vol_t0) volume_ask();
     return vol_pct;
 }
 
@@ -276,16 +407,16 @@ void power_volume_set(int percent)
 {
     if (percent < 0) percent = 0;
     if (percent > 100) percent = 100;
-    char arg[32];
-    snprintf(arg, sizeof arg, "%d%%", percent);
-    const char *argv[] = { "wpctl", "set-volume", SINK, arg, NULL };
-    if (run_detached(argv) == 0) {
-        vol_pct = percent;
-        /* Turning it up past nothing is how a person unmutes, whatever
-         * the mute flag says. Leaving it muted here means she presses
-         * the loud key four times in silence. */
-        if (percent > 0 && vol_muted) power_mute_set(0);
+    vol_pct  = percent;               /* believed at once, drawn at once */
+    vol_want = percent;
+    if (mono_ms() - vol_sent_ms >= VOL_SEND_MS) {
+        vol_want = -1;
+        volume_send(percent);
     }
+    /* Turning it up past nothing is how a person unmutes, whatever
+     * the mute flag says. Leaving it muted here means she presses
+     * the loud key four times in silence. */
+    if (percent > 0 && vol_muted) power_mute_set(0);
 }
 
 void power_mute_set(int muted)

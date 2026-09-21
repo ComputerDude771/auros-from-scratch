@@ -208,6 +208,13 @@ typedef struct shell_ctx_s {
      * the host carries it out. `1` off, `2` start again, `3` sleep. */
     int   want_power_off;
     int   power_open;          /* the three choices are on screen       */
+    /* Which of the three the KEYBOARD has landed on, as a P_* id, or 0
+     * for none. Separate from foot_hover because foot_motion() rebuilds
+     * that from the pointer every time any input event arrives, so a
+     * choice made with the arrow keys would be erased by the next key
+     * press -- including the one meant to confirm it. */
+    int   power_sel;
+
     /* She pressed "Close this". Only the band sets it; the host does
      * the closing, because which window is "this" is the session's
      * business and not the band's. */
@@ -236,6 +243,25 @@ typedef struct shell_ctx_s {
     /* ── per-layout scratch. Layouts own this; nothing else reads. */
     void *priv;
 } shell_ctx;
+
+/* ONE test for "something is covering the desktop".
+ *
+ * There are five of these now -- help, the wifi, Settings, headphones
+ * and the three power choices -- and every place that has to behave
+ * differently while one is up was listing them by hand. Four such
+ * lists drifted apart: the scroll wheel knew about three of them, the
+ * right button about four, the key path about three, and the button
+ * release about two. So with the power question on screen a person
+ * could scroll the application hidden behind it, open a context menu
+ * in it, and press its keyboard shortcuts -- and with Settings or the
+ * headphones panel open, every key she typed was ALSO delivered to
+ * whatever had focus, which on that screen is a browser.
+ *
+ * A list that has to be updated in five places is a list that will be
+ * updated in four. */
+#define SHELL_PANEL_OPEN(c) \
+    ((c)->help_open || (c)->net_open || (c)->settings_open || \
+     (c)->bt_open   || (c)->power_open)
 
 typedef struct {
     const char *id;

@@ -6,6 +6,10 @@
 #include "shell.h"
 #include "anim.h"
 
+/* Named, not included: shell.h must stay a header the archetypes can
+ * read without knowing a compositor exists. */
+typedef struct aurwl_win aurwl_win;
+
 /* Reconcile the compositor's window list into c->wins, adopt
  * placeholders, and configure clients. Call once per frame, after
  * dispatching the compositor and before painting. */
@@ -19,6 +23,13 @@ int  session_motion(shell_ctx *c, int x, int y);
 int  session_button(shell_ctx *c, int x, int y, uint32_t button, int pressed);
 int  session_scroll(shell_ctx *c, int x, int y, int horizontal, double step);
 int  session_key(shell_ctx *c, int code, int pressed);
+
+/* The compositor window a slot's `wid` stands for, or NULL if that
+ * window has gone. Every caller that holds a window across even one
+ * frame must go through this rather than keeping a pointer: a client
+ * can be destroyed between any two frames, and a stale aurwl_win* is
+ * a use-after-free reachable by waiting. */
+aurwl_win *session_win(shell_ctx *c, uint32_t wid);
 
 /* Menus and dropdowns, painted above everything the archetype drew. */
 void session_paint_popups(shell_ctx *c, surface *fb);

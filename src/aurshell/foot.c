@@ -323,7 +323,8 @@ void foot_paint(shell_ctx *c, surface *s, shell_fonts *f)
         rect pb[FOOT_POWER_MAX]; int pw[FOOT_POWER_MAX];
         int pn = foot_power_buttons(c, s->w, s->h, pb, pw);
         for (int i = 0; i < pn; i++) {
-            int hot = c->foot_hover == -100 - pw[i];
+            int hot = (c->foot_hover == -100 - pw[i]) ||
+                      (c->power_sel  == pw[i]);
             draw_rect(s, pb[i], hot ? FOOT_HOT : FOOT_BG, 1.f);
             draw_frame(s, pb[i], 1, FOOT_RULE, hot ? 1.f : 0.6f);
             const char *label = "", *note = "";
@@ -403,8 +404,15 @@ void foot_motion(shell_ctx *c, int x, int y)
             if (x >= pb[i].x && x < pb[i].x + pb[i].w &&
                 y >= pb[i].y && y < pb[i].y + pb[i].h) {
                 c->foot_hover = -100 - pw[i];
+                c->power_sel  = pw[i];     /* the two agree, always */
                 return;
             }
+        /* The pointer is on this screen but not on a choice. Whatever
+         * the arrow keys last picked is still picked: this function
+         * runs after EVERY input event, so without this the highlight
+         * made with the keyboard would be erased by the next keypress
+         * -- including the Return meant to act on it. */
+        if (c->power_sel) c->foot_hover = -100 - c->power_sel;
         return;
     }
     rect r[B_N]; int which[B_N];
@@ -412,6 +420,85 @@ void foot_motion(shell_ctx *c, int x, int y)
     for (int i = 0; i < n; i++)
         if (x >= r[i].x && x < r[i].x + r[i].w &&
             y >= r[i].y && y < r[i].y + r[i].h) { c->foot_hover = which[i]; return; }
+}
+
+/* Toggle one panel and close every other.
+ *
+ * Each case used to clear the others by name, and one of them -- the
+ * headphones panel, which is opened from inside Settings rather than
+ * from the band -- was not on any of those lists. So: Settings, then
+ * "Headphones and mice", then Settings again, and BOTH were open. The
+ * headphones panel was what she could see; every press went to the
+ * invisible Settings panel underneath, because painting goes back to
+ * front and hit-testing goes front to back and the two had been given
+ * different ideas about what was showing.
+ *
+ * One function. A panel that is not in it cannot be forgotten by it. */
+void foot_open_only(shell_ctx *c, int *flag)
+{
+    int want = !*flag;
+    c->help_open = c->net_open = c->settings_open = 0;
+    c->bt_open = c->power_open = 0;
+    c->power_sel = 0;          /* nothing is chosen until she chooses */
+    *flag = want;
+}
+
+/* The band and its two overlays, from the keyboard.
+ *
+ * The three power choices had no keyboard at all: no way to pick one,
+ * and -- worse -- no way to DISMISS the question, on a screen that
+ * covers everything she was doing. docs/EASY.md rule 6 says every
+ * state has a way out. Escape is that way out here, and it means the
+ * same thing the last button means: never mind.
+ *
+ * Returns 1 if the key was ours. While either overlay is up that is
+ * every key, because the overlay is modal and a key that fell past it
+ * would reach an application she cannot see. */
+int foot_key(shell_ctx *c, int k)
+{
+    if (!c) return 0;
+
+    if (c->power_open) {
+        rect pb[FOOT_POWER_MAX]; int pw[FOOT_POWER_MAX];
+        int pn = foot_power_buttons(c, c->screen_w,
+                                    c->screen_h + foot_height(c), pb, pw);
+        if (pn <= 0) { c->power_open = 0; c->power_sel = 0; return 1; }
+
+        int sel = -1;
+        for (int i = 0; i < pn; i++) if (pw[i] == c->power_sel) sel = i;
+
+        switch (k) {
+        case 1:                                     /* Escape          */
+            c->power_open = 0; c->power_sel = 0;
+            return 1;
+        case 108: case 15:                          /* Down, Tab       */
+            sel = (sel < 0) ? 0 : (sel + 1) % pn;
+            break;
+        case 103:                                   /* Up              */
+            sel = (sel <= 0) ? pn - 1 : sel - 1;
+            break;
+        case 28: case 96: case 57:                  /* Return, KP, Sp  */
+            /* Nothing picked yet means nothing happens. A blind Return
+             * that turned the machine off would be the worst key in
+             * this program. */
+            if (sel < 0) return 1;
+            if (pw[sel] == P_BACK) c->power_open = 0;
+            else { c->want_power_off = pw[sel]; c->power_open = 0; }
+            c->power_sel = 0;
+            return 1;
+        default:
+            return 1;                               /* modal          */
+        }
+        c->power_sel  = pw[sel];
+        c->foot_hover = -100 - pw[sel];
+        return 1;
+    }
+
+    /* Any key closes help, for the same reason any click does: asking
+     * her to find one particular small button again, to get rid of the
+     * thing that exists to help her, would be a joke at her expense. */
+    if (c->help_open) { c->help_open = 0; return 1; }
+    return 0;
 }
 
 int foot_click(shell_ctx *c, int x, int y)
@@ -426,18 +513,9 @@ int foot_click(shell_ctx *c, int x, int y)
         if (x < r[i].x || x >= r[i].x + r[i].w ||
             y < r[i].y || y >= r[i].y + r[i].h) continue;
         switch (which[i]) {
-        case B_HELP:
-            c->help_open = !c->help_open;
-            if (c->help_open) { c->net_open = 0; c->settings_open = 0; }
-            return 1;
-        case B_NET:
-            c->net_open = !c->net_open;
-            if (c->net_open) { c->help_open = 0; c->settings_open = 0; }
-            return 1;
-        case B_SETTINGS:
-            c->settings_open = !c->settings_open;
-            if (c->settings_open) { c->help_open = 0; c->net_open = 0; }
-            return 1;
+        case B_HELP:     foot_open_only(c, &c->help_open);     return 1;
+        case B_NET:      foot_open_only(c, &c->net_open);      return 1;
+        case B_SETTINGS: foot_open_only(c, &c->settings_open); return 1;
         case B_SMALLER:
             c->text_scale -= SCALE_STEP;
             if (c->text_scale < SCALE_MIN) c->text_scale = SCALE_MIN;
@@ -458,9 +536,7 @@ int foot_click(shell_ctx *c, int x, int y)
              * button that is always on screen. No confirmation, no way
              * back, and no way to do the other two things a person
              * wants from that corner of a computer. */
-            c->power_open = !c->power_open;
-            if (c->power_open) { c->help_open = 0; c->net_open = 0;
-                                 c->settings_open = 0; }
+            foot_open_only(c, &c->power_open);
             return 1;
         }
     }
@@ -473,6 +549,7 @@ int foot_click(shell_ctx *c, int x, int y)
                 y < pb[i].y || y >= pb[i].y + pb[i].h) continue;
             if (pw[i] == P_BACK) c->power_open = 0;
             else { c->want_power_off = pw[i]; c->power_open = 0; }
+            c->power_sel = 0;
             return 1;
         }
         /* Inside the question but not on an answer: swallowed. A press

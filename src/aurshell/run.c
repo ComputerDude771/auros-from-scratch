@@ -9,6 +9,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/wait.h>
+#include <time.h>
 
 #include "run.h"
 
@@ -37,10 +38,15 @@ static void remember(pid_t p)
     if (p <= 0) return;
     run_reap();
     if (n_reaping < REAP_MAX) { reaping[n_reaping++] = p; return; }
-    /* Unreachable in practice. Taking the blunt way out beats leaving
-     * something behind. */
-    kill(p, SIGKILL);
-    waitpid(p, NULL, 0);
+    /* Full. Make room by stopping the OLDEST, not the one we were just
+     * handed: under pressure, killing the newest kills the thing the
+     * person just asked for -- the volume change they are dragging --
+     * and keeps the stuck one that caused the pressure. */
+    pid_t oldest = reaping[0];
+    kill(oldest, SIGKILL);
+    waitpid(oldest, NULL, 0);
+    for (int i = 1; i < n_reaping; i++) reaping[i - 1] = reaping[i];
+    reaping[n_reaping - 1] = p;
 }
 
 /* The child half of both shapes. `pipe_w` is the fd to become stdout
@@ -76,6 +82,45 @@ int run_detached(const char *const argv[])
     return 0;
 }
 
+int run_status(const char *const argv[], int timeout_ms)
+{
+    if (!argv || !argv[0] || !argv[0][0]) return -1;
+    pid_t pid = fork();
+    if (pid < 0) return -1;
+    if (pid == 0) { child(argv, -1); }
+
+    /* Poll rather than block, so a helper that never exits costs the
+     * deadline and not the desktop. 10ms is far finer than a person
+     * can see and far coarser than a spin. */
+    struct timespec t0;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    int budget = timeout_ms < 0 ? 0 : timeout_ms;
+    for (;;) {
+        int st = 0;
+        pid_t r = waitpid(pid, &st, WNOHANG);
+        if (r == pid) {
+            if (WIFEXITED(st))   return WEXITSTATUS(st);
+            if (WIFSIGNALED(st)) return 128 + WTERMSIG(st);
+            return -1;
+        }
+        if (r < 0) { if (errno == EINTR) continue; return -1; }
+
+        struct timespec tn;
+        clock_gettime(CLOCK_MONOTONIC, &tn);
+        long spent = (tn.tv_sec - t0.tv_sec) * 1000L
+                   + (tn.tv_nsec - t0.tv_nsec) / 1000000L;
+        if (spent >= budget) {
+            /* Left alive on purpose: the caller's deadline is about how
+             * long the SCREEN waits, and `systemctl poweroff` taking
+             * longer than that is normal. remember() collects it. */
+            remember(pid);
+            return -1;
+        }
+        struct timespec nap = { 0, 10 * 1000 * 1000 };
+        nanosleep(&nap, NULL);
+    }
+}
+
 int run_capture(const char *const argv[], char *out, size_t n, int timeout_ms)
 {
     if (out && n) out[0] = 0;
@@ -92,8 +137,25 @@ int run_capture(const char *const argv[], char *out, size_t n, int timeout_ms)
     fcntl(p[0], F_SETFL, O_NONBLOCK);
 
     size_t got = 0;
-    int left = timeout_ms < 0 ? 0 : timeout_ms;
+    /* A DEADLINE, not a per-poll timeout.
+     *
+     * The first version passed the same `timeout_ms` to every poll(),
+     * so any child that dribbled its answer out reset the clock on
+     * every byte. The real bound was (bytes - 1) x timeout: a 128-byte
+     * buffer at 400ms is fifty seconds of a single-threaded shell that
+     * is not painting and not reading input. Reachable from one press
+     * of the Settings button. */
+    struct timespec t0;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    int budget = timeout_ms < 0 ? 0 : timeout_ms;
     for (;;) {
+        struct timespec tn;
+        clock_gettime(CLOCK_MONOTONIC, &tn);
+        long spent = (tn.tv_sec - t0.tv_sec) * 1000L
+                   + (tn.tv_nsec - t0.tv_nsec) / 1000000L;
+        int left = budget - (int)spent;
+        if (left < 0) left = 0;
+
         struct pollfd pf = { p[0], POLLIN, 0 };
         int r = poll(&pf, 1, left);
         if (r == 0) {                       /* out of time */

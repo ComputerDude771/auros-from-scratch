@@ -16,7 +16,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <sys/reboot.h>
 #include <fcntl.h>
 #include <dirent.h>
 #include <errno.h>
@@ -538,12 +537,14 @@ static int media_key(shell_ctx *c, int code)
         return 1;
     case KEY_BRIGHTNESSUP:
     case KEY_BRIGHTNESSDOWN: {
-        v = power_brightness();
-        if (v < 0) return 1;                 /* no backlight */
-        v += (code == KEY_BRIGHTNESSUP) ? STEP : -STEP;
-        int got = power_brightness_set(v);
+        /* The panel's own units, not percentage points. Reading the
+         * percentage and adding five to it is dead on every panel
+         * whose range is smaller than about twenty steps -- and the
+         * indicator showed the number she asked for, so the screen
+         * stayed put while the picture of it climbed. */
+        int got = power_brightness_step(code == KEY_BRIGHTNESSUP ? +1 : -1);
         if (got >= 0) osd_show(OSD_BRIGHTNESS, got);
-        return 1;
+        return 1;                            /* ours either way */
     }
     default:
         break;
@@ -1002,7 +1003,14 @@ int main(int argc, char **argv)
     int net_open_last = 0;
     int set_open_last = 0;
     int bt_open_last  = 0;
-    aurwl_win *net_prev_focus = NULL;
+    /* Who had the keyboard before a panel took it. A WINDOW ID and not
+     * a pointer: the window can be destroyed while the panel is up --
+     * closing a browser from its own menu, or an application that
+     * crashes -- and handing a freed pointer back to the compositor is
+     * a use-after-free reachable by waiting. An id that no longer
+     * resolves simply gives focus to nobody. */
+    uint32_t panel_prev_focus = 0;
+    int      panel_open_last  = 0;
 
     while (!want_quit) {
         if (want_reload || c.want_reload) {
@@ -1073,6 +1081,7 @@ int main(int argc, char **argv)
             set_open_last = c.settings_open;
             dirty = 1;
         }
+        power_step();
         if (settings_step(&c)) dirty = 1;
         /* The handful of things this computer should speak up about
          * without being asked. Today that is the battery: reading it
@@ -1081,20 +1090,41 @@ int main(int argc, char **argv)
          * once, it has lost her work. */
         if (watch_tick(&c)) dirty = 1;
         if (c.net_open != net_open_last) {
-            if (c.net_open) {
-                net_opened(&c);
-                if (c.wl) {
-                    net_prev_focus = aurwl_focus(c.wl);
+            if (c.net_open) net_opened(&c);
+            else            net_closed(&c);
+            net_open_last = c.net_open;
+            dirty = 1;
+        }
+
+        /* ONE PLACE DECIDES WHO HAS THE KEYBOARD.
+         *
+         * A panel is modal, so opening one takes the keyboard off
+         * whatever had it, and closing it gives the keyboard back. The
+         * leave that goes with the taking is also what makes the
+         * application let go of any key it thought was held.
+         *
+         * Only the wifi panel used to do this -- it was written where
+         * the wifi panel is opened. So the wifi PASSWORD was kept away
+         * from the browser behind it, and then Settings and the
+         * headphones panel were added beside it and every keystroke
+         * typed into either one was ALSO delivered to that browser:
+         * the same defect, in the two panels written after the fix.
+         *
+         * Driven off SHELL_PANEL_OPEN, so a sixth panel is covered by
+         * existing. */
+        int panel_now = SHELL_PANEL_OPEN(&c) ? 1 : 0;
+        if (panel_now != panel_open_last) {
+            if (c.wl) {
+                if (panel_now) {
+                    aurwl_win *had = aurwl_focus(c.wl);
+                    panel_prev_focus = had ? aurwl_win_id(had) : 0;
                     aurwl_set_focus(c.wl, NULL);
-                }
-            } else {
-                net_closed(&c);
-                if (c.wl) {
-                    aurwl_set_focus(c.wl, net_prev_focus);
-                    net_prev_focus = NULL;
+                } else {
+                    aurwl_set_focus(c.wl, session_win(&c, panel_prev_focus));
+                    panel_prev_focus = 0;
                 }
             }
-            net_open_last = c.net_open;
+            panel_open_last = panel_now;
             dirty = 1;
         }
 
@@ -1108,7 +1138,16 @@ int main(int argc, char **argv)
         run_reap();
         /* The indicator fades on a clock rather than on an event, so
          * the loop has to keep coming round while one is up. */
-        if (osd_visible()) dirty = 1;
+        /* The indicator needs one more frame AFTER it goes, to paint
+         * the screen without it. Without the falling edge it stayed on
+         * screen until something else happened to cause a repaint --
+         * which on an idle desktop is never. */
+        {
+            static int osd_was = 0;
+            int osd_now = osd_visible() ? 1 : 0;
+            if (osd_now || osd_was) dirty = 1;
+            osd_was = osd_now;
+        }
         if (c.wl) {
             aurwl_dispatch(c.wl);
             aurwl_reap(c.wl);
@@ -1141,7 +1180,29 @@ int main(int argc, char **argv)
             c.want_close_win = 0;
             int w = (c.focus >= 0 && c.focus < c.n_wins) ? c.focus
                   : (c.n_wins > 0 ? c.n_wins - 1 : -1);
-            if (w >= 0) shell_close_win(&c, w);
+            if (w < 0) {
+                osd_say("There is nothing open to close.");
+            } else if (c.wins[w].wid) {
+                /* A real window is ASKED, the way its own title bar
+                 * button would ask, so a document with unsaved changes
+                 * still gets to object. The slot goes when the client
+                 * actually goes.
+                 *
+                 * This half was never written. shell_close_win()
+                 * returns immediately on a slot that has a window --
+                 * its comment says the host does the asking -- and the
+                 * host did not ask. So "Close this", a button that is
+                 * on screen at all times, did nothing whatsoever: the
+                 * failure shell.h calls worse than having no control. */
+                aurwl_win *win = session_win(&c, c.wins[w].wid);
+                if (win) aurwl_win_close(win);
+                else     shell_close_win(&c, w);
+            } else {
+                /* A slot with nothing behind it yet -- an application
+                 * that is still starting, or one that failed to. That
+                 * one is the shell's own to remove. */
+                shell_close_win(&c, w);
+            }
             dirty = 1;
         }
 
@@ -1157,15 +1218,40 @@ int main(int argc, char **argv)
             if (what < 1 || what > 3) what = 1;
             fprintf(stderr, "aurshell: %s at the user's request\n", SAID[what]);
             const char *argv_off[] = { "/usr/bin/systemctl", VERB[what], NULL };
-            int started = c.wl ? (aurwl_spawn(c.wl, argv_off) > 0) : 0;
-            if (!started) started = (run_detached(argv_off) == 0);
-            /* Only the ones that END the session have a last resort:
-             * a machine that cannot suspend should stay awake, not
-             * power itself off because the suspend failed. */
-            if (!started && what != 3) {
-                sync();
-                reboot(what == 2 ? RB_AUTOBOOT : RB_POWER_OFF);
+
+            /* WAIT FOR IT, AND LOOK AT HOW IT ENDED.
+             *
+             * This used to spawn and call that success. A `systemctl
+             * suspend` that policy refuses forks perfectly and exits
+             * 1, so the button did nothing, silently -- which is word
+             * for word the bug aurshell.service was written to fix,
+             * re-committed one layer up by the code that read its
+             * commit message.
+             *
+             * Waiting is safe here: poweroff and reboot do not return
+             * (the process is killed with everything else), suspend
+             * returns when the machine comes back, and a refusal
+             * returns at once. Four seconds is the bound on how long
+             * the screen sits still, not on the shutdown. */
+            int rc = run_status(argv_off, 4000);
+            if (rc == 0 || rc == -1) {
+                /* 0: it is doing it. -1: still running after four
+                 * seconds, which for poweroff and reboot is the
+                 * ordinary case -- systemd is stopping units. */
+                dirty = 1;
+                continue;
             }
+
+            /* It came back, quickly, with a complaint. Say so, in her
+             * words, and leave the machine exactly as it was. */
+            static const char *SORRY[4] = {
+                NULL,
+                "This computer would not turn off. Try again in a moment.",
+                "This computer would not restart. Try again in a moment.",
+                "This computer will not go to sleep."
+            };
+            fprintf(stderr, "aurshell: systemctl %s exited %d\n", VERB[what], rc);
+            osd_say(SORRY[what]);
             dirty = 1;
         }
 
@@ -1346,12 +1432,13 @@ int main(int argc, char **argv)
                     /* A browser that cannot scroll is a poster of a
                      * browser, so the wheel is routed even though no
                      * archetype has ever used it. */
-                    /* Not through the wifi panel. The wheel is the
-                     * natural way to ask a list for more of itself, and
-                     * doing it over the panel used to scroll the
-                     * application hidden behind it. */
+                    /* Not through a panel. The wheel is the natural
+                     * way to ask a list for more of itself, and doing
+                     * it over a panel used to scroll the application
+                     * hidden behind it. This knew about three of the
+                     * five panels. */
                     if ((ev.code == REL_WHEEL || ev.code == REL_HWHEEL) &&
-                        !c.net_open && !c.settings_open && !c.bt_open)
+                        !SHELL_PANEL_OPEN(&c))
                         session_scroll(&c, c.mouse_x, c.mouse_y,
                                        ev.code == REL_HWHEEL, -(double)ev.value);
                     clamp_pointer(&c, disp->width, disp->height);
@@ -1442,21 +1529,24 @@ int main(int argc, char **argv)
                          * covered by whatever is on screen is not one. */
                         int taken = 0;
                         if (ev.value) taken = foot_click(&c, c.mouse_x, c.mouse_y);
-                        else if (c.foot_hover >= 0 || c.help_open ||
-                                 c.net_open) taken = 1;
+                        else if (c.foot_hover >= 0 || SHELL_PANEL_OPEN(&c))
+                            taken = 1;
 
-                        /* The wifi panel covers the desktop while it is
-                         * up, so it answers before the desktop does --
-                         * for the same reason the band answers before
-                         * it. */
+                        /* A panel covers the desktop while it is up, so it
+                         * answers before the desktop does -- for the
+                         * same reason the band answers before it. */
                         if (!taken && ev.value) {
                             taken = net_click(&c, c.mouse_x, c.mouse_y);
                             if (!taken)
                                 taken = settings_click(&c, c.mouse_x, c.mouse_y);
                             if (!taken)
                                 taken = bt_click(&c, c.mouse_x, c.mouse_y);
-                        } else if (!taken && (c.net_open || c.settings_open ||
-                                              c.bt_open)) {
+                            /* Anything still not taken, with a panel on
+                             * screen, is swallowed: a press that fell
+                             * through would reach whatever she was
+                             * doing before she opened it. */
+                            if (!taken && SHELL_PANEL_OPEN(&c)) taken = 1;
+                        } else if (!taken && SHELL_PANEL_OPEN(&c)) {
                             taken = 1;
                         }
 
@@ -1474,8 +1564,7 @@ int main(int argc, char **argv)
                         }
                         dirty = 1;
                     } else if ((ev.code == BTN_RIGHT || ev.code == BTN_MIDDLE) &&
-                               !c.net_open && !c.help_open &&
-                               !c.settings_open && !c.bt_open) {
+                               !SHELL_PANEL_OPEN(&c)) {
                         /* Not while a panel is covering the screen: a
                          * right-click on the wifi panel used to open a
                          * context menu in the hidden application and
@@ -1559,20 +1648,24 @@ int main(int argc, char **argv)
                         if (!super_down)
                             consumed = session_key(&c, ev.code, ev.value != 0);
 
-                        if (c.net_open) {
-                            if (ev.value) net_key(&c, ev.code);
-                            c.key_text[0] = 0;
-                            dirty = 1;
-                            continue;
-                        }
-                        if (c.settings_open) {
-                            if (ev.value) settings_key(&c, ev.code);
-                            c.key_text[0] = 0;
-                            dirty = 1;
-                            continue;
-                        }
-                        if (c.bt_open) {
-                            if (ev.value) bt_key(&c, ev.code);
+                        /* A panel on screen is modal, so it answers the
+                         * keyboard and NOTHING behind it does -- not
+                         * the archetype, and (via the focus block far
+                         * above) not the application either.
+                         *
+                         * Help and the power question were missing from
+                         * this chain entirely. With either up, every
+                         * key she pressed went to the archetype, and
+                         * the power question had no key that dismissed
+                         * it at all: a full-screen state with no way
+                         * out for anyone not using a mouse. */
+                        if (SHELL_PANEL_OPEN(&c)) {
+                            if (ev.value) {
+                                if      (c.net_open)      net_key(&c, ev.code);
+                                else if (c.settings_open) settings_key(&c, ev.code);
+                                else if (c.bt_open)       bt_key(&c, ev.code);
+                                else                      foot_key(&c, ev.code);
+                            }
                             c.key_text[0] = 0;
                             dirty = 1;
                             continue;
