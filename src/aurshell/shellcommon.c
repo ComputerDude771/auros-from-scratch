@@ -314,7 +314,7 @@ int shell_launch(shell_ctx *c, int app)
     c->focus = i;
 
     if (c->spawn && c->apps[app].exec[0]) {
-        if (c->spawn(c, c->apps[app].exec) < 0) {
+        if (c->spawn(c, c->apps[app].exec, c->apps[app].n_args) < 0) {
             copy_str(w->subtitle, sizeof w->subtitle, "Could not start");
             w->starting = 0;
         }

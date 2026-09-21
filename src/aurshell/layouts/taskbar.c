@@ -389,6 +389,36 @@ static void close_win(shell_ctx *c, int i)
     c->focus = topmost_visible(c);
 }
 
+/* The compositor is about to drop slot i and shift the rest down. Five
+ * arrays here are indexed by that slot number and one stores slot
+ * numbers, so all six move with it -- otherwise quitting a window from
+ * inside its own application left the window after it claiming to be
+ * maximised, with a rectangle to restore saved from somebody else, and
+ * a stacking order naming the wrong windows.
+ *
+ * This is close_win()'s bookkeeping without the removal, because the
+ * removal is session_sync's to do. */
+static void l_removed(shell_ctx *c, int i)
+{
+    tb_priv *p = P(c);
+    if (i < 0 || i >= c->n_wins) return;
+    for (int k = i; k < c->n_wins - 1; k++) {
+        p->slot[k]  = p->slot[k + 1];
+        p->maxed[k] = p->maxed[k + 1];
+        p->saved[k] = p->saved[k + 1];
+        p->shade[k] = p->shade[k + 1];
+    }
+    int n = 0;
+    for (int k = 0; k < p->n_z; k++) {
+        int w = p->z[k];
+        if (w == i) continue;
+        p->z[n++] = (w > i) ? w - 1 : w;
+    }
+    p->n_z = n;
+    if (p->drag_win == i) p->drag_win = -1;
+    else if (p->drag_win > i) p->drag_win--;
+}
+
 static void toggle_max(shell_ctx *c, int i)
 {
     tb_priv *p = P(c);
@@ -1053,4 +1083,5 @@ const shell_layout layout_taskbar = {
     .key = l_key,
     .step = l_step,
     .fini = l_fini,
+    .removed = l_removed,
 };

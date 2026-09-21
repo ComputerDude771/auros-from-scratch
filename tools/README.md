@@ -25,6 +25,10 @@ cc -O2 -std=gnu11 -o /tmp/sheet tools/contactsheet.c src/aurshell/draw.c \
 cc -O2 -std=gnu11 -I src/common -o /tmp/kerning tools/kerning.c src/common/font.c -lm
 /tmp/kerning 36 /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf
 
+cc -O2 -std=gnu11 -o /tmp/kiosktest tools/kiosktest.c src/aurshell/apps.c \
+   src/aurshell/shellcommon.c src/aurshell/draw.c src/aurshell/anim.c \
+   src/aurshell/layouts/*.c src/common/theme.c src/common/font.c -lm && /tmp/kiosktest
+
 cc -O2 -std=gnu11 -o /tmp/stridetest tools/stridetest.c src/aurshell/draw.c \
    src/aurshell/shellcommon.c src/aurshell/anim.c src/aurshell/layouts/*.c \
    src/common/theme.c src/common/font.c -lm && /tmp/stridetest
@@ -201,3 +205,22 @@ Every case in it was a real defect. Two were four-request crashes in a
 process that owns the display; one wrote 127 bytes of the client's
 choosing into freed memory; two were hangs, which in this process are
 as fatal as a crash and harder to explain to the person it happens to.
+
+`kiosktest` treats the kiosk allow-list as what the product says it is:
+a security control. On a managed machine it is the only thing limiting
+what can run, `allow_tty` is off so there is no console to escape to,
+and an unreadable policy file denies everything.
+
+It was bypassable three ways, each of them one file dropped in
+`~/.local/share/applications` — name it after an allowed program, claim
+that program's `StartupWMClass`, or write `Exec=allowed ; something
+else`, because the exec test accepted any suffix after a space. All
+three compared the list against something the person writing the file
+controls. The list is now matched against the resolved absolute path of
+the program the entry runs, the user's directory is not searched at all
+while a lockdown is in force, and there is no shell in the launch path.
+
+The last check in it is that a FIFO and a symlink to `/dev/zero` in
+that directory do not hang the scan. Either one used to block forever,
+before the compositor starts and before the first frame — so the
+desktop never appeared, and on a kiosk there was no way back in.

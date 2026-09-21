@@ -1945,9 +1945,9 @@ void aurwl_frame_done(aurwl *c, uint32_t t)
 
 /* ── launching ──────────────────────────────────────────────────── */
 
-pid_t aurwl_spawn(aurwl *c, const char *cmdline)
+pid_t aurwl_spawn(aurwl *c, const char *const argv[])
 {
-    if (!c || !cmdline || !*cmdline) return -1;
+    if (!c || !argv || !argv[0] || !argv[0][0]) return -1;
     if (c->n_kids >= (int)(sizeof c->kids / sizeof c->kids[0])) aurwl_reap(c);
 
     pid_t pid = fork();
@@ -1970,7 +1970,7 @@ pid_t aurwl_spawn(aurwl *c, const char *cmdline)
         setenv("MOZ_ENABLE_WAYLAND", "1", 1);
         setenv("XDG_SESSION_TYPE", "wayland", 1);
         setenv("XDG_CURRENT_DESKTOP", "AurOS", 1);
-        execl("/bin/sh", "sh", "-c", cmdline, (char *)NULL);
+        execvp(argv[0], (char *const *)argv);
         _exit(127);
     }
     if (c->n_kids < (int)(sizeof c->kids / sizeof c->kids[0])) c->kids[c->n_kids++] = pid;

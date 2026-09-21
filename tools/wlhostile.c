@@ -214,9 +214,10 @@ static int run_case(const char *self, int which)
     aurwl *c = aurwl_create(800, 600, 60000);
     if (!c) { printf("  could not start a compositor\n"); return 1; }
 
-    char cmd[512];
-    snprintf(cmd, sizeof cmd, "%s --client %d", self, which);
-    if (aurwl_spawn(c, cmd) < 0) { aurwl_destroy(c); return 1; }
+    char num[16];
+    snprintf(num, sizeof num, "%d", which);
+    const char *argv_h[] = { self, "--client", num, NULL };
+    if (aurwl_spawn(c, argv_h) < 0) { aurwl_destroy(c); return 1; }
 
     uint32_t t0 = now_ms();
     while (now_ms() - t0 < 6000) {
@@ -228,7 +229,8 @@ static int run_case(const char *self, int which)
     }
 
     /* The real test: does a well-behaved client still get a window? */
-    if (aurwl_spawn(c, "weston-simple-shm") < 0) { aurwl_destroy(c); return 1; }
+    const char *argv_ok[] = { "weston-simple-shm", NULL };
+    if (aurwl_spawn(c, argv_ok) < 0) { aurwl_destroy(c); return 1; }
     int good = 0;
     t0 = now_ms();
     while (now_ms() - t0 < 8000 && !good) {

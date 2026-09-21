@@ -715,6 +715,30 @@ static void wb_swap(shell_ctx *c, int a, int b)
     else if (c->focus == b) c->focus = a;
 }
 
+/* Which workspace each window is on is stored here, indexed by slot.
+ * When the compositor drops a slot it has to move with it, or a window
+ * on workspace 3 silently arrives on workspace 0 because the window
+ * below it in the list quit. */
+static void l_removed(shell_ctx *c, int i)
+{
+    wb_priv *p = P(c);
+    if (i < 0 || i >= c->n_wins) return;
+    for (int j = i; j + 1 < c->n_wins; j++) p->ws_of[j] = p->ws_of[j + 1];
+}
+
+/* And a window that has just appeared belongs on the workspace the user
+ * is looking at. ws_of[] is filled once at init, so a slot reused by a
+ * new application inherited whatever workspace it last held -- you
+ * clicked an icon, the window mapped, and nothing appeared, because it
+ * had opened on a workspace you were not on. */
+static void l_present(shell_ctx *c, int win)
+{
+    wb_priv *p = P(c);
+    if (win < 0 || win >= c->n_wins) return;
+    p->ws_of[win] = c->workspace;
+    c->focus = win;
+}
+
 static void wb_close_focused(shell_ctx *c)
 {
     wb_priv *p = P(c);
@@ -827,4 +851,6 @@ const shell_layout layout_workbench = {
     .key = l_key,
     .step = l_step,
     .fini = l_fini,
+    .present = l_present,
+    .removed = l_removed,
 };

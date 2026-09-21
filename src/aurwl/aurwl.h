@@ -140,10 +140,13 @@ void        aurwl_frame_done(aurwl *c, uint32_t time_ms);
 
 /* ── launching ──────────────────────────────────────────────────── */
 
-/* fork/exec with WAYLAND_DISPLAY, XDG_RUNTIME_DIR and a clean session
- * environment. `cmdline` is a /bin/sh command, because that is what a
- * .desktop Exec= line is. Returns the pid, or -1. */
-pid_t       aurwl_spawn(aurwl *c, const char *cmdline);
+/* fork/exec with WAYLAND_DISPLAY, XDG_RUNTIME_DIR and a session
+ * environment. `argv` is NULL-terminated and is passed to execvp
+ * directly -- there is no shell. A .desktop Exec= line looks like a
+ * shell command and is not one: it has its own quoting rules, and
+ * handing it to /bin/sh turns every metacharacter in a file the user
+ * can write into an instruction. Returns the pid, or -1. */
+pid_t       aurwl_spawn(aurwl *c, const char *const argv[]);
 
 /* Reap exited children. Call each frame; cheap when there are none. */
 void        aurwl_reap(aurwl *c);

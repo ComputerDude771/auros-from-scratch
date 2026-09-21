@@ -19,6 +19,9 @@
 #include "../common/font.h"
 
 #define SHELL_MAX_APPS 32
+/* More than any real Exec= line, and a bound on what a hostile one can
+ * make us allocate. */
+#define APP_MAX_ARGS   16
 #define SHELL_MAX_WINS 32
 
 /* Icons are drawn from primitives, so they inherit theme colours, scale
@@ -36,11 +39,16 @@ typedef struct {
     shell_icon  icon;
     uint32_t    tint;
     int         pinned;        /* appears in a dock / favourites strip */
-    /* The command that actually starts it, as a .desktop Exec= line.
-     * Empty means there is nothing behind this icon -- which is how the
-     * shell looked before it could run anything, and is now only true
-     * of the entries a profile pins without installing. */
+    /* The argument vector that starts it: NUL-separated tokens, ending
+     * in a second NUL, with n_args of them. NOT a shell command line --
+     * a .desktop Exec= is parsed per the XDG quoting rules and handed
+     * to execv, so a semicolon or a backtick in a file the user can
+     * write is an argument rather than an instruction.
+     *
+     * An empty first token means there is nothing behind this icon,
+     * which today is true only of the shell's own Settings entry. */
     char        exec[192];
+    int         n_args;
     char        wm_class[64];  /* app_id a window reports; links the two */
 } app_entry;
 
@@ -141,7 +149,7 @@ typedef struct shell_ctx_s {
      * than a direct call so that shellcommon.c -- which every preview
      * and test harness links -- does not drag in the compositor. NULL
      * means nothing starts, which is exactly right for a still render. */
-    int (*spawn)(struct shell_ctx_s *c, const char *cmdline);
+    int (*spawn)(struct shell_ctx_s *c, const char *argv_blob, int n_args);
 
     /* ── per-layout scratch. Layouts own this; nothing else reads. */
     void *priv;
@@ -163,6 +171,16 @@ typedef struct {
      * cannot be done by setting c->focus from outside. Optional; the
      * default is to set c->focus and let the archetype read it. */
     void (*present)(shell_ctx *c, int win);
+    /* A window is about to be removed from c->wins, and everything
+     * above it will shift down by one. An archetype that keeps its own
+     * arrays indexed by slot number must shift them here -- which
+     * workspace each window is on, which are maximised, the stacking
+     * order. Optional, and only for archetypes that keep such arrays.
+     *
+     * Called for the path a real application exits through, which is
+     * the one that actually happens; an archetype's own close button
+     * does its bookkeeping inline. */
+    void (*removed)(shell_ctx *c, int win);
 } shell_layout;
 
 /* Shared helpers every layout may use, so six renderers do not each

@@ -655,7 +655,12 @@ int main(int argc, char **argv)
             c.spawn = session_spawn;
             fprintf(stderr, "aurshell: WAYLAND_DISPLAY=%s, starting %s\n",
                     aurwl_socket(c.wl), with_app);
-            if (aurwl_spawn(c.wl, with_app) < 0) {
+            /* A development harness runs whatever command the person at the
+             * keyboard typed, so /bin/sh is the right thing here and is chosen
+             * explicitly. The product path has no shell: an Exec= line from a file
+             * on disk is parsed into an argv and handed to execvp. */
+            const char *argv_sh[] = { "/bin/sh", "-c", with_app, NULL };
+            if (aurwl_spawn(c.wl, argv_sh) < 0) {
                 fprintf(stderr, "aurshell: could not start it\n");
                 free_fonts(&f); return 1;
             }
@@ -669,7 +674,7 @@ int main(int argc, char **argv)
                 poll(&wp, 1, 16);
                 aurwl_dispatch(c.wl);
                 aurwl_reap(c.wl);
-                session_sync(&c, L->present);
+                session_sync(&c, L->present, L->removed);
                 aurwl_frame_done(c.wl, el);
                 /* Paint each pass: the tracker records where windows
                  * landed, and a client that never learns its size keeps
@@ -952,7 +957,7 @@ int main(int argc, char **argv)
             aurwl_dispatch(c.wl);
             aurwl_reap(c.wl);
             int before = c.n_wins;
-            session_sync(&c, L->present);
+            session_sync(&c, L->present, L->removed);
             uint32_t seq = aurwl_damage_seq(c.wl);
             if (seq != last_damage || c.n_wins != before) { last_damage = seq; dirty = 1; }
         }

@@ -74,7 +74,12 @@ int main(int argc, char **argv)
     printf("socket   %s\n", aurwl_socket(c));
     printf("command  %s\n", cmd);
 
-    if (aurwl_spawn(c, cmd) < 0) { fprintf(stderr, "wltest: spawn failed\n"); return 1; }
+/* A development harness runs whatever command the person at the
+ * keyboard typed, so /bin/sh is the right thing here and is chosen
+ * explicitly. The product path has no shell: an Exec= line from a file
+ * on disk is parsed into an argv and handed to execvp. */
+    const char *argv_sh[] = { "/bin/sh", "-c", cmd, NULL };
+    if (aurwl_spawn(c, argv_sh) < 0) { fprintf(stderr, "wltest: spawn failed\n"); return 1; }
 
     uint32_t t0 = now_ms(), last_frame = 0;
     int peak = 0;

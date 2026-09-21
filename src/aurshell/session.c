@@ -20,6 +20,8 @@
 #include <strings.h>
 #include <time.h>
 
+#include <string.h>
+
 #include "session.h"
 #include "../aurwl/aurwl.h"
 
@@ -76,7 +78,8 @@ static int slot_for_wid(shell_ctx *c, uint32_t wid)
 
 /* ── the reconcile ──────────────────────────────────────────────── */
 
-void session_sync(shell_ctx *c, void (*present)(shell_ctx *, int))
+void session_sync(shell_ctx *c, void (*present)(shell_ctx *, int),
+                  void (*removed)(shell_ctx *, int))
 {
     if (!c->wl) return;
     aurwl *wl = c->wl;
@@ -97,9 +100,16 @@ void session_sync(shell_ctx *c, void (*present)(shell_ctx *, int))
              * window appears where they were already looking instead of
              * arriving somewhere else while the placeholder lingers. */
             int app = app_for_window(c, app_id);
-            for (int j = 0; j < c->n_wins && i < 0; j++)
-                if (c->wins[j].starting && !c->wins[j].wid &&
-                    (app < 0 || c->wins[j].app == app)) i = j;
+            /* Only a placeholder for THIS application. Adopting any
+             * pending one when the window reported no app_id -- which
+             * the comment above says is a normal thing for a toolkit to
+             * do -- meant that starting two applications in a row gave
+             * the second one's window the first one's name and icon.
+             * And it stuck: the first application's icon then raised
+             * the wrong window forever, and never launched again. */
+            if (app >= 0)
+                for (int j = 0; j < c->n_wins && i < 0; j++)
+                    if (c->wins[j].starting && !c->wins[j].wid && c->wins[j].app == app) i = j;
             if (i < 0 && c->n_wins < SHELL_MAX_WINS) {
                 i = c->n_wins++;
                 memset(&c->wins[i], 0, sizeof c->wins[i]);
@@ -162,12 +172,28 @@ void session_sync(shell_ctx *c, void (*present)(shell_ctx *, int))
     for (int i = c->n_wins - 1; i >= 0; i--) {
         win_entry *e = &c->wins[i];
         if (e->wid && !seen[i]) {
-            /* The client went away. Its content pointer belonged to the
-             * compositor and is already gone, so clearing it is not
-             * tidiness -- it is the difference between an empty slot and
-             * a dangling read next frame. */
+            /* The client went away.
+             *
+             * Archetypes keep their own arrays indexed by the same slot
+             * number -- which workspace a window is on, whether it is
+             * maximised, the geometry to restore it to, its place in
+             * the stack. Shifting c->wins[] without telling them left
+             * every one of those naming a different window: quit a
+             * window and the one after it changes workspace, or claims
+             * to be maximised with a rectangle saved from somebody
+             * else. Their own close buttons always did this
+             * bookkeeping; the path a real application exits through
+             * did not, and that is the path that actually happens. */
+            if (removed) removed(c, i);
             for (int j = i; j + 1 < c->n_wins; j++) c->wins[j] = c->wins[j + 1];
             c->n_wins--;
+            /* A decrement, not a clamp. When the slot that went was
+             * below the focused one, everything above it moved down and
+             * the focus index silently named its neighbour -- so the
+             * window drawn as active and the window receiving keys were
+             * two different windows. */
+            if (c->focus > i) c->focus--;
+            else if (c->focus == i) c->focus = c->n_wins - 1;
             if (c->focus >= c->n_wins) c->focus = c->n_wins - 1;
             continue;
         }
@@ -297,8 +323,15 @@ void session_paint_popups(shell_ctx *c, surface *fb)
 
 /* ── the spawn hook the shell calls through ─────────────────────── */
 
-int session_spawn(shell_ctx *c, const char *cmdline)
+int session_spawn(shell_ctx *c, const char *argv_blob, int n_args)
 {
-    if (!c->wl) return -1;
-    return aurwl_spawn(c->wl, cmdline) > 0 ? 0 : -1;
+    if (!c->wl || n_args < 1 || n_args > APP_MAX_ARGS) return -1;
+    /* Unpack the NUL-separated tokens into the vector execvp wants. */
+    const char *argv[APP_MAX_ARGS + 1];
+    const char *p = argv_blob;
+    int i = 0;
+    for (; i < n_args && *p; i++) { argv[i] = p; p += strlen(p) + 1; }
+    argv[i] = NULL;
+    if (!i) return -1;
+    return aurwl_spawn(c->wl, argv) > 0 ? 0 : -1;
 }
