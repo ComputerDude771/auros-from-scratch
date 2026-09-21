@@ -67,6 +67,16 @@
 #define C_ERR         0xF2788Du   /* err         */
 #define C_INFO        0x82AAFFu   /* info        */
 
+/* Channel extraction, so the backdrop can be DERIVED from the palette
+ * above instead of restating it. It used to hardcode the accent bytes
+ * inline -- 0x7D/0xD3/0xC0 and 0xA7/0x8B/0xFA -- which meant the single
+ * largest area of colour in the installer ignored the palette block
+ * entirely, and editing that block to reskin the product changed
+ * everything except the thing you were looking at. */
+#define CH_R(c) ((float)(((c) >> 16) & 0xFFu))
+#define CH_G(c) ((float)(((c) >>  8) & 0xFFu))
+#define CH_B(c) ((float)( (c)        & 0xFFu))
+
 #define CR(c) RGB(((c)>>16)&0xFF, ((c)>>8)&0xFF, (c)&0xFF)
 
 /* Theme picker data, transcribed from the theme files in themes/. The installed
@@ -525,9 +535,19 @@ static void glyph_bang(float cx, float cy, float s, uint32_t col, float a)
 }
 
 /* ═══════════════════════════════════════════════════════════════════
- *  Backdrop: the Nocturne wallpaper's aurora, cheaply. Cached, because
- *  it is the only per-pixel cost that scales with window area.
+ *  Backdrop. Cached, because it is the only per-pixel cost that scales
+ *  with window area.
+ *
+ *  Every value it uses is named here rather than buried in the loop, so
+ *  a reskin is this block plus the palette above. Setting both
+ *  intensities to 0 gives a flat ground, which is what a design without
+ *  a gradient in it wants.
  * ═══════════════════════════════════════════════════════════════════ */
+#define C_BG_FOOT      0x081118u   /* the wash at the foot of the window */
+#define C_BACKDROP_1   C_ACCENT    /* the lower ribbon                   */
+#define C_BACKDROP_2   C_ACCENT_ALT/* the upper ribbon                   */
+#define BACKDROP_A1    0.16f
+#define BACKDROP_A2    0.10f
 static uint32_t *g_bgcache;
 static int       g_bgw, g_bgh;
 
@@ -551,18 +571,18 @@ static void backdrop_build(int w, int h)
         float vy = (float)y / (float)(h > 1 ? h - 1 : 1);
         for (int x = 0; x < w; x++) {
             /* base vertical wash: bg at the top, a touch deeper at the foot */
-            float r = 0x0B + ( 0x08 - 0x0B) * vy;
-            float g = 0x0E + ( 0x11 - 0x0E) * vy;
-            float b = 0x14 + ( 0x18 - 0x14) * vy;
+            float r = CH_R(C_BG) + (CH_R(C_BG_FOOT) - CH_R(C_BG)) * vy;
+            float g = CH_G(C_BG) + (CH_G(C_BG_FOOT) - CH_G(C_BG)) * vy;
+            float b = CH_B(C_BG) + (CH_B(C_BG_FOOT) - CH_B(C_BG)) * vy;
 
             float s1 = ((float)y - c1[x]) / (0.13f * (float)h);
-            float a1 = expf(-s1 * s1) * 0.16f;
+            float a1 = expf(-s1 * s1) * BACKDROP_A1;
             float s2 = ((float)y - c2[x]) / (0.10f * (float)h);
-            float a2 = expf(-s2 * s2) * 0.10f;
+            float a2 = expf(-s2 * s2) * BACKDROP_A2;
 
-            r += a1 * 0x7D * 0.35f + a2 * 0xA7 * 0.55f;
-            g += a1 * 0xD3 * 0.55f + a2 * 0x8B * 0.35f;
-            b += a1 * 0xC0 * 0.50f + a2 * 0xFA * 0.55f;
+            r += a1 * CH_R(C_BACKDROP_1) * 0.35f + a2 * CH_R(C_BACKDROP_2) * 0.55f;
+            g += a1 * CH_G(C_BACKDROP_1) * 0.55f + a2 * CH_G(C_BACKDROP_2) * 0.35f;
+            b += a1 * CH_B(C_BACKDROP_1) * 0.50f + a2 * CH_B(C_BACKDROP_2) * 0.55f;
 
             /* ordered dither: kills the banding a 20-step gradient shows
              * on a cheap panel, which is most of our market */
