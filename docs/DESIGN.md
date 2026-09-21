@@ -106,6 +106,14 @@ These are not taste. A future reskin must not break them.
 - **The type scale lives in the theme**, not in multipliers in C.
 - **It has to work at 1024×600**, in four themes, in a language whose
   labels are 40% longer, on a machine from 2013.
+- **If rules replace shadows, the rules must be visible.** Every theme
+  written before this had `col_overlay` around 1.4:1 against its
+  surface, which was defensible while shadows and fills did the
+  separating and is not defensible once a hairline *is* the structure.
+  `tools/contrast.c --strict` is the check; 3:1 is the floor. Two
+  independent redesigns both deleted the shadows and both left the rule
+  below 2.4:1 — it is not an obvious mistake, which is why it is
+  written down here.
 
 ---
 
