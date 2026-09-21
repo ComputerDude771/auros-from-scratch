@@ -81,8 +81,24 @@ static float corner_for(const corners *c, float px, float py)
     return px < 0.f ? c->bl : c->br;
 }
 
-static void round_rect_cov(surface *s, rect r, corners c, float expand,
-                           void (*emit)(surface *, int, int, float, void *), void *ud)
+/* Walk the pixels a rounded box touches, handing each one its exact
+ * coverage.
+ *
+ * The obvious implementation evaluates the distance field for every
+ * pixel in the bounding box. That is enormously wasteful: the field
+ * only says anything interesting within a pixel of the boundary, and
+ * for a full-size card the interior is ~95% of the area. Profiling the
+ * shell at 1366x768 found this was the single largest cost in a frame,
+ * ahead of even the blur -- roughly half a million needless sqrtf calls
+ * per card per frame.
+ *
+ * So each row is split: the span that is unambiguously inside gets
+ * coverage 1 with no field evaluation at all, and only the edge bands
+ * and the corner arcs are sampled. `exact` disables the shortcut for
+ * callers (shadows) whose emit function ignores the coverage and
+ * computes its own falloff from the field, where "inside" is not 1. */
+static void round_rect_cov_ex(surface *s, rect r, corners c, float expand, int exact,
+                              void (*emit)(surface *, int, int, float, void *), void *ud)
 {
     float hw = r.w * 0.5f + expand, hh = r.h * 0.5f + expand;
     float cx = r.x + r.w * 0.5f, cy = r.y + r.h * 0.5f;
@@ -95,9 +111,51 @@ static void round_rect_cov(surface *s, rect r, corners c, float expand,
     if (x1 > s->w) x1 = s->w;
     if (y1 > s->h) y1 = s->h;
 
+    /* Conservative radius: the largest corner, so the interior bound
+     * holds whichever quadrant a row happens to cross. */
+    float rmax = c.tl;
+    if (c.tr > rmax) rmax = c.tr;
+    if (c.br > rmax) rmax = c.br;
+    if (c.bl > rmax) rmax = c.bl;
+    rmax += expand;
+    if (rmax > hw) rmax = hw;
+    if (rmax > hh) rmax = hh;
+
     for (int y = y0; y < y1; y++) {
         float py = (float)y + 0.5f - cy;
-        for (int x = x0; x < x1; x++) {
+
+        int lo = x0, hi = x1;            /* span to evaluate exactly */
+        int ilo = 0, ihi = -1;           /* span known to be interior */
+
+        /* The row must also be clear of the horizontal edges. Constraining
+         * only x was wrong: a row inside a corner band is still within a
+         * pixel of the top or bottom edge, where coverage is partial
+         * whatever x is, and claiming it as interior drew those rows at
+         * full alpha. */
+        if (!exact && fabsf(py) <= hh - 1.f) {
+            /* Half-width of the guaranteed-inside span on this row: the
+             * full width away from the corner bands, and the straight
+             * section between them inside one. */
+            float inner_hw = (fabsf(py) <= hh - rmax) ? hw - 1.f : hw - rmax - 1.f;
+            if (inner_hw > 0.f) {
+                ilo = (int)ceilf(cx - inner_hw);
+                ihi = (int)floorf(cx + inner_hw);
+                if (ilo < x0) ilo = x0;
+                if (ihi >= x1) ihi = x1 - 1;
+                if (ihi >= ilo) { lo = x0; hi = x1; }
+                else { ihi = -1; }
+            }
+        }
+
+        for (int x = lo; x < hi; x++) {
+            if (ihi >= ilo && x >= ilo && x <= ihi) {
+                /* Emit EVERY pixel of the interior run, then jump past
+                 * it. Emitting once and skipping to the end silently
+                 * drew one pixel per row and left the card hollow. */
+                for (int xi = x; xi <= ihi; xi++) emit(s, xi, y, 1.f, ud);
+                x = ihi;
+                continue;
+            }
             float px = (float)x + 0.5f - cx;
             float rad = corner_for(&c, px, py) + expand;
             float d = sdf_round_box(px, py, hw, hh, rad);
@@ -107,6 +165,12 @@ static void round_rect_cov(surface *s, rect r, corners c, float expand,
             if (cov > 0.f) emit(s, x, y, cov, ud);
         }
     }
+}
+
+static void round_rect_cov(surface *s, rect r, corners c, float expand,
+                           void (*emit)(surface *, int, int, float, void *), void *ud)
+{
+    round_rect_cov_ex(s, r, c, expand, 0, emit, ud);
 }
 
 typedef struct { uint32_t rgb; float a; } fill_ud;
@@ -194,7 +258,7 @@ void draw_round_rect_shadow(surface *s, rect r, corners c,
 {
     rect sr = r; sr.y += dy;
     shadow_ud ud = { rgb, a, spread <= 0.f ? 1.f : spread, sr, c };
-    round_rect_cov(s, sr, c, spread, emit_shadow, &ud);
+    round_rect_cov_ex(s, sr, c, spread, 1, emit_shadow, &ud);
 }
 
 void draw_circle(surface *s, float cx, float cy, float radius, uint32_t rgb, float a)

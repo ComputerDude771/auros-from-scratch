@@ -278,9 +278,9 @@ static void open_app(shell_ctx *c, int app, int w, int h)
         wi = c->n_wins++;
         memset(&c->wins[wi], 0, sizeof c->wins[wi]);
         c->wins[wi].app = app;
-        /* memcpy rather than snprintf: source and destination are both
-         * inside *c, which is exactly the aliasing snprintf is allowed
-         * to assume away. */
+        /* copy_str, not snprintf: both strings live inside *c, which is
+         * exactly the aliasing snprintf's restrict contract lets the
+         * compiler assume away. */
         copy_str(c->wins[wi].title,    sizeof c->wins[wi].title,    c->apps[app].name);
         copy_str(c->wins[wi].subtitle, sizeof c->wins[wi].subtitle, c->apps[app].hint);
     }
