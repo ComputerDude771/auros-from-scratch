@@ -62,8 +62,15 @@ keyboard_variant=""
 # Hardware enablement. This is the line that makes WiFi and graphics
 # work on a ten-year-old laptop, and it is the single strongest reason
 # to sit on an existing base rather than rebuild one.
+#
+# polkitd is here and not in packages_base because it is what decides
+# whether the desktop is allowed to change the network at all. Without
+# it the Internet button in the band appears, presses, and refuses --
+# a control that looks like a control and is not, which is the exact
+# failure this product keeps finding in itself.
 packages_hardware="linux-image-generic linux-firmware
                    network-manager wireless-tools wpasupplicant
+                   polkitd
                    pciutils usbutils"
 
 # Boot chain. Signed, so Secure Boot does not have to be disabled.
@@ -179,6 +186,20 @@ blocked_apps=""
 allow_user_install="yes"  # may users install software?
 allow_settings_change="yes"
 allow_theme_change="yes"
+# May the person using this machine choose its wifi?
+#
+# "yes" puts an Internet button in the band at the bottom of every
+# screen, which lists the wifi in range and joins one. It is also what
+# installs the rule letting the desktop change the network at all: with
+# "no", nothing on the machine can, and the network is whatever the
+# image or the cable says it is.
+#
+# On a personal computer this is obviously yes -- it is her house and
+# her router, and the alternative is a machine that cannot get online
+# without somebody who knows what a terminal is. On a school laptop or
+# a machine on a counter it is the owner's decision and not the user's.
+# Kiosk builds never get the button regardless.
+allow_network_change="yes"
 allow_tty="yes"           # Ctrl-Alt-F2 to a console
 auto_login="no"
 default_user="auros"

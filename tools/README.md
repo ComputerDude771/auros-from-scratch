@@ -86,6 +86,19 @@ cc -O2 -std=gnu11 -o /tmp/hittest tools/hittest.c src/aurshell/draw.c \
 cc -O2 -std=gnu11 -o /tmp/keytest tools/keytest.c src/aurwl/aurwl.c \
    src/aurshell/draw.c build/gen/*-protocol.c -Ibuild/gen \
    $(pkg-config --cflags --libs wayland-server xkbcommon) -lm && /tmp/keytest
+
+cc -O2 -std=gnu11 -o /tmp/nettest tools/nettest.c src/aurshell/net.c \
+   src/aurshell/draw.c src/aurshell/shellcommon.c src/aurshell/anim.c \
+   src/aurshell/layouts/*.c src/common/theme.c src/common/font.c -lm \
+   && /tmp/nettest
+
+# every screen of the wifi panel in one picture; the last number is the
+# text size SHE chose, and 2.0 on a 1024x600 panel is the hard case
+cc -O2 -std=gnu11 -o /tmp/netsheet tools/netsheet.c src/aurshell/draw.c \
+   src/aurshell/shellcommon.c src/aurshell/anim.c src/aurshell/foot.c \
+   src/aurshell/layouts/*.c src/common/theme.c src/common/font.c \
+   src/common/png.c -lm
+/tmp/netsheet /tmp/nocturne.conf /tmp/net.png 1024 600 2.0
 ```
 
 `blur_equiv` carries a verbatim copy of the *old* implementation, so it
@@ -190,6 +203,41 @@ not text produce none; and the layout is read from
 already uses and `build/forge` already writes. Its last case feeds it a
 layout name that does not exist, because a typo in a profile must leave
 a keyboard in the wrong language rather than no keyboard at all.
+
+`nettest` exists because the wifi panel's job is to turn what nmcli
+printed into something she can press, and that translation cannot be
+checked by looking at a screen: on the developer's machine every
+network is well-behaved. The cases that break it are all in somebody
+else's house — a name with a colon in it (which nmcli writes as `\:`,
+and which a naive split truncates, so the name handed back to nmcli to
+join is one that does not exist); a mesh answering twice for one house;
+a network that announces no name at all; the one she is already on,
+buried at position nine because a neighbour's is stronger. It also
+checks every failure sentence, because which sentence she is shown when
+it goes wrong is decided by reading nmcli's own, and getting that
+reading wrong means the wrong words at the worst moment.
+
+It caught its own author immediately, though on the test rather than
+the code: the expected name in the colon case was written with a stray
+backslash in it.
+
+`netsheet` is `contactsheet` for the wifi panel: all five of its
+screens, rendered from the panel's own painting code against a real
+theme at a real panel size, because running it needs a radio, a daemon
+and somewhere with networks in range. It reaches the panel's private
+state by including `net.c` rather than by adding a way in for it — a
+door cut into shipping code so a picture can be taken is a door that is
+there on the machine too.
+
+It earned itself in one render. At 200% text on a 1024×600 panel — the
+exact machine and the exact person this product is for — the band at
+the bottom painted *Internet*, *Smaller* and "Words are 100% bigger"
+through each other, illegible, in the one strip that exists to still
+work when everything else has stopped being legible; the list showed
+one network out of six, because the buttons had been scaled in
+proportion to the type and a hundred-pixel-tall button is no easier to
+press than a sixty-pixel one; and "1 of 6" was painted exactly where
+the buttons now were. None of the three is visible at 100%.
 
 `wltest` fails a window that maps but arrives as one flat colour, not
 just one that never maps. A window full of one colour is what a client

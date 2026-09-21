@@ -79,6 +79,25 @@ for f in src/aurshell/*.c src/aurshell/layouts/*.c; do
         case "$src" in
             *stderr*|*perror*) continue ;;
         esac
+        # A string the product SEARCHES FOR is not a string it SAYS.
+        #
+        # src/aurshell/net.c reads what nmcli printed and turns it into
+        # one of five sentences of our own. To do that it has to match
+        # nmcli's words exactly -- "No network with SSID", "Passwords or
+        # encryption keys" -- and those words are data arriving from
+        # another program, not speech leaving this one. Renaming them to
+        # something plainer would not make the product gentler; it would
+        # make it stop recognising the failure and fall through to a
+        # vaguer sentence, which is the opposite of the rule's purpose.
+        #
+        # This is line-based and therefore approximate, like the rest of
+        # this file. It is narrow on purpose: the literal has to sit on
+        # a line that is calling one of these, and none of them draws
+        # anything. A painted string cannot hide behind it without
+        # someone writing strstr() on the same line for no reason.
+        case "$src" in
+            *'strstr('*|*'strcasestr('*|*'strcmp('*|*'strncmp('*) continue ;;
+        esac
         case "$(printf '%s' "$src" | sed 's/^[[:space:]]*//')" in
             '*'*|'/*'*|'//'*) continue ;;
         esac

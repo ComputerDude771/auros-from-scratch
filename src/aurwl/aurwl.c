@@ -2056,7 +2056,17 @@ void aurwl_frame_done(aurwl *c, uint32_t t)
 pid_t aurwl_spawn(aurwl *c, const char *const argv[])
 {
     if (!c || !argv || !argv[0] || !argv[0][0]) return -1;
-    if (c->n_kids >= (int)(sizeof c->kids / sizeof c->kids[0])) aurwl_reap(c);
+    int cap = (int)(sizeof c->kids / sizeof c->kids[0]);
+    if (c->n_kids >= cap) aurwl_reap(c);
+    if (c->n_kids >= cap) {
+        /* Sixty-four applications running at once is not a desktop, it
+         * is a fault. Refusing is better than the alternative this used
+         * to do, which was to start it anyway and forget the pid --
+         * leaving a process nothing would ever collect. */
+        fprintf(stderr, "aurwl: too many programs already running; "
+                        "not starting %s\n", argv[0]);
+        return -1;
+    }
 
     pid_t pid = fork();
     if (pid < 0) return -1;
@@ -2081,16 +2091,29 @@ pid_t aurwl_spawn(aurwl *c, const char *const argv[])
         execvp(argv[0], (char *const *)argv);
         _exit(127);
     }
-    if (c->n_kids < (int)(sizeof c->kids / sizeof c->kids[0])) c->kids[c->n_kids++] = pid;
+    c->kids[c->n_kids++] = pid;
     return pid;
 }
 
+/* Collect the ones WE started, and only those.
+ *
+ * This used to be waitpid(-1), which collects any child of this
+ * process -- including children the compositor knows nothing about.
+ * The shell is one process: when src/aurshell/net.c runs nmcli to look
+ * for wifi, that child is the shell's too, and a compositor reaping it
+ * out from under the module that started it means that module can
+ * neither learn how it ended nor safely signal it afterwards, because
+ * by then the number it is holding may belong to somebody else.
+ *
+ * Each subsystem waits for its own. Nothing is left behind, because
+ * aurwl_spawn() now refuses rather than forgetting a pid. */
 void aurwl_reap(aurwl *c)
 {
     if (!c) return;
-    pid_t p;
-    while ((p = waitpid(-1, NULL, WNOHANG)) > 0) {
-        for (int i = 0; i < c->n_kids; i++)
-            if (c->kids[i] == p) { c->kids[i] = c->kids[--c->n_kids]; break; }
+    for (int i = c->n_kids - 1; i >= 0; i--) {
+        pid_t p = waitpid(c->kids[i], NULL, WNOHANG);
+        /* >0 exited; <0 means it is not ours any more (already
+         * collected, or never was), and either way the slot is stale. */
+        if (p != 0) c->kids[i] = c->kids[--c->n_kids];
     }
 }

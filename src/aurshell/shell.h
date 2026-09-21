@@ -118,6 +118,15 @@ typedef struct shell_ctx_s {
 
     /* ── policy, from the profile ───────────────────────────────── */
     int   allow_install, allow_settings, allow_theme_change, kiosk;
+    /* May the person using this machine choose its wifi? On a personal
+     * computer, obviously yes -- it is her house and her router. On a
+     * school laptop or a machine on a counter, the network is the
+     * owner's decision and not the user's, and a public terminal whose
+     * users can point it at any nearby wifi is a different product.
+     * It is its own switch rather than riding on allow_settings,
+     * because a build that pins the theme and the archetype has not
+     * thereby said the owner must retype the wifi password. */
+    int   allow_network;
     /* allow_tty is not cosmetic. Masking getty units does not stop a
      * VT switch -- the kernel's VT layer handles the chord and needs no
      * cooperation from userspace -- so the shell has to refuse the
@@ -175,6 +184,11 @@ typedef struct shell_ctx_s {
     float text_scale;
     int   text_changed;        /* she just changed it; reload the fonts */
     int   help_open;
+    /* The wifi panel, which lives behind the band's Internet button.
+     * Only the FLAG lives here, so foot.c can toggle it without
+     * dragging the whole network module into every harness that links
+     * the band. src/aurshell/net.c owns everything else about it. */
+    int   net_open;
     int   foot_hover;          /* which button, -1 for none             */
     int   no_foot;             /* a profile turned the band off         */
     int   want_power_off;      /* she pressed Turn off                  */

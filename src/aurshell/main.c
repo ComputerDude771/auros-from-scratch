@@ -33,6 +33,7 @@
 #include "shell.h"
 #include "session.h"
 #include "foot.h"
+#include "net.h"
 #include "../aurwl/aurwl.h"
 #include "pad.h"
 #include "kms.h"
@@ -441,6 +442,7 @@ static void load_policy(shell_ctx *c, const char *path)
     theme_t p = {0};
     c->allow_install = c->allow_settings = c->allow_theme_change = 1;
     c->allow_tty = 1;
+    c->allow_network = 1;
     c->kiosk = 0;
     c->allowed_apps[0] = 0;
     c->blocked_apps[0] = 0;
@@ -455,6 +457,7 @@ static void load_policy(shell_ctx *c, const char *path)
                             "locking down\n", path);
             c->allow_install = c->allow_settings = c->allow_theme_change = 0;
             c->allow_tty = 0;
+            c->allow_network = 0;
             c->kiosk = 1;
             /* Failing closed has to include the applications, or a
              * machine whose policy file is corrupt keeps its lockdown
@@ -472,6 +475,7 @@ static void load_policy(shell_ctx *c, const char *path)
                 path);
         c->allow_install = c->allow_settings = c->allow_theme_change = 0;
         c->allow_tty = 0;
+        c->allow_network = 0;
         c->kiosk = 1;
         c->deny_all_apps = 1;
         return;
@@ -480,6 +484,7 @@ static void load_policy(shell_ctx *c, const char *path)
     c->allow_settings     = strcmp(theme_str(&p, "allow_settings_change", "yes"), "no") != 0;
     c->allow_theme_change = strcmp(theme_str(&p, "allow_theme_change",    "yes"), "no") != 0;
     c->allow_tty          = strcmp(theme_str(&p, "allow_tty",             "yes"), "no") != 0;
+    c->allow_network      = strcmp(theme_str(&p, "allow_network_change",  "yes"), "no") != 0;
     c->kiosk              = strcmp(theme_str(&p, "kiosk_mode",            "no"),  "yes") == 0;
     snprintf(c->allowed_apps, sizeof c->allowed_apps, "%s",
              theme_str(&p, "allowed_apps", ""));
@@ -941,6 +946,10 @@ int main(int argc, char **argv)
 
         /* Clients first: a window that arrived, moved or repainted has
          * to be in the list before the archetype lays the list out. */
+        /* Each subsystem waits for its own children; the wifi panel's
+         * nmcli is not the compositor's to collect, and there may be
+         * no compositor at all. */
+        net_reap();
         if (c.wl) {
             aurwl_dispatch(c.wl);
             aurwl_reap(c.wl);
@@ -1003,6 +1012,7 @@ int main(int argc, char **argv)
             body.h = c.screen_h;
             L->paint(&c, &body, &f, wall);
             session_paint_popups(&c, &body);
+            net_paint(&c, fb, &f);
             foot_paint(&c, fb, &f);
             paint_cursor(fb, c.mouse_x, c.mouse_y, cur_fill, cur_edge);
             /* A failed flip is not cosmetic: it means we no longer own
@@ -1027,7 +1037,7 @@ int main(int argc, char **argv)
         /* Animating: poll briefly so the next frame is soon. Idle: wait
          * a full second; with damage tracking there is nothing to do
          * until an event arrives, and the clock is handled above. */
-        struct pollfd pfd[MAX_INPUT_DEV + 2];
+        struct pollfd pfd[MAX_INPUT_DEV + 3];
         int np = 0;
         for (int i = 0; i < in.n; i++) { pfd[np].fd = in.fd[i]; pfd[np].events = POLLIN; np++; }
         int noti = -1;
@@ -1035,11 +1045,23 @@ int main(int argc, char **argv)
                                  pfd[np].events = POLLIN; np++; }
         int wlfd = -1;
         if (c.wl) { wlfd = np; pfd[np].fd = aurwl_fd(c.wl); pfd[np].events = POLLIN; np++; }
+        /* Whatever the wifi panel has running. A look for networks
+         * takes several seconds on a radio that has to sweep every
+         * channel; waiting for it in line would stop the screen, and
+         * polling for it here costs nothing when nothing is running. */
+        int netfd = -1, netslot = -1;
+        if ((netfd = net_fd()) >= 0) {
+            netslot = np; pfd[np].fd = netfd;
+            pfd[np].events = POLLIN; np++;
+        }
         /* With a client on screen the wait is short: it is drawing, and
          * the next thing to happen is its next buffer, not a keystroke. */
         int wait_ms = animating ? 8 : (c.n_wins > 0 ? 16 : 1000);
         if (poll(pfd, np, wait_ms) <= 0) continue;
         (void)wlfd;
+
+        if (netslot >= 0 && (pfd[netslot].revents & (POLLIN | POLLHUP | POLLERR)))
+            if (net_pump(&c)) dirty = 1;
 
         if (noti >= 0 && (pfd[noti].revents & POLLIN)) {
             char buf[4096];
@@ -1155,8 +1177,26 @@ int main(int argc, char **argv)
                          * is the way out, and a way out that can be
                          * covered by whatever is on screen is not one. */
                         int taken = 0;
+                        int was_net = c.net_open;
                         if (ev.value) taken = foot_click(&c, c.mouse_x, c.mouse_y);
-                        else if (c.foot_hover >= 0 || c.help_open) taken = 1;
+                        else if (c.foot_hover >= 0 || c.help_open ||
+                                 c.net_open) taken = 1;
+                        /* foot.c toggles the flag and knows nothing
+                         * else about the network; the work of opening
+                         * and closing is net.c's, and it happens here
+                         * so that the band stays linkable on its own. */
+                        if (c.net_open != was_net) {
+                            if (c.net_open) net_opened(&c);
+                            else            net_closed(&c);
+                        }
+
+                        /* The wifi panel covers the desktop while it is
+                         * up, so it answers before the desktop does --
+                         * for the same reason the band answers before
+                         * it. */
+                        if (!taken && ev.value)
+                            taken = net_click(&c, c.mouse_x, c.mouse_y);
+                        else if (!taken && c.net_open) taken = 1;
 
                         /* A click that lands on an application's own
                          * pixels is that application's. Letting the
@@ -1206,6 +1246,18 @@ int main(int argc, char **argv)
                             aurwl_key_utf8(c.wl, ev.code, c.key_text,
                                            sizeof c.key_text);
 
+                        /* With the wifi panel up the keyboard is its
+                         * own: she is typing a password, and every
+                         * character of it also reaching the desktop --
+                         * or the application behind it -- would be both
+                         * wrong and a leak. */
+                        if (c.net_open) {
+                            if (ev.value) net_key(&c, ev.code);
+                            c.key_text[0] = 0;
+                            dirty = 1;
+                            continue;
+                        }
+
                         int consumed = 0;
                         if (!super_down)
                             consumed = session_key(&c, ev.code, ev.value != 0);
@@ -1224,11 +1276,13 @@ int main(int argc, char **argv)
                 continue;
             }
             foot_motion(&c, c.mouse_x, c.mouse_y);
+            net_motion(&c, c.mouse_x, c.mouse_y);
             session_motion(&c, c.mouse_x, c.mouse_y);
             if (L->motion) L->motion(&c, c.mouse_x, c.mouse_y);
         }
     }
 
+    net_fini();
     if (c.wl) aurwl_destroy(c.wl);
     for (int i = 0; i < in.n; i++) { ioctl(in.fd[i], EVIOCGRAB, 0); close(in.fd[i]); }
     if (in.notify_fd >= 0) close(in.notify_fd);

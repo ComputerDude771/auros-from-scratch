@@ -40,17 +40,19 @@
 #define SCALE_MAX   2.00f
 #define SCALE_STEP  0.15f
 
-enum { B_HELP, B_SMALLER, B_BIGGER, B_POWER, B_N };
+enum { B_HELP, B_NET, B_SMALLER, B_BIGGER, B_POWER, B_N };
 
-static const char *LABEL[B_N] = { "Help", "Smaller", "Bigger", "Turn off" };
+static const char *LABEL[B_N] = { "Help", "Internet", "Smaller", "Bigger",
+                                  "Turn off" };
 
 /* ── where the buttons are ──────────────────────────────────────────
  *
- * ONE function, called by painting and by hit-testing, per
- * docs/SHELLS.md. Returns how many buttons this machine actually has --
- * a build that forbids changing settings has no size controls, and a
- * kiosk has no way to turn the machine off.
+ * ONE function, called by painting, by hit-testing and by
+ * tools/targets.c, per docs/SHELLS.md. Returns how many buttons this
+ * machine actually has.
  */
+#define FOOT_GAP 6
+
 int foot_buttons(const shell_ctx *c, int sw, int sh, rect *out, int *which)
 {
     int h = foot_height(c);
@@ -58,34 +60,54 @@ int foot_buttons(const shell_ctx *c, int sw, int sh, rect *out, int *which)
     int top = sh - h;
     int pad = FOOT_PAD;
 
+    /* Which buttons this machine has at all. A build that forbids
+     * changing settings has no size controls; a kiosk has neither a way
+     * to turn the machine off nor a network of its own to choose, since
+     * an administrator sets a kiosk's network and a public terminal
+     * whose users can point it at any nearby wifi is a different
+     * product. */
+    int left[FOOT_MAX], right[FOOT_MAX], nl = 0, nr = 0;
+    left[nl++] = B_HELP;
+    if (!c->kiosk && c->allow_network) left[nl++] = B_NET;
+    if (!c->kiosk) right[nr++] = B_POWER;
+    if (c->allow_settings) { right[nr++] = B_BIGGER; right[nr++] = B_SMALLER; }
+
+    int n_all = nl + nr;
+    if (n_all <= 0) return 0;
+
     /* Width follows the type, so the band stays proportionate when she
-     * makes everything bigger. */
+     * makes everything bigger -- but never past what the screen can
+     * hold. The cap used to be a flat sw/5, which was right for four
+     * buttons and silently wrong for five: at the smallest panel and
+     * the largest type the row ran off the edge. Deriving it from how
+     * many buttons there actually are is the same rule stated once. */
     int bw = (int)(96.f * (c->text_scale < 1.f ? 1.f : c->text_scale));
-    if (bw < FOOT_TARGET) bw = FOOT_TARGET;
-    if (bw > sw / 5) bw = sw / 5;
+    int room = sw - 2 * pad - (n_all - 1) * FOOT_GAP;
+    int fit  = room / n_all;
+    if (bw > fit) bw = fit;
+    if (bw < FOOT_TARGET) bw = FOOT_TARGET;   /* rule 4 wins over fitting;
+                                               * targets.c is what says so */
     int bh = h - 2 * pad;
     if (bh < FOOT_TARGET) bh = FOOT_TARGET;
     if (bh > h) bh = h;
+    int by = top + (h - bh) / 2;
 
     int n = 0;
-    /* Help on the left, flush to the corner. A corner cannot be
+    /* The left group starts flush in the corner. A corner cannot be
      * overshot by a hand that is not steady. */
-    out[n] = (rect){ pad, top + (h - bh) / 2, bw, bh };
-    which[n] = B_HELP; n++;
-
-    /* The rest on the right, in the order she would reach for them. */
-    int x = sw - pad - bw;
-    if (!c->kiosk) {
-        out[n] = (rect){ x, top + (h - bh) / 2, bw, bh };
-        which[n] = B_POWER; n++;
-        x -= bw + 6;
+    int x = pad;
+    for (int i = 0; i < nl; i++) {
+        out[n] = (rect){ x, by, bw, bh };
+        which[n] = left[i]; n++;
+        x += bw + FOOT_GAP;
     }
-    if (c->allow_settings) {
-        out[n] = (rect){ x, top + (h - bh) / 2, bw, bh };
-        which[n] = B_BIGGER; n++;
-        x -= bw + 6;
-        out[n] = (rect){ x, top + (h - bh) / 2, bw, bh };
-        which[n] = B_SMALLER; n++;
+    /* The right group runs inward from the other corner, in the order
+     * she would reach for them. */
+    x = sw - pad - bw;
+    for (int i = 0; i < nr; i++) {
+        out[n] = (rect){ x, by, bw, bh };
+        which[n] = right[i]; n++;
+        x -= bw + FOOT_GAP;
     }
     return n;
 }
@@ -180,6 +202,8 @@ void foot_paint(shell_ctx *c, surface *s, shell_fonts *f)
                 "Smaller and Bigger change the size of the words everywhere.",
                 "If the screen has become hard to read, press Smaller.",
                 "",
+                "Internet shows the wifi in range, so you can join yours.",
+                "",
                 "Turn off shuts the computer down properly.",
                 "",
                 "Press Help again to close this.",
@@ -205,22 +229,41 @@ void foot_paint(shell_ctx *c, surface *s, shell_fonts *f)
         paint_button(s, f, r[i], LABEL[which[i]], c->foot_hover == which[i], px);
 
     /* What the size is now, so pressing Smaller twice is not a guess.
-     * Only when it is not the size it came at. */
+     * Only when it is not the size it came at.
+     *
+     * It goes in whatever gap is left between the left-hand buttons
+     * and the right-hand ones, and it is not drawn at all when there
+     * is no gap. The first version put it at a fixed offset from the
+     * FIRST button, which was right while Help was alone on the left;
+     * the moment Internet joined it, the note, the button and the word
+     * Smaller were all painted through each other -- illegible, in the
+     * one strip of this product that exists to still work when
+     * everything else has stopped being legible. */
+    const char *note = NULL;
+    char msg[48];
     if (c->allow_settings && c->text_scale > 1.01f) {
-        font *ft = f->small ? f->small : f->mid;
-        if (ft) {
-            char msg[48];
-            snprintf(msg, sizeof msg, "Words are %d%% bigger",
-                     (int)((c->text_scale - 1.f) * 100.f + 0.5f));
-            shell_text(s, ft, (float)(r[0].x + r[0].w + 18),
-                       shell_baseline(ft, (float)top, (float)h), msg, FOOT_DIM, 0.85f);
-        }
+        snprintf(msg, sizeof msg, "Words are %d%% bigger",
+                 (int)((c->text_scale - 1.f) * 100.f + 0.5f));
+        note = msg;
     } else if (c->allow_settings && c->text_scale < 0.99f) {
+        note = "Words are smaller than usual";
+    }
+    if (note && n > 0) {
         font *ft = f->small ? f->small : f->mid;
-        if (ft)
-            shell_text(s, ft, (float)(r[0].x + r[0].w + 18),
-                       shell_baseline(ft, (float)top, (float)h),
-                       "Words are smaller than usual", FOOT_DIM, 0.85f);
+        /* The gap is between the rightmost thing on the left and the
+         * leftmost thing on the right, whatever those turn out to be. */
+        int left_end = 0, right_start = s->w;
+        for (int i = 0; i < n; i++) {
+            int mid = r[i].x + r[i].w / 2;
+            if (mid < s->w / 2) {
+                if (r[i].x + r[i].w > left_end) left_end = r[i].x + r[i].w;
+            } else if (r[i].x < right_start) right_start = r[i].x;
+        }
+        int room = right_start - left_end - 2 * FOOT_GAP;
+        if (ft && room > 60)
+            shell_text_elided(s, ft, (float)(left_end + FOOT_GAP),
+                              shell_baseline(ft, (float)top, (float)h),
+                              (float)room, note, FOOT_DIM, 0.85f);
     }
 }
 
@@ -250,6 +293,11 @@ int foot_click(shell_ctx *c, int x, int y)
         switch (which[i]) {
         case B_HELP:
             c->help_open = !c->help_open;
+            if (c->help_open) c->net_open = 0;
+            return 1;
+        case B_NET:
+            c->net_open = !c->net_open;
+            if (c->net_open) c->help_open = 0;
             return 1;
         case B_SMALLER:
             c->text_scale -= SCALE_STEP;
