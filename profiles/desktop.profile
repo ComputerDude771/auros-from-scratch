@@ -34,6 +34,23 @@ os_codename="Nocturne"
 theme="nocturne"
 wallpaper_style=""        # empty = whatever the theme says
 
+# ── How the computer works (docs/SHELLS.md) ────────────────────────
+# The single most consequential line in this file. It decides how a
+# person reaches a different thing, which is what actually makes a
+# computer feel easy or hostile. Colours are cosmetic next to it.
+#
+#   rail       everything open sits in a row; nothing can hide
+#   tiles      a page of big buttons; one thing fills the screen
+#   locked     only the apps the owner chose; nothing else exists
+#   taskbar    a bar of open windows along the bottom; they overlap
+#   dock       favourites always in the same place along the edge
+#   workbench  windows divide the screen; keyboard-driven
+#
+# All six are built into every image. This picks the default; a user
+# can try another with `aurshell --shell`, and an administrator pins
+# it by leaving allow_settings_change="no".
+shell_archetype="rail"
+
 # ── Locale ─────────────────────────────────────────────────────────
 locale="en_US.UTF-8"
 extra_locales=""          # e.g. "fr_FR.UTF-8 zh_CN.UTF-8"

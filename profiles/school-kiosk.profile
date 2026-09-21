@@ -9,6 +9,7 @@ profile_description="Locked to a single browser. No installs, no settings, no co
 
 brand_name="Lincoln High Chromebook Replacement"
 theme="sandstone"
+shell_archetype="locked"
 
 packages_apps="firefox"
 packages_extra="cups-client"

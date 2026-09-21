@@ -1,13 +1,15 @@
 /* ═══════════════════════════════════════════════════════════════════
  *  aurshell — the AurOS desktop shell
  *
- *  Paints directly to a DRM/KMS scanout buffer. Every colour, radius,
- *  gap and font comes from /etc/auros/shell.conf, which aurora
- *  regenerates from the active theme, so a reskin needs no rebuild --
- *  the shell re-reads the file on SIGHUP and repaints.
+ *  Paints directly to a DRM/KMS scanout buffer. No X11, no Wayland
+ *  compositor, no Mesa anywhere in this path.
  *
- *  Input is read straight from evdev. There is no X11, no Wayland
- *  compositor and no Mesa anywhere in this path.
+ *  This file owns the machinery only: the display, input, the frame
+ *  loop and the theme. WHAT is drawn belongs entirely to the selected
+ *  archetype (one file per layout under src/aurshell/layouts),
+ *  chosen by a .shell file. That separation is the product: shipping
+ *  a differently-behaving desktop is picking a different .shell, not
+ *  writing code.
  * ═══════════════════════════════════════════════════════════════════ */
 #define _GNU_SOURCE
 #include <stdio.h>
@@ -20,309 +22,288 @@
 #include <time.h>
 #include <signal.h>
 #include <poll.h>
+#include <sys/ioctl.h>
 #include <linux/input.h>
 
-#include "draw.h"
+#include "shell.h"
 #include "kms.h"
-#include "../common/theme.h"
 #include "../common/wall.h"
-#include "../common/font.h"
 #include "../common/png.h"
 
-#define MAX_KBD 8
+#define MAX_INPUT_DEV 16
 
 static volatile sig_atomic_t want_reload = 0;
 static volatile sig_atomic_t want_quit   = 0;
 static void on_hup(int s)  { (void)s; want_reload = 1; }
 static void on_term(int s) { (void)s; want_quit = 1; }
 
-/* ── the shell's view of the theme ───────────────────────────────── */
-typedef struct {
-    theme_t  t;
-    int      bar_h, radius, radius_sm, gap, margin, padding, border;
-    int      blur_r, shadow_r, font_size, font_size_sm, font_size_lg;
-    float    panel_a, shadow_a;
-    uint32_t bg, bg_alt, surface_c, surface_hi, overlay, muted, subtle, fg, fg_hi;
-    uint32_t accent, accent_alt, accent_warm, err;
-    char     brand[64];
-    char     font_sans[256], font_mono[256];
-} shell_theme;
-
-static void load_theme(shell_theme *s, const char *conf)
-{
-    memset(&s->t, 0, sizeof s->t);
-    if (theme_load(&s->t, conf) < 0)
-        fprintf(stderr, "aurshell: no %s — falling back to built-in defaults\n", conf);
-
-    theme_t *t = &s->t;
-    s->bar_h     = theme_int(t, "bar_height", 38);
-    s->radius    = theme_int(t, "radius", 14);
-    s->radius_sm = theme_int(t, "radius_sm", 8);
-    s->gap       = theme_int(t, "gap", 12);
-    s->margin    = theme_int(t, "margin", 14);
-    s->padding   = theme_int(t, "padding", 14);
-    s->border    = theme_int(t, "border", 2);
-    s->blur_r    = theme_int(t, "blur_radius", 20);
-    s->shadow_r  = theme_int(t, "shadow_radius", 28);
-    s->font_size = theme_int(t, "font_size", 14);
-    s->font_size_sm = theme_int(t, "font_size_sm", 12);
-    s->font_size_lg = theme_int(t, "font_size_lg", 19);
-    s->panel_a   = (float)theme_num(t, "opacity_panel", 0.88);
-    s->shadow_a  = (float)theme_num(t, "shadow_opacity", 0.50);
-
-    s->bg        = theme_color(t, "col_bg",         theme_color(t, "bg", 0x0B0E14));
-    s->bg_alt    = theme_color(t, "col_bar_bg",     theme_color(t, "bg_alt", 0x10151F));
-    s->surface_c = theme_color(t, "col_surface",    theme_color(t, "surface", 0x161C28));
-    s->surface_hi= theme_color(t, "col_surface_hi", theme_color(t, "surface_hi", 0x1F2735));
-    s->overlay   = theme_color(t, "col_overlay",    theme_color(t, "overlay", 0x2B3542));
-    s->muted     = theme_color(t, "col_muted",      theme_color(t, "muted", 0x55606E));
-    s->subtle    = theme_color(t, "col_subtle",     theme_color(t, "subtle", 0x8793A4));
-    s->fg        = theme_color(t, "col_fg",         theme_color(t, "fg", 0xD4DCEA));
-    s->fg_hi     = theme_color(t, "col_fg_hi",      theme_color(t, "fg_hi", 0xF3F7FD));
-    s->accent    = theme_color(t, "col_accent",     theme_color(t, "accent", 0x7DD3C0));
-    s->accent_alt= theme_color(t, "col_accent_alt", theme_color(t, "accent_alt", 0xA78BFA));
-    s->accent_warm=theme_color(t, "col_accent_warm",theme_color(t, "accent_warm", 0xF2B880));
-    s->err       = theme_color(t, "col_err",        theme_color(t, "err", 0xF2788D));
-
-    snprintf(s->brand, sizeof s->brand, "%s", theme_str(t, "brand_text", "AurOS"));
-    snprintf(s->font_sans, sizeof s->font_sans, "%s",
-             theme_str(t, "font_sans", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"));
-    snprintf(s->font_mono, sizeof s->font_mono, "%s",
-             theme_str(t, "font_mono", "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"));
-}
-
-/* Theme files name a family; the shell needs a path. Try the named
- * file, then the usual places, then anything at all -- a desktop with
- * the wrong font is recoverable, a desktop with no text is not. */
+/* ── fonts ───────────────────────────────────────────────────────── */
 static font *open_font(const char *named, float px)
 {
     if (named && named[0] == '/') {
         font *f = font_load(named, px);
         if (f) return f;
     }
-    static const char *fallbacks[] = {
+    /* A desktop with the wrong font is recoverable; one with no text is
+     * not, so fall through every plausible location before giving up. */
+    static const char *fb[] = {
         "/usr/share/auros/fonts/Inter.ttf",
+        "/usr/share/fonts/opentype/inter/Inter-Regular.otf",
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
         "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
-        "/usr/share/fonts/TTF/DejaVuSans.ttf",
         NULL
     };
-    for (int i = 0; fallbacks[i]; i++) {
-        font *f = font_load(fallbacks[i], px);
+    for (int i = 0; fb[i]; i++) {
+        font *f = font_load(fb[i], px);
         if (f) return f;
     }
     return NULL;
 }
 
-/* ── evdev keyboards ─────────────────────────────────────────────── */
-typedef struct { int fd[MAX_KBD]; int n; } kbd_set;
-
-static int looks_like_keyboard(int fd)
+static void load_fonts(shell_fonts *f, const shell_ctx *c)
 {
-    unsigned long evbits = 0, keybits[(KEY_MAX/(8*sizeof(long)))+1];
-    if (ioctl(fd, EVIOCGBIT(0, sizeof evbits), &evbits) < 0) return 0;
-    if (!(evbits & (1u << EV_KEY))) return 0;
-    memset(keybits, 0, sizeof keybits);
-    if (ioctl(fd, EVIOCGBIT(EV_KEY, sizeof keybits), keybits) < 0) return 0;
-    /* Require a few letter keys: mice and lid switches also report
-     * EV_KEY, and grabbing those instead of the keyboard is a classic
-     * "the desktop ignores my typing" bug. */
-    int hits = 0;
-    for (int k = KEY_Q; k <= KEY_P; k++)
-        if (keybits[k / (8*sizeof(long))] & (1UL << (k % (8*sizeof(long))))) hits++;
-    return hits > 5;
+    const char *p = theme_str(&c->theme, "font_sans", "");
+    int base = theme_int(&c->theme, "font_size", 14);
+    f->huge  = open_font(p, (float)base * 2.6f);
+    f->big   = open_font(p, (float)base * 1.7f);
+    f->mid   = open_font(p, (float)base * 1.2f);
+    f->small = open_font(p, (float)base);
+}
+static void free_fonts(shell_fonts *f)
+{
+    if (f->huge) font_free(f->huge);
+    if (f->big) font_free(f->big);
+    if (f->mid) font_free(f->mid);
+    if (f->small) font_free(f->small);
+    memset(f, 0, sizeof *f);
 }
 
-static void kbd_open_all(kbd_set *ks)
+/* ── input ───────────────────────────────────────────────────────────
+ * Keyboards and pointers are told apart by the events they advertise.
+ * Mice and lid switches also report EV_KEY, so a keyboard must show a
+ * spread of letter keys; a pointer must show relative or absolute axes.
+ * Grabbing the wrong device is how a desktop ends up ignoring the mouse
+ * -- which is exactly the state this shell was in until now. */
+typedef struct { int fd[MAX_INPUT_DEV]; int kind[MAX_INPUT_DEV]; int n; } input_set;
+enum { DEV_KBD = 1, DEV_REL = 2, DEV_ABS = 3 };
+
+static int has_bit(const unsigned long *b, int bit)
+{ return (b[bit / (8 * sizeof(long))] >> (bit % (8 * sizeof(long)))) & 1; }
+
+static int classify(int fd)
 {
-    ks->n = 0;
+    unsigned long ev = 0;
+    if (ioctl(fd, EVIOCGBIT(0, sizeof ev), &ev) < 0) return 0;
+
+    if (ev & (1u << EV_REL)) {
+        unsigned long rel[(REL_MAX / (8 * sizeof(long))) + 1];
+        memset(rel, 0, sizeof rel);
+        if (ioctl(fd, EVIOCGBIT(EV_REL, sizeof rel), rel) >= 0 &&
+            has_bit(rel, REL_X) && has_bit(rel, REL_Y)) return DEV_REL;
+    }
+    if (ev & (1u << EV_ABS)) {
+        unsigned long abs_[(ABS_MAX / (8 * sizeof(long))) + 1];
+        memset(abs_, 0, sizeof abs_);
+        if (ioctl(fd, EVIOCGBIT(EV_ABS, sizeof abs_), abs_) >= 0 &&
+            has_bit(abs_, ABS_X) && has_bit(abs_, ABS_Y)) return DEV_ABS;
+    }
+    if (ev & (1u << EV_KEY)) {
+        unsigned long key[(KEY_MAX / (8 * sizeof(long))) + 1];
+        memset(key, 0, sizeof key);
+        if (ioctl(fd, EVIOCGBIT(EV_KEY, sizeof key), key) < 0) return 0;
+        int hits = 0;
+        for (int k = KEY_Q; k <= KEY_P; k++) if (has_bit(key, k)) hits++;
+        if (hits > 5) return DEV_KBD;
+    }
+    return 0;
+}
+
+static void input_open_all(input_set *s)
+{
+    s->n = 0;
     DIR *d = opendir("/dev/input");
     if (!d) return;
     struct dirent *e;
-    while ((e = readdir(d)) && ks->n < MAX_KBD) {
+    while ((e = readdir(d)) && s->n < MAX_INPUT_DEV) {
         if (strncmp(e->d_name, "event", 5) != 0) continue;
         char p[288];
         snprintf(p, sizeof p, "/dev/input/%s", e->d_name);
         int fd = open(p, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
         if (fd < 0) continue;
-        if (looks_like_keyboard(fd)) ks->fd[ks->n++] = fd;
+        int k = classify(fd);
+        if (k) { s->fd[s->n] = fd; s->kind[s->n] = k; s->n++; }
         else close(fd);
     }
     closedir(d);
 }
 
-/* ── painting ────────────────────────────────────────────────────── */
-static void paint_bar(surface *s, shell_theme *th, font *fs, font *fsm,
-                      int nworkspaces, int active_ws)
+/* Absolute devices report in their own units; scale to the screen. */
+static void abs_range(int fd, int axis, int *lo, int *hi)
 {
-    rect bar = { th->margin, th->margin, s->w - th->margin*2, th->bar_h };
-    corners rc = corners_all((float)th->radius);
+    struct input_absinfo ai;
+    *lo = 0; *hi = 0;
+    if (ioctl(fd, EVIOCGABS(axis), &ai) == 0 && ai.maximum > ai.minimum)
+        { *lo = ai.minimum; *hi = ai.maximum; }
+}
 
-    draw_round_rect_shadow(s, bar, rc, (float)th->shadow_r * 0.7f, 0x000000,
-                           th->shadow_a * 0.75f, 6);
-    draw_blur_region(s, bar, th->blur_r);
-    draw_round_rect(s, bar, rc, th->bg_alt, th->panel_a);
-    draw_round_rect_border(s, bar, rc, 1.f, th->overlay, 0.75f);
-
-    int cy = bar.y + th->bar_h / 2;
-    draw_circle(s, (float)(bar.x + th->padding + 6), (float)cy, 6.f, th->accent, 1.f);
-
-    int x = bar.x + th->padding + 26;
-    if (fs) {
-        float baseline = (float)cy + font_ascent(fs) * 0.5f - font_descent(fs) * 0.5f;
-        font_draw(fs, s->px, s->w, s->h, (float)x, baseline, th->brand, th->fg_hi, 0.95f);
-        x += (int)font_text_width(fs, th->brand) + 22;
-    }
-
-    /* Workspace pills: the active one is a wide capsule, so which
-     * workspace you are on is legible at a glance and in peripheral
-     * vision, without reading a number. */
-    for (int i = 0; i < nworkspaces; i++) {
-        int pw = (i == active_ws) ? 26 : 10;
-        rect pill = { x, cy - 5, pw, 10 };
-        draw_round_rect(s, pill, corners_all(5.f),
-                        i == active_ws ? th->accent : th->muted,
-                        i == active_ws ? 1.f : 0.45f);
-        x += pw + 8;
-    }
-
-    /* Clock, right-aligned. */
-    time_t now = time(NULL);
-    struct tm tmv;
-    localtime_r(&now, &tmv);
-    char clock[32], date[48];
-    strftime(clock, sizeof clock, "%H:%M", &tmv);
-    strftime(date,  sizeof date,  "%a %d %b", &tmv);
-
-    int rx = bar.x + bar.w - th->padding;
-    if (fs) {
-        float bl = (float)cy + font_ascent(fs) * 0.5f - font_descent(fs) * 0.5f;
-        float cw = font_text_width(fs, clock);
-        font_draw(fs, s->px, s->w, s->h, (float)rx - cw, bl, clock, th->fg_hi, 0.95f);
-        rx -= (int)cw + 16;
-        if (fsm) {
-            float dw = font_text_width(fsm, date);
-            font_draw(fsm, s->px, s->w, s->h, (float)rx - dw, bl, date, th->subtle, 0.8f);
-            rx -= (int)dw + 18;
+/* ── software cursor ─────────────────────────────────────────────────
+ * Drawn by us because there is no compositor to do it. The dark outline
+ * is not decoration: without it the pointer vanishes over a pale
+ * wallpaper on a light theme, and a pointer you cannot find is the
+ * fastest way to make someone believe the machine has frozen. */
+static void paint_cursor(surface *s, int x, int y, uint32_t fill, uint32_t edge)
+{
+    if (x < 0 || y < 0) return;
+    static const char *glyph[] = {
+        "X.........",
+        "XX........",
+        "X#X.......",
+        "X##X......",
+        "X###X.....",
+        "X####X....",
+        "X#####X...",
+        "X######X..",
+        "X#######X.",
+        "X####XXXXX",
+        "X##X#X....",
+        "X#X.X#X...",
+        "XX..X#X...",
+        "X....X#X..",
+        ".....XXX..",
+    };
+    for (int r = 0; r < 15; r++)
+        for (int c = 0; glyph[r][c]; c++) {
+            char g = glyph[r][c];
+            if (g == '.') continue;
+            draw_blend_px(s, x + c, y + r, g == '#' ? fill : edge, 1.f);
         }
-    }
-    for (int i = 0; i < 3; i++) {
-        uint32_t c = (i == 0) ? th->accent : (i == 1) ? th->accent_warm : th->subtle;
-        draw_circle(s, (float)(rx - i*20), (float)cy, 5.f, c, 0.8f);
+}
+
+/* ── a starter set of things the machine can do ──────────────────── */
+static void seed_apps(shell_ctx *c)
+{
+    const struct { const char *id, *name, *hint; shell_icon ic; uint32_t t; int pin; } A[] = {
+      { "web",   "Internet",   "Browse the web",        ICON_GLOBE,    0x7DD3C0, 1 },
+      { "mail",  "Email",      "Read your messages",    ICON_MAIL,     0x82AAFF, 1 },
+      { "photo", "Photos",     "Pictures and videos",   ICON_PHOTOS,   0xA78BFA, 1 },
+      { "files", "My Files",   "Documents you saved",   ICON_FILES,    0xF2B880, 1 },
+      { "write", "Writing",    "Letters and notes",     ICON_TEXT,     0x6FD8DC, 0 },
+      { "music", "Music",      "Songs and radio",       ICON_MUSIC,    0xF2788D, 0 },
+      { "calc",  "Calculator", "Do sums",               ICON_CALC,     0x9BE8D8, 0 },
+      { "set",   "Settings",   "Change how this works", ICON_SETTINGS, 0x8793A4, 1 },
+      { "help",  "Help",       "Show me how",           ICON_HELP,     0x6FD8DC, 0 },
+    };
+    c->n_apps = (int)(sizeof A / sizeof A[0]);
+    for (int i = 0; i < c->n_apps; i++) {
+        snprintf(c->apps[i].id,   sizeof c->apps[i].id,   "%s", A[i].id);
+        snprintf(c->apps[i].name, sizeof c->apps[i].name, "%s", A[i].name);
+        snprintf(c->apps[i].hint, sizeof c->apps[i].hint, "%s", A[i].hint);
+        c->apps[i].icon = A[i].ic;
+        c->apps[i].tint = A[i].t;
+        c->apps[i].pinned = A[i].pin;
     }
 }
 
-typedef struct { const char *name; const char *hint; } palette_item;
-
-static void paint_palette(surface *s, shell_theme *th, font *fs, font *fsm,
-                          const char *query, const palette_item *items, int n, int sel)
+static void build_wallpaper(surface **wall, int w, int h, const theme_t *t)
 {
-    int pw = s->w * 42 / 100; if (pw < 460) pw = 460; if (pw > 760) pw = 760;
-    int rowh = 46;
-    int ph = th->padding * 2 + 44 + 10 + n * rowh;
-    rect pal = { (s->w - pw)/2, (s->h - ph)/2 - 40, pw, ph };
-    corners rc = corners_all((float)th->radius);
+    if (*wall) surface_free(*wall);
+    *wall = surface_new(w, h);
+    if (!*wall) return;
+    uint32_t *tmp = malloc((size_t)w * h * sizeof *tmp);
+    if (!tmp) return;
+    wall_render(tmp, w, h, t);
+    for (int i = 0; i < w * h; i++) (*wall)->px[i] = 0xFF000000u | tmp[i];
+    free(tmp);
+}
 
-    draw_round_rect_shadow(s, pal, rc, (float)th->shadow_r * 1.6f, 0x000000, th->shadow_a, 18);
-    draw_blur_region(s, pal, th->blur_r + 8);
-    draw_round_rect(s, pal, rc, th->surface_c, 0.94f);
-    draw_round_rect_border(s, pal, rc, 1.f, th->overlay, 0.9f);
-
-    rect inp = { pal.x + th->padding, pal.y + th->padding, pal.w - th->padding*2, 44 };
-    draw_round_rect(s, inp, corners_all((float)th->radius_sm), th->bg, 0.9f);
-    draw_round_rect_border(s, inp, corners_all((float)th->radius_sm), 1.f, th->accent, 0.55f);
-    draw_circle(s, (float)(inp.x + 20), (float)(inp.y + 22), 7.f, th->subtle, 0.75f);
-
-    if (fs) {
-        float bl = (float)(inp.y + 22) + font_ascent(fs)*0.5f - font_descent(fs)*0.5f;
-        const char *shown = (query && *query) ? query : "Type a command…";
-        font_draw(fs, s->px, s->w, s->h, (float)(inp.x + 38), bl, shown,
-                  (query && *query) ? th->fg_hi : th->muted, (query && *query) ? 0.95f : 0.7f);
-        if (query && *query) {
-            float qw = font_text_width(fs, query);
-            draw_round_rect(s, (rect){ inp.x + 38 + (int)qw + 3, inp.y + 13, 2, 18 },
-                            corners_all(1.f), th->accent, 0.95f);
-        }
-    }
-
-    for (int i = 0; i < n; i++) {
-        rect row = { pal.x + th->padding, pal.y + th->padding + 44 + 10 + i*rowh,
-                     pal.w - th->padding*2, rowh - 6 };
-        if (i == sel) {
-            draw_round_rect(s, row, corners_all((float)th->radius_sm), th->surface_hi, 1.f);
-            draw_round_rect(s, (rect){ row.x, row.y + 8, 3, row.h - 16 },
-                            corners_all(1.5f), th->accent, 1.f);
-        }
-        draw_round_rect(s, (rect){ row.x + 14, row.y + (row.h-18)/2, 18, 18 }, corners_all(5.f),
-                        i == sel ? th->accent : th->muted, i == sel ? 0.95f : 0.5f);
-        if (fs) {
-            float bl = (float)(row.y + row.h/2) + font_ascent(fs)*0.5f - font_descent(fs)*0.5f;
-            font_draw(fs, s->px, s->w, s->h, (float)(row.x + 44), bl, items[i].name,
-                      i == sel ? th->fg_hi : th->fg, i == sel ? 0.95f : 0.72f);
-            if (fsm && items[i].hint) {
-                float hw = font_text_width(fsm, items[i].hint);
-                font_draw(fsm, s->px, s->w, s->h, (float)(row.x + row.w - 14 - hw), bl,
-                          items[i].hint, th->muted, 0.6f);
-            }
-        }
-    }
+static void load_policy(shell_ctx *c, const char *path)
+{
+    theme_t p = {0};
+    c->allow_install = c->allow_settings = c->allow_theme_change = 1;
+    c->kiosk = 0;
+    if (theme_load(&p, path) < 0) return;
+    c->allow_install      = strcmp(theme_str(&p, "allow_user_install",    "yes"), "no") != 0;
+    c->allow_settings     = strcmp(theme_str(&p, "allow_settings_change", "yes"), "no") != 0;
+    c->allow_theme_change = strcmp(theme_str(&p, "allow_theme_change",    "yes"), "no") != 0;
+    c->kiosk              = strcmp(theme_str(&p, "kiosk_mode",            "no"),  "yes") == 0;
 }
 
 int main(int argc, char **argv)
 {
-    const char *conf = "/etc/auros/shell.conf";
-    const char *card = NULL;
-    const char *png_out = NULL;
-    int once = 0, png_w = 1600, png_h = 900, png_palette = 1;
+    const char *conf   = "/etc/auros/shell.conf";
+    const char *shellf = "/etc/auros/shell/active.shell";
+    const char *policy = "/etc/auros/policy.conf";
+    const char *card = NULL, *png_out = NULL;
+    int png_w = 1600, png_h = 900, nopen = 0, once = 0;
+
     for (int i = 1; i < argc; i++) {
-        if (!strcmp(argv[i], "--conf") && i+1 < argc) conf = argv[++i];
-        else if (!strcmp(argv[i], "--card") && i+1 < argc) card = argv[++i];
-        else if (!strcmp(argv[i], "--once")) once = 1;   /* paint one frame and exit */
-        /* --png renders one frame through the identical paint path and
-         * writes it out, so the shell's real output can be reviewed
-         * (and regression-checked) without a display attached. */
-        else if (!strcmp(argv[i], "--png") && i+1 < argc) png_out = argv[++i];
-        else if (!strcmp(argv[i], "--size") && i+2 < argc) { png_w = atoi(argv[++i]); png_h = atoi(argv[++i]); }
-        else if (!strcmp(argv[i], "--no-palette")) png_palette = 0;
+        if      (!strcmp(argv[i], "--conf")   && i+1 < argc) conf   = argv[++i];
+        else if (!strcmp(argv[i], "--shell")  && i+1 < argc) shellf = argv[++i];
+        else if (!strcmp(argv[i], "--policy") && i+1 < argc) policy = argv[++i];
+        else if (!strcmp(argv[i], "--card")   && i+1 < argc) card   = argv[++i];
+        else if (!strcmp(argv[i], "--png")    && i+1 < argc) png_out = argv[++i];
+        else if (!strcmp(argv[i], "--size")   && i+2 < argc) { png_w = atoi(argv[++i]); png_h = atoi(argv[++i]); }
+        else if (!strcmp(argv[i], "--open")   && i+1 < argc) nopen = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--once")) once = 1;
+        else if (!strcmp(argv[i], "--help")) {
+            fputs("aurshell [--shell FILE] [--conf FILE] [--policy FILE]\n"
+                  "         [--card /dev/dri/cardN] [--png OUT --size W H] [--once]\n", stderr);
+            return 0;
+        }
     }
 
     signal(SIGHUP,  on_hup);
     signal(SIGTERM, on_term);
     signal(SIGINT,  on_term);
 
-    shell_theme th;
-    load_theme(&th, conf);
+    theme_t t = {0};
+    if (theme_load(&t, conf) < 0)
+        fprintf(stderr, "aurshell: no %s — using built-in defaults\n", conf);
 
+    shell_ctx c;
+    memset(&c, 0, sizeof c);
+    shell_theme_load(&c, &t);
+    if (shell_archetype_load(&c, shellf) < 0) {
+        /* Rail is the safe default: it is the only archetype in which a
+         * thing cannot be hidden, so an unreadable config degrades to
+         * the shell that is hardest to get lost in. */
+        fprintf(stderr, "aurshell: no %s — defaulting to the rail archetype\n", shellf);
+        snprintf(c.layout_id, sizeof c.layout_id, "rail");
+        c.show_clock = 1;
+    }
+    load_policy(&c, policy);
+    seed_apps(&c);
+    c.mouse_x = c.mouse_y = -1;
+    c.hover = -1;
+    c.focus = -1;
+
+    for (int i = 0; i < nopen && i < SHELL_MAX_WINS; i++) {
+        c.wins[i].app = i % c.n_apps;
+        snprintf(c.wins[i].title, sizeof c.wins[i].title, "%s", c.apps[c.wins[i].app].name);
+        c.n_wins++;
+    }
+    if (c.n_wins) c.focus = 0;
+
+    const shell_layout *L = shell_layout_by_id(c.layout_id);
+    fprintf(stderr, "aurshell: archetype '%s' (%s)\n", L->id, c.shell_name);
+
+    shell_fonts f;
+    load_fonts(&f, &c);
+    if (!f.small) fprintf(stderr, "aurshell: no usable font — running without text\n");
+
+    /* ── headless: one frame to a PNG, through the identical path ── */
     if (png_out) {
-        surface *fb = surface_new(png_w, png_h);
-        if (!fb) return 1;
-        font *pf  = open_font(th.font_sans, (float)th.font_size);
-        font *pfm = open_font(th.font_sans, (float)th.font_size_sm);
-        uint32_t *tmp = malloc((size_t)png_w * png_h * sizeof *tmp);
-        if (tmp) {
-            wall_render(tmp, png_w, png_h, &th.t);
-            for (int i = 0; i < png_w * png_h; i++) fb->px[i] = 0xFF000000u | tmp[i];
-            free(tmp);
-        }
-        static const palette_item pitems[] = {
-            { "Files",             "enter" },
-            { "Web Browser",       "" },
-            { "Terminal",          "ctrl+alt+t" },
-            { "Settings",          "" },
-            { "Change theme\u2026", "aurora" },
-        };
-        paint_bar(fb, &th, pf, pfm, 5, 1);
-        if (png_palette)
-            paint_palette(fb, &th, pf, pfm, "term", pitems,
-                          (int)(sizeof pitems / sizeof pitems[0]), 2);
-        uint32_t *out = malloc((size_t)png_w * png_h * sizeof *out);
-        for (int i = 0; i < png_w * png_h; i++) out[i] = fb->px[i] & 0xFFFFFFu;
-        int rc = png_write_rgb(png_out, out, png_w, png_h);
-        free(out); surface_free(fb);
-        if (pf) font_free(pf);
-        if (pfm) font_free(pfm);
-        fprintf(stderr, "aurshell: wrote %s (%dx%d, theme %s)\n", png_out, png_w, png_h,
-                theme_str(&th.t, "theme_name", "?"));
+        surface *s = surface_new(png_w, png_h), *wall = NULL;
+        build_wallpaper(&wall, png_w, png_h, &t);
+        if (L->init) L->init(&c);
+        L->paint(&c, s, &f, wall);
+        uint32_t *o = malloc((size_t)png_w * png_h * sizeof *o);
+        for (int i = 0; i < png_w * png_h; i++) o[i] = s->px[i] & 0xFFFFFFu;
+        int rc = png_write_rgb(png_out, o, png_w, png_h);
+        free(o); surface_free(s); surface_free(wall);
+        if (L->fini) L->fini(&c);
+        free_fonts(&f);
+        fprintf(stderr, "aurshell: wrote %s (%dx%d, %s)\n", png_out, png_w, png_h, L->id);
         return rc;
     }
 
@@ -331,95 +312,105 @@ int main(int argc, char **argv)
     fprintf(stderr, "aurshell: %dx%d on connector %u\n",
             disp->width, disp->height, disp->connector_id);
 
-    font *fs  = open_font(th.font_sans, (float)th.font_size);
-    font *fsm = open_font(th.font_sans, (float)th.font_size_sm);
-    if (!fs) fprintf(stderr, "aurshell: no usable font — running without text\n");
+    surface *wall = NULL;
+    build_wallpaper(&wall, disp->width, disp->height, &t);
+    if (L->init) L->init(&c);
 
-    /* The wallpaper is expensive and static, so render it once into its
-     * own surface and blit it each frame rather than regenerating. */
-    surface *wall = surface_new(disp->width, disp->height);
-    if (!wall) return 1;
-    {
-        uint32_t *tmp = malloc((size_t)disp->width * disp->height * sizeof *tmp);
-        if (tmp) {
-            wall_render(tmp, disp->width, disp->height, &th.t);
-            for (int i = 0; i < disp->width * disp->height; i++)
-                wall->px[i] = 0xFF000000u | tmp[i];
-            free(tmp);
-        }
-    }
+    input_set in;
+    input_open_all(&in);
+    int n_kbd = 0, n_ptr = 0;
+    for (int i = 0; i < in.n; i++) (in.kind[i] == DEV_KBD) ? n_kbd++ : n_ptr++;
+    fprintf(stderr, "aurshell: %d keyboard%s, %d pointer%s\n",
+            n_kbd, n_kbd == 1 ? "" : "s", n_ptr, n_ptr == 1 ? "" : "s");
 
-    kbd_set ks; kbd_open_all(&ks);
-    fprintf(stderr, "aurshell: %d keyboard%s\n", ks.n, ks.n == 1 ? "" : "s");
+    /* Start the pointer centred so it is findable on the first frame. */
+    c.mouse_x = disp->width / 2;
+    c.mouse_y = disp->height / 2;
 
-    static const palette_item items[] = {
-        { "Files",              "enter" },
-        { "Web Browser",        "" },
-        { "Terminal",           "ctrl+alt+t" },
-        { "Settings",           "" },
-        { "Change theme…",      "aurora" },
-    };
-    const int nitems = (int)(sizeof items / sizeof items[0]);
+    uint32_t cur_fill = theme_color(&t, "col_fg_hi", 0xF3F7FD);
+    uint32_t cur_edge = theme_color(&t, "col_bg",    0x0B0E14);
 
-    int palette_open = once ? 1 : 0;
-    int sel = 0, active_ws = 1;
-    char query[128] = "";
+    struct timespec last;
+    clock_gettime(CLOCK_MONOTONIC, &last);
 
     while (!want_quit) {
         if (want_reload) {
             want_reload = 0;
-            load_theme(&th, conf);
-            if (fs) { font_free(fs); fs = open_font(th.font_sans, (float)th.font_size); }
-            if (fsm){ font_free(fsm); fsm = open_font(th.font_sans, (float)th.font_size_sm); }
-            uint32_t *tmp = malloc((size_t)disp->width * disp->height * sizeof *tmp);
-            if (tmp) {
-                wall_render(tmp, disp->width, disp->height, &th.t);
-                for (int i = 0; i < disp->width * disp->height; i++)
-                    wall->px[i] = 0xFF000000u | tmp[i];
-                free(tmp);
+            theme_t nt = {0};
+            if (theme_load(&nt, conf) == 0) {
+                t = nt;
+                shell_theme_load(&c, &t);
+                free_fonts(&f);
+                load_fonts(&f, &c);
+                build_wallpaper(&wall, disp->width, disp->height, &t);
+                cur_fill = theme_color(&t, "col_fg_hi", 0xF3F7FD);
+                cur_edge = theme_color(&t, "col_bg",    0x0B0E14);
+                fprintf(stderr, "aurshell: theme reloaded\n");
             }
-            fprintf(stderr, "aurshell: theme reloaded\n");
         }
 
+        struct timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        float dt = (float)(now.tv_sec - last.tv_sec)
+                 + (float)(now.tv_nsec - last.tv_nsec) / 1e9f;
+        last = now;
+        if (dt > 0.25f) dt = 0.25f;          /* a stall must not teleport */
+
+        int animating = L->step ? L->step(&c, dt) : 0;
+
         surface *fb = kms_back_surface(disp);
-        for (int y = 0; y < fb->h; y++)
-            memcpy(fb->px + (size_t)y * fb->stride, wall->px + (size_t)y * wall->w,
-                   (size_t)fb->w * sizeof *fb->px);
-
-        paint_bar(fb, &th, fs, fsm, 5, active_ws);
-        if (palette_open) paint_palette(fb, &th, fs, fsm, query, items, nitems, sel);
-
+        L->paint(&c, fb, &f, wall);
+        paint_cursor(fb, c.mouse_x, c.mouse_y, cur_fill, cur_edge);
         kms_flip(disp);
         if (once) break;
 
-        /* Idle at ~4 Hz: enough for the clock, and it leaves the CPU
-         * alone on the battery-powered old laptops this targets. */
-        struct pollfd pfd[MAX_KBD];
-        for (int i = 0; i < ks.n; i++) { pfd[i].fd = ks.fd[i]; pfd[i].events = POLLIN; }
-        int pr = poll(pfd, ks.n, 250);
-        if (pr > 0) {
-            for (int i = 0; i < ks.n; i++) {
-                if (!(pfd[i].revents & POLLIN)) continue;
-                struct input_event ev;
-                while (read(ks.fd[i], &ev, sizeof ev) == (ssize_t)sizeof ev) {
-                    if (ev.type != EV_KEY || ev.value == 0) continue;
-                    switch (ev.code) {
-                        case KEY_SPACE:  palette_open = !palette_open; sel = 0; query[0] = 0; break;
-                        case KEY_ESC:    if (palette_open) palette_open = 0; else want_quit = 1; break;
-                        case KEY_DOWN:   if (palette_open) sel = (sel + 1) % nitems; break;
-                        case KEY_UP:     if (palette_open) sel = (sel + nitems - 1) % nitems; break;
-                        case KEY_1: case KEY_2: case KEY_3: case KEY_4: case KEY_5:
-                            active_ws = ev.code - KEY_1; break;
-                        default: break;
+        /* Animating: poll briefly so the next frame is soon. Idle: wait
+         * up to a quarter second, which is enough for a clock and
+         * leaves the CPU alone on a fanless machine. */
+        struct pollfd pfd[MAX_INPUT_DEV];
+        for (int i = 0; i < in.n; i++) { pfd[i].fd = in.fd[i]; pfd[i].events = POLLIN; }
+        if (poll(pfd, in.n, animating ? 8 : 250) <= 0) continue;
+
+        for (int i = 0; i < in.n; i++) {
+            if (!(pfd[i].revents & POLLIN)) continue;
+            struct input_event ev;
+            while (read(in.fd[i], &ev, sizeof ev) == (ssize_t)sizeof ev) {
+                if (ev.type == EV_REL) {
+                    if (ev.code == REL_X) c.mouse_x += ev.value;
+                    if (ev.code == REL_Y) c.mouse_y += ev.value;
+                } else if (ev.type == EV_ABS) {
+                    int lo, hi;
+                    if (ev.code == ABS_X) {
+                        abs_range(in.fd[i], ABS_X, &lo, &hi);
+                        if (hi > lo) c.mouse_x = (int)((int64_t)(ev.value - lo) * disp->width  / (hi - lo));
+                    } else if (ev.code == ABS_Y) {
+                        abs_range(in.fd[i], ABS_Y, &lo, &hi);
+                        if (hi > lo) c.mouse_y = (int)((int64_t)(ev.value - lo) * disp->height / (hi - lo));
+                    }
+                } else if (ev.type == EV_KEY) {
+                    if (ev.code == BTN_LEFT || ev.code == BTN_TOUCH) {
+                        c.mouse_down = (ev.value != 0);
+                        /* Act on release, not press: it is the gesture
+                         * people can abort by sliding off the target. */
+                        if (!ev.value && L->click) L->click(&c, c.mouse_x, c.mouse_y);
+                    } else if (ev.value && in.kind[i] == DEV_KBD) {
+                        if (ev.code == KEY_ESC && c.kiosk) continue;  /* no escape hatch */
+                        if (L->key) L->key(&c, ev.code);
                     }
                 }
             }
         }
+
+        if (c.mouse_x < 0) c.mouse_x = 0;
+        if (c.mouse_y < 0) c.mouse_y = 0;
+        if (c.mouse_x >= disp->width)  c.mouse_x = disp->width - 1;
+        if (c.mouse_y >= disp->height) c.mouse_y = disp->height - 1;
+        if (L->motion) L->motion(&c, c.mouse_x, c.mouse_y);
     }
 
-    for (int i = 0; i < ks.n; i++) close(ks.fd[i]);
-    if (fs) font_free(fs);
-    if (fsm) font_free(fsm);
+    for (int i = 0; i < in.n; i++) close(in.fd[i]);
+    if (L->fini) L->fini(&c);
+    free_fonts(&f);
     surface_free(wall);
     kms_close(disp);
     fprintf(stderr, "aurshell: exit\n");
