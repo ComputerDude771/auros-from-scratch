@@ -133,6 +133,40 @@ browser="firefox"
 browser_source="mozilla-apt"
 browser_fallback="epiphany-browser"
 
+# ── Opening things, and getting more things ────────────────────────
+#
+# Software arrives here the way it arrives on any other Linux machine:
+# from the archive, or as a .deb downloaded from a website. There is no
+# AurOS-only walled garden, and there is no attempt to run .exe files --
+# a .exe is a Windows program and nothing on Linux runs one. What IS
+# here is the normal path, made pressable:
+#
+#   thunar     her files, in a window. Double-clicking something opens
+#              it with whatever claims that kind of file, which is what
+#              makes "make files openable" true rather than a plan.
+#   gdebi      double-click a downloaded .deb and it installs, with a
+#              screen first saying what it is. This is the closest thing
+#              Linux has to the .exe habit she has had for twenty years,
+#              and it is how Google Chrome is actually installed.
+#   ristretto  pictures      atril     PDFs
+#   mousepad   text          xarchiver zip files
+#
+# The viewers are the light ones (XFCE and MATE) rather than the GNOME
+# ones: ristretto is 8 packages where eog is 14, and this is a machine
+# from 2013.
+packages_files="thunar thunar-volman gvfs gvfs-backends udisks2
+                gdebi
+                ristretto atril mousepad xarchiver
+                shared-mime-info desktop-file-utils xdg-user-dirs"
+
+# The browse-and-install store. Heavier than everything above put
+# together -- 35 packages and a background service -- so it is a knob
+# rather than an assumption, and a build for a slow machine can drop it
+# and still install software by downloading it.
+#   gnome-software  the usual Ubuntu store, backed by packagekit
+#   none            the archive is still there; .deb files still install
+software_store="gnome-software"
+
 packages_apps=""
 
 packages_extra=""

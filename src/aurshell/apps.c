@@ -42,6 +42,7 @@ static const char *APP_DIRS[] = {
 
 typedef struct {
     char name[96], comment[160], exec[192], wmclass[64], icon[96], cats[192];
+    char only_show[160], not_show[160];
     int  no_display, hidden, terminal, is_app;
     int  name_score;         /* how well the Name= key matched our locale */
 } entry;
@@ -138,6 +139,59 @@ static FILE *open_entry(const char *path)
  * gigabyte at a time during boot. */
 #define ENTRY_MAX_BYTES  (256 * 1024)
 
+/* Is `needle` one of the semicolon-separated items in `list`? Whole
+ * item against whole item, so "Settings" does not match
+ * "DesktopSettings". */
+static int in_semi_list(const char *list, const char *needle)
+{
+    const char *p = list;
+    size_t n = strlen(needle);
+    if (!n) return 0;
+    while ((p = strstr(p, needle))) {
+        int left  = (p == list) || p[-1] == ';';
+        int right = (p[n] == ';' || p[n] == 0);
+        if (left && right) return 1;
+        p += n;
+    }
+    return 0;
+}
+
+static int has_cat(const entry *e, const char *cat)
+{ return in_semi_list(e->cats, cat); }
+
+/* Is this entry meant for THIS desktop?
+ *
+ * OnlyShowIn and NotShowIn are how an entry says "I belong in XFCE's
+ * menu, not everyone's". They were not read at all, so AurOS showed
+ * every helper every installed desktop had ever registered. The value
+ * to compare against is XDG_CURRENT_DESKTOP, which aurwl_spawn() sets
+ * to AurOS for the programs it starts -- so we compare against the same
+ * name we tell everyone else we are. */
+static int shown_here(const entry *e)
+{
+    const char *me = getenv("XDG_CURRENT_DESKTOP");
+    if (!me || !*me) me = "AurOS";
+    if (e->only_show[0] && !in_semi_list(e->only_show, me)) return 0;
+    if (e->not_show[0]  &&  in_semi_list(e->not_show,  me)) return 0;
+    return 1;
+}
+
+/* A page of a control panel, not a program.
+ *
+ * "File Manager Settings" and "Text Editor Settings" are real .desktop
+ * entries with no NoDisplay, and they were appearing on her home screen
+ * beside the browser. Every desktop filters these; the marker is a
+ * settings-dialog category, which is more precise than "Settings" alone
+ * -- a real settings APPLICATION is something she might want, a
+ * settings DIALOG belongs behind one. */
+static int is_settings_page(const entry *e)
+{
+    if (has_cat(e, "X-XFCE-SettingsDialog")) return 1;
+    if (has_cat(e, "X-GNOME-Settings-Panel")) return 1;
+    if (has_cat(e, "Settings") && has_cat(e, "DesktopSettings")) return 1;
+    return 0;
+}
+
 static int read_entry(const char *path, entry *e, const char *lang, const char *ll)
 {
     FILE *fp = open_entry(path);
@@ -192,6 +246,8 @@ static int read_entry(const char *path, entry *e, const char *lang, const char *
         else if (!strcmp(key, "Icon"))              snprintf(e->icon, sizeof e->icon, "%s", val);
         else if (!strcmp(key, "Categories"))        snprintf(e->cats, sizeof e->cats, "%s", val);
         else if (!strcmp(key, "StartupWMClass"))    snprintf(e->wmclass, sizeof e->wmclass, "%s", val);
+        else if (!strcmp(key, "OnlyShowIn"))        snprintf(e->only_show, sizeof e->only_show, "%s", val);
+        else if (!strcmp(key, "NotShowIn"))         snprintf(e->not_show,  sizeof e->not_show,  "%s", val);
         else if (!strcmp(key, "NoDisplay"))         e->no_display = !strcmp(val, "true");
         else if (!strcmp(key, "Hidden"))            e->hidden     = !strcmp(val, "true");
         else if (!strcmp(key, "Terminal"))          e->terminal   = !strcmp(val, "true");
@@ -200,6 +256,7 @@ static int read_entry(const char *path, entry *e, const char *lang, const char *
     fclose(fp);
 
     if (!e->is_app || e->hidden || e->no_display) return -1;
+    if (!shown_here(e) || is_settings_page(e)) return -1;
     if (!e->exec[0]) return -1;
     strip_field_codes(e->exec);
     if (!e->exec[0]) return -1;
@@ -298,18 +355,8 @@ static int resolve_program(const char *argv0, char *out, size_t cap)
 
 /* ── mapping an application to the shell's own vocabulary ───────── */
 
-static int has_cat(const entry *e, const char *cat)
-{
-    const char *p = e->cats;
-    size_t n = strlen(cat);
-    while ((p = strstr(p, cat))) {
-        int left  = (p == e->cats) || p[-1] == ';';
-        int right = (p[n] == ';' || p[n] == 0);
-        if (left && right) return 1;
-        p += n;
-    }
-    return 0;
-}
+/* ── mapping an application to the shell's own vocabulary ───────── */
+
 
 /* The icons are drawn from primitives, so an application is matched to
  * the nearest thing the shell can draw rather than to an icon theme we
@@ -335,14 +382,32 @@ static shell_icon icon_for(const entry *e)
 
 /* What the user reaches for first should be first. Everything else is
  * alphabetical, because any other order is one the user has to learn. */
+/* What she reaches for first should be first.
+ *
+ * Ranking matters more than it looks: within a rank the list is
+ * alphabetical, so anything left at the default floats up on its first
+ * letter. "Bulk Rename" -- a niche tool for renaming fifty files at
+ * once -- was landing on the home screen above her documents, purely
+ * because B comes early. It is not hidden; it is ranked where somebody
+ * would actually look for it. */
 static int rank_of(const entry *e)
 {
     if (has_cat(e, "WebBrowser"))                             return 0;
     if (has_cat(e, "FileManager") || has_cat(e, "FileTools")) return 1;
     if (has_cat(e, "Email"))                                  return 2;
-    if (has_cat(e, "TextEditor"))                             return 3;
-    if (has_cat(e, "Settings"))                               return 8;
-    return 5;
+    if (has_cat(e, "Office") || has_cat(e, "WordProcessor")
+     || has_cat(e, "TextEditor"))                             return 3;
+    if (has_cat(e, "Photography") || has_cat(e, "Graphics")
+     || has_cat(e, "Viewer"))                                 return 4;
+    if (has_cat(e, "AudioVideo") || has_cat(e, "Audio")
+     || has_cat(e, "Video") || has_cat(e, "Player"))          return 5;
+    if (has_cat(e, "PackageManager"))                         return 6;
+    if (has_cat(e, "Settings") || has_cat(e, "System"))        return 8;
+    if (has_cat(e, "TerminalEmulator"))                       return 9;
+    /* Utilities last but one: real, occasionally wanted, never the
+     * thing she opened the computer to do. */
+    if (has_cat(e, "Utility"))                                return 7;
+    return 6;
 }
 
 /* ── the scan ───────────────────────────────────────────────────── */

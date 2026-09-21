@@ -158,7 +158,34 @@ done
 [ "$found" -eq 0 ] && echo "  ok    every build describes itself plainly"
 checked=$((checked + 1))
 
-# ── 4. The Windows-side wizard ──────────────────────────────────────
+# ── 4. What the shipped programs are called ─────────────────────────
+#
+# The names and descriptions in the app list are the first words she
+# reads on this machine, and by default they arrive with the package,
+# written by packagers for packagers -- "Browse the filesystem with the
+# file manager", "Install and view software packages". build/forge
+# renames the handful AurOS ships; this checks the replacements, since
+# a rename that swaps one piece of jargon for another has done nothing.
+echo
+echo "what the shipped programs are called"
+found=0
+if [ -f build/forge ]; then
+    awk "/^thunar\|/,/^EOL$/" build/forge | grep -E '^[a-z0-9.]+\|' | \
+    while IFS='|' read -r desk nm cm; do
+        for v in "$nm" "$cm"; do
+            hit=$(printf '%s' "$v" | tr 'A-Z' 'a-z' | grep -oE "$PAT" | head -1)
+            [ -n "$hit" ] && printf 'HIT\t%s\t%s\t%s\n' "build/forge ($desk)" "$hit" "$v"
+        done
+    done > /tmp/plainwords.apps 2>/dev/null
+    while IFS="$(printf '\t')" read -r _ loc word lit; do
+        report "$loc" "$word" "$lit"
+    done < /tmp/plainwords.apps
+    [ -s /tmp/plainwords.apps ] && found=1
+fi
+[ "$found" -eq 0 ] && echo "  ok    every program AurOS ships is named plainly"
+checked=$((checked + 1))
+
+# ── 5. The Windows-side wizard ──────────────────────────────────────
 #
 # The highest-stakes words in the product: she reads these while
 # deciding whether to let us change her computer.
@@ -186,7 +213,7 @@ fi
 [ "$found" -eq 0 ] && echo "  ok    the installer speaks plainly"
 checked=$((checked + 1))
 
-rm -f /tmp/plainwords.shell /tmp/plainwords.wiz
+rm -f /tmp/plainwords.shell /tmp/plainwords.wiz /tmp/plainwords.apps
 
 echo
 if [ "$fail" -gt 0 ]; then

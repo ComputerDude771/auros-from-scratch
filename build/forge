@@ -105,7 +105,7 @@ EOL
 stage_packages() {
     step "stage 2/7  packages"
     chroot_prep
-    local pkgs="$packages_hardware $packages_boot $packages_base $packages_desktop $packages_apps $packages_extra"
+    local pkgs="$packages_hardware $packages_boot $packages_base $packages_desktop $packages_files $packages_apps $packages_extra"
     pkgs=$(echo "$pkgs" | tr -s ' \n' ' ')
     note "installing: $(echo "$pkgs" | wc -w) packages"
     inchroot "apt-get update -qq"
@@ -115,8 +115,128 @@ stage_packages() {
         inchroot "apt-get purge -y $packages_exclude 2>/dev/null || true"
 
     stage_browser
+    stage_store
+    stage_file_types
     inchroot "apt-get clean; rm -rf /var/lib/apt/lists/*"
     chroot_done
+}
+
+# ── the store, if this build wants one ────────────────────────────
+#
+# Optional on purpose. It is 35 packages and a background service, and
+# on a 2013 machine it is the slowest thing on the desktop. A build that
+# drops it can still install software: from the archive, and by
+# downloading a .deb and opening it, which is the path most people
+# actually use for the one program they came for.
+stage_store() {
+    case "${software_store:-none}" in
+      none|"") note "no software store in this build" ;;
+      gnome-software)
+        inchroot "apt-get install -y --no-install-recommends gnome-software packagekit" \
+            && note "gnome-software installed" \
+            || note "gnome-software would not install; .deb files still open" ;;
+      *) die "unknown software_store: $software_store" ;;
+    esac
+}
+
+# ── what opens what ───────────────────────────────────────────────
+#
+# Installing a viewer is not the same as a file opening. Every one of
+# these packages ships a .desktop that CLAIMS a set of file types, and
+# with several installed the winner is whichever the database happens
+# to rank first -- which on a fresh image is arbitrary and, for a .deb,
+# is often an archive manager that will happily show her the inside of
+# an installer she wanted to run.
+#
+# So the defaults are stated. This is the same mimeapps.list any Linux
+# distribution ships; there is nothing AurOS-specific about the
+# mechanism, only about bothering to set it.
+stage_file_types() {
+    install -d "$RFS/etc/xdg"
+    cat > "$RFS/etc/xdg/mimeapps.list" <<'EOL'
+[Default Applications]
+# A downloaded program package. gdebi says what it is and installs it;
+# an archive manager would show her the inside of it instead, which is
+# how a person ends up with a folder full of files and no program.
+application/vnd.debian.binary-package=gdebi.desktop
+
+# Pictures
+image/jpeg=org.xfce.ristretto.desktop
+image/png=org.xfce.ristretto.desktop
+image/gif=org.xfce.ristretto.desktop
+image/bmp=org.xfce.ristretto.desktop
+image/tiff=org.xfce.ristretto.desktop
+image/webp=org.xfce.ristretto.desktop
+
+# Documents she is most likely to have brought with her
+application/pdf=atril.desktop
+text/plain=org.xfce.mousepad.desktop
+text/markdown=org.xfce.mousepad.desktop
+text/csv=org.xfce.mousepad.desktop
+
+# Zip files and the rest
+application/zip=xarchiver.desktop
+application/x-tar=xarchiver.desktop
+application/gzip=xarchiver.desktop
+application/x-7z-compressed=xarchiver.desktop
+application/vnd.rar=xarchiver.desktop
+
+# Folders
+inode/directory=thunar.desktop
+EOL
+
+    # ── what these programs are CALLED ─────────────────────────────
+    #
+    # The names and one-line descriptions in the app list are the first
+    # words she reads on this machine, and by default they are written
+    # by Debian packagers for other Debian packagers:
+    #
+    #   thunar     "Browse the filesystem with the file manager"
+    #   gdebi      "Install and view software packages"
+    #   xarchiver  "Create, extract and modify archives"
+    #
+    # Every one of those uses a word docs/EASY.md rule 2 forbids, and
+    # tools/plainwords.sh cannot see them because they are not our
+    # strings -- they arrive with the package.
+    #
+    # So the handful of programs AurOS itself ships are renamed, as
+    # data rather than code: a .desktop in /usr/local/share, which the
+    # XDG search order puts ahead of /usr/share, so it survives the
+    # package being updated.
+    #
+    # Only the plain Name= and Comment= are replaced. The packagers'
+    # translations are left alone, because on a French machine their
+    # French is better than our English. That does mean this plain
+    # language is English-only until AurOS carries its own translations,
+    # which is a real limit and is written down here rather than
+    # discovered later.
+    install -d "$RFS/usr/local/share/applications"
+    while IFS='|' read -r desk nm cm; do
+        [ -n "$desk" ] || continue
+        src="$RFS/usr/share/applications/$desk.desktop"
+        [ -f "$src" ] || continue
+        sed -e "s|^Name=.*|Name=$nm|" -e "s|^Comment=.*|Comment=$cm|" \
+            "$src" > "$RFS/usr/local/share/applications/$desk.desktop"
+    done <<'EOL'
+thunar|Your files|Everything you have saved, in folders
+gdebi|Install a program you downloaded|Opens a program you have downloaded and puts it on this computer
+atril|Documents|Read PDFs and other documents
+org.xfce.ristretto|Photos|Look at your pictures
+org.xfce.mousepad|Notes|Write and read plain notes
+xarchiver|Zip files|Open a zip file, or make one
+gnome-software|Get more programs|Find and add programs to this computer
+EOL
+
+    # The database the desktop actually reads. Without this the file
+    # above is a text file nobody consults.
+    inchroot "update-desktop-database /usr/share/applications >/dev/null 2>&1" || true
+    inchroot "update-mime-database /usr/share/mime >/dev/null 2>&1" || true
+
+    # Her folders -- Documents, Pictures, Downloads -- created with the
+    # names her language uses, which is what Ferry copies into and what
+    # the file manager opens on.
+    inchroot "xdg-user-dirs-update >/dev/null 2>&1" || true
+    note "file types set: a .deb installs, a PDF opens, a folder browses"
 }
 
 # ── browser: never let a desktop ship without one, silently ───────

@@ -33,6 +33,7 @@ cc -O2 -std=gnu11 -o /tmp/targets tools/targets.c src/aurshell/foot.c \
    src/aurshell/draw.c src/aurshell/shellcommon.c src/aurshell/anim.c \
    src/aurshell/layouts/*.c src/common/theme.c src/common/font.c -lm && /tmp/targets
 
+sh tools/filetypes.sh      # needs packages_files installed on this machine
 sh tools/plainwords.sh
 
 cc -O2 -std=gnu11 -o /tmp/kiosktest tools/kiosktest.c src/aurshell/apps.c \
@@ -316,3 +317,22 @@ It only measures controls that publish their geometry -- today, the
 band. Archetype internals (dock cells, window buttons, rail rows) do
 not, so it says so in its own output rather than implying coverage it
 does not have.
+
+`filetypes.sh` checks that every kind of file opens something that
+exists. `build/forge` writes an `/etc/xdg/mimeapps.list` naming a
+`.desktop` for each file type, and if that `.desktop` does not exist the
+line does nothing at all -- silently. The file just opens with whatever
+the database happens to rank first, or with nothing.
+
+Two of the first six entries were wrong: ristretto ships
+`org.xfce.ristretto.desktop` and mousepad ships
+`org.xfce.mousepad.desktop`, not the names anybody would assume. A
+`.deb` that opens an archive manager instead of an installer is how a
+person ends up with a folder full of files and no program.
+
+It reads the table out of `build/forge` rather than keeping a second
+copy, checks each `.desktop` exists AND that its `Exec` names something
+installed, and calls out the `.deb` association on its own -- that one
+is the whole "download things like on any other Linux distro" path. It
+exits 2, rather than passing, when the packages are not installed
+locally, because an empty search is not a clean bill of health.
