@@ -26,6 +26,13 @@ say()  { printf '%s::%s %s\n' "$C_OK"  "$C_RST" "$*"; }
 step() { printf '\n%s▸%s %s\n' "$C_OK" "$C_RST" "$*"; }
 note() { printf '%s   %s%s\n' "$C_DIM" "$*" "$C_RST"; }
 die()  { printf '%s::%s %s\n' "$C_ERR" "$C_RST" "$*" >&2; exit 1; }
+# Something is wrong but the image is still worth finishing. It goes to
+# stderr so it survives a build whose output is being piped somewhere.
+#
+# This did not exist while two places already called it, under
+# `set -euo pipefail`, where an unknown command ends the build. Neither
+# branch had run yet.
+warn() { printf '%s::%s %s\n' "$C_ERR" "$C_RST" "$*" >&2; }
 
 # ── profile loading, with single-parent inheritance ────────────────
 load_profile() {
@@ -204,18 +211,50 @@ EOL
     # XDG search order puts ahead of /usr/share, so it survives the
     # package being updated.
     #
-    # Only the plain Name= and Comment= are replaced. The packagers'
-    # translations are left alone, because on a French machine their
-    # French is better than our English. That does mean this plain
-    # language is English-only until AurOS carries its own translations,
-    # which is a real limit and is written down here rather than
-    # discovered later.
+    # THE TRANSLATED NAMES HAVE TO GO WITH THE NAME.
+    #
+    # The first version of this replaced the plain Name= and Comment=
+    # and left every Name[xx]= alone, on the reasoning that on a French
+    # machine the packager's French is better than our English. The
+    # reasoning was fine; the fact was not. Name[en_US] is a
+    # "translation" too, and the XDG rule -- which src/aurshell/apps.c
+    # implements correctly -- is that an exact language-and-country
+    # match beats the plain key. So on the default en_US build, a
+    # package that ships Name[en_US] kept it, and the rename did
+    # nothing at all.
+    #
+    # It was not theoretical and it was not subtle. atril ships
+    # Name[en_US]=Atril Document Viewer, and the very first screen of a
+    # freshly booted image read "Atril Document Viewer" in a list whose
+    # other rows said "Your files" and "Photos". It was found by
+    # booting the image and looking at it, which is the only way it
+    # could have been found.
+    #
+    # So the override drops every localised Name, Comment and
+    # GenericName. A translation of a name we have just replaced is a
+    # translation of a name that no longer exists, and keeping it means
+    # the rename applies on some machines and not others -- which is
+    # worse than either consistent answer.
+    #
+    # The cost is real and belongs here rather than in a surprise: these
+    # six plain names are English until AurOS carries its own
+    # translations, so a French build shows "Photos" and "Your files"
+    # rather than the packager's French. "Photos" is a French word.
+    # "Visionneur de documents Atril" is not a name anyone uses.
     install -d "$RFS/usr/local/share/applications"
     while IFS='|' read -r desk nm cm; do
         [ -n "$desk" ] || continue
         src="$RFS/usr/share/applications/$desk.desktop"
-        [ -f "$src" ] || continue
+        # A name in this table that matches no installed .desktop is a
+        # rename that silently does nothing -- which is how gnome-software
+        # kept the packagers' words while this table claimed to have
+        # replaced them. Say so.
+        if [ ! -f "$src" ]; then
+            warn "no $desk.desktop installed, so '$nm' renames nothing"
+            continue
+        fi
         sed -e "s|^Name=.*|Name=$nm|" -e "s|^Comment=.*|Comment=$cm|" \
+            -e '/^Name\[/d' -e '/^Comment\[/d' -e '/^GenericName\[/d' \
             "$src" > "$RFS/usr/local/share/applications/$desk.desktop"
     done <<'EOL'
 thunar|Your files|Everything you have saved, in folders
@@ -224,7 +263,7 @@ atril|Documents|Read PDFs and other documents
 org.xfce.ristretto|Photos|Look at your pictures
 org.xfce.mousepad|Notes|Write and read plain notes
 xarchiver|Zip files|Open a zip file, or make one
-gnome-software|Get more programs|Find and add programs to this computer
+org.gnome.Software|Get more programs|Find and add programs to this computer
 EOL
 
     # The database the desktop actually reads. Without this the file
@@ -447,10 +486,29 @@ stage_overlay() {
     chroot_done
     rm -rf "$RFS/usr/src/auros"
 
-    # First-boot and shell units.
-    install -d "$RFS/etc/systemd/system"
-    cp "$ROOT/rootfs/etc/systemd/system"/*.service "$RFS/etc/systemd/system/" 2>/dev/null || true
-    install -Dm755 "$ROOT/rootfs/usr/lib/auros/firstboot.sh" "$RFS/usr/lib/auros/firstboot.sh"
+    # ── THE WHOLE rootfs/ TREE, not a list of files from it ────────
+    #
+    # rootfs/ in this repository is an overlay: whatever is under it
+    # lands at the same path in the image. It used to be copied as two
+    # named things -- the .service files and firstboot.sh -- which
+    # meant that adding a third file to the tree and forgetting to add
+    # a line here produced a file that exists in the repository, is
+    # reviewed, is committed, and is not on the machine.
+    #
+    # It happened the same day this comment was written: the PAM stack
+    # that gives the desktop a logind session, without which the Turn
+    # off button and mounting a USB stick are both refused by polkit,
+    # was written to rootfs/etc/pam.d/aurshell and would never have
+    # been copied anywhere.
+    #
+    # cp -a preserves modes, so an executable in the tree arrives
+    # executable; the explicit chmod below is for the one file whose
+    # mode matters enough to state twice.
+    if [ -d "$ROOT/rootfs" ]; then
+        cp -a "$ROOT/rootfs/." "$RFS/" || die "could not lay down rootfs/"
+        note "rootfs overlay: $(cd "$ROOT/rootfs" && find . -type f | wc -l) files"
+    fi
+    chmod 755 "$RFS/usr/lib/auros/firstboot.sh" 2>/dev/null || true
 
     # ── Resolve the theme's named fonts to files the rasterizer can
     # actually read. Our engine renders TrueType `glyf` outlines; many
@@ -647,6 +705,41 @@ EOL
         note "archetype '$shell_archetype' not found - falling back to rail"
     fi
 
+    # ── ONE reading of every yes/no, before anything acts on it ────
+    #
+    # The shell reads policy.conf as `!= "no"`, and the build read its
+    # own profile variable as `= "yes"`. Those are not the same
+    # question. allow_network_change="YES" gave a band with an Internet
+    # button and no rule letting it do anything -- a control that looks
+    # like a control and is not, which is the failure this whole
+    # feature was written to avoid, reintroduced by the two halves
+    # disagreeing about what a yes is.
+    #
+    # So the answer is normalised here, once, and everything downstream
+    # -- policy.conf and the polkit rule alike -- uses the normalised
+    # value.
+    yesno() {
+        case "$(printf '%s' "${1:-}" | tr 'A-Z' 'a-z')" in
+            no|false|0|off|n) printf 'no'  ;;
+            *)                printf 'yes' ;;
+        esac
+    }
+    allow_user_install=$(yesno "${allow_user_install:-yes}")
+    allow_settings_change=$(yesno "${allow_settings_change:-yes}")
+    allow_theme_change=$(yesno "${allow_theme_change:-yes}")
+    allow_tty=$(yesno "${allow_tty:-yes}")
+    allow_network_change=$(yesno "${allow_network_change:-yes}")
+    kiosk_mode=$(yesno "${kiosk_mode:-no}")
+    auto_login=$(yesno "${auto_login:-no}")
+
+    # A kiosk's network is the administrator's, not the user's, and the
+    # band shows no Internet button on one. The policy file has to say
+    # the same thing the machine does: a kiosk image whose policy.conf
+    # read "allow_network_change = yes" was stating the opposite of the
+    # truth to anyone -- an administrator, a later tool, this build --
+    # who read it to find out what the machine allows.
+    if [ "$kiosk_mode" = "yes" ]; then allow_network_change="no"; fi
+
     # The policy file is what aurshell and the settings app consult.
     # Lockdown is enforced by the shell reading this, not by hiding menus.
     install -d "$RFS/etc/auros"
@@ -660,7 +753,7 @@ blocked_apps         = ${blocked_apps:-}
 allow_user_install   = $allow_user_install
 allow_settings_change= $allow_settings_change
 allow_theme_change   = $allow_theme_change
-allow_network_change = ${allow_network_change:-yes}
+allow_network_change = $allow_network_change
 allow_tty            = $allow_tty
 auto_login           = $auto_login
 default_user         = $default_user
@@ -669,59 +762,100 @@ update_channel       = ${update_channel:-stable}
 telemetry            = ${telemetry:-off}
 EOL
 
-    # ── letting the desktop change the network ──────────────────────
+    # ── letting the person at this computer use this computer ──────
     #
-    # The Internet button in the band runs nmcli, which asks
-    # NetworkManager over the system bus, which asks polkit whether
-    # this user may. aurshell is a system service with User=, not a
-    # logged-in session, so polkit's shipped defaults -- which say yes
-    # to a person sitting at an active local session and ask for a
-    # password otherwise -- do not apply to it. Without a rule of our
-    # own the button would be there, press cleanly, and come back with
-    # a refusal every single time.
+    # Everything below is one problem with one shape. aurshell runs as
+    # a systemd service, and polkit's shipped rules are written in
+    # terms of a logind SESSION: every action the distribution gates
+    # says allow_active=yes for a person sitting at a local session and
+    # auth_admin for anything else. A service is "anything else".
     #
-    # What this grants is what the owner of a personal computer already
-    # has on every other desktop: control of their own machine's
-    # network. It is written from the profile and it is not
-    # unconditional -- a kiosk never gets it, and neither does a build
-    # that set allow_network_change="no", which is the same build whose
-    # band has no Internet button. The two have to agree, or the
-    # product either shows a control that cannot work or hides one that
-    # can.
-    if [ "${allow_network_change:-yes}" = "yes" ] && [ "$kiosk_mode" != "yes" ]; then
-        install -d "$RFS/etc/polkit-1/rules.d"
-        cat > "$RFS/etc/polkit-1/rules.d/49-auros-network.rules" <<EOL
-// Generated by forge from profile '$profile_id'.
-//
-// Lets the person at this computer choose its wifi, which on a
-// personal machine is the owner deciding about their own router.
-// Everything else polkit governs is untouched.
-polkit.addRule(function(action, subject) {
-    if (subject.user !== "$default_user") { return undefined; }
-    switch (action.id) {
-    case "org.freedesktop.NetworkManager.network-control":
+    # The service now asks PAM for a session (see PAMName= in
+    # rootfs/etc/systemd/system/aurshell.service), which is the real
+    # fix and restores allow_active for everything the distribution
+    # ships. This file is the belt to that pair of braces: if the
+    # session does not materialise on some machine, these three things
+    # still work rather than failing silently, which is how they failed
+    # before anyone noticed.
+    #
+    #   turning the computer off   the band's Turn off button ran
+    #                              systemctl poweroff, polkit refused
+    #                              it, nothing looked at the result,
+    #                              and the button did nothing at all
+    #   a USB stick                udisks2's mount action is gated the
+    #                              same way, so "files open" stopped at
+    #                              the edge of the built-in disk
+    #   the wifi                   which is what started all this
+    #
+    # A kiosk gets none of it: its user turns nothing off, mounts
+    # nothing and chooses no network. That is the whole difference
+    # between a personal computer and a machine on a counter.
+    if [ "$kiosk_mode" != "yes" ]; then
+        case "$default_user" in
+            ''|*[!a-z0-9_-]*)
+                die "default_user '$default_user' is not a plain account name" ;;
+        esac
+        # mkdir, not `install -d`: polkitd's own postinst sets this
+        # directory to 0750 root:polkitd on purpose, and install -d
+        # applies its default 0755 to a directory that already exists.
+        # The build was quietly widening a permission the distribution
+        # had deliberately narrowed, on every run.
+        mkdir -p "$RFS/etc/polkit-1/rules.d"
+
+        net_cases=""
+        if [ "$allow_network_change" = "yes" ]; then
+            net_cases='    case "org.freedesktop.NetworkManager.network-control":
     case "org.freedesktop.NetworkManager.enable-disable-network":
     case "org.freedesktop.NetworkManager.enable-disable-wifi":
     case "org.freedesktop.NetworkManager.wifi.scan":
     case "org.freedesktop.NetworkManager.settings.modify.own":
-    case "org.freedesktop.NetworkManager.settings.modify.system":
+    case "org.freedesktop.NetworkManager.settings.modify.system":'
+        fi
+
+        cat > "$RFS/etc/polkit-1/rules.d/49-auros.rules" <<EOL
+// Generated by forge from profile '$profile_id'.
+//
+// The person sitting at this computer may turn it off, open a disk
+// they plugged into it, and choose its wifi. On a personal machine
+// that is the owner deciding about their own machine, and it is what
+// every other desktop grants a local session.
+polkit.addRule(function(action, subject) {
+    if (subject.user !== "$default_user") { return undefined; }
+    switch (action.id) {
+    case "org.freedesktop.login1.power-off":
+    case "org.freedesktop.login1.power-off-multiple-sessions":
+    case "org.freedesktop.login1.reboot":
+    case "org.freedesktop.login1.reboot-multiple-sessions":
+    case "org.freedesktop.udisks2.filesystem-mount":
+    case "org.freedesktop.udisks2.filesystem-mount-system":
+    case "org.freedesktop.udisks2.eject-media":
+$net_cases
         return polkit.Result.YES;
     }
     return undefined;
 });
 EOL
-        chmod 644 "$RFS/etc/polkit-1/rules.d/49-auros-network.rules"
+        chmod 644 "$RFS/etc/polkit-1/rules.d/49-auros.rules"
+        note "$default_user may turn this computer off and open a USB stick"
+        if [ "$allow_network_change" = "yes" ]; then
+            note "$default_user may choose the wifi"
+        else
+            note "$default_user may NOT change the network (profile policy)"
+        fi
         # The rule is inert without the thing that reads it, and the
         # failure would be invisible: the button appears, presses, and
-        # refuses. Say so at build time instead.
-        if inchroot "command -v pkaction >/dev/null 2>&1"; then
-            note "the desktop may change the network (user $default_user)"
-        else
-            warn "the permission service is not installed, so the Internet"
-            warn "button will refuse everything. Add polkitd to the profile."
+        # refuses. Ask polkit whether it knows the action, rather than
+        # whether a file called pkaction exists.
+        if ! inchroot "pkaction --action-id org.freedesktop.login1.power-off \
+                       >/dev/null 2>&1"; then
+            warn "the permission service cannot be asked about its own"
+            warn "actions, so Turn off and the Internet button will refuse"
+            warn "everything. Check that polkitd is installed."
         fi
     else
-        note "the desktop may NOT change the network (profile policy)"
+        rm -f "$RFS/etc/polkit-1/rules.d/49-auros.rules" \
+              "$RFS/etc/polkit-1/rules.d/49-auros-network.rules"
+        note "a kiosk: nothing on this machine may be changed by its user"
     fi
 
     if [ "$allow_tty" = "no" ]; then

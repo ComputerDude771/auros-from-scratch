@@ -63,11 +63,13 @@ keyboard_variant=""
 # work on a ten-year-old laptop, and it is the single strongest reason
 # to sit on an existing base rather than rebuild one.
 #
-# polkitd is here and not in packages_base because it is what decides
-# whether the desktop is allowed to change the network at all. Without
-# it the Internet button in the band appears, presses, and refuses --
-# a control that looks like a control and is not, which is the exact
-# failure this product keeps finding in itself.
+# polkitd decides whether the desktop may turn the computer off, open a
+# USB stick, or change the network. network-manager already depends on
+# it, so it arrives either way -- it is named here so that it is
+# MANUALLY installed and survives the autoremove the build runs, and so
+# that a profile which drops network-manager does not silently lose the
+# other two as well. Without it those controls appear, press, and
+# refuse: controls that look like controls and are not.
 packages_hardware="linux-image-generic linux-firmware
                    network-manager wireless-tools wpasupplicant
                    polkitd
@@ -189,10 +191,14 @@ allow_theme_change="yes"
 # May the person using this machine choose its wifi?
 #
 # "yes" puts an Internet button in the band at the bottom of every
-# screen, which lists the wifi in range and joins one. It is also what
-# installs the rule letting the desktop change the network at all: with
-# "no", nothing on the machine can, and the network is whatever the
-# image or the cable says it is.
+# screen, which lists the wifi in range and joins one, and grants the
+# desktop permission to change the network. With "no", neither exists
+# and the network is whatever the image or the cable says it is.
+#
+# Anything that is not a plain no -- "false", "0", "off" -- is read as
+# no; anything else is read as yes. The build normalises it once and
+# both the button and the permission come from that one reading, so the
+# two can no longer disagree.
 #
 # On a personal computer this is obviously yes -- it is her house and
 # her router, and the alternative is a machine that cannot get online

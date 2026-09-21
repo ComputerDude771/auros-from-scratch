@@ -22,7 +22,7 @@
 /* Which nmcli run is in flight. They run one at a time, in this order,
  * because each is cheap except the last and she should see her own
  * network before the slow scan finishes rather than after it. */
-enum { J_NONE, J_DEVICES, J_SAVED, J_LIST_FAST, J_LIST_SCAN, J_JOIN };
+enum { J_NONE, J_DEVICES, J_RADIO, J_SAVED, J_LIST_FAST, J_LIST_SCAN, J_JOIN };
 
 static struct {
     int   page;                  /* the panel's state, one of P_*     */
@@ -33,19 +33,34 @@ static struct {
     char  saved[NET_MAX_SAVED][NET_NAME_MAX];
     int   n_saved;
 
-    int   have_wifi;             /* a wifi radio exists               */
+    int   have_wifi;             /* 1 yes, 0 no, -1 no answer         */
     int   asked_devices;         /* we have looked at least once      */
     int   scanning;              /* the slow look is still running    */
 
-    int   sel;                   /* which row she picked              */
+    int   sel;                   /* the row that is lit, and the one
+                                  * Enter acts on. ONE notion of it:
+                                  * the keyboard moves it and so does
+                                  * the pointer, and painting reads it.
+                                  * Keeping a separate `hover` meant the
+                                  * pointer's row was lit while the
+                                  * keyboard's row was the one Enter
+                                  * joined -- so pressing Down three
+                                  * times changed nothing on screen and
+                                  * Enter joined a network she had never
+                                  * been shown she had chosen.         */
     char  pick[NET_NAME_MAX];       /* its name, kept across the scan    */
     int   pick_secure;
     char  pw[PW_MAX];
     int   pw_n;
 
     int   first_row;             /* paging: the row at the top        */
-    int   hover;                 /* row under the pointer, -1 none    */
     int   hover_act;             /* action under the pointer, -1 none */
+    /* Where the pointer was when we last looked. The host calls
+     * net_motion() after every batch of input whether or not the mouse
+     * moved, so without this a keystroke was immediately followed by
+     * the pointer re-asserting its own row over the keyboard's. */
+    int   last_x, last_y;
+    int   moved_once;
 
     /* the child */
     int   job;
@@ -53,7 +68,7 @@ static struct {
     int   fd;
     char  out[OUT_MAX];
     int   out_n;
-} N = { .fd = -1, .pid = -1, .sel = -1, .hover = -1, .hover_act = -1 };
+} N = { .fd = -1, .pid = -1, .sel = -1, .hover_act = -1 };
 
 /* ── running nmcli ──────────────────────────────────────────────────
  *
@@ -101,6 +116,12 @@ static void child_stop(void)
     N.pid = -1;
     N.job = J_NONE;
     N.out_n = 0;
+    /* Nothing is running, so nothing is looking. This was cleared in
+     * the two places a scan FINISHED and not in the one place a scan
+     * was stopped -- so pressing a network during the four seconds a
+     * scan takes, then coming back, left the panel reading "Still
+     * looking..." for the rest of the session with no child alive. */
+    N.scanning = 0;
 }
 
 /* The one thing the parent cannot learn any other way. The compositor
@@ -108,7 +129,13 @@ static void child_stop(void)
  * still has to be distinguishable from a command that ran and said
  * nothing -- so the child says so on the pipe the parent is already
  * reading. */
-#define NOEXEC_MARK "\x01aurnoexec\n"
+/* Split deliberately. "\x01aurnoexec" is NOT what it looks like: a C
+ * hex escape is greedy and 'a' is a hex digit, so \x01a is the single
+ * byte 0x1A and the string is "\x1Aurnoexec". It happened to work,
+ * because the same macro is written and searched for -- but anyone who
+ * retyped this literal by hand, or wrote it in a test, would silently
+ * break every detection of a program that could not be started. */
+#define NOEXEC_MARK "\x01" "aurnoexec\n"
 
 static int child_start(int job, const char *const argv[])
 {
@@ -181,16 +208,31 @@ static int named_in(const char *name, const char saved[][NET_NAME_MAX],
     return 0;
 }
 
+/* 1 there is wifi, 0 there is none, -1 the machine did not answer.
+ *
+ * The third case is the one that matters. `nmcli device status` with
+ * NetworkManager not yet running prints "Error: NetworkManager is not
+ * running." and exits non-zero -- and the first version of this read
+ * that as "no line says wifi" and therefore "this computer has no wifi
+ * of its own". On first boot, in the house the machine was carried
+ * into, opening the panel a few seconds early told a laptop with a
+ * wifi card that it had none, and offered nothing but Close. */
 int net_parse_devices(char *terse)
 {
-    int have_wifi = 0;
+    int have_wifi = 0, lines = 0;
     char *save = NULL;
     for (char *line = strtok_r(terse, "\n", &save); line;
          line = strtok_r(NULL, "\n", &save)) {
+        if (!strncmp(line, "Error:", 6) || !strncmp(line, "error:", 6))
+            return -1;
         char *f[4];
         if (split_t(line, f, 4) < 2) continue;
+        lines++;
         if (!strcmp(f[1], "wifi")) have_wifi = 1;
     }
+    /* Not one device at all, not even loopback: nmcli said nothing we
+     * can read, which is not the same as "no wifi". */
+    if (!lines) return -1;
     return have_wifi;
 }
 
@@ -277,6 +319,7 @@ static void parse_devices(void)
     N.asked_devices = 1;
 }
 
+
 static void parse_saved(void)
 {
     N.n_saved = net_parse_saved(N.out, N.saved, NET_MAX_SAVED);
@@ -300,8 +343,10 @@ int net_parse_trouble(const char *out)
         strstr(out, "secrets were required")   ||
         strstr(out, "psk: property is invalid")||
         strstr(out, "Passwords or encryption keys"))  return T_PASSWORD;
+    if (strstr(out, "No Wi-Fi device found") ||
+        strstr(out, "No Wi-Fi device"))               return T_NOWIFI;
+    if (strstr(out, "NetworkManager is not running")) return T_NOANSWER;
     if (strstr(out, "No network with SSID")    ||
-        strstr(out, "No Wi-Fi device found")   ||
         strstr(out, "not found"))                     return T_GONE;
     if (strstr(out, "Not authorized")          ||
         strstr(out, "not authorized")          ||
@@ -324,6 +369,20 @@ static void start_job(int job)
         if (child_start(J_DEVICES, a) < 0) {
             N.page = P_TROUBLE; N.trouble = T_NOTOOL;
         }
+        break;
+    }
+    /* Switch the radio on. She pressed Internet; wanting the wifi on
+     * is not a separate question.
+     *
+     * A laptop wifi key, or an `nmcli radio wifi off` from months ago,
+     * leaves the card present but soft-blocked, and the panel would
+     * then show an empty list and say no wifi was found near this
+     * computer -- true of the radio and false of the house, with no way
+     * out of it that does not involve a terminal. It is idempotent, so
+     * it costs a fork on a machine whose radio is already on. */
+    case J_RADIO: {
+        const char *a[] = { "nmcli", "radio", "wifi", "on", NULL };
+        child_start(J_RADIO, a);
         break;
     }
     case J_SAVED: {
@@ -375,8 +434,12 @@ void net_opened(shell_ctx *c)
     N.page = P_LIST;
     N.sel = -1;
     N.first_row = 0;
-    N.hover = -1;
     N.hover_act = -1;
+    N.moved_once = 0;
+    /* A re-open must not inherit the last one's "still looking" or its
+     * trouble screen. */
+    N.scanning = 0;
+    N.trouble = 0;
     N.pw[0] = 0; N.pw_n = 0;
     start_job(J_DEVICES);
 }
@@ -404,7 +467,11 @@ void net_fini(void)
     }
     n_reaping = 0;
     memset(&N, 0, sizeof N);
-    N.fd = -1; N.pid = -1;
+    /* -1 is "nothing", and 0 is "the first one". Zeroing the struct and
+     * restoring only two of the four sentinels would leave a
+     * re-initialised panel with its first button drawn as if the
+     * pointer were on it. */
+    N.fd = -1; N.pid = -1; N.sel = -1; N.hover_act = -1;
 }
 
 int net_fd(void) { return N.fd; }
@@ -444,7 +511,18 @@ int net_pump(shell_ctx *c)
         }
         parse_devices();
         N.out_n = 0;
+        if (N.have_wifi < 0) {
+            N.page = P_TROUBLE; N.trouble = T_NOANSWER; return 1;
+        }
         if (!N.have_wifi) { N.page = P_TROUBLE; N.trouble = T_NOWIFI; return 1; }
+        start_job(J_RADIO);
+        return 1;
+
+    case J_RADIO:
+        /* Whether it worked or not, carry on: an already-on radio
+         * prints nothing, and a refusal here is better discovered as an
+         * empty list than as a stop. */
+        N.out_n = 0;
         start_job(J_SAVED);
         return 1;
 
@@ -669,9 +747,19 @@ static void net_layout(const shell_ctx *c, int sw, int sh,
     case P_JOINING:   which[na++] = A_STOP; break;
     case P_JOINED:    which[na++] = A_CLOSE; break;
     case P_TROUBLE:
+        /* Try again on every one of them, including the two that look
+         * final. "This computer has no wifi" is a conclusion drawn from
+         * one answer from one program, and being wrong about it -- the
+         * network service was still starting, the radio was switched
+         * off -- used to leave her on a screen whose only button was
+         * Close. A retry costs one second and nothing else; being
+         * unable to retry costs her the machine. */
+        which[na++] = A_AGAIN;
         if (v->trouble == T_NOWIFI || v->trouble == T_NOTOOL ||
-            v->trouble == T_NOTALLOWED) which[na++] = A_CLOSE;
-        else { which[na++] = A_AGAIN; which[na++] = A_BACK; }
+            v->trouble == T_NOANSWER || v->trouble == T_NOTALLOWED)
+            which[na++] = A_CLOSE;
+        else
+            which[na++] = A_BACK;
         break;
     }
     /* If they will not fit side by side, they get narrower rather than
@@ -801,6 +889,9 @@ void net_paint(shell_ctx *c, surface *s, shell_fonts *f)
         case T_NOWIFI:
             subtext = "This computer has no wifi of its own.";
             break;
+        case T_NOANSWER:
+            subtext = "This computer could not look for wifi just now.";
+            break;
         case T_NOTOOL:
             subtext = "This computer cannot search for wifi.";
             break;
@@ -821,6 +912,8 @@ void net_paint(shell_ctx *c, surface *s, shell_fonts *f)
         advice = "It is usually printed on the bottom of your internet box.";
     else if (N.page == P_TROUBLE && N.trouble == T_NOWIFI)
         advice = "A cable from your internet box to this computer will work.";
+    else if (N.page == P_TROUBLE && N.trouble == T_NOANSWER)
+        advice = "It may still be starting up. Wait a moment and try again.";
     else if (N.page == P_TROUBLE && N.trouble == T_NOTALLOWED)
         advice = "The person who set this computer up can change it.";
     else if (N.page == P_TROUBLE && N.trouble == T_NOTOOL)
@@ -843,7 +936,7 @@ void net_paint(shell_ctx *c, surface *s, shell_fonts *f)
         for (int i = 0; i < g.n_rows; i++) {
             const net_ap *a = &N.aps[from + i];
             rect r = g.rows[i];
-            if (N.hover == from + i) draw_rect(s, r, c->surface_hi, 1.f);
+            if (N.sel == from + i) draw_rect(s, r, c->surface_hi, 1.f);
             draw_hrule(s, r.x, r.y + r.h - 1, r.w, 1, c->fg, 0.12f);
 
             float by = shell_baseline(name, (float)r.y, (float)r.h);
@@ -941,20 +1034,25 @@ static int in_rect(rect r, int x, int y)
 
 void net_motion(shell_ctx *c, int x, int y)
 {
-    N.hover = -1;
+    if (!c->net_open) { N.hover_act = -1; return; }
+    /* The pointer speaks only when it has actually moved. */
+    if (N.moved_once && x == N.last_x && y == N.last_y) return;
+    N.last_x = x; N.last_y = y; N.moved_once = 1;
+
     N.hover_act = -1;
-    if (!c->net_open) return;
     net_geom g;
     net_view v = view_now();
     net_layout(c, c->screen_w, c->screen_h, &v, &g);
     for (int i = 0; i < g.n_acts; i++)
         if (in_rect(g.acts[i], x, y)) {
             if (act_enabled(g.act[i])) N.hover_act = g.act[i];
+            N.sel = -1;                  /* she is reaching for a button */
             return;
         }
     int from = clampi_(N.first_row, 0, N.n_aps > 0 ? N.n_aps - 1 : 0);
+    N.sel = -1;
     for (int i = 0; i < g.n_rows; i++)
-        if (in_rect(g.rows[i], x, y)) { N.hover = from + i; return; }
+        if (in_rect(g.rows[i], x, y)) { N.sel = from + i; return; }
 }
 
 /* She picked a network. If we have joined it before, or it wants no
@@ -974,8 +1072,12 @@ static void do_action(shell_ctx *c, int a)
 {
     switch (a) {
     case A_CLOSE:
+        /* Only the flag. The host notices it change and does the rest
+         * -- stopping whatever nmcli is running, forgetting the
+         * password, handing the keyboard back -- in the one place that
+         * also handles the band's button and Escape. Three doors, one
+         * piece of bookkeeping. */
         c->net_open = 0;
-        net_closed(c);
         break;
     case A_JOIN:
         if (N.pw_n > 0 || !N.pick_secure) start_join();
@@ -1000,13 +1102,21 @@ static void do_action(shell_ctx *c, int a)
         if (N.page == P_TROUBLE && N.trouble == T_PASSWORD) {
             N.pw[0] = 0; N.pw_n = 0;
             N.page = P_PASSWORD;
-        } else if (N.page == P_TROUBLE) {
-            N.page = P_LIST;
-            start_job(J_LIST_SCAN);
-        } else {
-            N.first_row = 0;
-            start_job(J_LIST_SCAN);
+            break;
         }
+        /* Start the whole sequence again, from asking the machine what
+         * it has. Restarting only the scan was enough when the scan was
+         * the thing that failed, and wrong every other time: pressing
+         * Try again during the opening handshake -- which is exactly
+         * when an impatient person presses it, because the panel is
+         * still blank -- cut the chain that asks which networks this
+         * computer has joined before. Every one of them then showed as
+         * new and asked for a password she had already given, which is
+         * the failure this panel exists to avoid. */
+        N.page = P_LIST;
+        N.first_row = 0;
+        N.sel = -1;
+        start_job(J_DEVICES);
         break;
     case A_STOP:
         child_stop();
@@ -1054,8 +1164,19 @@ int net_key(shell_ctx *c, int k)
 
     /* evdev: 1 Escape, 28 Return, 14 Backspace, 103/108 up/down. */
     if (k == 1) {
-        if (N.page == P_LIST) { c->net_open = 0; net_closed(c); }
-        else do_action(c, N.page == P_JOINING ? A_STOP : A_BACK);
+        /* Escape does whatever this screen's second button does, so
+         * that the keyboard and the pointer agree. It used to always
+         * mean "back to the list", which on the screens that say "this
+         * computer has no wifi" put her in front of "No wifi found near
+         * this computer" -- a different claim, and a false one. */
+        if (N.page == P_LIST || N.page == P_JOINED) { c->net_open = 0; return 1; }
+        if (N.page == P_JOINING) { do_action(c, A_STOP); return 1; }
+        if (N.page == P_TROUBLE &&
+            (N.trouble == T_NOWIFI || N.trouble == T_NOTOOL ||
+             N.trouble == T_NOANSWER || N.trouble == T_NOTALLOWED)) {
+            c->net_open = 0; return 1;
+        }
+        do_action(c, A_BACK);
         return 1;
     }
 
@@ -1080,9 +1201,20 @@ int net_key(shell_ctx *c, int k)
     }
 
     if (N.page == P_LIST && N.n_aps > 0) {
-        if (k == 103) { N.sel = N.sel <= 0 ? 0 : N.sel - 1; N.hover = N.sel; return 1; }
-        if (k == 108) { N.sel = N.sel + 1 >= N.n_aps ? N.n_aps - 1 : N.sel + 1;
-                        N.hover = N.sel; return 1; }
+        if (k == 103 || k == 108) {
+            if (N.sel < 0) N.sel = N.first_row;
+            else N.sel += (k == 108) ? 1 : -1;
+            N.sel = clampi_(N.sel, 0, N.n_aps - 1);
+            /* And the list follows her, or the selection walks off the
+             * page and she is choosing something she cannot see. */
+            net_geom g;
+            net_view v = view_now();
+            net_layout(c, c->screen_w, c->screen_h, &v, &g);
+            if (N.sel < N.first_row) N.first_row = N.sel;
+            else if (g.n_vis > 0 && N.sel >= N.first_row + g.n_vis)
+                N.first_row = N.sel - g.n_vis + 1;
+            return 1;
+        }
         if (k == 28 && N.sel >= 0 && N.sel < N.n_aps) {
             pick_ap(&N.aps[N.sel]); return 1;
         }

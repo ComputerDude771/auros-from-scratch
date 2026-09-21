@@ -34,6 +34,29 @@
  * instruction -- and read its output without blocking, because the
  * shell that paints the screen is the same thread.
  *
+ * WHAT USING nmcli COSTS, SAID PLAINLY
+ *
+ * The password is handed to it as an argument, and an argument is
+ * visible in /proc/<pid>/cmdline, which is world-readable. For the few
+ * seconds the join takes, anything else running on the machine can read
+ * the wifi password -- including the browser, and anything she has
+ * installed.
+ *
+ * That is a real exposure and it is written here rather than left to be
+ * found. Three things bound it. It lasts only as long as the join, not
+ * the session. It happens once per network, because NetworkManager
+ * keeps the password itself afterwards in a root-only file and this
+ * panel never asks again for a network it has joined. And on the
+ * machine this product is for, everything already runs as the same
+ * person, so the browser could read her saved passwords out of her own
+ * home directory with or without this.
+ *
+ * It is still the weaker half of the story, and the fix is to stop
+ * using a command line for the one call that carries a secret: libnm's
+ * AddAndActivateConnection takes it over D-Bus and never puts it in an
+ * argument. That is the next change to this file, not a thing we have
+ * decided is acceptable forever.
+ *
  * WHAT SHE SEES, AND WHAT SHE NEVER SEES
  *
  * She sees the names printed on the back of people's routers, strongest
@@ -144,6 +167,13 @@ enum {
     T_NOTALLOWED,  /* this machine will not let us       */
     T_NOWIFI,      /* there is no wifi of its own        */
     T_NOTOOL,      /* the program that does it is missing*/
+    /* The machine did not answer. NOT the same as "there is no wifi
+     * in this computer", and telling her the second when the first is
+     * true is the worst sentence this panel can produce: on first boot
+     * she can easily open it before the network service has finished
+     * starting, and a laptop with a perfectly good wifi card would say
+     * it had none and offer her nothing but Close. */
+    T_NOANSWER,
     T_OTHER,
     T_N
 };

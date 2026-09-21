@@ -901,6 +901,10 @@ int main(int argc, char **argv)
     int dirty = 1, last_min = -1;
     uint32_t last_damage = 0;
     int super_down = 0;
+    /* The wifi panel as of the last pass, and what had the keyboard
+     * before it took it. See the transition handler in the loop. */
+    int net_open_last = 0;
+    aurwl_win *net_prev_focus = NULL;
 
     while (!want_quit) {
         if (want_reload) {
@@ -943,6 +947,38 @@ int main(int argc, char **argv)
                  + (float)(now.tv_nsec - last.tv_nsec) / 1e9f;
         last = now;
         if (dt > 0.25f) dt = 0.25f;          /* a stall must not teleport */
+
+        /* ONE place notices the wifi panel opening and closing.
+         *
+         * Three things can toggle it -- the band's button, Close inside
+         * the panel, Escape -- and the work that has to happen on each
+         * transition is the same. Doing it at the button was doing it
+         * in one of the three places, so closing the panel from inside
+         * it left the keyboard pointed at nothing and the nmcli it had
+         * running still running.
+         *
+         * The panel is modal, so opening it takes the keyboard off
+         * whatever had it. Without that her password is typed into a
+         * browser's address bar as well as into the box she is looking
+         * at. The leave that goes with it is also what makes the
+         * application let go of any key it thought was held. */
+        if (c.net_open != net_open_last) {
+            if (c.net_open) {
+                net_opened(&c);
+                if (c.wl) {
+                    net_prev_focus = aurwl_focus(c.wl);
+                    aurwl_set_focus(c.wl, NULL);
+                }
+            } else {
+                net_closed(&c);
+                if (c.wl) {
+                    aurwl_set_focus(c.wl, net_prev_focus);
+                    net_prev_focus = NULL;
+                }
+            }
+            net_open_last = c.net_open;
+            dirty = 1;
+        }
 
         /* Clients first: a window that arrived, moved or repainted has
          * to be in the list before the archetype lays the list out. */
@@ -1108,7 +1144,12 @@ int main(int argc, char **argv)
                     /* A browser that cannot scroll is a poster of a
                      * browser, so the wheel is routed even though no
                      * archetype has ever used it. */
-                    if (ev.code == REL_WHEEL || ev.code == REL_HWHEEL)
+                    /* Not through the wifi panel. The wheel is the
+                     * natural way to ask a list for more of itself, and
+                     * doing it over the panel used to scroll the
+                     * application hidden behind it. */
+                    if ((ev.code == REL_WHEEL || ev.code == REL_HWHEEL) &&
+                        !c.net_open)
                         session_scroll(&c, c.mouse_x, c.mouse_y,
                                        ev.code == REL_HWHEEL, -(double)ev.value);
                     clamp_pointer(&c, disp->width, disp->height);
@@ -1148,11 +1189,28 @@ int main(int argc, char **argv)
                                    ev.value != 0, now_ms())) {
                         /* A tap is a press and a release in one go, so
                          * the layout sees the same sequence a physical
-                         * click produces and drags still work. */
+                         * click produces and drags still work.
+                         *
+                         * It goes through the same three doors a mouse
+                         * click does, in the same order. It used to go
+                         * straight to the archetype -- past the band
+                         * and past whatever panel was covering the
+                         * screen -- which meant that on a laptop, whose
+                         * touchpad is the only pointer it has, tapping
+                         * the wifi panel started whatever icon happened
+                         * to be underneath it. */
                         c.mouse_down = 1;
-                        if (L->click)  L->click(&c, c.mouse_x, c.mouse_y);
+                        int pad_taken = foot_click(&c, c.mouse_x, c.mouse_y);
+                        if (!pad_taken) pad_taken = net_click(&c, c.mouse_x, c.mouse_y);
+                        if (!pad_taken)
+                            pad_taken = session_button(&c, c.mouse_x, c.mouse_y,
+                                                       BTN_LEFT, 1);
+                        if (!pad_taken && L->click) L->click(&c, c.mouse_x, c.mouse_y);
                         c.mouse_down = 0;
-                        if (L->motion) L->motion(&c, c.mouse_x, c.mouse_y);
+                        if (!pad_taken) {
+                            session_button(&c, c.mouse_x, c.mouse_y, BTN_LEFT, 0);
+                            if (L->motion) L->motion(&c, c.mouse_x, c.mouse_y);
+                        }
                     }
                     dirty = 1;
                 } else if (ev.type == EV_KEY) {
@@ -1177,18 +1235,9 @@ int main(int argc, char **argv)
                          * is the way out, and a way out that can be
                          * covered by whatever is on screen is not one. */
                         int taken = 0;
-                        int was_net = c.net_open;
                         if (ev.value) taken = foot_click(&c, c.mouse_x, c.mouse_y);
                         else if (c.foot_hover >= 0 || c.help_open ||
                                  c.net_open) taken = 1;
-                        /* foot.c toggles the flag and knows nothing
-                         * else about the network; the work of opening
-                         * and closing is net.c's, and it happens here
-                         * so that the band stays linkable on its own. */
-                        if (c.net_open != was_net) {
-                            if (c.net_open) net_opened(&c);
-                            else            net_closed(&c);
-                        }
 
                         /* The wifi panel covers the desktop while it is
                          * up, so it answers before the desktop does --
@@ -1211,8 +1260,15 @@ int main(int argc, char **argv)
                             if (!ev.value && L->motion) L->motion(&c, c.mouse_x, c.mouse_y);
                         }
                         dirty = 1;
-                    } else if (ev.code == BTN_RIGHT || ev.code == BTN_MIDDLE) {
-                        /* Context menus arrive as popups, which is why
+                    } else if ((ev.code == BTN_RIGHT || ev.code == BTN_MIDDLE) &&
+                               !c.net_open && !c.help_open) {
+                        /* Not while a panel is covering the screen: a
+                         * right-click on the wifi panel used to open a
+                         * context menu in the hidden application and
+                         * move the keyboard to it, painted underneath
+                         * the panel and so invisible.
+                         *
+                         * Context menus arrive as popups, which is why
                          * the right button is worth forwarding even
                          * though no archetype has a use for it. */
                         session_button(&c, c.mouse_x, c.mouse_y, ev.code, ev.value != 0);
@@ -1246,21 +1302,38 @@ int main(int argc, char **argv)
                             aurwl_key_utf8(c.wl, ev.code, c.key_text,
                                            sizeof c.key_text);
 
-                        /* With the wifi panel up the keyboard is its
-                         * own: she is typing a password, and every
-                         * character of it also reaching the desktop --
-                         * or the application behind it -- would be both
-                         * wrong and a leak. */
+                        /* session_key() ALWAYS runs, whatever is on
+                         * screen, because aurwl_key() underneath it is
+                         * the one place in this program where xkb
+                         * learns that a key moved -- and the character
+                         * read one line above comes out of xkb.
+                         *
+                         * The first version of the wifi panel skipped
+                         * it while the panel was up, to keep the
+                         * password away from the application behind.
+                         * The effect was that Shift was never recorded,
+                         * so the password field could not type a
+                         * capital letter: the exact defect the commit
+                         * before it was written to fix. It also dropped
+                         * every key RELEASE, leaving a held key stuck
+                         * down in whatever was running.
+                         *
+                         * The password is kept away from the
+                         * application by taking keyboard focus off it
+                         * while the panel is open (below), which is
+                         * what a modal panel does everywhere and which
+                         * also tells the application to let go of
+                         * whatever it thought was held. */
+                        int consumed = 0;
+                        if (!super_down)
+                            consumed = session_key(&c, ev.code, ev.value != 0);
+
                         if (c.net_open) {
                             if (ev.value) net_key(&c, ev.code);
                             c.key_text[0] = 0;
                             dirty = 1;
                             continue;
                         }
-
-                        int consumed = 0;
-                        if (!super_down)
-                            consumed = session_key(&c, ev.code, ev.value != 0);
                         if (!consumed && ev.value && L->key) L->key(&c, ev.code);
                         c.key_text[0] = 0;
                         dirty = 1;

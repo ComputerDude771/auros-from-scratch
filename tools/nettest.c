@@ -140,8 +140,18 @@ int main(void)
     ok("a desktop with only a cable", net_parse_devices(dup_(
         "enp0s25:ethernet:connected\n"
         "lo:loopback:unmanaged\n", buf, sizeof buf)) == 0);
-    ok("a machine that reports nothing", net_parse_devices(dup_(
-        "", buf, sizeof buf)) == 0);
+    /* Three answers, not two. "nmcli did not answer" must never be
+     * read as "this computer has no wifi": on first boot she can open
+     * the panel before NetworkManager has finished starting, and a
+     * laptop with a perfectly good card would be told it had none. */
+    ok("a machine that reports nothing at all", net_parse_devices(dup_(
+        "", buf, sizeof buf)) == -1);
+    ok("the network service is not running yet", net_parse_devices(dup_(
+        "Error: NetworkManager is not running.\n", buf, sizeof buf)) == -1);
+    ok("a laptop whose wifi is switched off still HAS wifi",
+       net_parse_devices(dup_(
+        "wlp3s0:wifi:unavailable\n"
+        "lo:loopback:unmanaged\n", buf, sizeof buf)) == 1);
 
     /* ── the sentences she is shown when it goes wrong ───────────── */
     printf("\n  what she is told when it does not work\n");
@@ -155,8 +165,15 @@ int main(void)
     ok("a network that has gone",
        net_parse_trouble("Error: No network with SSID 'Home' found.")
        == T_GONE);
+    /* This used to be asserted as T_GONE, whose sentence is "<name> is
+     * not there any more" -- telling a machine with no wifi hardware
+     * that its network had moved. The test locked the wrong answer in,
+     * which is the specific way a harness can make a defect permanent. */
     ok("a machine with no wifi in it",
-       net_parse_trouble("Error: No Wi-Fi device found.") == T_GONE);
+       net_parse_trouble("Error: No Wi-Fi device found.") == T_NOWIFI);
+    ok("the network service stopped mid-way",
+       net_parse_trouble("Error: NetworkManager is not running.")
+       == T_NOANSWER);
     ok("a machine that will not allow it",
        net_parse_trouble("Error: Not authorized to control networking.")
        == T_NOTALLOWED);

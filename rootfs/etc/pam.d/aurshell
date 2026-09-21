@@ -1,0 +1,23 @@
+# PAM for the AurOS desktop shell. See the comment in
+# /etc/systemd/system/aurshell.service for why this exists.
+#
+# It authenticates nobody. systemd has already decided which account
+# runs the shell, and starts it as root before dropping to that account;
+# this stack exists so that pam_systemd registers a logind SESSION, so
+# that the person sitting at the machine counts as "active" to polkit --
+# which is what lets them turn the computer off, mount a USB stick they
+# plugged in, and choose their wifi.
+#
+# account is pam_permit and not pam_unix ON PURPOSE. A shipped image
+# expires the placeholder password deliberately, and pam_unix's account
+# check refuses a session for an account in that state. That would turn
+# a security measure into a machine that will not start its desktop.
+auth       required   pam_permit.so
+account    required   pam_permit.so
+password   required   pam_deny.so
+
+session    required   pam_loginuid.so
+session    optional   pam_keyinit.so force revoke
+session    optional   pam_limits.so
+session    required   pam_systemd.so
+session    required   pam_permit.so

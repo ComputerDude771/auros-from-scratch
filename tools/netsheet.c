@@ -125,7 +125,7 @@ int main(int argc, char **argv)
         seed();
         N.page = SHOTS[k].page;
         N.trouble = SHOTS[k].trouble;
-        N.hover = (SHOTS[k].page == P_LIST) ? 1 : -1;
+        N.sel = (SHOTS[k].page == P_LIST) ? 1 : -1;
         N.hover_act = -1;
         N.scanning = 0;
         if (SHOTS[k].trouble == T_NOWIFI) N.n_aps = 0;

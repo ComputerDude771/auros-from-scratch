@@ -22,7 +22,9 @@
 set -u
 cd "$(dirname "$0")/.."
 
-APPS=/usr/share/applications
+# Overridable so this can also be run against a rootfs a build has just
+# produced, rather than only against the machine it is running on.
+APPS="${APPS:-/usr/share/applications}"
 FORGE=build/forge
 
 # The mimeapps.list block, taken out of forge rather than copied -- a
@@ -95,12 +97,69 @@ else
     fail=$((fail + 1))
 fi
 
+# ── and is each one CALLED something she would recognise ───────────
+#
+# forge also ships a plain-language rename for the handful of programs
+# AurOS installs: an override .desktop in /usr/local/share/applications,
+# which the XDG search order puts ahead of the packager's.
+#
+# Two ways that silently does nothing, and both have happened:
+#
+#   the name is wrong    the table said "gnome-software" and the archive
+#                        ships org.gnome.Software.desktop, so the line
+#                        renamed a file that is not there
+#
+#   the name is right    but the package also ships Name[en_US], and the
+#   and it still loses   XDG rule -- which src/aurshell/apps.c follows
+#                        correctly -- is that an exact language-and-
+#                        country match beats the plain Name=. atril does
+#                        exactly this, so a freshly booted image read
+#                        "Atril Document Viewer" next to "Your files"
+#
+# Neither is visible in the build output. Both are visible here.
+echo
+echo "and is each program called something she would recognise?"
+RENAMES=$(awk "/^thunar\\|/,/^EOL$/" "$FORGE" | grep -E '^[a-zA-Z0-9._-]+\|')
+rn_fail=0
+if [ -z "$RENAMES" ]; then
+    echo "  could not find the rename table in $FORGE"
+    rn_fail=1
+else
+    for line in $(printf '%s\n' "$RENAMES" | cut -d'|' -f1); do
+        if [ -f "$APPS/$line.desktop" ]; then
+            printf '  %-42s %s\n' "$line" "installed"
+        else
+            printf '  %-42s %s\n' "$line" "NOT INSTALLED -- this line renames nothing"
+            rn_fail=$((rn_fail + 1))
+        fi
+    done
+fi
+
+# And the rename has to out-rank what the package itself ships. Checked
+# against forge rather than against the packages, because it is a
+# property of the transform and not of any one .desktop: whatever a
+# package ships, an override that leaves Name[en_US] in place loses to
+# it on the machine this product is built for.
+echo
+echo "does the rename out-rank the name the package ships?"
+if awk "/^    install -d .*local\\/share\\/applications/,/^EOL$/" "$FORGE" \
+     | grep -q "Name\\\\\\[/d"; then
+    echo "  ok    the override drops the packagers' localised names"
+else
+    echo "  the override keeps Name[..] lines, so on an en_US machine the"
+    echo "  packager's English name wins and the rename is invisible"
+    rn_fail=$((rn_fail + 1))
+fi
+fail=$((fail + rn_fail))
+
 echo
 if [ "$fail" -gt 0 ]; then
-    echo "$fail file type$([ "$fail" -eq 1 ] || echo s) open nothing."
-    echo "The name in $FORGE has to match the .desktop the package really"
-    echo "ships -- check with: dpkg -L PACKAGE | grep applications"
+    echo "$fail thing$([ "$fail" -eq 1 ] || echo s) in $FORGE point at nothing,"
+    echo "or are overridden by a name the package also ships. The name has to"
+    echo "match the .desktop the package really ships -- check with:"
+    echo "  dpkg -L PACKAGE | grep applications"
     exit 1
 fi
-echo "all $checked file types open a program that is installed"
+echo "all $checked file types open a program that is installed,"
+echo "and every rename reaches the screen"
 exit 0

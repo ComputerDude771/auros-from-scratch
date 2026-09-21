@@ -14,6 +14,34 @@ After=getty@tty1.service
 
 [Service]
 Type=simple
+# THE SHELL NEEDS A SESSION, not just a user.
+#
+# This is a systemd system service, so without PAM there is no logind
+# session behind it -- and polkit's shipped rules are written in terms
+# of one. Every action the distribution gates says `allow_active=yes`
+# for a person sitting at a local session and `auth_admin` for anything
+# else, and "anything else" is what this was.
+#
+# The consequence was not theoretical and it was not only about wifi.
+# The band's own Turn off button ran `systemctl poweroff`, polkit
+# refused it with no agent to ask, the return code was never looked at,
+# and the button did nothing at all, silently, forever. Plugging in a
+# USB stick failed the same way: udisks2's mount action is
+# `allow_active=yes` too.
+#
+# The wifi grant in /etc/polkit-1/rules.d was written for exactly this
+# problem and fixed exactly one button. Giving the service a session is
+# the general answer: it restores `allow_active` for everything the
+# distribution ships, rather than enumerating polkit actions one
+# discovered product bug at a time.
+#
+# It is our own PAM stack, not `login`, for a reason: a shipped image
+# expires the account's placeholder password on purpose, and the login
+# stack would refuse to open a session for an account in that state --
+# turning a deliberate security measure into a machine that does not
+# come up. Nothing here authenticates anybody. systemd has already
+# decided who runs this; PAM is here only to register the session.
+PAMName=aurshell
 # Wrapped in a session bus, and not as a nicety. A real desktop
 # application will not start at all without one: the first thing a
 # browser does on a machine with no session bus is fail with "Cannot
