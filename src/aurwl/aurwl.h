@@ -126,6 +126,12 @@ int         aurwl_key(aurwl *c, uint32_t evdev_code, int pressed, uint32_t time_
  * the client's idea of Shift drifts from the user's. */
 void        aurwl_update_modifiers(aurwl *c);
 
+/* Bumped every time a client commits new pixels. The shell repaints
+ * only when something changed, and without this it would have no way to
+ * know that something did -- so it would either repaint forever or miss
+ * a cursor blinking in a text field. */
+uint32_t    aurwl_damage_seq(const aurwl *c);
+
 /* ── frame ──────────────────────────────────────────────────────── */
 
 /* Call after presenting. Fires frame callbacks, so clients that throttle

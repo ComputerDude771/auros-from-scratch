@@ -30,6 +30,8 @@
 #include <sys/inotify.h>
 
 #include "shell.h"
+#include "session.h"
+#include "../aurwl/aurwl.h"
 #include "pad.h"
 #include "kms.h"
 #include "../common/wall.h"
@@ -469,6 +471,8 @@ static void load_policy(shell_ctx *c, const char *path)
     c->allow_install = c->allow_settings = c->allow_theme_change = 1;
     c->allow_tty = 1;
     c->kiosk = 0;
+    c->allowed_apps[0] = 0;
+    c->deny_all_apps = 0;
 
     struct stat st;
     int present = (stat(path, &st) == 0);
@@ -480,6 +484,11 @@ static void load_policy(shell_ctx *c, const char *path)
             c->allow_install = c->allow_settings = c->allow_theme_change = 0;
             c->allow_tty = 0;
             c->kiosk = 1;
+            /* Failing closed has to include the applications, or a
+             * machine whose policy file is corrupt keeps its lockdown
+             * flags and loses the only thing that limited what can be
+             * launched on it. */
+            c->deny_all_apps = 1;
         } else {
             fprintf(stderr, "aurshell: no %s — unmanaged machine, "
                             "no restrictions\n", path);
@@ -492,6 +501,7 @@ static void load_policy(shell_ctx *c, const char *path)
         c->allow_install = c->allow_settings = c->allow_theme_change = 0;
         c->allow_tty = 0;
         c->kiosk = 1;
+        c->deny_all_apps = 1;
         return;
     }
     c->allow_install      = strcmp(theme_str(&p, "allow_user_install",    "yes"), "no") != 0;
@@ -499,6 +509,8 @@ static void load_policy(shell_ctx *c, const char *path)
     c->allow_theme_change = strcmp(theme_str(&p, "allow_theme_change",    "yes"), "no") != 0;
     c->allow_tty          = strcmp(theme_str(&p, "allow_tty",             "yes"), "no") != 0;
     c->kiosk              = strcmp(theme_str(&p, "kiosk_mode",            "no"),  "yes") == 0;
+    snprintf(c->allowed_apps, sizeof c->allowed_apps, "%s",
+             theme_str(&p, "allowed_apps", ""));
 }
 
 int main(int argc, char **argv)
@@ -509,6 +521,7 @@ int main(int argc, char **argv)
     const char *card = NULL, *png_out = NULL;
     int png_w = 1600, png_h = 900, nopen = 0, once = 0, frames = 1;
     int mouse_x0 = -1, mouse_y0 = -1, input_test = 0;
+    const char *with_app = NULL; int app_wait = 12;
 
     for (int i = 1; i < argc; i++) {
         if      (!strcmp(argv[i], "--conf")   && i+1 < argc) conf   = argv[++i];
@@ -520,12 +533,21 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--open")   && i+1 < argc) nopen = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--mouse")  && i+2 < argc) { mouse_x0 = atoi(argv[++i]); mouse_y0 = atoi(argv[++i]); }
         else if (!strcmp(argv[i], "--frames") && i+1 < argc) frames = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--with-app") && i+1 < argc) with_app = argv[++i];
+        else if (!strcmp(argv[i], "--app-wait") && i+1 < argc) app_wait = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--once")) once = 1;
         else if (!strcmp(argv[i], "--input-test")) input_test = 1;
         else if (!strcmp(argv[i], "--help")) {
             fputs("aurshell [--shell FILE] [--conf FILE] [--policy FILE]\n"
                   "         [--card /dev/dri/cardN] [--png OUT --size W H]\n"
                   "         [--frames N] [--open N] [--once] [--input-test]\n"
+                  "         [--with-app CMD [--app-wait SECONDS]]\n"
+                  "  --with-app  start the compositor, launch CMD, wait for its\n"
+                  "              window and render the desktop with the real\n"
+                  "              application in it. This is how the shell is\n"
+                  "              checked against actual software without a\n"
+                  "              screen: the pixels in the window came from\n"
+                  "              another process or the test is worthless.\n"
                   "  --input-test  print every input device this machine has,\n"
                   "              how the shell classifies it, and every event\n"
                   "              it produces, with the pointer position each\n"
@@ -568,7 +590,20 @@ int main(int argc, char **argv)
         snprintf(c.layout_id, sizeof c.layout_id, "%s", fb);
         c.show_clock = 1;
     }
+    /* The seeded table is the fallback, not the source of truth: it is
+     * what a still render and a machine with no desktop files get. What
+     * is actually installed wins, because "install an application and
+     * it appears" is a promise the shell cannot keep from a table
+     * compiled into it. */
     shell_seed_apps(&c);
+    int scanned = shell_scan_apps(&c);
+    if (scanned > 0)
+        fprintf(stderr, "aurshell: %d application%s installed\n",
+                scanned, scanned == 1 ? "" : "s");
+    else
+        fprintf(stderr, "aurshell: no desktop entries found — "
+                        "showing the built-in placeholder set\n");
+
     c.mouse_x = mouse_x0;
     c.mouse_y = mouse_y0;
     c.hover = -1;
@@ -602,6 +637,63 @@ int main(int argc, char **argv)
         build_wallpaper(&wall, png_w, png_h, &t);
         c.screen_w = png_w; c.screen_h = png_h;
         if (L->init) L->init(&c);
+
+        /* Offscreen, but with real applications in it. Everything below
+         * -- the compositor, the reconcile, the routing -- is the same
+         * code the booted machine runs; only the destination differs. */
+        if (with_app) {
+            if (!getenv("XDG_RUNTIME_DIR")) {
+                char rd[64];
+                snprintf(rd, sizeof rd, "/run/user/%u", (unsigned)getuid());
+                if (mkdir(rd, 0700) < 0 && errno != EEXIST)
+                    snprintf(rd, sizeof rd, "%s", "/tmp");
+                setenv("XDG_RUNTIME_DIR", rd, 1);
+            }
+            c.wl = aurwl_create(png_w, png_h, 60000);
+            if (!c.wl) { fprintf(stderr, "aurshell: no compositor\n");
+                         free_fonts(&f); return 1; }
+            c.spawn = session_spawn;
+            fprintf(stderr, "aurshell: WAYLAND_DISPLAY=%s, starting %s\n",
+                    aurwl_socket(c.wl), with_app);
+            if (aurwl_spawn(c.wl, with_app) < 0) {
+                fprintf(stderr, "aurshell: could not start it\n");
+                free_fonts(&f); return 1;
+            }
+            struct timespec t0; clock_gettime(CLOCK_MONOTONIC, &t0);
+            for (;;) {
+                struct timespec tn; clock_gettime(CLOCK_MONOTONIC, &tn);
+                uint32_t el = (uint32_t)((tn.tv_sec - t0.tv_sec) * 1000
+                                       + (tn.tv_nsec - t0.tv_nsec) / 1000000);
+                if (el > (uint32_t)app_wait * 1000u) break;
+                struct pollfd wp = { aurwl_fd(c.wl), POLLIN, 0 };
+                poll(&wp, 1, 16);
+                aurwl_dispatch(c.wl);
+                aurwl_reap(c.wl);
+                session_sync(&c, L->present);
+                aurwl_frame_done(c.wl, el);
+                /* Paint each pass: the tracker records where windows
+                 * landed, and a client that never learns its size keeps
+                 * redrawing the same first frame. */
+                /* Animations have to run here too, or a carousel that
+                 * was asked to scroll to a new window never arrives and
+                 * the render shows the window halfway off the screen --
+                 * which looks like a placement bug and is a missing
+                 * clock tick. */
+                if (L->step) L->step(&c, 0.016f);
+                draw_track_reset();
+                L->paint(&c, s, &f, wall);
+                if (c.n_wins > 0 && !aurwl_focus(c.wl)) {
+                    int n = aurwl_window_count(c.wl);
+                    if (n) aurwl_set_focus(c.wl, aurwl_window_at(c.wl, 0));
+                }
+            }
+            fprintf(stderr, "aurshell: %d window%s on the desktop\n",
+                    c.n_wins, c.n_wins == 1 ? "" : "s");
+            for (int i = 0; i < c.n_wins; i++)
+                fprintf(stderr, "  %-40s %s\n", c.wins[i].title,
+                        c.wins[i].content ? "live" : "no content");
+        }
+
         if (L->motion && c.mouse_x >= 0) L->motion(&c, c.mouse_x, c.mouse_y);
 
         /* Paint-only timing. The whole process also builds a wallpaper
@@ -612,7 +704,9 @@ int main(int argc, char **argv)
         for (int fr = 0; fr < frames; fr++) {
             struct timespec a, b;
             clock_gettime(CLOCK_MONOTONIC, &a);
+            draw_track_reset();
             L->paint(&c, s, &f, wall);
+            session_paint_popups(&c, s);
             clock_gettime(CLOCK_MONOTONIC, &b);
             if (ms) ms[fr] = (double)(b.tv_sec - a.tv_sec) * 1e3
                            + (double)(b.tv_nsec - a.tv_nsec) / 1e6;
@@ -749,6 +843,30 @@ int main(int argc, char **argv)
     c.screen_w = disp->width;
     c.screen_h = disp->height;
 
+    /* A Wayland socket has to live somewhere a client can find it. The
+     * shell is a system service, not a user session, so nothing has set
+     * XDG_RUNTIME_DIR for us -- and without it aurwl has nowhere to
+     * bind and not one application can start. */
+    if (!getenv("XDG_RUNTIME_DIR")) {
+        char rd[64];
+        snprintf(rd, sizeof rd, "/run/user/%u", (unsigned)getuid());
+        if (mkdir(rd, 0700) < 0 && errno != EEXIST)
+            snprintf(rd, sizeof rd, "%s", "/tmp");
+        setenv("XDG_RUNTIME_DIR", rd, 1);
+        fprintf(stderr, "aurshell: XDG_RUNTIME_DIR was unset — using %s\n", rd);
+    }
+    c.wl = aurwl_create(disp->width, disp->height, disp->refresh_mhz);
+    if (c.wl) {
+        c.spawn = session_spawn;
+        fprintf(stderr, "aurshell: applications may connect on WAYLAND_DISPLAY=%s\n",
+                aurwl_socket(c.wl));
+    } else {
+        /* The desktop still works; it just cannot run anything. Saying
+         * so plainly beats a machine where every icon silently does
+         * nothing and nobody can tell why. */
+        fprintf(stderr, "aurshell: NO COMPOSITOR — applications cannot start\n");
+    }
+
     surface *wall = NULL;
     build_wallpaper(&wall, disp->width, disp->height, &t);
     if (L->init) L->init(&c);
@@ -783,6 +901,8 @@ int main(int argc, char **argv)
      * something actually changed -- input, an animation, a new minute
      * on the clock, a theme reload, or losing and regaining the VT. */
     int dirty = 1, last_min = -1;
+    uint32_t last_damage = 0;
+    int super_down = 0;
 
     while (!want_quit) {
         if (want_reload) {
@@ -826,6 +946,17 @@ int main(int argc, char **argv)
         last = now;
         if (dt > 0.25f) dt = 0.25f;          /* a stall must not teleport */
 
+        /* Clients first: a window that arrived, moved or repainted has
+         * to be in the list before the archetype lays the list out. */
+        if (c.wl) {
+            aurwl_dispatch(c.wl);
+            aurwl_reap(c.wl);
+            int before = c.n_wins;
+            session_sync(&c, L->present);
+            uint32_t seq = aurwl_damage_seq(c.wl);
+            if (seq != last_damage || c.n_wins != before) { last_damage = seq; dirty = 1; }
+        }
+
         int animating = L->step ? L->step(&c, dt) : 0;
         if (animating) dirty = 1;
 
@@ -839,7 +970,12 @@ int main(int argc, char **argv)
 
         if (dirty) {
             surface *fb = kms_back_surface(disp);
+            /* Cleared before the archetype paints, so the rectangles it
+             * records are this frame's and input routes against what is
+             * on screen rather than what was. */
+            draw_track_reset();
             L->paint(&c, fb, &f, wall);
+            session_paint_popups(&c, fb);
             paint_cursor(fb, c.mouse_x, c.mouse_y, cur_fill, cur_edge);
             /* A failed flip is not cosmetic: it means we no longer own
              * the display. Say so once rather than painting into the
@@ -849,6 +985,13 @@ int main(int argc, char **argv)
                 if (!moaned++) fprintf(stderr, "aurshell: display present failed "
                                                "— lost DRM master?\n");
             }
+            /* Every toolkit throttles itself to this. Without it a
+             * client draws exactly one frame and then waits forever,
+             * which looks like an application that has hung. */
+            if (c.wl) {
+                struct timespec ft; clock_gettime(CLOCK_MONOTONIC, &ft);
+                aurwl_frame_done(c.wl, (uint32_t)(ft.tv_sec * 1000u + ft.tv_nsec / 1000000u));
+            }
             dirty = 0;
         }
         if (once) break;
@@ -856,13 +999,19 @@ int main(int argc, char **argv)
         /* Animating: poll briefly so the next frame is soon. Idle: wait
          * a full second; with damage tracking there is nothing to do
          * until an event arrives, and the clock is handled above. */
-        struct pollfd pfd[MAX_INPUT_DEV + 1];
+        struct pollfd pfd[MAX_INPUT_DEV + 2];
         int np = 0;
         for (int i = 0; i < in.n; i++) { pfd[np].fd = in.fd[i]; pfd[np].events = POLLIN; np++; }
         int noti = -1;
         if (in.notify_fd >= 0) { noti = np; pfd[np].fd = in.notify_fd;
                                  pfd[np].events = POLLIN; np++; }
-        if (poll(pfd, np, animating ? 8 : 1000) <= 0) continue;
+        int wlfd = -1;
+        if (c.wl) { wlfd = np; pfd[np].fd = aurwl_fd(c.wl); pfd[np].events = POLLIN; np++; }
+        /* With a client on screen the wait is short: it is drawing, and
+         * the next thing to happen is its next buffer, not a keystroke. */
+        int wait_ms = animating ? 8 : (c.n_wins > 0 ? 16 : 1000);
+        if (poll(pfd, np, wait_ms) <= 0) continue;
+        (void)wlfd;
 
         if (noti >= 0 && (pfd[noti].revents & POLLIN)) {
             char buf[4096];
@@ -906,6 +1055,12 @@ int main(int argc, char **argv)
                 if (ev.type == EV_REL) {
                     if (ev.code == REL_X) c.mouse_x += ev.value;
                     if (ev.code == REL_Y) c.mouse_y += ev.value;
+                    /* A browser that cannot scroll is a poster of a
+                     * browser, so the wheel is routed even though no
+                     * archetype has ever used it. */
+                    if (ev.code == REL_WHEEL || ev.code == REL_HWHEEL)
+                        session_scroll(&c, c.mouse_x, c.mouse_y,
+                                       ev.code == REL_HWHEEL, -(double)ev.value);
                     clamp_pointer(&c, disp->width, disp->height);
                     dirty = 1;
                 } else if (ev.type == EV_ABS && (in.kind[i] & DEV_ABS)) {
@@ -968,12 +1123,39 @@ int main(int argc, char **argv)
                          * up, so a release-dispatched click sets and
                          * cancels the drag in the same instant. Press
                          * is also what every other desktop does. */
-                        if (ev.value && L->click) L->click(&c, c.mouse_x, c.mouse_y);
-                        if (!ev.value && L->motion) L->motion(&c, c.mouse_x, c.mouse_y);
+                        /* A click that lands on an application's own
+                         * pixels is that application's. Letting the
+                         * archetype also act on it is how a desktop
+                         * ends up closing a window because the user
+                         * pressed a button inside it. */
+                        int taken = session_button(&c, c.mouse_x, c.mouse_y,
+                                                   BTN_LEFT, ev.value != 0);
+                        if (!taken) {
+                            if (ev.value && L->click) L->click(&c, c.mouse_x, c.mouse_y);
+                            if (!ev.value && L->motion) L->motion(&c, c.mouse_x, c.mouse_y);
+                        }
                         dirty = 1;
-                    } else if (ev.value && (in.kind[i] & DEV_KBD)) {
-                        if (ev.code == KEY_ESC && c.kiosk) continue;
-                        if (L->key) L->key(&c, ev.code);
+                    } else if (ev.code == BTN_RIGHT || ev.code == BTN_MIDDLE) {
+                        /* Context menus arrive as popups, which is why
+                         * the right button is worth forwarding even
+                         * though no archetype has a use for it. */
+                        session_button(&c, c.mouse_x, c.mouse_y, ev.code, ev.value != 0);
+                        dirty = 1;
+                    } else if (in.kind[i] & DEV_KBD) {
+                        if (ev.code == KEY_LEFTMETA || ev.code == KEY_RIGHTMETA)
+                            super_down = (ev.value != 0);
+
+                        if (ev.value && ev.code == KEY_ESC && c.kiosk) continue;
+
+                        /* Super belongs to the desktop, always. Without
+                         * one chord the shell keeps for itself, a
+                         * full-screen application is a machine the user
+                         * cannot get out of -- which on a kiosk is the
+                         * whole product and everywhere else is a trap. */
+                        int consumed = 0;
+                        if (!super_down)
+                            consumed = session_key(&c, ev.code, ev.value != 0);
+                        if (!consumed && ev.value && L->key) L->key(&c, ev.code);
                         dirty = 1;
                     }
                 }
@@ -986,10 +1168,12 @@ int main(int argc, char **argv)
                 input_drop(&in, i);
                 continue;
             }
+            session_motion(&c, c.mouse_x, c.mouse_y);
             if (L->motion) L->motion(&c, c.mouse_x, c.mouse_y);
         }
     }
 
+    if (c.wl) aurwl_destroy(c.wl);
     for (int i = 0; i < in.n; i++) { ioctl(in.fd[i], EVIOCGRAB, 0); close(in.fd[i]); }
     if (in.notify_fd >= 0) close(in.notify_fd);
     console_give_back(&g_con);

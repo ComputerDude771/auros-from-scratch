@@ -404,7 +404,7 @@ static void paint_open(shell_ctx *c, surface *s, shell_fonts *f,
         draw_round_rect_border(s, a, cr, (float)c->border, tint, 0.85f * (1.f - t));
 
     if (win->content)
-        draw_scaled_rounded(s, win->content, a, cr, t);
+        draw_content_fit(s, win->content, a, cr, t);
 
     /* Text does not scale, so it cannot ride the move the way the icon
      * does: it leaves early and arrives late, and for the fifth of a
@@ -785,5 +785,12 @@ static void l_init(shell_ctx *c)
 static void l_fini(shell_ctx *c) { c->priv = NULL; }
 
 const shell_layout layout_tiles = {
-    "tiles", l_init, l_paint, l_click, l_motion, l_key, l_step, l_fini
+    .id = "tiles",
+    .init = l_init,
+    .paint = l_paint,
+    .click = l_click,
+    .motion = l_motion,
+    .key = l_key,
+    .step = l_step,
+    .fini = l_fini,
 };

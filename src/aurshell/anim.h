@@ -47,6 +47,35 @@ void draw_scaled(surface *dst, const surface *src, rect dst_rect, float alpha);
 
 /* Same, but clipped to a rounded rectangle, so a scaled view can sit in
  * a rounded card without a separate masking pass. */
+/* ── where live content actually landed ─────────────────────────
+ *
+ * Once windows contain another process's pixels, a click inside one has
+ * to reach that process, which means knowing where on screen the window
+ * was drawn. Six archetypes compute that rectangle six different ways,
+ * and asking each of them to also describe it would be six chances for
+ * the description to drift from the drawing -- which is the exact bug
+ * docs/DESIGN.md already records in the rail archetype.
+ *
+ * So nothing describes it. The scaled blits record the rectangle they
+ * blit into, and input routing reads that. The record is a byproduct of
+ * painting, so it cannot disagree with painting. Entries are in paint
+ * order, which is back to front.
+ */
+void draw_track_reset(void);
+int  draw_track_count(void);
+int  draw_track_at(int i, const surface **src, rect *out);
+/* The topmost rectangle this content was drawn into this frame. */
+int  draw_track_find(const surface *src, rect *out);
+/* The space the archetype set aside for it, which is usually larger.
+ * This is the size a client should be asked to draw at. */
+int  draw_track_slot(const surface *src, rect *out);
+
+/* Fit content into the slot an archetype chose, without ever enlarging
+ * it. See draw_fit_rect() in anim.c for why never enlarging matters. */
+rect draw_fit_rect(rect slot, const surface *src);
+void draw_content_fit(surface *dst, const surface *src, rect slot,
+                      corners c, float alpha);
+
 void draw_scaled_rounded(surface *dst, const surface *src, rect dst_rect,
                          corners c, float alpha);
 

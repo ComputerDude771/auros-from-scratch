@@ -318,7 +318,7 @@ static void paint_pane(shell_ctx *c, surface *s, shell_fonts *f,
 
     if (w->content) {
         corners bc = { 0, 0, (float)c->radius, (float)c->radius };
-        draw_scaled_rounded(s, w->content, body, bc, dim);
+        draw_content_fit(s, w->content, body, bc, dim);
         return;
     }
 
@@ -819,5 +819,12 @@ static int l_step(shell_ctx *c, float dt)
 }
 
 const shell_layout layout_workbench = {
-    "workbench", l_init, l_paint, l_click, l_motion, l_key, l_step, l_fini
+    .id = "workbench",
+    .init = l_init,
+    .paint = l_paint,
+    .click = l_click,
+    .motion = l_motion,
+    .key = l_key,
+    .step = l_step,
+    .fini = l_fini,
 };

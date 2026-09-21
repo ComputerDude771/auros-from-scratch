@@ -140,6 +140,8 @@ struct aurwl {
     struct wl_resource *selection;
     uint32_t            selection_serial;
 
+    uint32_t            damage_seq;
+
     pid_t               kids[64];
     int                 n_kids;
 };
@@ -356,6 +358,7 @@ static void apply_commit(aurwl_win *w)
     if (p->attached) {
         if (p->buffer) {
             take_buffer(w, p->buffer);
+            w->c->damage_seq++;
             wl_buffer_send_release(p->buffer);
             if (!w->mapped) surface_map(w);
         } else {
@@ -1278,6 +1281,7 @@ void aurwl_destroy(aurwl *c)
 }
 
 const char *aurwl_socket(const aurwl *c) { return c ? c->socket : NULL; }
+uint32_t aurwl_damage_seq(const aurwl *c) { return c ? c->damage_seq : 0; }
 int aurwl_fd(const aurwl *c) { return c ? wl_event_loop_get_fd(c->loop) : -1; }
 
 void aurwl_dispatch(aurwl *c)

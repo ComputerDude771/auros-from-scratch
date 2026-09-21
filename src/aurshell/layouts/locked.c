@@ -398,7 +398,7 @@ static void paint_stage(shell_ctx *c, surface *s, shell_fonts *f, rect a, int ap
     rect body = { a.x, a.y + th, a.w, a.h - th };
     if (w && w->content) {
         corners bc = { 0, 0, (float)c->radius, (float)c->radius };
-        draw_scaled_rounded(s, w->content, body, bc, alpha);
+        draw_content_fit(s, w->content, body, bc, alpha);
     } else {
         paint_placeholder(c, s, f, body, app, c->apps[app].hint, alpha * 0.9f, 0.8f, 0);
     }
@@ -657,7 +657,7 @@ static void l_paint(shell_ctx *c, surface *s, shell_fonts *f, const surface *wal
         int wi = win_of_app(c, cur_app);
         const win_entry *w = (wi >= 0) ? &c->wins[wi] : NULL;
         rect full = { 0, 0, s->w, s->h };
-        if (w && w->content) draw_scaled(s, w->content, full, 1.f);
+        if (w && w->content) draw_content_fit(s, w->content, full, corners_all(0.f), 1.f);
         else {
             paint_wall(s, wall, c->bg);
             paint_placeholder(c, s, f, full, cur_app,
@@ -834,6 +834,28 @@ static int l_step(shell_ctx *c, float dt)
 
 static void l_fini(shell_ctx *c) { c->priv = NULL; }
 
+/* On a machine that shows one application at a time, "a window
+ * appeared" and "put it on the stage" are the same event. Without this,
+ * a kiosk started the browser and went on showing the previous app --
+ * which to the person standing at it is a machine that ignored them. */
+static void l_present(shell_ctx *c, int win)
+{
+    if (win < 0 || win >= c->n_wins) return;
+    int app[SHELL_MAX_APPS];
+    int n = allowed_list(c, app);
+    for (int k = 0; k < n; k++)
+        if (app[k] == c->wins[win].app) { select_app(c, k, n, app, 1); return; }
+    c->focus = win;
+}
+
 const shell_layout layout_locked = {
-    "locked", l_init, l_paint, l_click, l_motion, l_key, l_step, l_fini
+    .id = "locked",
+    .init = l_init,
+    .paint = l_paint,
+    .click = l_click,
+    .motion = l_motion,
+    .key = l_key,
+    .step = l_step,
+    .fini = l_fini,
+    .present = l_present,
 };

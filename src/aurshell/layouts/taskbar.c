@@ -590,7 +590,7 @@ static void paint_window(shell_ctx *c, surface *s, shell_fonts *f, int i,
 
     rect body = win_part(c, c->screen_w, c->screen_h, i, WP_BODY);
     if (c->wins[i].content) {
-        draw_scaled_rounded(s, c->wins[i].content, body, bc, alpha);
+        draw_content_fit(s, c->wins[i].content, body, bc, alpha);
         return;
     }
     if (body.h < 80) return;
@@ -1045,5 +1045,12 @@ static int l_step(shell_ctx *c, float dt)
 static void l_fini(shell_ctx *c) { c->priv = NULL; }
 
 const shell_layout layout_taskbar = {
-    "taskbar", l_init, l_paint, l_click, l_motion, l_key, l_step, l_fini
+    .id = "taskbar",
+    .init = l_init,
+    .paint = l_paint,
+    .click = l_click,
+    .motion = l_motion,
+    .key = l_key,
+    .step = l_step,
+    .fini = l_fini,
 };

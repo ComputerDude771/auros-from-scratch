@@ -176,7 +176,7 @@ static void paint_win(shell_ctx *c, surface *s, rect a, int wi, shell_fonts *f,
     if (w->content) {
         rect body = { a.x, a.y + th, a.w, a.h - th };
         corners bc = { 0, 0, (float)c->radius, (float)c->radius };
-        draw_scaled_rounded(s, w->content, body, bc, alpha);
+        draw_content_fit(s, w->content, body, bc, alpha);
     } else {
         float cx = (float)(a.x + a.w/2), cy = (float)(a.y + th + (a.h - th)/2);
         draw_circle(s, cx, cy - 30.f, 40.f, tint, alpha * 0.10f);
@@ -348,8 +348,23 @@ static void l_key(shell_ctx *c, int k)
 }
 
 static int  l_step(shell_ctx *c, float dt) { return tween_step(&P(c)->slide, dt); }
+
+/* In a row of cards, "show me this window" means scroll the row until
+ * that card is the one in the middle. Setting c->focus alone would move
+ * the highlight without moving the row, leaving the focused card
+ * halfway off the screen -- which is exactly what a newly started
+ * application looked like before this existed. */
+static void l_present(shell_ctx *c, int win) { focus_card(c, win + 1, 0.30f); }
 static void l_fini(shell_ctx *c) { c->priv = NULL; }
 
 const shell_layout layout_rail = {
-    "rail", l_init, l_paint, l_click, l_motion, l_key, l_step, l_fini
+    .id = "rail",
+    .init = l_init,
+    .paint = l_paint,
+    .click = l_click,
+    .motion = l_motion,
+    .key = l_key,
+    .step = l_step,
+    .fini = l_fini,
+    .present = l_present,
 };

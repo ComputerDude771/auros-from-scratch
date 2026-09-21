@@ -269,3 +269,73 @@ const shell_layout *shell_layout_by_id(const char *id)
         if (all[i]->id && strcmp(all[i]->id, id) == 0) return all[i];
     return &layout_rail;   /* the safe default: nothing can hide in it */
 }
+
+/* ── starting things ────────────────────────────────────────────── */
+
+/* snprintf with both arguments inside one shell_ctx warns about
+ * overlap on every compiler that can see it, and the warning is fair.
+ * A bounded copy says what is meant. */
+static void copy_str(char *dst, size_t n, const char *src)
+{
+    if (!n) return;
+    size_t i = 0;
+    for (; i + 1 < n && src[i]; i++) dst[i] = src[i];
+    dst[i] = 0;
+}
+
+/* A window slot appears the instant the user clicks, before the
+ * application has done anything at all. That is not a cosmetic choice:
+ * a browser takes seconds to show its first frame on the hardware this
+ * product exists to rescue, and a desktop that does nothing visible for
+ * two seconds after a click has, to the person sitting there, ignored
+ * them. The real window adopts this slot when it maps. */
+int shell_launch(shell_ctx *c, int app)
+{
+    if (!c || app < 0 || app >= c->n_apps) return -1;
+
+    /* Already running and not adopted-away: raise rather than start a
+     * second copy. Most applications are single-instance anyway and
+     * would silently do nothing, which looks like a broken icon. */
+    for (int i = 0; i < c->n_wins; i++)
+        if (c->wins[i].app == app) {
+            c->wins[i].minimised = 0;
+            c->focus = i;
+            return i;
+        }
+
+    if (c->n_wins >= SHELL_MAX_WINS) return -1;
+    int i = c->n_wins++;
+    win_entry *w = &c->wins[i];
+    memset(w, 0, sizeof *w);
+    w->app = app;
+    w->starting = 1;
+    copy_str(w->title,    sizeof w->title,    c->apps[app].name);
+    copy_str(w->subtitle, sizeof w->subtitle, "Starting…");
+    c->focus = i;
+
+    if (c->spawn && c->apps[app].exec[0]) {
+        if (c->spawn(c, c->apps[app].exec) < 0) {
+            copy_str(w->subtitle, sizeof w->subtitle, "Could not start");
+            w->starting = 0;
+        }
+    } else if (!c->apps[app].exec[0]) {
+        /* An entry with nothing behind it is the shell's own -- Settings
+         * today. Saying so beats a slot that waits forever. */
+        copy_str(w->subtitle, sizeof w->subtitle, c->apps[app].hint);
+        w->starting = 0;
+    }
+    return i;
+}
+
+void shell_close_win(shell_ctx *c, int win)
+{
+    if (!c || win < 0 || win >= c->n_wins) return;
+    /* Only the slot is removed here. A slot backed by a real window is
+     * asked to close by the host, which owns the compositor; it
+     * disappears from this list when the client actually goes, so a
+     * document with unsaved changes still gets to object. */
+    if (c->wins[win].wid) return;
+    for (int i = win; i + 1 < c->n_wins; i++) c->wins[i] = c->wins[i + 1];
+    c->n_wins--;
+    if (c->focus >= c->n_wins) c->focus = c->n_wins - 1;
+}

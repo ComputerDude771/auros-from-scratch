@@ -377,7 +377,7 @@ static void paint_win(shell_ctx *c, surface *s, shell_fonts *f, int i, int focus
     rect body = { a.x, a.y + WIN_TITLE_H, a.w, a.h - WIN_TITLE_H };
     if (w->content) {
         corners bc = { 0, 0, (float)c->radius, (float)c->radius };
-        draw_scaled_rounded(s, w->content, body, bc, al);
+        draw_content_fit(s, w->content, body, bc, al);
     } else {
         /* Centre icon and captions as one block sized to the body, and
          * drop the second line when there is no room for it. A cascade
@@ -881,5 +881,12 @@ static int l_step(shell_ctx *c, float dt)
 static void l_fini(shell_ctx *c) { c->priv = NULL; }
 
 const shell_layout layout_dock = {
-    "dock", l_init, l_paint, l_click, l_motion, l_key, l_step, l_fini
+    .id = "dock",
+    .init = l_init,
+    .paint = l_paint,
+    .click = l_click,
+    .motion = l_motion,
+    .key = l_key,
+    .step = l_step,
+    .fini = l_fini,
 };

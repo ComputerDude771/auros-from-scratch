@@ -91,9 +91,53 @@ static uint32_t sample_bilinear(const surface *s, float fx, float fy)
            ((uint32_t)(out[1] + 0.5f) << 8)  |  (uint32_t)(out[0] + 0.5f);
 }
 
+/* Paint order, back to front. Bounded because a frame that drew more
+ * than this many live views has a problem the tracker cannot fix. */
+#define TRACK_MAX 64
+/* Two rectangles per entry, because they answer different questions.
+ * `r` is where the pixels went, which is what a click has to be tested
+ * against. `slot` is the space the archetype set aside, which is what
+ * the client should be told to draw at -- telling it `r` would pin it
+ * to whatever size it already chose and it would never grow into the
+ * room it was given. */
+static struct { const surface *src; rect r, slot; } g_track[TRACK_MAX];
+static int g_track_n;
+
+void draw_track_reset(void) { g_track_n = 0; }
+int  draw_track_count(void) { return g_track_n; }
+
+int draw_track_at(int i, const surface **src, rect *out)
+{
+    if (i < 0 || i >= g_track_n) return 0;
+    if (src) *src = g_track[i].src;
+    if (out) *out = g_track[i].r;
+    return 1;
+}
+int draw_track_find(const surface *src, rect *out)
+{
+    for (int i = g_track_n - 1; i >= 0; i--)
+        if (g_track[i].src == src) { if (out) *out = g_track[i].r; return 1; }
+    return 0;
+}
+int draw_track_slot(const surface *src, rect *out)
+{
+    for (int i = g_track_n - 1; i >= 0; i--)
+        if (g_track[i].src == src) { if (out) *out = g_track[i].slot; return 1; }
+    return 0;
+}
+static void track(const surface *src, rect r)
+{
+    if (g_track_n < TRACK_MAX) {
+        g_track[g_track_n].src = src;
+        g_track[g_track_n].r = g_track[g_track_n].slot = r;
+        g_track_n++;
+    }
+}
+
 void draw_scaled(surface *dst, const surface *src, rect r, float alpha)
 {
     if (!src || src->w <= 0 || src->h <= 0 || r.w <= 0 || r.h <= 0) return;
+    track(src, r);
     float sx = (float)src->w / (float)r.w;
     float sy = (float)src->h / (float)r.h;
 
@@ -126,10 +170,47 @@ static float sdf_round_box_local(float px, float py, float hw, float hh, float r
     return sqrtf(ax*ax + ay*ay) + fminf(fmaxf(qx, qy), 0.f) - r;
 }
 
+/* Where a window's content should actually go inside the slot an
+ * archetype gave it. Content larger than the slot is scaled down to
+ * fit, keeping its aspect ratio; content smaller than the slot is drawn
+ * at its own size, centred.
+ *
+ * The second half is the important one. Stretching a 440x248 dialog
+ * across a 840x660 card does not make it bigger, it makes it blurry and
+ * wrong -- every stroke in it thickens by the scale factor, and the
+ * buttons end up further apart than the application drew them. A dialog
+ * is the size it is. */
+rect draw_fit_rect(rect slot, const surface *src)
+{
+    if (!src || src->w <= 0 || src->h <= 0) return slot;
+    if (src->w <= slot.w && src->h <= slot.h) {
+        rect r = { slot.x + (slot.w - src->w) / 2, slot.y + (slot.h - src->h) / 2,
+                   src->w, src->h };
+        return r;
+    }
+    long kw = (long)slot.w * src->h, kh = (long)slot.h * src->w;
+    int w = slot.w, h = slot.h;
+    if (kw < kh) h = (int)((long)slot.w * src->h / src->w);
+    else         w = (int)((long)slot.h * src->w / src->h);
+    if (w < 1) w = 1;
+    if (h < 1) h = 1;
+    rect r = { slot.x + (slot.w - w) / 2, slot.y + (slot.h - h) / 2, w, h };
+    return r;
+}
+
+void draw_content_fit(surface *dst, const surface *src, rect slot,
+                      corners c, float alpha)
+{
+    draw_scaled_rounded(dst, src, draw_fit_rect(slot, src), c, alpha);
+    if (g_track_n && g_track[g_track_n - 1].src == src)
+        g_track[g_track_n - 1].slot = slot;
+}
+
 void draw_scaled_rounded(surface *dst, const surface *src, rect r,
                          corners c, float alpha)
 {
     if (!src || src->w <= 0 || src->h <= 0 || r.w <= 0 || r.h <= 0) return;
+    track(src, r);
     float sx = (float)src->w / (float)r.w;
     float sy = (float)src->h / (float)r.h;
     float hw = r.w * 0.5f, hh = r.h * 0.5f;

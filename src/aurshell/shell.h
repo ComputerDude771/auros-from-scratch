@@ -36,6 +36,12 @@ typedef struct {
     shell_icon  icon;
     uint32_t    tint;
     int         pinned;        /* appears in a dock / favourites strip */
+    /* The command that actually starts it, as a .desktop Exec= line.
+     * Empty means there is nothing behind this icon -- which is how the
+     * shell looked before it could run anything, and is now only true
+     * of the entries a profile pins without installing. */
+    char        exec[192];
+    char        wm_class[64];  /* app_id a window reports; links the two */
 } app_entry;
 
 typedef struct {
@@ -45,11 +51,19 @@ typedef struct {
     surface  *content;         /* live view; NULL draws a placeholder */
     int       minimised;
     rect      geom;            /* used by overlapping and tiled models */
+
+    /* The compositor window this entry stands for, or 0 while the
+     * application is still starting. A slot is created the instant the
+     * user clicks, because two seconds of nothing happening reads as a
+     * broken machine; the real window adopts the slot when it maps. */
+    uint32_t  wid;
+    int       starting;
+    uint32_t  start_ms;        /* when the wait began; 0 = not yet set */
 } win_entry;
 
 typedef struct { font *big, *mid, *small, *huge; } shell_fonts;
 
-typedef struct {
+typedef struct shell_ctx_s {
     /* ── theme, resolved once ───────────────────────────────────── */
     int      radius, radius_sm, margin, padding, border;
     int      bar_h, blur_r, shadow_r;
@@ -83,6 +97,16 @@ typedef struct {
      * cooperation from userspace -- so the shell has to refuse the
      * switch itself. See console_release() in main.c. */
     int   allow_tty;
+    /* An empty string means every installed application. A non-empty
+     * one is an allow-list of desktop-file names, window classes or
+     * commands, and is enforced when the app table is built rather than
+     * when an icon is pressed -- see shell_scan_apps(). */
+    char  allowed_apps[256];
+    /* Set when the policy file exists but could not be trusted. The
+     * allow-list is then not "empty" -- which would mean everything --
+     * but "nothing", which is the only safe reading of a lockdown file
+     * we failed to parse. */
+    int   deny_all_apps;
 
     /* ── content ────────────────────────────────────────────────── */
     app_entry apps[SHELL_MAX_APPS]; int n_apps;
@@ -106,6 +130,19 @@ typedef struct {
     int   mouse_x, mouse_y, mouse_down;
     int   hover;               /* layout-defined hot item, -1 none   */
 
+    /* ── the running system ─────────────────────────────────────── */
+    /* The Wayland server applications connect to, or NULL. It is NULL
+     * in the preview renderer, the contact sheet and the hit-test
+     * harness -- which is why every use of it is guarded rather than
+     * assumed, and why a layout asks shell_launch() rather than
+     * reaching for it. */
+    struct aurwl *wl;
+    /* How the host actually starts a program. A function pointer rather
+     * than a direct call so that shellcommon.c -- which every preview
+     * and test harness links -- does not drag in the compositor. NULL
+     * means nothing starts, which is exactly right for a still render. */
+    int (*spawn)(struct shell_ctx_s *c, const char *cmdline);
+
     /* ── per-layout scratch. Layouts own this; nothing else reads. */
     void *priv;
 } shell_ctx;
@@ -120,6 +157,12 @@ typedef struct {
     void (*key)  (shell_ctx *c, int keycode);
     int  (*step) (shell_ctx *c, float dt);   /* 1 while animating */
     void (*fini) (shell_ctx *c);
+    /* A window just appeared, or the user asked for this one. Bring it
+     * to where the user is looking -- which in a carousel means
+     * scrolling to it and in a stack means raising it, and is why this
+     * cannot be done by setting c->focus from outside. Optional; the
+     * default is to set c->focus and let the archetype read it. */
+    void (*present)(shell_ctx *c, int win);
 } shell_layout;
 
 /* Shared helpers every layout may use, so six renderers do not each
@@ -141,6 +184,23 @@ void shell_theme_load(shell_ctx *c, const theme_t *t);
 void shell_seed_apps(shell_ctx *c);
 /* Loads a .shell archetype file into the ctx. Returns 0 on success. */
 int  shell_archetype_load(shell_ctx *c, const char *path);
+
+/* Replaces the seeded app table with what is actually installed, read
+ * from XDG desktop entries. This is what makes "install an application
+ * and it appears" true without the shell knowing anything about the
+ * application: a .deb drops a .desktop file, and the next scan finds
+ * it. Returns the number of apps found, or -1 if nothing was readable
+ * (in which case the caller keeps the seeded table). */
+int  shell_scan_apps(shell_ctx *c);
+
+/* Start an application and give the user something to look at while it
+ * loads. Safe to call with no compositor; it then only marks the slot,
+ * which is what the preview renderers want. Returns the window index,
+ * or -1. */
+int  shell_launch(shell_ctx *c, int app);
+
+/* Ask a window to close, the way its own title bar button would. */
+void shell_close_win(shell_ctx *c, int win);
 
 /* Registry. Each layout lives in its own translation unit and exposes
  * exactly one of these, so six of them can be written independently
