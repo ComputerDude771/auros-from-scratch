@@ -148,6 +148,57 @@ time, and an administrator can pin it with the policy file.
 
 ---
 
+## The band, which belongs to none of them
+
+Along the bottom of every archetype is a strip that is not part of any
+of them. It is always there, it is in the same place in all six, and
+nothing on the screen can cover it.
+
+| | |
+|---|---|
+| **Help** | one thing, in one place, in every archetype |
+| **Internet** | the wifi in range, and joining one |
+| **Smaller** / **Bigger** | the size of every word on the machine |
+| **Turn off** | shutting the computer down properly |
+
+Those four exist because each was a thing a person could not do at all.
+There was no way to shut the machine down except holding the power
+button in. There was no way to make the words bigger, on a product
+whose median user has presbyopia. And there was no way to get onto
+wifi, on a machine whose whole promise is that she can hand us her
+computer — NetworkManager was installed and running from the first
+image, and there was not one pixel between it and her.
+
+**How it reaches six archetypes without six implementations.** It does
+not draw into them and they cannot draw into it. The host hands the
+archetype a surface that is shorter than the screen — same pixels, same
+stride, fewer rows — and reduces `screen_h` to match. Every primitive in
+`draw.c` and `font.c` already clips to the surface's height, so the band
+is unreachable from a layout by construction rather than by agreement,
+and not one archetype needed editing to gain it.
+
+**Its colours are fixed**, which is a deliberate exception to the rule
+below that nothing hardcodes a colour. A theme may restyle every pixel
+in this product except the one that leads out of it: the control she
+reaches for when the screen has become unreadable must not be styled by
+the thing that made it unreadable. Its type has a floor for the same
+reason — and the floor is a floor, not a ceiling, because the person who
+picks the largest text is the person who needs the way out largest of
+all.
+
+**What a kiosk gets.** Help and nothing else. A kiosk has no way to turn
+the machine off and no network of its own to choose: an administrator
+sets a kiosk's network, and a public terminal whose users can point it
+at any nearby wifi is a different product. `allow_network_change` in the
+profile is the switch for the ordinary builds, and it is separate from
+`allow_settings_change` — a build that pins the theme has not thereby
+said the owner must retype the wifi password.
+
+`src/aurshell/foot.c` is the band; `src/aurshell/net.c` is the wifi
+panel behind its Internet button.
+
+---
+
 ## For builders
 
 ```
@@ -182,6 +233,15 @@ shellpreview shells/dock.shell themes/sandstone.theme /tmp/x.png 1600 900 3
 - **One function owns geometry**, called by both painting and
   hit-testing. Deriving them separately is how a UI ends up off by the
   width of a shadow and feeling haunted.
+- **A geometry function takes what it needs, not what the machine
+  happens to be doing.** `foot_buttons()` and `net_layout()` are pure
+  functions of the policy, the panel size and the text size, so
+  `tools/targets.c` can ask them about every screen at every size
+  without a radio, a daemon, or a person pressing things. A geometry
+  function that can only be asked about the current state is one that
+  nothing checks — and the 44-pixel floor in docs/EASY.md is then an
+  intention rather than a rule. It has already caught three real
+  defects that are invisible at the default text size.
 - **Icons and the clock are shared helpers.** Six independently written
   renderers must not drift into six icon sets. A mark is a solid
   silhouette with its detail knocked out in the PAPER colour the
