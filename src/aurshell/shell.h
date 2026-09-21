@@ -68,6 +68,14 @@ typedef struct {
     int   show_clock, show_positions;
     int   workspaces;
 
+    /* Locked-archetype parameters. They live in the shared context
+     * rather than as constants in the layout so that an administrator
+     * changes behaviour by editing a .shell file, which is the entire
+     * point of splitting archetype from code. */
+    int   locked_autostart;       /* 1 = the first allowed app is showing  */
+    int   locked_show_switcher;   /* 0 auto (>1 app), 1 always, 2 never    */
+    int   locked_exit_combo;      /* 0 none, 1 an admin escape exists      */
+
     /* ── policy, from the profile ───────────────────────────────── */
     int   allow_install, allow_settings, allow_theme_change, kiosk;
 

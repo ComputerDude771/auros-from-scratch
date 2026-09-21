@@ -244,7 +244,7 @@ static void begin_session(shell_ctx *c)
     int app[SHELL_MAX_APPS];
     int n = allowed_list(c, app);
     p->idle = 0.f;
-    select_app(c, LOCKED_AUTOSTART_FIRST ? 0 : p->cur, n, app, 1);
+    select_app(c, c->locked_autostart ? 0 : p->cur, n, app, 1);
     tween_to(&p->attract, 0.f, 0.30f, EASE_OUT_CUBIC);
 }
 
@@ -641,7 +641,16 @@ static void l_paint(shell_ctx *c, surface *s, shell_fonts *f, const surface *wal
 
     int cur_app = app[p->cur];
 
-    if (n == 1) {
+    /* locked_show_switcher, from the .shell file: "auto" shows the strip
+     * only when more than one app is allowed, "always" shows it even for
+     * one, and "never" suppresses it entirely — which is how an
+     * administrator pins a machine to a single app without having to
+     * uninstall the others. */
+    int show_strip = (c->locked_show_switcher == 1) ? 1
+                   : (c->locked_show_switcher == 2) ? 0
+                   : (n > 1);
+
+    if (!show_strip) {
         /* One allowed app: it IS the machine. No strip, no header, no
          * brand, nothing to press — the only pixels that are not the
          * app are the clock, and only because the .shell asked for it.

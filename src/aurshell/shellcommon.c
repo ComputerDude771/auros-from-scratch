@@ -186,6 +186,16 @@ int shell_archetype_load(shell_ctx *c, const char *path)
     c->show_clock      = strcmp(theme_str(&a, "show_clock", "yes"), "no") != 0;
     c->show_positions  = strcmp(theme_str(&a, "show_positions", "no"), "yes") == 0;
     c->workspaces      = theme_int(&a, "workspaces", 0);
+
+    c->locked_autostart = strcmp(theme_str(&a, "locked_autostart", "first"), "none") != 0;
+    {
+        const char *sw = theme_str(&a, "locked_show_switcher", "auto");
+        c->locked_show_switcher = !strcmp(sw, "always") ? 1 : !strcmp(sw, "never") ? 2 : 0;
+    }
+    /* Defaults to none on purpose. An escape hatch that appears because
+     * a key was missing from a profile is the opposite of a locked
+     * machine, so absence of the key must mean absence of the hatch. */
+    c->locked_exit_combo = strcmp(theme_str(&a, "locked_exit_combo", "none"), "admin") == 0;
     return 0;
 }
 
