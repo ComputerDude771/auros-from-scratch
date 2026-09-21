@@ -236,17 +236,22 @@ stage_overlay() {
         # Priority order matters: a plain find would happily return
         # "-Bold" before "-Regular" because B sorts before R, and the
         # whole UI would come up bold.
-        for _pat in "${_want}-Regular.ttf" "${_want}Regular.ttf" "${_want}.ttf" \
-                    "${_want}-Book.ttf" "${_want}*.ttf"; do
+        for _pat in "${_want}-Regular.ttf" "${_want}-Regular.otf" \
+                    "${_want}Regular.ttf" "${_want}Regular.otf" \
+                    "${_want}.ttf" "${_want}.otf" \
+                    "${_want}-Book.ttf" "${_want}*.ttf" "${_want}*.otf"; do
             for _cand in $(find "$RFS/usr/share/fonts" -iname "$_pat" 2>/dev/null | sort); do
                 case "$(basename "$_cand")" in
                     *Bold*|*Italic*|*Oblique*|*Light*|*Thin*|*Black*|*Medium*|*SemiBold*|*Extra*)
                         continue ;;
                 esac
-                # 'glyf' must appear in the sfnt table directory: our
-                # rasterizer renders TrueType outlines, and an OTF/CFF
-                # font would give a desktop with no text at all.
-                if head -c 4096 "$_cand" | grep -aq glyf; then
+                # The font must carry outlines our rasterizer can read.
+                # It handles BOTH TrueType 'glyf' (quadratic) and
+                # OpenType 'CFF ' (Type 2 charstrings, cubic), so accept
+                # either. Checking matters: a font with neither -- a
+                # bitmap-only or CFF2 font -- renders no text at all, and
+                # a desktop with no text is not a recoverable state.
+                if head -c 4096 "$_cand" | grep -aqE 'glyf|CFF '; then
                     ln -sf "${_cand#"$RFS"}" "$RFS/usr/share/auros/fonts/$_link.ttf"
                     note "font $_link -> $(basename "$_cand")"
                     return 0

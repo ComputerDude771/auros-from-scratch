@@ -1,7 +1,16 @@
 /* font_test.c — specimen sheet, self-checks and fuzz driver for font.c.
  *
- *   font_test [ttf] [out.png]     render the specimen + run assertions
- *   font_test --fuzz [ttf] [n]    truncate/corrupt a font n times
+ *   font_test [font] [out.png]              specimen + assertions
+ *   font_test --fuzz [font] [n]             truncate/corrupt a font n times
+ *   font_test --compare A.ttf B.otf a.png b.png [twin.png]
+ *
+ * --compare runs the whole suite over two fonts and renders the SAME
+ * strings from both, once per file and once interleaved line-by-line in
+ * `twin.png`. That last sheet is the point: a CFF interpreter that
+ * miscounts hintmask bytes or drops the charstring width operand still
+ * produces letter-shaped ink, and the cheapest way to see that it is
+ * the WRONG ink is to put a known-good TrueType rendering of the same
+ * sentence directly above it.
  *
  * The specimen is rendered in the real UI colours (Nocturne #0B0E14 with
  * #D4DCEA text) because anti-aliasing quality is a function of contrast
@@ -355,6 +364,56 @@ static void selftest(const char *ttf)
     }
     check(1, "clipping and degenerate draws survive");
 
+    /* Every printable ASCII glyph must put ink on the page.
+     *
+     * This is the check that catches a desynchronised Type 2
+     * charstring. A CFF interpreter that miscounts stem hints reads the
+     * hintmask byte-count wrong, and from that point on the charstring
+     * decodes as a different program: usually one that runs off the end
+     * of its own data with nothing drawn, or that closes no contour. A
+     * `glyf` bug looks the same. Either way the symptom is glyphs that
+     * silently come out blank, one or two at a time, which is exactly
+     * what nobody notices in a screenshot. */
+    {
+        int blank = 0;
+        char bad[96];
+        size_t nb = 0;
+        bad[0] = '\0';
+        for (char ch = '!'; ch <= '~'; ch++) {
+            char s[2] = { ch, 0 };
+            if (!has_glyph(f, s, 48.0f)) continue;   /* genuinely absent */
+            probe p = probe_text(f, s, 48.0f);
+            if (p.x0 < 0) { blank++; if (nb + 2 < sizeof bad) bad[nb++] = ch; }
+            free(p.c.px);
+        }
+        bad[nb] = '\0';
+        char msg[160];
+        snprintf(msg, sizeof msg, "every mapped printable ASCII glyph draws ink%s%s",
+                 blank ? " -- blank: " : "", bad);
+        check(blank == 0, msg);
+    }
+
+    /* No glyph may paint far outside the em box.
+     *
+     * A charstring's leading width operand is a coordinate to anyone who
+     * forgets to drop it, so mistaking it shifts the first moveto by up
+     * to a full advance and the outline lands somewhere absurd. The
+     * rasteriser would absorb that silently -- the bitmap just gets
+     * bigger -- so it is worth asserting. 2.5x the em is generous enough
+     * for a descender under an accent and tight enough to catch a
+     * misread operand. */
+    {
+        int over = 0;
+        for (const char *p = "HxgQ|@8W\xC3\x85\xC3\x87j"; *p; p++) {
+            char s[2] = { *p, 0 };
+            probe q = probe_text(f, s, 48.0f);
+            if (q.x0 >= 0 && (q.y1 - q.y0 > (int)(48.0f * 2.5f) ||
+                              q.x1 - q.x0 > (int)(48.0f * 2.5f))) over++;
+            free(q.c.px);
+        }
+        check(over == 0, "glyph ink stays inside a sane multiple of the em");
+    }
+
     font_free(f);
     font_free(NULL);
 }
@@ -449,8 +508,128 @@ static int fuzz(const char *ttf, int iters)
     return 0;
 }
 
+/* ── two fonts, one sheet ────────────────────────────────────────── */
+
+/* Render each sample string twice, one font directly under the other.
+ *
+ * Two outline formats that agree glyph-for-glyph on a page of Latin are
+ * the strongest evidence available without a reference rasteriser: the
+ * fonts differ in design, so the lines will never be identical, but a
+ * cubic flattened wrongly, a contour dropped, a counter filled in or a
+ * width operand mistaken for a coordinate all show up immediately as
+ * one row that does not read like the other. */
+static int twin(const char *fa, const char *fb, const char *out)
+{
+    const float sizes[] = { 13.0f, 18.0f, 30.0f };
+    canvas cv = canvas_new(1280, 1220, BG);
+    if (!cv.px) return 1;
+
+    font *hdr = font_load(fa, 17.0f);
+    if (!hdr) hdr = font_load(fb, 17.0f);
+    if (!hdr) { free(cv.px); return 1; }
+
+    float y = 40.0f;
+    font_draw(hdr, cv.px, cv.w, cv.h, 32.0f, y,
+              "AurOS font.c \xE2\x80\x94 TrueType (A) vs OpenType/CFF (B), same strings",
+              ACC, 1.0f);
+    y += 20.0f;
+    font_draw(hdr, cv.px, cv.w, cv.h, 32.0f, y, fa, DIM, 1.0f);
+    y += 16.0f;
+    font_draw(hdr, cv.px, cv.w, cv.h, 32.0f, y, fb, DIM, 1.0f);
+    y += 12.0f;
+    hline(&cv, (int)y, 0x1A2030);
+    y += 20.0f;
+
+    for (int s = 0; s < 3; s++) {
+        float px = sizes[s];
+        font *A = font_load(fa, px), *B = font_load(fb, px);
+        if (!A || !B) { font_free(A); font_free(B); continue; }
+        for (int i = 0; i < NSAMPLES && i < 4; i++) {
+            /* The A/B rows share a baseline grid so a vertical scan of
+             * the sheet compares like with like. */
+            y += font_ascent(A);
+            font_draw(A, cv.px, cv.w, cv.h, 52.0f, y, SAMPLES[i], FG, 1.0f);
+            font_draw(hdr, cv.px, cv.w, cv.h, 32.0f, y, "A", DIM, 1.0f);
+            y += font_line_height(A) - font_ascent(A);
+            y += font_ascent(B);
+            font_draw(B, cv.px, cv.w, cv.h, 52.0f, y, SAMPLES[i], FG, 1.0f);
+            font_draw(hdr, cv.px, cv.w, cv.h, 32.0f, y, "B", ACC, 0.7f);
+            y += font_line_height(B) - font_ascent(B);
+            y += 6.0f;
+        }
+        y += 14.0f;
+        font_free(A); font_free(B);
+    }
+
+    hline(&cv, (int)y, 0x1A2030);
+    y += 18.0f;
+    font_draw(hdr, cv.px, cv.w, cv.h, 32.0f, y,
+              "4x zoom \xE2\x80\x94 counters and curve quality, A above B", ACC, 0.85f);
+    y += 14.0f;
+
+    for (int k = 0; k < 2; k++) {
+        font *f = font_load(k ? fb : fa, 40.0f);
+        if (!f) continue;
+        canvas s = canvas_new(300, 54, BG);
+        if (s.px) {
+            font_draw(f, s.px, s.w, s.h, 4.0f, 40.0f, "oeaBg@8%SR&",
+                      k ? ACC : FG, 1.0f);
+            blit_zoom(&cv, 32, (int)y, &s, 4);
+            free(s.px);
+        }
+        y += 54 * 4 + 8;
+        font_free(f);
+    }
+
+    font_free(hdr);
+    int rc = png_write_rgb(out, cv.px, cv.w, cv.h);
+    free(cv.px);
+    printf("wrote %s (twin sheet, content ends at y=%d) rc=%d\n", out, (int)y, rc);
+    return rc;
+}
+
+/* Numeric cross-check. Two unrelated sans faces at the same pixel size
+ * still have to agree roughly on how much of the line a sentence eats
+ * and how tall a capital is; an order-of-magnitude gap means one of the
+ * two outline paths has the wrong scale, not that the designers
+ * disagreed. */
+static void compare_metrics(const char *fa, const char *fb)
+{
+    font *A = font_load(fa, 32.0f), *B = font_load(fb, 32.0f);
+    if (!A || !B) { check(0, "both fonts load at 32px"); font_free(A); font_free(B); return; }
+
+    const char *line = SAMPLES[0];
+    float wa = font_text_width(A, line), wb = font_text_width(B, line);
+    printf("  info  advance of sample line: A=%.1f  B=%.1f  ratio=%.3f\n",
+           (double)wa, (double)wb, (double)(wb / (wa > 0 ? wa : 1.0f)));
+    check(wa > 0 && wb > 0 && wb > wa * 0.55f && wb < wa * 1.8f,
+          "the two fonts set the same sentence to a comparable width");
+
+    probe ha = probe_text(A, "H", 32.0f), hb = probe_text(B, "H", 32.0f);
+    int ca = ha.y1 - ha.y0, cb = hb.y1 - hb.y0;
+    printf("  info  cap height in px: A=%d  B=%d\n", ca, cb);
+    check(ca > 0 && cb > 0 && cb > ca * 0.7f && cb < ca * 1.4f,
+          "the two fonts agree on cap height to within 30%");
+    free(ha.c.px); free(hb.c.px);
+
+    font_free(A); font_free(B);
+}
+
 int main(int argc, char **argv)
 {
+    if (argc > 5 && !strcmp(argv[1], "--compare")) {
+        const char *fa = argv[2], *fb = argv[3];
+        int rc = 0;
+        selftest(fa);
+        rc |= sheet(fa, argv[4]);
+        selftest(fb);
+        rc |= sheet(fb, argv[5]);
+        compare_metrics(fa, fb);
+        rc |= twin(fa, fb, argc > 6 ? argv[6] : "font_twin.png");
+        printf("%d check(s) failed\n", failures);
+        return rc || failures ? 1 : 0;
+    }
+
     if (argc > 1 && !strcmp(argv[1], "--fuzz")) {
         const char *ttf = argc > 2 ? argv[2] : DEFAULT_TTF;
         int n = argc > 3 ? atoi(argv[3]) : 300;
