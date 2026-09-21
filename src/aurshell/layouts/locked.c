@@ -685,11 +685,18 @@ static void l_paint(shell_ctx *c, surface *s, shell_fonts *f, const surface *wal
          * filled strip across the top reads as a taskbar, and a
          * taskbar is a promise of somewhere else to go. */
         float by = (float)c->margin + 10.f;
-        shell_text(s, f->big, (float)(c->margin + 10),
-                   by + (f->big ? font_ascent(f->big) : 22.f),
+        /* The brand is a profile's own words — "Lincoln High Chromebook
+         * Replacement" is a real one — so it is measured, not assumed.
+         * A school name that runs under the clock is the first thing
+         * the person who signed off on this deployment would notice. */
+        font *bf = f->big;
+        float bavail = (float)(s->w - 2*(c->margin + 10)) - (c->show_clock ? 170.f : 0.f);
+        if (shell_text_w(bf, c->brand) > bavail) bf = f->mid;
+        shell_text(s, bf, (float)(c->margin + 10),
+                   by + (bf ? font_ascent(bf) : 22.f),
                    c->brand, c->fg_hi, 0.95f);
         shell_text(s, f->small, (float)(c->margin + 10),
-                   by + (f->big ? font_line_height(f->big) : 34.f)
+                   by + (bf ? font_line_height(bf) : 34.f)
                       + (f->small ? font_ascent(f->small) : 13.f) + 2.f,
                    "The apps below are everything this computer does.",
                    c->subtle, 0.8f);

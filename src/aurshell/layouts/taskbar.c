@@ -201,13 +201,25 @@ static rect cascade_geom(shell_ctx *c, int W, int H, int i)
      * jammed against it, so a screen with two or three things open
      * looks composed instead of swept into one corner — and so the
      * first window a person opens is not sitting under the pointer. */
-    int step = cascade_step(c);
     int x0 = clampi((W - ww) / 3, m + 16, W - m - 200);
     int y0 = top + clampi(((bot - top) - wh) / 3, m, bot - top);
     int span_x = (W - m - ww) - x0, span_y = (bot - m - wh) - y0;
     if (span_x < 0) span_x = 0;
     if (span_y < 0) span_y = 0;
-    int per = 1 + (span_x < span_y ? span_x : span_y) / step;
+    int span = span_x < span_y ? span_x : span_y;
+
+    /* Tighten the step until the whole pile fits in one run. A cascade
+     * that wraps puts a new window BEHIND the corner of the pile, where
+     * the front window is no longer the one nearest the bottom right —
+     * and a pile that does not read front-to-back is worse than a
+     * tighter one. Below a floor they would be indistinguishable, so
+     * past that it wraps and the bar carries the load, which is what
+     * the bar is for. */
+    int step = cascade_step(c);
+    int n = c->n_wins < 1 ? 1 : c->n_wins;
+    if (n > 1 && (n - 1) * step > span) step = span / (n - 1);
+    if (step < 22) step = 22;
+    int per = 1 + span / step;
 
     int k = i % per, band = i / per;
     rect r = { x0 + k * step + band * 18, y0 + k * step, ww, wh };

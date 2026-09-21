@@ -57,11 +57,13 @@ static float fdc(font *f, float d) { return f ? font_descent(f) : d; }
  * colours at half alpha gives two ghosts and no contrast. */
 static uint32_t mix_rgb(uint32_t a, uint32_t b, float t)
 {
-    float k = t < 0.f ? 0.f : (t > 1.f ? 1.f : t);
-    uint32_t r = (uint32_t)((float)((a >> 16) & 0xFF) + (float)(((int)((b >> 16) & 0xFF)) - (int)((a >> 16) & 0xFF)) * k);
-    uint32_t g = (uint32_t)((float)((a >>  8) & 0xFF) + (float)(((int)((b >>  8) & 0xFF)) - (int)((a >>  8) & 0xFF)) * k);
-    uint32_t bl= (uint32_t)((float)( a        & 0xFF) + (float)(((int)( b        & 0xFF)) - (int)( a        & 0xFF)) * k);
-    return (r << 16) | (g << 8) | bl;
+    float k = clampf(t, 0.f, 1.f);
+    uint32_t out = 0;
+    for (int sh = 16; sh >= 0; sh -= 8) {
+        float ca = (float)((a >> sh) & 0xFFu), cb = (float)((b >> sh) & 0xFFu);
+        out |= ((uint32_t)(ca + (cb - ca) * k) & 0xFFu) << sh;
+    }
+    return out;
 }
 
 static rect rect_lerp(rect a, rect b, float t)
@@ -111,8 +113,6 @@ static rect home_btn_rect(shell_ctx *c, int w, int h)
     return r;
 }
 
-/* The area a thing fills when it is open: everything that is not
- * permanent chrome. */
 /* The dot strip's top edge, owned here so grid_metrics() can leave room
  * above it and page_dot_rect() can put the dots in it without the two
  * drifting apart. */
@@ -121,6 +121,8 @@ static int dots_band_y(shell_ctx *c, int h)
     return h - homebar_h(c) - c->margin - DOTS_BAND;
 }
 
+/* The area a thing fills when it is open: everything that is not
+ * permanent chrome. */
 static rect full_rect(shell_ctx *c, int w, int h)
 {
     int top = strip_h(c);
