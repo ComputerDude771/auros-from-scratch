@@ -39,6 +39,10 @@
  * buffer is either broken or hostile, and either way the answer is to
  * refuse rather than to try the allocation. */
 #define MAX_DIM     16384
+/* How deep a chain of parents or subsurfaces may be before we stop
+ * walking it. Any real window tree is a handful deep; a client can make
+ * one a hundred thousand deep for the price of some memory. */
+#define PARENT_MAX    256
 #define MAX_WINS      128
 
 enum role { ROLE_NONE = 0, ROLE_TOPLEVEL, ROLE_POPUP, ROLE_SUBSURFACE, ROLE_CURSOR };
@@ -48,7 +52,7 @@ enum role { ROLE_NONE = 0, ROLE_TOPLEVEL, ROLE_POPUP, ROLE_SUBSURFACE, ROLE_CURS
  * commits lands together or not at all. Getting this wrong produces
  * tearing that looks like a driver bug. */
 typedef struct {
-    struct wl_resource *buffer;
+    struct wl_resource *buffer;       /* pending only; never kept past commit */
     int                 attached;     /* attach() was called this cycle */
     int                 dx, dy;
     int                 dmg_x0, dmg_y0, dmg_x1, dmg_y1;  /* buffer coords */
@@ -65,6 +69,13 @@ struct aurwl_win {
     uint32_t            id;
 
     surf_state          pending, current;
+    /* A client may destroy a wl_buffer it has attached but not yet
+     * committed -- and an ordinary toolkit does exactly that when a
+     * synchronized subsurface parks a buffer until its parent commits.
+     * Without this listener the next commit called wl_shm_buffer_get()
+     * on freed memory and then sent a release event through it. */
+    struct wl_listener  buf_gone;
+    struct wl_resource *buf_listening;
     struct wl_list      frame_cbs;    /* wl_resource link list */
 
     /* Our own copy of the client's pixels. Owning a copy rather than
@@ -205,7 +216,7 @@ static void viewport_destroy(struct wl_client *cl, struct wl_resource *r)
 {
     (void)cl;
     aurwl_win *w = wl_resource_get_user_data(r);
-    if (w) { w->pending.vp_dst_w = w->pending.vp_dst_h = 0; w->viewport = NULL; }
+    if (w && w->viewport == r) { w->pending.vp_dst_w = w->pending.vp_dst_h = 0; w->viewport = NULL; }
     wl_resource_destroy(r);
 }
 static void viewport_gone(struct wl_resource *r)
@@ -298,10 +309,33 @@ static int take_buffer(aurwl_win *w, struct wl_resource *buf)
 static void surface_map(aurwl_win *w);
 static void surface_unmap(aurwl_win *w);
 
+static void buffer_gone(struct wl_listener *l, void *data)
+{
+    (void)data;
+    aurwl_win *w = wl_container_of(l, w, buf_gone);
+    /* Forget the attach rather than treating it as attach(NULL): a
+     * client that throws away a buffer it never committed has not asked
+     * to be unmapped, and unmapping it would make a window vanish
+     * because of a bookkeeping detail the user never sees. */
+    w->pending.buffer = NULL;
+    w->pending.attached = 0;
+    w->buf_listening = NULL;
+}
+static void watch_buffer(aurwl_win *w, struct wl_resource *buf)
+{
+    if (w->buf_listening == buf) return;
+    if (w->buf_listening) { wl_list_remove(&w->buf_gone.link); w->buf_listening = NULL; }
+    if (!buf) return;
+    w->buf_gone.notify = buffer_gone;
+    wl_resource_add_destroy_listener(buf, &w->buf_gone);
+    w->buf_listening = buf;
+}
+
 static void surf_attach(struct wl_client *cl, struct wl_resource *r,
                         struct wl_resource *buf, int32_t dx, int32_t dy)
 {
     (void)cl; aurwl_win *w = wl_resource_get_user_data(r);
+    watch_buffer(w, buf);
     w->pending.buffer = buf;
     w->pending.attached = 1;
     if (wl_resource_get_version(r) < WL_SURFACE_OFFSET_SINCE_VERSION) {
@@ -314,7 +348,21 @@ static void surf_offset(struct wl_client *cl, struct wl_resource *r, int32_t dx,
 static void damage_accum(surf_state *st, int x, int y, int ww, int hh, int scale)
 {
     if (ww <= 0 || hh <= 0) return;
-    int x0 = x * scale, y0 = y * scale, x1 = (x + ww) * scale, y1 = (y + hh) * scale;
+    /* In 64 bits and clamped. A client may send any int32 for any of
+     * these, and (x + ww) * scale overflows -- which is undefined
+     * behaviour, not merely a wrong rectangle. The copy clamps to the
+     * buffer afterwards, so this never reached out of bounds, but
+     * undefined behaviour is not a thing to leave lying about in the
+     * process that owns the display. */
+    long long sc = scale < 1 ? 1 : scale;
+    long long lx0 = (long long)x * sc,          ly0 = (long long)y * sc;
+    long long lx1 = ((long long)x + ww) * sc,   ly1 = ((long long)y + hh) * sc;
+    if (lx0 < 0) lx0 = 0;
+    if (ly0 < 0) ly0 = 0;
+    if (lx1 > MAX_DIM) lx1 = MAX_DIM;
+    if (ly1 > MAX_DIM) ly1 = MAX_DIM;
+    if (lx1 <= lx0 || ly1 <= ly0) return;
+    int x0 = (int)lx0, y0 = (int)ly0, x1 = (int)lx1, y1 = (int)ly1;
     if (!st->has_damage) { st->dmg_x0 = x0; st->dmg_y0 = y0; st->dmg_x1 = x1; st->dmg_y1 = y1; st->has_damage = 1; return; }
     if (x0 < st->dmg_x0) st->dmg_x0 = x0;
     if (y0 < st->dmg_y0) st->dmg_y0 = y0;
@@ -352,8 +400,15 @@ static void surf_set_scale(struct wl_client *cl, struct wl_resource *r, int32_t 
     w->pending.scale = s;
 }
 
-static void apply_commit(aurwl_win *w)
+static void apply_commit(aurwl_win *w, int depth)
 {
+    /* Not an infinite recursion -- sub_cached is cleared before
+     * recursing and nothing inside ever sets it, so a ring terminates.
+     * What is unbounded is the DEPTH: a chain of a hundred thousand
+     * synchronized subsurfaces, each committed once, recurses that far
+     * on one commit and walks off the end of the stack. That is
+     * affordable for a client to build. */
+    if (depth > PARENT_MAX) return;
     surf_state *p = &w->pending;
 
     /* Carry damage into current before take_buffer reads it, since the
@@ -378,16 +433,16 @@ static void apply_commit(aurwl_win *w)
             if (w->store) { surface_free(w->store); w->store = NULL; }
             w->cw = w->ch = 0;
         }
-        w->current.buffer = p->buffer;
     }
     p->attached = 0; p->buffer = NULL; p->has_damage = 0;
+    watch_buffer(w, NULL);
 
     /* A synchronized subsurface's own commit does not take effect until
      * its parent commits; that is what makes a parent and its children
      * resize as one thing instead of tearing against each other. */
     aurwl_win *ch;
     wl_list_for_each(ch, &w->children, child_link)
-        if (ch->sub_sync && ch->sub_cached) { ch->sub_cached = 0; apply_commit(ch); }
+        if (ch->sub_sync && ch->sub_cached) { ch->sub_cached = 0; apply_commit(ch, depth + 1); }
 }
 
 static void surf_commit(struct wl_client *cl, struct wl_resource *r)
@@ -401,7 +456,7 @@ static void surf_commit(struct wl_client *cl, struct wl_resource *r)
      * that never receives a configure never draws, which presents as a
      * window that silently fails to appear. */
     if (w->xdg_surface && !w->acked && !w->pending.buffer) {
-        apply_commit(w);
+        apply_commit(w, 0);
         if (w->xdg_toplevel) {
             struct wl_array states; wl_array_init(&states);
             xdg_toplevel_send_configure(w->xdg_toplevel, 0, 0, &states);
@@ -410,7 +465,7 @@ static void surf_commit(struct wl_client *cl, struct wl_resource *r)
         xdg_surface_send_configure(w->xdg_surface, serial_of(w->c));
         return;
     }
-    apply_commit(w);
+    apply_commit(w, 0);
 }
 
 static const struct wl_surface_interface surface_impl = {
@@ -487,6 +542,8 @@ static void surface_free_res(struct wl_resource *r)
     wl_list_remove(&w->child_link);
     w->parent = NULL;
 
+    watch_buffer(w, NULL);
+
     struct wl_resource *cb, *cbt;
     wl_resource_for_each_safe(cb, cbt, &w->frame_cbs) wl_resource_destroy(cb);
 
@@ -542,7 +599,7 @@ static void sub_destroy(struct wl_client *cl, struct wl_resource *r)
 {
     (void)cl;
     aurwl_win *w = wl_resource_get_user_data(r);
-    if (w) {
+    if (w && w->subsurface == r) {
         if (w->parent) { wl_list_remove(&w->child_link); wl_list_init(&w->child_link); w->parent = NULL; }
         w->role = ROLE_NONE; w->subsurface = NULL;
     }
@@ -551,20 +608,48 @@ static void sub_destroy(struct wl_client *cl, struct wl_resource *r)
 static void sub_set_position(struct wl_client *cl, struct wl_resource *r, int32_t x, int32_t y)
 { (void)cl; aurwl_win *w = wl_resource_get_user_data(r); if (w) { w->sub_x = x; w->sub_y = y; } }
 
-static void sub_place(aurwl_win *w, struct wl_resource *sib_res, int above)
+static void sub_place(struct wl_resource *r, aurwl_win *w,
+                     struct wl_resource *sib_res, int above)
 {
     if (!w || !w->parent) return;
     aurwl_win *sib = sib_res ? wl_resource_get_user_data(sib_res) : NULL;
+
+    /* The sibling must be an actual sibling, or the parent. A client
+     * passing its OWN surface was accepted, and then:
+     *
+     *   place_below -- wl_list_remove() zeroes both links, so
+     *     sib->child_link.prev is read as NULL and wl_list_insert()
+     *     dereferences address 8. Four requests, and the compositor is
+     *     dead along with every window on the machine.
+     *
+     *   place_above -- no crash, but the surface ends up in a self-ring
+     *     while w->parent still names its parent. It is then invisible
+     *     to the parent's walk in surface_free_res(), so when the parent
+     *     goes, this child keeps a pointer to freed memory -- which the
+     *     shell dereferences every frame in session_paint_popups().
+     *
+     * Two sources of truth, `parent` and `child_link`, and this was the
+     * one function that could pull them apart. */
+    if (sib == w) {
+        wl_resource_post_error(r, WL_SUBSURFACE_ERROR_BAD_SURFACE,
+                               "a subsurface cannot be its own sibling");
+        return;
+    }
+    if (sib && sib != w->parent && sib->parent != w->parent) {
+        wl_resource_post_error(r, WL_SUBSURFACE_ERROR_BAD_SURFACE,
+                               "not a sibling of this subsurface");
+        return;
+    }
     wl_list_remove(&w->child_link);
-    if (sib && sib->parent == w->parent)
+    if (sib && sib != w->parent)
         wl_list_insert(above ? &sib->child_link : sib->child_link.prev, &w->child_link);
     else
         wl_list_insert(above ? w->parent->children.prev : &w->parent->children, &w->child_link);
 }
 static void sub_place_above(struct wl_client *cl, struct wl_resource *r, struct wl_resource *s)
-{ (void)cl; sub_place(wl_resource_get_user_data(r), s, 1); }
+{ (void)cl; sub_place(r, wl_resource_get_user_data(r), s, 1); }
 static void sub_place_below(struct wl_client *cl, struct wl_resource *r, struct wl_resource *s)
-{ (void)cl; sub_place(wl_resource_get_user_data(r), s, 0); }
+{ (void)cl; sub_place(r, wl_resource_get_user_data(r), s, 0); }
 static void sub_set_sync(struct wl_client *cl, struct wl_resource *r)
 { (void)cl; aurwl_win *w = wl_resource_get_user_data(r); if (w) w->sub_sync = 1; }
 static void sub_set_desync(struct wl_client *cl, struct wl_resource *r)
@@ -572,7 +657,7 @@ static void sub_set_desync(struct wl_client *cl, struct wl_resource *r)
     (void)cl; aurwl_win *w = wl_resource_get_user_data(r);
     if (!w) return;
     w->sub_sync = 0;
-    if (w->sub_cached) { w->sub_cached = 0; apply_commit(w); }
+    if (w->sub_cached) { w->sub_cached = 0; apply_commit(w, 0); }
 }
 static const struct wl_subsurface_interface subsurface_impl = {
     .destroy = sub_destroy, .set_position = sub_set_position,
@@ -583,6 +668,27 @@ static void subsurface_gone(struct wl_resource *r)
 {
     aurwl_win *w = wl_resource_get_user_data(r);
     if (w && w->subsurface == r) w->subsurface = NULL;
+}
+
+/* Would making `cand` the parent of `w` close a loop?
+ *
+ * `parent` is shared between subsurfaces and popups, and only the
+ * subsurface path ever checked -- so two popups could name each other
+ * and the subsurface check would then walk that ring forever, spinning
+ * at 100% inside a client request with the event loop never reached
+ * again. A hang in the process that owns the display is as fatal as a
+ * crash, and harder to describe to the person it happens to.
+ *
+ * The step bound is belt and braces: it makes the walk terminate even
+ * if some future path builds a ring this cannot see. */
+static int parent_loop(aurwl_win *cand, aurwl_win *w)
+{
+    int steps = 0;
+    for (aurwl_win *a = cand; a; a = a->parent) {
+        if (a == w) return 1;
+        if (++steps > PARENT_MAX) return 1;
+    }
+    return 0;
 }
 
 static void subcomp_get(struct wl_client *cl, struct wl_resource *r, uint32_t id,
@@ -596,16 +702,16 @@ static void subcomp_get(struct wl_client *cl, struct wl_resource *r, uint32_t id
                                "a surface cannot be its own subsurface");
         return;
     }
-    /* A cycle -- A below B, then B below A -- makes apply_commit()
-     * recurse until the stack runs out, and the client can build one
-     * with two ordinary requests. The protocol forbids it; nothing
-     * enforced it. */
-    for (aurwl_win *a = p; a; a = a->parent)
-        if (a == w) {
-            wl_resource_post_error(r, WL_SUBCOMPOSITOR_ERROR_BAD_SURFACE,
-                                   "subsurface loop");
-            return;
-        }
+    if (parent_loop(p, w)) {
+        wl_resource_post_error(r, WL_SUBCOMPOSITOR_ERROR_BAD_SURFACE,
+                               "subsurface loop");
+        return;
+    }
+    if (w->subsurface || w->xdg_toplevel || w->xdg_popup) {
+        wl_resource_post_error(r, WL_SUBCOMPOSITOR_ERROR_BAD_SURFACE,
+                               "this surface already has a role");
+        return;
+    }
     struct wl_resource *res = wl_resource_create(cl, &wl_subsurface_interface, 1, id);
     if (!res) { wl_client_post_no_memory(cl); return; }
     wl_resource_set_implementation(res, &subsurface_impl, w, subsurface_gone);
@@ -634,7 +740,13 @@ static void vper_get(struct wl_client *cl, struct wl_resource *r, uint32_t id,
     (void)r;
     struct wl_resource *res = wl_resource_create(cl, &wp_viewport_interface, 1, id);
     if (!res) { wl_client_post_no_memory(cl); return; }
-    aurwl_win *w = wl_resource_get_user_data(surf);
+    aurwl_win *w = surf ? wl_resource_get_user_data(surf) : NULL;
+    if (w && w->viewport) {
+        wl_resource_destroy(res);
+        wl_resource_post_error(r, WP_VIEWPORTER_ERROR_VIEWPORT_EXISTS,
+                               "this surface already has a viewport");
+        return;
+    }
     wl_resource_set_implementation(res, &viewport_impl, w, viewport_gone);
     if (w) w->viewport = res;
 }
@@ -878,6 +990,13 @@ static void ddev_set_selection(struct wl_client *cl, struct wl_resource *r,
     if (c->selection && c->selection != src) wl_data_source_send_cancelled(c->selection);
     c->selection = src;
     c->selection_serial = serial;
+    /* Retire the offers for the previous selection. Leaving them alive
+     * leaked one wl_data_offer per device per focus change, and -- worse
+     * than the leak -- a client that kept an old offer could go on
+     * reading the clipboard contents it described long after the user
+     * had copied something else. */
+    struct wl_resource *old, *oldt;
+    wl_resource_for_each_safe(old, oldt, &c->offers) wl_resource_destroy(old);
     /* Everyone who can paste has to hear that there is something new,
      * including the client that just copied -- its own paste menu reads
      * the selection the same way everyone else's does. */
@@ -1008,7 +1127,12 @@ static void positioner_resolve(const positioner *p, aurwl_win *parent, aurwl *c,
 
 static void configure_toplevel(aurwl_win *w)
 {
-    if (!w->xdg_toplevel) return;
+    /* Both, separately. A client may destroy the xdg_surface and keep
+     * the xdg_toplevel; the window then stays mapped and in the list,
+     * so the shell configures it every frame, and
+     * xdg_surface_send_configure(NULL) dereferences its client. That
+     * crashes with no further help from the client at all. */
+    if (!w->xdg_toplevel || !w->xdg_surface) return;
     struct wl_array states;
     wl_array_init(&states);
     uint32_t *st;
@@ -1066,6 +1190,7 @@ static void toplevel_gone(struct wl_resource *r)
 {
     aurwl_win *w = wl_resource_get_user_data(r);
     if (!w) return;
+    if (w->xdg_toplevel != r) return;      /* a stale duplicate */
     w->xdg_toplevel = NULL; w->role = ROLE_NONE;
     if (w->mapped) surface_unmap(w);
 }
@@ -1081,6 +1206,7 @@ static void pop_reposition(struct wl_client *cl, struct wl_resource *r,
     aurwl_win *w = wl_resource_get_user_data(r);
     positioner *p = wl_resource_get_user_data(pos_res);
     if (!w || !p) return;
+    if (!w->xdg_surface) return;
     positioner_resolve(p, w->parent, w->c, &w->px, &w->py);
     w->want_w = p->w; w->want_h = p->h;
     xdg_popup_send_repositioned(r, token);
@@ -1094,6 +1220,7 @@ static void popup_gone(struct wl_resource *r)
 {
     aurwl_win *w = wl_resource_get_user_data(r);
     if (!w) return;
+    if (w->xdg_popup != r) return;
     w->xdg_popup = NULL; w->role = ROLE_NONE;
     if (w->parent) { wl_list_remove(&w->child_link); wl_list_init(&w->child_link); w->parent = NULL; }
     if (w->mapped) surface_unmap(w);
@@ -1105,6 +1232,17 @@ static void xs_get_toplevel(struct wl_client *cl, struct wl_resource *r, uint32_
 {
     aurwl_win *w = wl_resource_get_user_data(r);
     if (!w) { wl_resource_post_error(r, 0, "surface is gone"); return; }
+    /* One role object per surface, which the spec requires anyway. The
+     * surface stores a single pointer to each kind, so a second one is
+     * invisible to the disarming in surface_free_res() -- it stays
+     * armed with a pointer to the freed window, and its handlers then
+     * write attacker-chosen bytes into the freed chunk. set_title alone
+     * is 127 of them at a fixed offset. */
+    if (w->xdg_toplevel || w->xdg_popup) {
+        wl_resource_post_error(r, XDG_WM_BASE_ERROR_ROLE,
+                               "this surface already has a role");
+        return;
+    }
     struct wl_resource *tl = wl_resource_create(cl, &xdg_toplevel_interface,
                                                 wl_resource_get_version(r), id);
     if (!tl) { wl_client_post_no_memory(cl); return; }
@@ -1118,6 +1256,11 @@ static void xs_get_popup(struct wl_client *cl, struct wl_resource *r, uint32_t i
     aurwl_win *w = wl_resource_get_user_data(r);
     positioner *p = pos_res ? wl_resource_get_user_data(pos_res) : NULL;
     if (!w || !p) { wl_resource_post_error(r, 0, "surface or positioner is gone"); return; }
+    if (w->xdg_toplevel || w->xdg_popup) {
+        wl_resource_post_error(r, XDG_WM_BASE_ERROR_ROLE,
+                               "this surface already has a role");
+        return;
+    }
     struct wl_resource *pr = wl_resource_create(cl, &xdg_popup_interface,
                                                 wl_resource_get_version(r), id);
     if (!pr) { wl_client_post_no_memory(cl); return; }
@@ -1131,7 +1274,12 @@ static void xs_get_popup(struct wl_client *cl, struct wl_resource *r, uint32_t i
         parent = pw;
     }
     if (parent) {
-        if (w->parent) wl_list_remove(&w->child_link);
+        if (parent_loop(parent, w)) {
+            wl_resource_post_error(r, XDG_WM_BASE_ERROR_INVALID_POPUP_PARENT,
+                                   "popup parent loop");
+            return;
+        }
+        wl_list_remove(&w->child_link);
         w->parent = parent;
         wl_list_insert(parent->children.prev, &w->child_link);
     }
@@ -1160,7 +1308,7 @@ static const struct xdg_surface_interface xdg_surface_impl = {
 static void xdg_surface_gone(struct wl_resource *r)
 {
     aurwl_win *w = wl_resource_get_user_data(r);
-    if (w) w->xdg_surface = NULL;
+    if (w && w->xdg_surface == r) w->xdg_surface = NULL;
 }
 
 /* ── xdg_wm_base ────────────────────────────────────────────────── */
@@ -1180,6 +1328,11 @@ static void wm_get_xdg_surface(struct wl_client *cl, struct wl_resource *r, uint
 {
     aurwl_win *w = surf ? wl_resource_get_user_data(surf) : NULL;
     if (!w) { wl_resource_post_error(r, 0, "no such surface"); return; }
+    if (w->xdg_surface) {
+        wl_resource_post_error(r, XDG_WM_BASE_ERROR_ROLE,
+                               "this surface already has an xdg_surface");
+        return;
+    }
     struct wl_resource *xs = wl_resource_create(cl, &xdg_surface_interface,
                                                 wl_resource_get_version(r), id);
     if (!xs) { wl_client_post_no_memory(cl); return; }
