@@ -201,23 +201,32 @@ static rect cascade_geom(shell_ctx *c, int W, int H, int i)
      * jammed against it, so a screen with two or three things open
      * looks composed instead of swept into one corner — and so the
      * first window a person opens is not sitting under the pointer. */
-    int x0 = clampi((W - ww) / 3, m + 16, W - m - 200);
-    int y0 = top + clampi(((bot - top) - wh) / 3, m, bot - top);
+    /* Give the pile the room it needs first and spread whatever is left
+     * over around it, so two windows look composed on the desktop and
+     * eight still step cleanly instead of being shoved into a corner. */
+    int n = c->n_wins < 1 ? 1 : c->n_wins;
+    int step = cascade_step(c);
+    int need = (n - 1) * step;
+    int room_x = (W - m) - (m + 16) - ww;
+    int room_y = (bot - m) - (top + m) - wh;
+    if (room_x < 0) room_x = 0;
+    if (room_y < 0) room_y = 0;
+    int x0 = m + 16 + clampi((room_x - need) / 3, 0, room_x);
+    int y0 = top + m + clampi((room_y - need) / 3, 0, room_y);
+
     int span_x = (W - m - ww) - x0, span_y = (bot - m - wh) - y0;
     if (span_x < 0) span_x = 0;
     if (span_y < 0) span_y = 0;
     int span = span_x < span_y ? span_x : span_y;
 
     /* Tighten the step until the whole pile fits in one run. A cascade
-     * that wraps puts a new window BEHIND the corner of the pile, where
-     * the front window is no longer the one nearest the bottom right —
-     * and a pile that does not read front-to-back is worse than a
-     * tighter one. Below a floor they would be indistinguishable, so
-     * past that it wraps and the bar carries the load, which is what
-     * the bar is for. */
-    int step = cascade_step(c);
-    int n = c->n_wins < 1 ? 1 : c->n_wins;
-    if (n > 1 && (n - 1) * step > span) step = span / (n - 1);
+     * that wraps puts the newest window BEHIND the corner of the pile,
+     * where the front one is no longer the one nearest the bottom
+     * right — and a pile that does not read front-to-back is worse than
+     * a tight one. Below a floor they stop being separate things at
+     * all, so past that it wraps and the bar carries the load, which is
+     * what the bar is for. */
+    if (n > 1 && need > span) step = span / (n - 1);
     if (step < 22) step = 22;
     int per = 1 + span / step;
 
@@ -532,6 +541,10 @@ static void paint_window(shell_ctx *c, surface *s, shell_fonts *f, int i,
 
     float body_a = alpha * c->panel_a * (focused ? 1.f : 0.96f);
     draw_round_rect(s, a, fc, c->surface_c, body_a);
+    /* An unfocused window is washed toward the bar colour rather than
+     * just faded: on a light theme a plain fade leaves it the brightest
+     * thing on the screen, competing with the window actually in use. */
+    if (!focused) draw_round_rect(s, a, fc, c->bg_alt, alpha * 0.3f);
 
     rect tb = { a.x, a.y, a.w, th };
     if (focused)
