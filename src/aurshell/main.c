@@ -30,6 +30,7 @@
 #include <sys/inotify.h>
 
 #include "shell.h"
+#include "pad.h"
 #include "kms.h"
 #include "../common/wall.h"
 #include "../common/png.h"
@@ -246,8 +247,6 @@ static void free_fonts(shell_fonts *f)
  *    fires on every finger-down and finger-up, so honouring it there
  *    means the user cannot move the pointer without clicking.
  */
-enum { DEV_KBD = 1, DEV_REL = 2, DEV_ABS = 4, DEV_DIRECT = 8 };
-
 typedef struct {
     int fd[MAX_INPUT_DEV];
     int kind[MAX_INPUT_DEV];
@@ -255,6 +254,7 @@ typedef struct {
      * ioctl per sample on a device that can report at 250 Hz. */
     int ax_lo[MAX_INPUT_DEV], ax_hi[MAX_INPUT_DEV];
     int ay_lo[MAX_INPUT_DEV], ay_hi[MAX_INPUT_DEV];
+    pad_state pad[MAX_INPUT_DEV];
     char name[MAX_INPUT_DEV][32];
     int n;
     int notify_fd;             /* inotify on /dev/input, for hotplug   */
@@ -263,46 +263,44 @@ typedef struct {
 static int has_bit(const unsigned long *b, int bit)
 { return (b[bit / (8 * sizeof(long))] >> (bit % (8 * sizeof(long)))) & 1; }
 
+/* Read what the kernel knows about a device and hand the decision to
+ * pad_classify(), which is pure and therefore tested. */
 static int classify(int fd)
 {
     unsigned long ev = 0;
-    int kind = 0;
     if (ioctl(fd, EVIOCGBIT(0, sizeof ev), &ev) < 0) return 0;
+
+    dev_caps d;
+    memset(&d, 0, sizeof d);
+
+    unsigned long key[(KEY_MAX / (8 * sizeof(long))) + 1];
+    memset(key, 0, sizeof key);
+    int have_key = (ev & (1u << EV_KEY)) &&
+                   ioctl(fd, EVIOCGBIT(EV_KEY, sizeof key), key) >= 0;
+    if (have_key) {
+        d.has_btn_finger = has_bit(key, BTN_TOOL_FINGER);
+        for (int k = KEY_Q; k <= KEY_P; k++) if (has_bit(key, k)) d.letter_keys++;
+    }
 
     unsigned long prop[(INPUT_PROP_MAX / (8 * sizeof(long))) + 1];
     memset(prop, 0, sizeof prop);
     ioctl(fd, EVIOCGPROP(sizeof prop), prop);   /* absent on old kernels */
-    int direct  = has_bit(prop, INPUT_PROP_DIRECT);
-    int pointer = has_bit(prop, INPUT_PROP_POINTER);
+    d.prop_direct = has_bit(prop, INPUT_PROP_DIRECT);
 
     if (ev & (1u << EV_REL)) {
         unsigned long rel[(REL_MAX / (8 * sizeof(long))) + 1];
         memset(rel, 0, sizeof rel);
-        if (ioctl(fd, EVIOCGBIT(EV_REL, sizeof rel), rel) >= 0 &&
-            has_bit(rel, REL_X) && has_bit(rel, REL_Y)) kind |= DEV_REL;
+        if (ioctl(fd, EVIOCGBIT(EV_REL, sizeof rel), rel) >= 0)
+            d.has_rel_xy = has_bit(rel, REL_X) && has_bit(rel, REL_Y);
     }
     if (ev & (1u << EV_ABS)) {
         unsigned long abs_[(ABS_MAX / (8 * sizeof(long))) + 1];
         memset(abs_, 0, sizeof abs_);
-        if (ioctl(fd, EVIOCGBIT(EV_ABS, sizeof abs_), abs_) >= 0 &&
-            (has_bit(abs_, ABS_X) || has_bit(abs_, ABS_MT_POSITION_X))) {
-            if (direct) kind |= DEV_ABS | DEV_DIRECT;
-            /* A pad, or anything that did not say it is direct: relative
-             * is the safe reading, because a wrong "absolute" teleports
-             * the pointer and a wrong "relative" merely ignores it. */
-            else if (pointer || !(kind & DEV_REL)) kind |= DEV_REL;
-        }
+        if (ioctl(fd, EVIOCGBIT(EV_ABS, sizeof abs_), abs_) >= 0)
+            d.has_abs_xy = has_bit(abs_, ABS_X) ||
+                           has_bit(abs_, ABS_MT_POSITION_X);
     }
-    if (ev & (1u << EV_KEY)) {
-        unsigned long key[(KEY_MAX / (8 * sizeof(long))) + 1];
-        memset(key, 0, sizeof key);
-        if (ioctl(fd, EVIOCGBIT(EV_KEY, sizeof key), key) >= 0) {
-            int hits = 0;
-            for (int k = KEY_Q; k <= KEY_P; k++) if (has_bit(key, k)) hits++;
-            if (hits > 5) kind |= DEV_KBD;
-        }
-    }
-    return kind;
+    return pad_classify(&d);
 }
 
 /* Absolute devices report in their own units; scale to the screen. */
@@ -312,6 +310,25 @@ static void abs_range(int fd, int axis, int *lo, int *hi)
     *lo = 0; *hi = 0;
     if (ioctl(fd, EVIOCGABS(axis), &ai) == 0 && ai.maximum > ai.minimum)
         { *lo = ai.minimum; *hi = ai.maximum; }
+}
+
+static int64_t now_ms(void)
+{
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return (int64_t)t.tv_sec * 1000 + t.tv_nsec / 1000000;
+}
+
+static int pad_event_kind(int code)
+{
+    switch (code) {
+    case BTN_TOUCH:            return PAD_TOUCH;
+    case BTN_TOOL_FINGER:      return PAD_FINGER;
+    case BTN_TOOL_DOUBLETAP:   return PAD_DOUBLETAP;
+    case BTN_TOOL_TRIPLETAP:   return PAD_TRIPLETAP;
+    case BTN_TOOL_QUADTAP:     return PAD_QUADTAP;
+    default:                   return -1;
+    }
 }
 
 static int input_have(const input_set *s, const char *node)
@@ -340,10 +357,12 @@ static int input_scan(input_set *s, int grab)
         int i = s->n;
         s->fd[i] = fd; s->kind[i] = k;
         s->ax_lo[i] = s->ax_hi[i] = s->ay_lo[i] = s->ay_hi[i] = 0;
-        if (k & DEV_ABS) {
+        if (k & (DEV_ABS | DEV_PAD)) {
             abs_range(fd, ABS_X, &s->ax_lo[i], &s->ax_hi[i]);
             abs_range(fd, ABS_Y, &s->ay_lo[i], &s->ay_hi[i]);
         }
+        pad_reset(&s->pad[i], s->ax_lo[i], s->ax_hi[i],
+                              s->ay_lo[i], s->ay_hi[i]);
         snprintf(s->name[i], sizeof s->name[i], "%.31s", e->d_name);
         /* Kiosk: take the device away from everyone else, so a key
          * combination cannot reach another reader. This is what makes
@@ -364,6 +383,7 @@ static void input_drop(input_set *s, int i)
         s->fd[i]    = s->fd[s->n];    s->kind[i]  = s->kind[s->n];
         s->ax_lo[i] = s->ax_lo[s->n]; s->ax_hi[i] = s->ax_hi[s->n];
         s->ay_lo[i] = s->ay_lo[s->n]; s->ay_hi[i] = s->ay_hi[s->n];
+        s->pad[i] = s->pad[s->n];
         memcpy(s->name[i], s->name[s->n], sizeof s->name[i]);
     }
 }
@@ -771,6 +791,8 @@ int main(int argc, char **argv)
                      * painting. Anything we think is held down may not
                      * be; the safe assumption is nothing is. */
                     if (ev.code == SYN_DROPPED) c.mouse_down = 0;
+                    else if (ev.code == SYN_REPORT && (in.kind[i] & DEV_PAD))
+                        pad_synced(&in.pad[i]);
                     continue;
                 }
                 if (ev.type == EV_REL) {
@@ -795,6 +817,30 @@ int main(int argc, char **argv)
                                               / (hi - lo + 1));
                     }
                     clamp_pointer(&c, disp->width, disp->height);
+                    dirty = 1;
+                } else if (ev.type == EV_ABS && (in.kind[i] & DEV_PAD)) {
+                    int axis = (ev.code == ABS_Y || ev.code == ABS_MT_POSITION_Y);
+                    if (ev.code == ABS_X || ev.code == ABS_Y ||
+                        ev.code == ABS_MT_POSITION_X || ev.code == ABS_MT_POSITION_Y) {
+                        int step = pad_delta(&in.pad[i], axis, ev.value);
+                        if (step) {
+                            if (axis) c.mouse_y += step; else c.mouse_x += step;
+                            clamp_pointer(&c, disp->width, disp->height);
+                            dirty = 1;
+                        }
+                    }
+                } else if (ev.type == EV_KEY && (in.kind[i] & DEV_PAD) &&
+                           pad_event_kind(ev.code) >= 0) {
+                    if (pad_button(&in.pad[i], pad_event_kind(ev.code),
+                                   ev.value != 0, now_ms())) {
+                        /* A tap is a press and a release in one go, so
+                         * the layout sees the same sequence a physical
+                         * click produces and drags still work. */
+                        c.mouse_down = 1;
+                        if (L->click)  L->click(&c, c.mouse_x, c.mouse_y);
+                        c.mouse_down = 0;
+                        if (L->motion) L->motion(&c, c.mouse_x, c.mouse_y);
+                    }
                     dirty = 1;
                 } else if (ev.type == EV_KEY) {
                     /* BTN_TOUCH is a click only where the user is

@@ -12,6 +12,11 @@ CONFIG_DEVTMPFS_MOUNT=y
 CONFIG_EFI=y
 CONFIG_EFI_STUB=y
 CONFIG_EFI_MIXED=y
+# efivarfs is how BootNext and BootOrder are read and written from
+# Linux. Without it the staging environment cannot touch a boot entry,
+# which is most of what it exists to do.
+CONFIG_EFIVAR_FS=y
+CONFIG_EFI_VARS_PSTORE=n
 CONFIG_FB_EFI=y
 
 # ── Filesystems ────────────────────────────────────────────────────
@@ -39,6 +44,9 @@ CONFIG_NTFS3_LZX_XPRESS=y
 CONFIG_NTFS3_FS_POSIX_ACL=y
 
 # ── Storage ────────────────────────────────────────────────────────
+# Built in, not modules. The staging environment has to see the disk
+# before any module could be loaded from it, and a machine that cannot
+# see its own disk at that moment is a machine we have to refuse.
 CONFIG_BLK_DEV_NVME=y
 CONFIG_SATA_AHCI=y
 CONFIG_ATA_PIIX=y
@@ -48,6 +56,25 @@ CONFIG_CHR_DEV_SG=y
 CONFIG_SCSI_VIRTIO=y
 CONFIG_USB_STORAGE=y
 CONFIG_USB_UAS=y
+
+# Intel RST / VMD. Without this the NVMe drive in a machine whose
+# firmware is set to "RAID On" -- which is the factory default on a
+# large number of consumer laptops -- is simply invisible to Linux.
+# Preflight blocks on that configuration while this is missing, so
+# every one of those machines is a refused install.
+CONFIG_VMD=y
+
+# Device mapper, so fakeraid and Storage Spaces metadata can be
+# RECOGNISED. We do not support installing onto them; we need to be
+# able to tell that is what we are looking at, and refuse.
+CONFIG_BLK_DEV_DM=y
+CONFIG_DM_RAID=y
+
+# Genuinely old machines: PATA, and the generic fallback for
+# controllers with no specific driver.
+CONFIG_ATA_GENERIC=y
+CONFIG_PATA_LEGACY=y
+CONFIG_PATA_SCH=y
 
 # ── virtio (QEMU / VM install targets) ─────────────────────────────
 CONFIG_VIRTIO=y
@@ -125,3 +152,23 @@ CONFIG_DEBUG_INFO_NONE=y
 CONFIG_DEBUG_INFO_DWARF5=n
 CONFIG_SYSTEM_TRUSTED_KEYRING=n
 CONFIG_SYSTEM_REVOCATION_LIST=n
+
+# ── Wireless ───────────────────────────────────────────────────────
+# This section did not exist, which made the phase-7 hardware probe
+# impossible: "verify WiFi comes up before committing" cannot be done
+# by a kernel with no wireless stack in it. The drivers themselves stay
+# modular and load from the newly written root along with their
+# firmware -- see docs/AURBRIDGE.md on why firmware is not in the
+# initramfs.
+CONFIG_WIRELESS=y
+CONFIG_CFG80211=y
+CONFIG_CFG80211_WEXT=y
+CONFIG_MAC80211=y
+CONFIG_RFKILL=y
+CONFIG_WLAN=y
+CONFIG_WLAN_VENDOR_INTEL=y
+CONFIG_WLAN_VENDOR_REALTEK=y
+CONFIG_WLAN_VENDOR_ATH=y
+CONFIG_WLAN_VENDOR_BROADCOM=y
+CONFIG_WLAN_VENDOR_MARVELL=y
+CONFIG_WLAN_VENDOR_RALINK=y

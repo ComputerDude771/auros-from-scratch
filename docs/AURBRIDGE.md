@@ -10,9 +10,12 @@
    costs a user, their data, a support case, and possibly a lawsuit.
    Refusing is a designed product outcome with a plain-language remedy,
    never an error dialog.
-2. **The machine can always go back.** A recovery partition exists
-   *before* the first destructive byte, and is reachable from the boot
-   menu without a USB stick, a second computer, or us.
+2. **The machine can always go back.** A complete, verified recovery
+   payload exists on removable media *and* on the Windows volume before
+   the first destructive byte; a bootable recovery partition exists
+   before the partition table is committed, reachable from the boot menu
+   without a USB stick, a second computer, or us. (This rule used to say
+   the partition came first. It cannot — see "The recovery payload".)
 3. **Nothing irreversible until AurOS has booted and the user has said
    it works.** Two-stage commit. Windows stays bootable and default
    until the user chooses otherwise.
@@ -25,138 +28,310 @@
 
 ## Phases
 
+**Nothing destructive happens on the Windows side. Not one byte.**
+
 ```
+ WINDOWS — every step here is reversible by doing nothing
  0  INSPECT      read-only. preflight. no side effects whatsoever.
- 1  CONSENT      plain-language disclosure; BitLocker key proof-of-possession
- 2  PREPARE      recovery USB + recovery partition. Still non-destructive
-                 to Windows: only free space is consumed.
- 3  SHRINK       the one destructive step on the Windows side
- 4  WRITE        raw image -> new partition, read-back verified
- 5  HANDOFF      bootloader to ESP, BootNext (one-shot, self-reverting)
- ── RESTART ──
- 6  STAGE        AurOS staging environment: probe hardware, grow fs,
-                 verify WiFi/backlight/audio BEFORE committing
- 7  FIRSTBOOT    desktop; user confirms "this works"
- 8  COMMIT       Ferry imports files; optionally make AurOS default
+ 1  CONSENT      plain-language disclosure; recorded
+ 2  PREPARE      recovery payload -> the recovery USB and a file on the
+                 Windows volume. Staging environment -> the ESP, or the
+                 USB if the ESP has no room.
+ 3  HANDOFF      BootNext (one-shot, self-reverting). Nothing else.
+ ── THE RESTART — exactly one, and this is it ──
+
+ STAGING — the AurOS initramfs, same boot, no second restart
+ 4  SHRINK       ntfsresize, FILESYSTEM ONLY. The partition entry is
+                 not touched, so Windows still boots after this step.
+ 5  WRITE        image into the freed region BY OFFSET, old partition
+                 table still in force
+ 6  VERIFY       read back and hash. Abort here changes nothing.
+ 7  PROBE        mount the new root read-only, load ITS drivers and
+                 firmware, test WiFi/backlight/audio on the real
+                 machine. Abort here changes nothing.
+ 8  COMMIT       the new GPT: backup header, then primary, one flush.
+                 Then partx, resize2fs, recovery partition, switch_root.
+
+ AUROS
+ 9  FIRSTBOOT    desktop; user confirms "this works"
+10  IMPORT       Ferry imports files; optionally make AurOS default
 ```
 
-**Abort at any phase ≤5 leaves the machine exactly as it was.** That is
-a hard requirement, tested, not a goal.
+**Abort at any phase ≤7 leaves the machine bootable into Windows.** That
+is a hard requirement, tested, not a goal. The entire product has
+exactly **one** non-restartable window — phase 4 — and everything after
+it writes only into space that is already free.
 
-## Why the staging environment exists (phase 6)
+### Why the destructive work is after the restart, not before
 
-The original brief asked for exactly one restart, doing everything from
-inside live Windows. That was dropped deliberately, and this is the
-reasoning, kept here so nobody re-adopts it by accident:
+This is the decision the rest of the document hangs on, so the actual
+reason is worth stating plainly, because two weaker ones were believed
+here first.
 
-Between the first destructive write and a successful AurOS boot there
-would be **no environment in which recovery code can run**. Fail at 60%
-and the machine boots into nothing. Endless OS — better funded, shipping
-real hardware — failed for 20-30% of users on BIOS systems doing
-approximately this, and concluded dual-boot was for evaluation only.
+**The real reason is the pagefile.** Windows' online shrink cannot move
+`pagefile.sys`, and disabling the pagefile does not remove the file
+until after a restart. So online shrink *costs* a restart — the one
+thing this design is spending its whole budget to avoid. Offline
+`ntfsresize` treats the pagefile as an ordinary file and relocates it.
+The one-restart promise requires offline shrink; it does not merely
+tolerate it.
 
-The staging environment also buys the single most valuable mitigation
-available for the hardware risk: it can **test WiFi, backlight, audio and
-suspend on the real machine before anything is committed**. If WiFi will
-not come up there, we abort and leave Windows alone — instead of
-discovering it after the user has no way to reach help.
+**The second reason is what happens when the restart fails.** Firmware
+that ignores `BootNext` is not rare on old Lenovo and HP machines with a
+full NVRAM store. Under this ordering that is a non-event: nothing has
+changed, Windows comes back, and AurBridge re-arms. Under the ordering
+this document used to describe — shrink and repartition inside live
+Windows, *then* restart — the same firmware quirk means Windows boots
+onto a disk that has already been repartitioned underneath it.
 
-The user still clicks once and never touches firmware, a boot menu, or a
-USB stick. They see one uninterrupted branded flow. They do not count
-power cycles; they count lost photos.
+**The reason that was in this document is wrong**, and is recorded here
+so nobody restores it: it argued from Endless OS failing for 20-30% of
+users. Endless's Windows installer created a file inside the existing
+NTFS filesystem (`C:\endless\endless.img`) — **it never shrank NTFS and
+never repartitioned**. The failure rate being cited is for *MBR
+bootloader replacement on BIOS firmware*, which is a different
+operation, and using it to justify a decision about NTFS shrink is a
+category error. It does support the BIOS/MBR refusal, which is why that
+refusal stands.
 
-## The recovery partition (built in phase 2, before anything destructive)
+The transferable Endless evidence points the other way, in favour of
+this design: `eos-boot-helper` rewrites the partition table **of the
+disk it is booting from, from inside the initramfs, in the same boot**,
+and has done in production for years. That is exactly phase 8.
 
-A ~600 MB FAT32 partition, marked with a discoverable type GUID, holding:
+## The staging environment is the initramfs
+
+It is not a second operating system and it is not a second reboot. The
+kernel and initramfs AurOS already needs in order to boot *are* the
+staging environment: they come up after the one restart, do the
+destructive work with a full Linux toolset and real block-device access,
+and then `switch_root` into the installed system **in the same boot**.
+
+That buys the single most valuable mitigation available for the hardware
+risk: it can **test WiFi, backlight, audio and suspend on the real
+machine before anything is committed**. If WiFi will not come up, we
+abort and leave Windows alone — instead of discovering it after the user
+has no way to reach help.
+
+**The firmware does not go in the initramfs.** `linux-firmware` is
+700 MB to 1.5 GB; even a WiFi-only subset is 150-400 MB, and an OEM ESP
+is commonly 100 MB and 85-95% full. So the probe happens in phase 7,
+*after* the image has been written and verified — mount the new root
+read-only, load **its** modules and **its** `/lib/firmware`, and test
+against that. The initramfs stays under ~80 MB, and the probe still
+happens before anything is committed. This is strictly better than
+carrying firmware, not a compromise.
+
+Where the ESP has no room even for that, the staging environment boots
+from the **recovery USB**, which R4 makes mandatory anyway. `BootNext`
+points at the USB's boot entry: no boot menu, no F12, no user
+interaction, the same single restart. The USB stops being pure
+conversion cost and gets a second job.
+
+The user clicks once and never touches firmware, a boot menu, or a USB
+stick. They see one uninterrupted branded flow. They do not count power
+cycles; they count lost photos.
+
+## The recovery payload, and the rule that had to change
+
+The governing rule used to read: *a recovery partition exists before the
+first destructive byte.* **That is not achievable, and the reason is
+worth understanding before anything is built on it.**
+
+On a typical OEM layout — ESP, MSR, C:, OEM recovery — **there is no
+unallocated space on the disk.** A 600 MB partition cannot be created
+before the shrink, because the shrink is what creates the space. Free
+space *inside* the C: filesystem is a different quantity entirely, and
+measuring that one instead is how this mistake survives review.
+
+So the payload lives in two places that need no partition:
+
+- the mandatory **recovery USB**, and
+- a **file on the Windows volume** (`C:\AurOS\recovery\`), which
+  survives the shrink because `ntfsresize` relocates files rather than
+  destroying them.
+
+The recovery *partition* is created in phase 8, from space that by then
+exists, and the payload is copied into it and hash-checked against the
+USB copy.
+
+**Rule 2 now reads:** a complete, verified recovery payload exists on
+removable media and on the Windows volume before the first destructive
+byte; a bootable recovery partition exists before the partition table is
+committed.
+
+The payload, wherever it lives:
 
 | Contents | Why |
 |---|---|
-| `bootx64.efi` + rescue kernel/initramfs | bootable without external media |
+| `bootx64.efi` + rescue kernel/initramfs | bootable without external media once the partition exists |
 | `parttable.bin` — original GPT, primary + backup | exact restore |
 | `esp-backup.tar` — the entire ESP as found | R12: never lose `\EFI\Microsoft\Boot` |
 | `bcd-backup.bin` — Windows BCD store | restores the Windows boot path |
-| `bitlocker-key.txt` — if the user consented to save it | the R1 escape hatch |
+| `ntfs-boot.bin` — `$Boot`, the volume's first 16 sectors | without it a restored GPT describes a filesystem that is no longer there |
+| `ntfs-backup-boot.bin` + original sector count | the backup boot sector moves when the volume is resized, and nothing else records how big C: used to be |
 | `journal.json` — transactional install log | a resumed installer knows which step it died in |
 | `machine.json` — full preflight snapshot | support can see the machine without the machine |
 
-Its menu entry offers exactly one prominent action: **"Put Windows
-back."** That restores the partition table, the ESP and the BCD, then
-reboots.
+"Put Windows back" restores the partition table, the ESP and the BCD,
+**and `ntfsresize`s the volume back up to its recorded original size** —
+expansion being the direction `ntfsresize` documents as restart-safe.
+Restoring the GPT alone leaves the user with Windows and a permanently
+smaller C:, which is a worse outcome than a clean refusal.
 
-The recovery partition is also written to the mandatory **recovery USB**.
 The partition covers "AurOS won't boot"; the USB covers "the disk's
 partition table is gone". Both are needed; neither substitutes.
 
-## Boot handoff (phase 5)
+## Boot handoff (phase 3)
 
-UEFI only. Install our loader to the ESP (never reformat it — see R12,
-and create our own ESP if the existing one lacks free space), then set
-**`BootNext`**, not `BootOrder`.
+UEFI only. Write the staging kernel and initramfs to the ESP — never
+reformat it, see R12 — then set **`BootNext`**, not `BootOrder`.
 
 `BootNext` is one-shot and self-reverting: firmware consumes it on the
-next boot and falls back to the previous order by itself. If AurOS fails
-to start, the machine comes back up in Windows with no user action. That
-property is why BIOS/MBR is refused — it has no equivalent, and without
-it a failed first boot is a brick.
+next boot and falls back to the previous order by itself. If the staging
+environment fails to start, the machine comes back up in Windows with no
+user action and nothing has been changed. That property is why BIOS/MBR
+is refused — it has no equivalent, and without it a failed first boot is
+a brick.
 
-`BootOrder` is only rewritten in phase 8, after the user confirms.
+Two things must happen right at the end, in this order:
 
-## BitLocker handling (R1 — the highest-consequence path)
+1. **Re-run preflight.** The user has been reading for several minutes;
+   Windows Update can arrive in that window, and servicing-on-shutdown
+   will consume the restart and rewrite parts of the ESP.
+2. **Disarm `BootNext` if the restart does not actually happen.** A user
+   can cancel a restart and an application can block one. An armed
+   `BootNext` that is consumed three days later, after the disk has
+   changed, is a trap. The staging environment therefore also re-verifies
+   the machine against `journal.json` — disk serial, GPT hash, NTFS
+   start LBA and sector count — and aborts on any mismatch.
 
-```
-detect  → -FVE-FS- boot-sector signature (native, no COM)
-          then Win32_EncryptableVolume for full status
-refuse  → ConversionStatus 2/3/4/5 (encryption mid-flight)
-refuse  → no Numerical Password protector retrievable
-require → user types part of the 48-digit key back. Proof of
-          possession, not a checkbox.
-offer   → save/print the key; write it to the recovery partition
-suspend → Suspend-BitLocker -MountPoint C: -RebootCount 0
-```
+`BootOrder` is only rewritten in phase 10, after the user confirms.
 
-**`-RebootCount 0` is load-bearing.** The default is 1, meaning "restore
-protection after one restart". Our restart goes into AurOS, so the
-suspension would expire without Windows ever re-sealing the VMK against
-the new PCR values. The next Windows boot then demands the recovery key.
-`0` suspends indefinitely (a clear-key protector is written into the
-volume metadata) until an explicit `Resume-BitLocker`.
+## BitLocker: refused, and why it stays refused
+
+**There is no shrink path for a BitLocker-protected volume, online or
+offline.** Offline, `cryptsetup`'s BITLK support has no resize operation
+and never modifies the on-device header, while `ntfsresize` sees
+`-FVE-FS-` rather than NTFS and refuses. Online, shrink is unavailable
+on an encrypted volume and the guidance is to turn encryption *off* —
+a full decryption, hours of whole-disk rewriting on exactly the aged
+drive R5 is about. Suspension does not help: `Suspend-BitLocker` writes
+a clear-key protector and does not decrypt a single sector.
+
+So preflight blocks, unconditionally, and the remedy says what is
+actually required — fully decrypt — rather than implying that producing
+the recovery key clears it. It does not, and a refusal the user cannot
+clear by following its own instructions is a user who re-runs forever.
+
+This matters more over time, not less: Windows 11 24H2 enables device
+encryption automatically on clean installs, with the hardware
+requirements relaxed.
+
+> ### MUST NOT
+>
+> **Never move, truncate or resize a partition entry whose first sector
+> carries `-FVE-FS-` at offset 3.** Shrinking the partition without
+> shrinking the volume destroys the trailing FVE metadata copy and the
+> ciphertext behind it: instant, total, unrecoverable loss of an
+> encrypted volume. It is the most destructive single mistake available
+> anywhere in this codebase and it is a two-line mistake to make. The
+> check belongs in code, at every site that touches partition geometry,
+> not in this document.
 
 Third-party full-disk encryption (VeraCrypt system encryption, Sophos,
 Trellix, Symantec) → **abort unconditionally**. There is no safe shrink
 underneath a sector-level encryption filter we do not control.
 
-## Shrink (phase 3)
+## Shrink (phase 4) — the one irreversible step
 
-Performed **offline from the staging environment** with `ntfsresize`,
-not online from Windows. Online shrink is capped by unmovable files
-(pagefile, hiberfil, VSS storage, `$MFT`, `$Bitmap`, `$UsnJrnl`) and
-commonly offers 2 GB on a disk with 30 GB free.
+Performed offline, from the staging environment, with `ntfsresize`.
 
-Preparation, all disclosed and revertible: disable hibernation, disable
-the pagefile, delete shadow copies, consolidate free space.
+**`--force` must be unreachable by construction**, not merely unpassed.
+It authorises resizing a filesystem whose own metadata Windows has
+declared untrustworthy, which is R9 verbatim, and it is one word away at
+all times. Never `ntfsfix --clear-dirty` either: R2 records why — it
+discards the user's unsaved session.
 
-**We do not write our own NTFS resizer.** That is how a few unreadable
-files become an unmountable volume.
+On a dirty or hibernated volume, `ntfsresize` refuses. **So do we.** The
+remedy is the chkdsk one preflight already writes: a user-visible
+restart outside our flow, before the install starts. That is acceptable.
+A second restart *inside* the flow is not.
+
+The authoritative check is not "did Windows say it shut down cleanly".
+It is the on-disk NTFS state read from Linux, immediately before
+touching anything: volume flags, `$LogFile` restart-area state, and the
+presence and size of `hiberfil.sys`.
+
+Order matters, and this order is the reason phase 4 is the only
+non-restartable window in the product:
+
+1. `ntfsresize --no-action` for the true achievable size. Not an
+   estimate from filesystem free space — R7 requires the real number.
+2. **Surface-test** the region being reclaimed *and* the region NTFS
+   will relocate into. Read every sector; refuse on any error. R5, and
+   it is cheap.
+3. Resize **the filesystem only**. Do not touch the partition entry. A
+   partition larger than its filesystem mounts and boots normally, so
+   **if we stop here, Windows still boots.**
+
+`ntfsresize` documents restart-safety for *expansion* only. Treat an
+interrupted shrink as a damaged volume, which is why the AC-power gate
+and the surface test guard this step specifically.
 
 ⚠ **512e vs 4Kn**: shrink takes *sectors*, partition structures take
 *bytes*, NTFS allocates in *clusters*. Hard-coding 512 on a 4Kn disk
 makes the partition 8× too small. Always read
-`StorageAccessAlignmentProperty`.
+`StorageAccessAlignmentProperty`, and block if it cannot be read.
 
-## Write (phase 4)
+**We do not write our own NTFS resizer.** That is how a few unreadable
+files become an unmountable volume.
 
-A prebuilt filesystem image is written byte-for-byte to the new
-partition, then **read back and verified** against its hash. Grown to
-fill the partition on first boot with `resize2fs`, where a real kernel is
-available.
+## Write and commit (phases 5-8)
 
-Chosen over implementing an ext4 writer for Windows: a write loop is
-boring and auditable; an ext4 writer is a corruption-bug factory.
+The image is written **by offset, with the old partition table still in
+force**, then read back and verified against its hash. Only after that
+does the new GPT get written: backup header first, primary last, one
+flush.
 
-Per the signing research, **no kernel-mode driver is required** — Rufus
-performs partition-table rewrites, volume lock/dismount and raw sector
-writes from an elevated user-mode process. That keeps attestation
-signing off the critical path.
+Borrowed directly from `eos-installer`, and worth keeping: **write the
+first megabyte last.** Zero it, write everything else, verify, and only
+then lay down the first megabyte. A partially written install is then
+never a bootable-looking install and never claims to be a partition
+table.
+
+Then `partx --update`, `resize2fs`, create the recovery partition from
+the freed space, and `switch_root`.
+
+⚠ **The image the build produces does not currently match this.**
+`build/mkimage` emits a whole-disk GPT image with its own protective
+MBR, ESP and root partition. Writing *that* into a partition embeds a
+nested GPT and boots nothing. Either the build publishes a bare root
+filesystem image and the ESP as a file tree, or the staging environment
+translates the whole-disk image. The staging environment makes the
+second viable; nothing on the Windows side did, which is how the
+mismatch survived.
+
+Writing a filesystem image was chosen over implementing an ext4 writer
+for Windows: a write loop is boring and auditable; an ext4 writer is a
+corruption-bug factory. Per the signing research, **no kernel-mode
+driver is required** — Rufus performs partition-table rewrites, volume
+lock/dismount and raw sector writes from an elevated user-mode process,
+which keeps attestation signing off the critical path.
+
+## Power loss, step by step
+
+The point of the ordering above is that this table has exactly one bad
+row.
+
+| Loss during | Disk state | Back to Windows? |
+|---|---|---|
+| 0-3 (Windows side) | untouched | yes, automatically |
+| 4 verification | untouched | yes, automatically |
+| **4 the resize itself** | **NTFS possibly inconsistent** | **only via the recovery USB and chkdsk; worst case, data loss** |
+| 5-7 write and verify | NTFS smaller, old GPT in force, garbage in free space | yes — `BootOrder` still points at Windows Boot Manager and the ESP is untouched |
+| 8 GPT commit | one sector write; the backup header is already correct | yes, via recovery restore |
+| 9-10 | new layout, Windows partition intact and bootable | yes |
 
 ## The wizard (`src/aurbridge/wizard.c`)
 
@@ -179,9 +354,10 @@ Pages, in order:
  4 BACKUP       backup + recovery-USB confirmation, both required
  5 CONSENT      the disclosure; typed acknowledgement, not a checkbox
  6 CHOOSE       dual-boot (default) or replace Windows (extra gate)
- 7 PERSONALIZE  language, keyboard, time zone, theme
- 8 READY        summary, and confirmation of the target drive by name
- 9 PROGRESS     the phase list above, with per-phase state
+ 7 DESKTOP      which archetype — see docs/SHELLS.md
+ 8 PERSONALIZE  language, keyboard, time zone, theme
+ 9 READY        summary, and confirmation of the target drive by name
+10 PROGRESS     the phase list above, with per-phase state
 ```
 
 **The refusal is a page, not a dialog.** BLOCKED has no continue button, no
@@ -245,14 +421,44 @@ unrunnable.
 
 ## Still to build
 
-Phases 1-8. Preflight (phase 0) is implemented and builds as a native
-`.exe`. The wizard is implemented as far as its last screen: every phase
-on the progress page calls a `stub_phase_*` function that logs what the
-real phase would do and returns success. Nothing in `wizard.c` opens a
-handle to a disk, a volume or a boot entry, and nothing should be added
-there — the phase engine belongs in its own translation unit with its own
-tests.
+Phase 0 (preflight) is implemented and builds as a native `.exe`. The
+wizard is implemented to its last screen; every phase on the progress
+page calls a `stub_phase_*` that logs what the real phase would do and
+returns success. Nothing in `wizard.c` opens a handle to a disk, a
+volume or a boot entry, and nothing should be added there — the phase
+engine belongs in its own translation unit with its own tests.
 
-Nothing destructive ships until the recovery partition and the "Put
-Windows back" path are implemented and tested by deliberately failing an
-install at each phase.
+Build order, and nothing from a later stage before an earlier one:
+
+**A — make the staging environment exist and boot. No disk writes at
+all.** Kernel config first: it currently has no `CONFIG_VMD` (Intel RST
+machines cannot see their own disk), no `CONFIG_EFIVAR_FS` (boot entries
+cannot be touched from Linux without it), no device-mapper, and **no
+wireless stack whatsoever**, which makes the phase-7 probe impossible
+today. Then a minimal init — not systemd, because a generator or an
+automount that mounts NTFS behind our back is the one thing this
+environment must never do. Then `aurshell` as the staging UI, with a
+progress model that survives a forty-minute resize on a 5400 rpm disk
+without looking hung. Prove `BootNext` → staging → `switch_root` into an
+already-installed AurOS, with zero disk modification.
+
+**B — read-only verification, still no writes.** Journal reader
+(serial, GPT hash, NTFS geometry, free-extent map) that aborts on any
+mismatch. NTFS state reader that refuses dirty, hibernated or
+`-FVE-FS-`. `ntfsresize --no-action`. Surface test. Storage-controller
+visibility check. Then a `--dry-run` that runs all of it and reboots
+back to Windows having changed nothing. **That is the first shippable
+artifact**, and it is worth shipping on its own to build a hardware
+matrix before anyone's disk is at risk.
+
+**C — destructive, one step at a time, each with its own kill-the-power
+test.** Filesystem-only shrink. Write by offset. Read-back verify.
+Probe from the freshly written root. GPT commit. `partx`, `resize2fs`,
+`switch_root`.
+
+**D — the way back.** Recovery partition from the freed space. "Put
+Windows back", including the `ntfsresize` expansion. Then the R4 test:
+deliberately fail at each step of C and prove Windows comes back, on
+real hardware, including one power-pull per step.
+
+Nothing destructive ships until D is done.

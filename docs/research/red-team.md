@@ -50,17 +50,44 @@ workaround (`ntfsfix --clear-dirty`) deletes the user's unsaved session.
 forced real restart, re-verify flag clear) as a hard gate; never offer a
 Windows boot entry that could resume a stale hibernation image.
 
-## R3 — The one-reboot constraint was the root cause · RESOLVED
+## R3 — The one-reboot constraint was the root cause · RESOLVED (revised)
 
 Doing all destructive work inside live Windows means that between the
 first destructive write and a successful Linux boot **there is no
 environment in which recovery code can run.** Fail at 60% → the machine
-boots into nothing.
+boots into nothing. That much stands, and it is a real risk.
 
-**Decision taken:** the literal one-reboot promise is dropped. AurBridge
-reboots into a branded, recovery-capable AurOS staging environment that
-owns its own failure, then into the desktop. One click, one uninterrupted
-branded experience, two power cycles. See `docs/PLAN.md §2.1`.
+**The decision recorded here was wrong, and is superseded.** It read:
+"the literal one-reboot promise is dropped… two power cycles." It
+accepted the premise that one reboot requires doing the destructive work
+inside Windows. It does not. Move the destructive work *after* the
+restart and the AurOS initramfs **is** the recovery-capable staging
+environment — same boot, `switch_root` at the end, one power cycle. The
+risk is mitigated and the promise is kept; they were never in tension.
+
+The reasoning that produced the wrong answer is worth keeping, because
+it was a chain of two mistakes and both are easy to repeat:
+
+1. **A category error in the evidence.** The Endless OS 20-30% failure
+   rate cited in support of dropping the promise is for *MBR bootloader
+   replacement on BIOS firmware*. Endless's Windows installer created a
+   file inside the existing NTFS filesystem; **it never shrank NTFS and
+   never repartitioned.** The number is real and it justifies the
+   BIOS/MBR refusal (R6). It says nothing about repartitioning from an
+   initramfs — which Endless's own `eos-boot-helper` has done in
+   production, on the disk it is booting from, for years.
+2. **A premise nobody re-examined** once it was written down as
+   RESOLVED. The document then carried the contradiction for some time:
+   its phase list put the shrink before the restart while its own shrink
+   section said the shrink happens after it.
+
+The actual, mechanical argument for offline shrink was never in this
+file at all: **Windows cannot move `pagefile.sys` during an online
+shrink, and disabling the pagefile does not remove the file until after
+a restart**, so online shrink costs the very reboot being saved.
+
+See `docs/AURBRIDGE.md` for the corrected phase list and the power-loss
+table. Marking a risk RESOLVED is not a reason to stop reading it.
 
 ## R4 — Single-PC catastrophic failure · CATASTROPHIC · HIGH at scale
 
@@ -70,10 +97,18 @@ and their photos on a partition they cannot reach. This is not a support
 problem, it is a product-existence problem.
 
 **Required — all of these, not a subset:**
-1. **Recovery partition written FIRST**, before the first destructive
-   operation: rescue image, original partition table, original MBR/BCD,
-   one-button "Put Windows back". *The single highest-value engineering
-   decision available.*
+1. **Recovery payload written FIRST**, before the first destructive
+   operation: rescue image, original partition table, original BCD, the
+   NTFS `$Boot` sectors and the volume's original size, one-button "Put
+   Windows back". *The single highest-value engineering decision
+   available.*
+   ⚠ It cannot be a *partition* at that point. On a typical OEM layout
+   there is no unallocated space on the disk, and the shrink is what
+   creates it. Before the shrink the payload lives on the recovery USB
+   and in a file on the Windows volume (which `ntfsresize` relocates
+   rather than destroys); the partition is created from the freed space
+   before the partition table is committed. Measuring free space *inside*
+   C: and concluding a partition can be created is how this is missed.
 2. **Never remove the ability to boot Windows** until the new system has
    booted and the user has confirmed it works. Use UEFI `BootNext` — it
    is one-shot and self-reverting; firmware restores the old order

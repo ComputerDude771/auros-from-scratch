@@ -215,7 +215,7 @@ stage_overlay() {
     # without a rebuild is not the product we promised.
     if inchroot "cd /usr/src/auros && gcc -O2 -std=gnu11 -o /usr/bin/aurshell \
             aurshell/main.c aurshell/draw.c aurshell/kms.c \
-            aurshell/shellcommon.c aurshell/anim.c \
+            aurshell/shellcommon.c aurshell/anim.c aurshell/pad.c \
             aurshell/layouts/rail.c aurshell/layouts/tiles.c \
             aurshell/layouts/locked.c aurshell/layouts/taskbar.c \
             aurshell/layouts/dock.c aurshell/layouts/workbench.c \

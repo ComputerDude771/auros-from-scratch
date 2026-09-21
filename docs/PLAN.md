@@ -32,21 +32,44 @@ that matter, with the reasoning exposed so they can be attacked.
 ### 2.1 Why one reboot is achievable
 
 The normal Linux install is two reboots: boot an installer, install,
-reboot again into the result. We get one by **doing the entire install
-from inside Windows** and rebooting straight into a finished system.
+reboot again into the result. We get one — and the way we get it is the
+opposite of what this section used to claim.
 
-That is only tractable because of one choice: we **write a prebuilt
-filesystem image byte-for-byte** into the new partition rather than
-implementing an ext4 writer for Windows. Writing a raw image is a loop
-over `WriteFile` on a volume handle — boring, auditable, and hard to get
-subtly wrong. Implementing ext4 write support in Windows userspace is a
-corruption bug factory. The image is created small and **grown to fill
-the partition on first boot**, where we have a real Linux kernel and
-`resize2fs`.
+**Nothing destructive happens inside Windows.** Windows only inspects,
+gets consent, writes a recovery payload into free space, and arms
+`BootNext`. The restart then lands in **the AurOS initramfs**, which is
+the installer: it shrinks NTFS, writes the image, verifies it, probes
+the hardware, commits the partition table, and `switch_root`s into the
+finished system **in the same boot**. One power cycle, and every
+destructive operation happens somewhere recovery code can run.
 
-*Why not just boot an installer?* Because "insert USB, change boot order,
-press F12" is exactly the wall the non-technical user hits. Removing it
-is the product.
+The reason it has to be this way round is specific and mechanical:
+**Windows' online shrink cannot move `pagefile.sys`, and disabling the
+pagefile does not remove the file until after a restart.** So shrinking
+from inside Windows *costs* a restart — the exact thing this design
+spends its whole budget avoiding. Offline `ntfsresize` treats the
+pagefile as an ordinary file and relocates it.
+
+The second reason is what happens when the restart does not: firmware
+that ignores `BootNext` is not rare on old machines with a full NVRAM
+store. Under this ordering that is a non-event — nothing has changed and
+Windows comes back. Under the old one, Windows boots onto a disk that
+has already been repartitioned underneath it.
+
+This is still tractable only because of one choice: we **write a
+prebuilt filesystem image** into the new region rather than implementing
+an ext4 writer. A write loop is boring and auditable; an ext4 writer is
+a corruption-bug factory. The image is **grown to fill the partition**
+with `resize2fs` before `switch_root`, where a real kernel is available.
+
+*Why not just boot an installer from a USB stick?* Because "insert USB,
+change boot order, press F12" is exactly the wall the non-technical user
+hits. `BootNext` removes it: the staging environment boots without the
+user touching firmware or a boot menu, from the ESP, or from the
+recovery USB when the ESP has no room. Removing that wall is the
+product.
+
+See `docs/AURBRIDGE.md` for the phase list and the power-loss table.
 
 ### 2.2 Why we keep the Windows partition
 
@@ -118,28 +141,46 @@ compositor alongside. That is a known, scoped cost — not a surprise.
 Each step is a testable checkpoint.
 
 ```
+ WINDOWS — nothing here changes the disk layout
  1  Website          user picks "Download for Windows"
  2  Download         one signed .exe
  3  Launch           SmartScreen does NOT warn  (requires code signing)
- 4  Preflight        UEFI? Secure Boot? BitLocker? disk space? battery?
-                     known-bad hardware? → refuse loudly if unsafe
+ 4  Preflight        UEFI? BitLocker? third-party FDE? dynamic disk?
+                     real reclaimable space? sector size? battery?
+                     → refuse loudly if unsafe
  5  Backup gate      verify a backup exists, or make one, or explicit override
  6  Consent          plain language: what changes, what is kept, how to undo
  7  Choose           dual-boot (default) or replace
- 8  Personalize      language · keyboard · timezone · theme · apps
- 9  Fetch            download the payload matching those choices
-10  Prepare          suspend BitLocker · disable hiber/pagefile · shrink NTFS
-                     create partitions · write image · verify checksum
-11  Boot handoff     install loader to ESP · set BootNext
+ 8  Desktop          which archetype — see docs/SHELLS.md
+ 9  Personalize      language · keyboard · timezone · theme · apps
+10  Fetch            download the payload matching those choices
+11  Recovery         payload -> the USB and a file on the Windows volume;
+                     staging kernel + initramfs -> the ESP (or the USB)
 12  Inventory        record what to migrate from Windows
-13  RESTART          ← the only one
-14  First boot       grow filesystem · detect hardware · start shell
-15  Ferry            import files, bookmarks, wallpaper, wifi, locale
-16  Welcome          short tour; Windows is still there and still boots
+13  Boot handoff     re-run preflight, then set BootNext
+14  RESTART          ← the only one
+
+ STAGING — the AurOS initramfs, same boot
+15  Re-verify        the machine still matches the journal, NTFS is clean,
+                     the disk is visible, the surface reads
+16  Shrink           ntfsresize, filesystem only. Windows still boots.
+17  Write            image by offset, old partition table still in force
+18  Verify           read back and hash
+19  Probe            mount the new root, load ITS drivers and firmware,
+                     test WiFi / backlight / audio on the real machine
+20  Commit           new GPT · partx · resize2fs · recovery partition
+21  switch_root      into the finished system
+
+ AUROS
+22  First boot       start the shell
+23  Ferry            import files, bookmarks, wallpaper, wifi, locale
+24  Welcome          short tour; Windows is still there and still boots
 ```
 
-**Every step before 13 must be abortable with the machine left exactly as
-it was.** That is a hard requirement, not a goal.
+**Every step up to and including 19 must leave the machine bootable into
+Windows.** That is a hard requirement, not a goal. Step 16 is the only
+non-restartable window in the entire product; everything after it writes
+into space that is already free.
 
 ---
 

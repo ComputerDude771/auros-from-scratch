@@ -77,7 +77,13 @@ note "root $LOOP2  (offset $P2_OFF, $((P2_SZ/1048576))MB)"
 
 step "filesystems"
 mkfs.vfat -F32 -n AUROS-ESP "$LOOP1" >/dev/null
-mkfs.ext4 -q -L AUROS-ROOT -O ^has_journal,^metadata_csum_seed "$LOOP2"
+# The journal stays ON. It was off, presumably for image size, and that
+# is the wrong trade for this product: these machines get switched off
+# at the wall, and an unjournalled ext4 on a consumer desktop is a
+# corruption generator that shows up weeks later as "AurOS lost my
+# file". metadata_csum_seed is disabled only so the UUID can be changed
+# later without rewriting every checksum.
+mkfs.ext4 -q -L AUROS-ROOT -O ^metadata_csum_seed "$LOOP2"
 ROOT_UUID=$(blkid -s UUID -o value "$LOOP2")
 ESP_UUID=$(blkid -s UUID -o value "$LOOP1")
 note "root UUID $ROOT_UUID"
