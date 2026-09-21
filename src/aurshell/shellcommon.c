@@ -158,6 +158,50 @@ void shell_icon_draw(surface *s, shell_icon ic, float cx, float cy, float sz,
     }
 }
 
+/* The starter set of things the machine can do.
+ *
+ * Shared, because it was three separate copies — main.c, shellpreview.c
+ * and railpreview.c — and each one carried the SAME nine Nocturne hexes
+ * baked in as app tints. docs/SHELLS.md states the rule in writing: no
+ * archetype may hardcode a colour. The file that seeds every icon in
+ * the system broke it, which is why Sandstone's warm terracotta-and-oat
+ * desktop still glowed mint, cornflower and lavender — another theme's
+ * palette pasted onto its design.
+ *
+ * Tints now cycle the theme's own decorative accents, so a theme that
+ * defines three gets three and a theme that sets all three alike gets a
+ * monochrome icon set, which is a legitimate thing for a theme to want.
+ * Call this AFTER shell_theme_load(); it reads the resolved accents.
+ */
+void shell_seed_apps(shell_ctx *c)
+{
+    static const struct { const char *id, *name, *hint; shell_icon ic; int pin; } A[] = {
+      { "web",   "Internet",   "Browse the web",        ICON_GLOBE,    1 },
+      { "mail",  "Email",      "Read your messages",    ICON_MAIL,     1 },
+      { "photo", "Photos",     "Pictures and videos",   ICON_PHOTOS,   1 },
+      { "files", "My Files",   "Documents you saved",   ICON_FILES,    1 },
+      { "write", "Writing",    "Letters and notes",     ICON_TEXT,     0 },
+      { "music", "Music",      "Songs and radio",       ICON_MUSIC,    0 },
+      { "calc",  "Calculator", "Do sums",               ICON_CALC,     0 },
+      { "set",   "Settings",   "Change how this works", ICON_SETTINGS, 1 },
+      { "help",  "Help",       "Show me how",           ICON_HELP,     0 },
+    };
+    const uint32_t tint[3] = { c->accent, c->accent_alt, c->accent_warm };
+
+    c->n_apps = (int)(sizeof A / sizeof A[0]);
+    if (c->n_apps > SHELL_MAX_APPS) c->n_apps = SHELL_MAX_APPS;
+    for (int i = 0; i < c->n_apps; i++) {
+        snprintf(c->apps[i].id,   sizeof c->apps[i].id,   "%s", A[i].id);
+        snprintf(c->apps[i].name, sizeof c->apps[i].name, "%s", A[i].name);
+        snprintf(c->apps[i].hint, sizeof c->apps[i].hint, "%s", A[i].hint);
+        c->apps[i].icon   = A[i].ic;
+        c->apps[i].pinned = A[i].pin;
+        /* Settings is machinery, not one of the user's things, so it
+         * takes the quiet colour rather than a place in the cycle. */
+        c->apps[i].tint = (A[i].ic == ICON_SETTINGS) ? c->subtle : tint[i % 3];
+    }
+}
+
 void shell_theme_load(shell_ctx *c, const theme_t *t)
 {
     c->theme = *t;

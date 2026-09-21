@@ -136,6 +136,9 @@ float shell_baseline(font *f, float y, float h);
 void shell_clock(char *hm, size_t hm_n, char *date, size_t date_n);
 
 void shell_theme_load(shell_ctx *c, const theme_t *t);
+/* The starter app set. Call AFTER shell_theme_load(): tints come from
+ * the theme's accents, because nothing may hardcode a colour. */
+void shell_seed_apps(shell_ctx *c);
 /* Loads a .shell archetype file into the ctx. Returns 0 on success. */
 int  shell_archetype_load(shell_ctx *c, const char *path);
 

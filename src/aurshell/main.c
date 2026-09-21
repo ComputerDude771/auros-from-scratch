@@ -438,30 +438,6 @@ static void paint_cursor(surface *s, int x, int y, uint32_t fill, uint32_t edge)
         }
 }
 
-/* ── a starter set of things the machine can do ──────────────────── */
-static void seed_apps(shell_ctx *c)
-{
-    const struct { const char *id, *name, *hint; shell_icon ic; uint32_t t; int pin; } A[] = {
-      { "web",   "Internet",   "Browse the web",        ICON_GLOBE,    0x7DD3C0, 1 },
-      { "mail",  "Email",      "Read your messages",    ICON_MAIL,     0x82AAFF, 1 },
-      { "photo", "Photos",     "Pictures and videos",   ICON_PHOTOS,   0xA78BFA, 1 },
-      { "files", "My Files",   "Documents you saved",   ICON_FILES,    0xF2B880, 1 },
-      { "write", "Writing",    "Letters and notes",     ICON_TEXT,     0x6FD8DC, 0 },
-      { "music", "Music",      "Songs and radio",       ICON_MUSIC,    0xF2788D, 0 },
-      { "calc",  "Calculator", "Do sums",               ICON_CALC,     0x9BE8D8, 0 },
-      { "set",   "Settings",   "Change how this works", ICON_SETTINGS, 0x8793A4, 1 },
-      { "help",  "Help",       "Show me how",           ICON_HELP,     0x6FD8DC, 0 },
-    };
-    c->n_apps = (int)(sizeof A / sizeof A[0]);
-    for (int i = 0; i < c->n_apps; i++) {
-        snprintf(c->apps[i].id,   sizeof c->apps[i].id,   "%s", A[i].id);
-        snprintf(c->apps[i].name, sizeof c->apps[i].name, "%s", A[i].name);
-        snprintf(c->apps[i].hint, sizeof c->apps[i].hint, "%s", A[i].hint);
-        c->apps[i].icon = A[i].ic;
-        c->apps[i].tint = A[i].t;
-        c->apps[i].pinned = A[i].pin;
-    }
-}
 
 static void build_wallpaper(surface **wall, int w, int h, const theme_t *t)
 {
@@ -592,7 +568,7 @@ int main(int argc, char **argv)
         snprintf(c.layout_id, sizeof c.layout_id, "%s", fb);
         c.show_clock = 1;
     }
-    seed_apps(&c);
+    shell_seed_apps(&c);
     c.mouse_x = mouse_x0;
     c.mouse_y = mouse_y0;
     c.hover = -1;
