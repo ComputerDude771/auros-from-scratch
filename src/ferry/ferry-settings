@@ -1,0 +1,234 @@
+#!/bin/sh
+# ═══════════════════════════════════════════════════════════════════
+#  ferry-settings — make the new desktop feel like the old one.
+#
+#  Wallpaper, timezone, locale, keyboard layout, display scale, default
+#  browser (spec §4). None of it is data the user would lose sleep over,
+#  but a Linux desktop that boots in the wrong timezone with a US
+#  keyboard on a British user's machine feels broken on the first
+#  minute, and first minutes decide whether they keep it.
+#
+#  Everything here is SUGGESTED, not forced, exactly as the spec asks:
+#  values are written where the desktop reads them and echoed in the
+#  report so the welcome screen can show "we set your timezone to
+#  Europe/London — change it?". Display scale in particular is only
+#  suggested; forcing 150% on a panel that does not want it is worse
+#  than leaving it.
+#
+#  The timezone mapping is the one genuinely hard part: Windows stores a
+#  name of its own invention ("GMT Standard Time"), and everything on
+#  Linux wants an IANA id ("Europe/London"). The CLDR windowsZones table
+#  in data/windowsZones.tab is the authoritative bridge, shipped with
+#  Ferry so this works with no network.
+#
+#    ferry-settings                 apply all
+#    ferry-settings --only timezone one thing
+#    ferry-settings --dry-run       show, change nothing
+# ═══════════════════════════════════════════════════════════════════
+set -eu
+. "$(dirname "$0")/ferry-common.sh"
+
+ONLY=""
+while [ $# -gt 0 ]; do
+    common_opt "$@"
+    if [ "${_consumed:-0}" -gt 0 ]; then shift "$_consumed"; continue; fi
+    case $1 in
+        --only) ONLY=${2:?--only needs a name}; shift 2 ;;
+        -h|--help) sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        *) die "unknown option '$1'" ;;
+    esac
+done
+
+[ -n "$FERRY_ROOT" ] || die "ferry-settings needs a mounted Windows volume (--root)"
+stage_begin settings
+require_clean_volume "$FERRY_ROOT" "$FERRY_DEV"
+resolve_target
+select_profile || die "could not identify which Windows profile to import (pass --user NAME)"
+
+_soft=$(win_hive SOFTWARE || true)
+_sys=$(win_hive SYSTEM || true)
+_nt="$_WIN_NTUSER"
+
+want() { [ -z "$ONLY" ] || [ "$ONLY" = "$1" ]; }
+
+# The registry file the desktop reads suggested settings from. Written
+# as key=value so aurora / the shell / the welcome app can all read it
+# without re-parsing hives — Ferry is the only thing that touches NTFS.
+SUGG="$FERRY_STATE/suggested.conf"
+[ "$FERRY_DRYRUN" = 1 ] || : > "$SUGG"
+suggest() {
+    [ "$FERRY_DRYRUN" = 1 ] || printf '%s=%s\n' "$1" "$2" >> "$SUGG"
+    note settings info "$1" "suggested: $2 ${3:+($3)}"
+}
+
+# ── Timezone. TimeZoneKeyName -> IANA via CLDR. This is the mapping the
+#    spec specifically demands, and the reason the table ships with us.
+if want timezone && [ -n "$_sys" ]; then
+    _cs=$(hive_get "$_sys" 'Select' Current 2>/dev/null || echo 1)
+    case "$_cs" in ''|*[!0-9]*) _cs=1 ;; esac
+    _csk=$(printf 'ControlSet%03d' "$_cs")
+    _tzkey=$(hive_get "$_sys" "$_csk\\Control\\TimeZoneInformation" TimeZoneKeyName 2>/dev/null || true)
+    if [ -n "$_tzkey" ]; then
+        _iana=$(awk -F'\t' -v k="$_tzkey" '
+            /^#/ || NF < 2 { next } $1 == k { print $2; exit }' \
+            "$FERRY_SHARE/windowsZones.tab" 2>/dev/null || true)
+        if [ -n "$_iana" ]; then
+            suggest timezone "$_iana" "from Windows '$_tzkey'"
+            if [ "$FERRY_DRYRUN" = 0 ] && command -v timedatectl >/dev/null 2>&1; then
+                timedatectl set-timezone "$_iana" >/dev/null 2>&1 && \
+                    say "timezone set to $_iana" || \
+                    warn "could not apply timezone (need root / running systemd)"
+            elif [ "$FERRY_DRYRUN" = 0 ] && [ -e /usr/share/zoneinfo/"$_iana" ]; then
+                ln -sf "/usr/share/zoneinfo/$_iana" /etc/localtime 2>/dev/null && \
+                    printf '%s\n' "$_iana" > /etc/timezone 2>/dev/null && \
+                    say "timezone set to $_iana" || true
+            fi
+        else
+            note settings manual timezone \
+                "Windows timezone '$_tzkey' is not in the CLDR mapping table; set your timezone manually"
+        fi
+    fi
+fi
+
+# ── Locale. Windows LocaleName (en-GB) -> a glibc/musl locale
+#    (en_GB.UTF-8). We do not invent an encoding: UTF-8 is the only one
+#    AurOS ships, and forcing it is correct.
+if want locale && [ -n "$_nt" ]; then
+    _loc=$(hive_get "$_nt" 'Control Panel\International' LocaleName 2>/dev/null || true)
+    if [ -n "$_loc" ]; then
+        _glibc=$(printf '%s' "$_loc" | sed 's/-/_/')".UTF-8"
+        suggest locale "$_glibc" "from Windows '$_loc'"
+        if [ "$FERRY_DRYRUN" = 0 ]; then
+            mkdir -p "$(dirname /etc/locale.conf)" 2>/dev/null || true
+            printf 'LANG=%s\n' "$_glibc" > /etc/locale.conf 2>/dev/null && \
+                say "locale set to $_glibc" || \
+                note settings manual locale "could not write /etc/locale.conf (need root)"
+        fi
+    fi
+fi
+
+# ── Keyboard. Preload holds KLIDs in priority order; the first is the
+#    one to make primary. KLID -> XKB via the table, with a low-word
+#    language fallback so an unlisted KLID still lands on the right
+#    language rather than defaulting to US.
+if want keyboard && [ -n "$_nt" ]; then
+    _first=$(hive_get "$_nt" 'Keyboard Layout\Preload' 1 2>/dev/null || true)
+    if [ -n "$_first" ]; then
+        _klid=$(printf '%s' "$_first" | tr 'a-f' 'A-F')
+        _xkb=$(awk -F'\t' -v k="$_klid" '
+            /^#/ || NF < 2 { next } $1 == k { print $2 (NF>=3 && $3!=" " ? "\t" $3 : ""); exit }' \
+            "$FERRY_SHARE/klid.tab" 2>/dev/null || true)
+        if [ -z "$_xkb" ]; then
+            # Fall back to the low 16 bits (the language id). Match any
+            # KLID in the table whose last 4 hex digits agree.
+            _low=$(printf '%s' "$_klid" | sed 's/^.*\(....\)$/\1/')
+            _xkb=$(awk -F'\t' -v l="$_low" '
+                /^#/ || NF < 2 { next }
+                substr($1, 5) == l { print $2; exit }' \
+                "$FERRY_SHARE/klid.tab" 2>/dev/null || true)
+        fi
+        if [ -n "$_xkb" ]; then
+            _layout=$(printf '%s' "$_xkb" | cut -f1)
+            _variant=$(printf '%s' "$_xkb" | cut -f2)
+            [ "$_variant" = "$_layout" ] && _variant=""
+            suggest keyboard "$_layout${_variant:+:$_variant}" "from KLID $_klid"
+            if [ "$FERRY_DRYRUN" = 0 ]; then
+                {
+                    echo '# Written by Ferry from the Windows keyboard layout.'
+                    printf 'KEYMAP=%s\n' "$_layout"
+                    printf 'XKBLAYOUT=%s\n' "$_layout"
+                    [ -n "$_variant" ] && printf 'XKBVARIANT=%s\n' "$_variant"
+                } > /etc/vconsole.conf 2>/dev/null && say "keyboard set to $_layout${_variant:+ ($_variant)}" || \
+                note settings manual keyboard "could not write /etc/vconsole.conf (need root)"
+            fi
+        else
+            note settings manual keyboard \
+                "Windows keyboard layout KLID $_klid has no XKB mapping; set your layout manually"
+        fi
+    fi
+fi
+
+# ── Display scale. LogPixels 96/120/144/192 -> 1.0/1.25/1.5/2.0. Only
+#    ever suggested: forcing a scale factor a panel dislikes is worse
+#    than the wrong default, so this writes the hint and stops.
+if want scale && [ -n "$_nt" ]; then
+    _lp=$(hive_get "$_nt" 'Control Panel\Desktop' LogPixels 2>/dev/null || true)
+    case "$_lp" in
+        ''|*[!0-9]*) : ;;
+        *) _sc=$(awk -v p="$_lp" 'BEGIN { printf "%.2f", p/96.0 }')
+           suggest display-scale "$_sc" "from Windows ${_lp} DPI — suggestion only" ;;
+    esac
+fi
+
+# ── Wallpaper. Copy the image and record the fit mode; the desktop
+#    applies it. TranscodedWallpaper is the reliable fallback because the
+#    Wallpaper value can point at a theme pack path that no longer
+#    resolves.
+if want wallpaper; then
+    _wp="" _style=""
+    if [ -n "$_nt" ]; then
+        _wpraw=$(hive_get "$_nt" 'Control Panel\Desktop' Wallpaper 2>/dev/null || true)
+        _style=$(hive_get "$_nt" 'Control Panel\Desktop' WallpaperStyle 2>/dev/null || true)
+        if [ -n "$_wpraw" ]; then
+            _WIN_SYSDRIVE=C
+            _wprel=$(win_to_rel "$(expand_tokens "$_wpraw")")
+            _wp=$(path_ci "$FERRY_ROOT" "$_wprel" 2>/dev/null || true)
+        fi
+    fi
+    if [ -z "$_wp" ]; then
+        _wp=$(path_ci "$_WIN_PROFILE_DIR" \
+              "AppData/Roaming/Microsoft/Windows/Themes/TranscodedWallpaper" 2>/dev/null || true)
+    fi
+    if [ -n "$_wp" ] && [ -f "$_wp" ]; then
+        _wpdest="$FERRY_HOME/.local/share/backgrounds/windows-wallpaper"
+        # Keep the extension when there is one; TranscodedWallpaper has none.
+        case "$_wp" in *.*) _wpdest="$_wpdest.${_wp##*.}" ;; esac
+        [ "$FERRY_DRYRUN" = 1 ] || mkdir -p "$(dirname "$_wpdest")"
+        _act=$(safe_copy "$_wp" "$_wpdest")
+        if [ "$_act" = copied ] || [ "$_act" = already ]; then
+            _fit=fill
+            case "$_style" in
+                10) _fit=fill ;; 6) _fit=fit ;; 2) _fit=stretch ;;
+                0)  _fit=center ;; 22) _fit=span ;;
+            esac
+            suggest wallpaper "$_wpdest" "fit=$_fit"
+            own "$(dirname "$_wpdest")"
+            say "wallpaper imported ($_fit)"
+        fi
+    else
+        note settings info wallpaper "no wallpaper image could be located to import"
+    fi
+fi
+
+# ── Default browser. A ProgId, mapped to something xdg-settings knows.
+#    Only a suggestion: the app must actually be installed to honour it.
+if want default-browser && [ -n "$_nt" ]; then
+    _progid=$(hive_get "$_nt" \
+        'Software\Microsoft\Windows\Shell\Associations\UrlAssociations\https\UserChoice' \
+        ProgId 2>/dev/null || true)
+    case "$_progid" in
+        FirefoxURL*) suggest default-browser firefox.desktop "was Firefox" ;;
+        ChromeHTML*) suggest default-browser google-chrome.desktop "was Chrome" ;;
+        MSEdgeHTM*)  suggest default-browser microsoft-edge.desktop "was Edge" ;;
+        BraveHTML*)  suggest default-browser brave-browser.desktop "was Brave" ;;
+        AppX*|*)     [ -n "$_progid" ] && note settings info default-browser \
+                       "previous default browser ProgId '$_progid' has no Linux mapping" ;;
+    esac
+fi
+
+# ── Mapped network drives. Reconstructing them needs credentials that
+#    are DPAPI-protected, so this reports them for the user rather than
+#    inventing an fstab line that would fail to mount.
+if want mapped-drives && [ -n "$_nt" ]; then
+    for _l in D E F G H I J K L M N O P Q R S T U V W X Y Z; do
+        _rp=$(hive_get "$_nt" "Network\\$_l" RemotePath 2>/dev/null || true)
+        [ -n "$_rp" ] || continue
+        note settings manual "drive-$_l" \
+            "was mapped to '$_rp'; reconnect it in Files (credentials are not recoverable offline)"
+    done
+fi
+
+[ "$FERRY_DRYRUN" = 1 ] || own "$FERRY_HOME/.local" 2>/dev/null || true
+say "settings: suggestions written to $SUGG"
+stage_done settings
+exit 0

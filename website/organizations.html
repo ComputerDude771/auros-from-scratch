@@ -1,0 +1,501 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AurOS for schools and organizations</title>
+<meta name="description" content="Profiles, lockdown, kiosk mode and languages: one plain-text file describes a whole fleet of AurOS machines. Plus an honest account of what is not ready.">
+<meta name="color-scheme" content="dark">
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2032%2032'%3E%3Crect%20width='32'%20height='32'%20rx='7'%20fill='%230B0E14'/%3E%3Cpath%20d='M16%205L25%2016L16%2027L7%2016Z'%20fill='%237DD3C0'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="assets/nocturne.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="site-head">
+  <div class="shell">
+    <a class="brand" href="index.html">
+      <span class="glyph" aria-hidden="true">&#9670;</span>
+      AurOS
+      <span class="ver">0.1.0 Nocturne</span>
+    </a>
+    <nav class="site-nav" aria-label="Main">
+      <a href="index.html">Home</a>
+      <a href="how-it-works.html">How it works</a>
+      <a href="safety.html">Safety</a>
+      <a href="organizations.html" aria-current="page">Organizations</a>
+      <a class="btn btn-primary" href="download.html">Download</a>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+
+  <section class="hero hero-sm">
+    <div class="aurora" aria-hidden="true"></div>
+    <div class="aurora-veil" aria-hidden="true"></div>
+    <div class="shell">
+      <p class="eyebrow">Schools &amp; organizations</p>
+      <h1>One plain-text file describes the whole fleet.</h1>
+      <p class="lede">
+        A room of ageing Windows machines that are too slow for the current
+        operating system and too functional to throw away is a common problem with
+        an expensive default answer. AurOS is an attempt at a cheaper one: branding,
+        language, the app list, and exactly what students are allowed to change, all
+        in a single readable file that produces a bootable image.
+      </p>
+    </div>
+  </section>
+
+  <!-- ───────────────────── what a profile is ──────────────────── -->
+  <section>
+    <div class="shell" id="profiles">
+      <div class="sec-head">
+        <h2>Profiles</h2>
+        <p class="lede">
+          A profile is the entire customization surface of the system in one file.
+          No scripts to maintain, no golden image to re-capture, no configuration
+          management agent. Edit the file, build, deploy.
+        </p>
+      </div>
+
+      <div class="grid grid-2">
+        <div>
+          <h3>Inheritance, so you only write the differences</h3>
+          <p>
+            A profile can inherit from another and override only what differs. The
+            default desktop profile carries the sensible defaults; a lab profile
+            might change four lines. Your organization&rsquo;s own base profile can
+            in turn be the parent of per-room or per-year-group profiles.
+          </p>
+          <h3>It is data, not code</h3>
+          <p>
+            Everything on this page is a key and a value in a text file. That is a
+            deliberate design constraint: the moment the lockdown story requires
+            writing code, it stops being auditable by the person responsible for the
+            machines, and that person is usually not a programmer.
+          </p>
+          <p class="small">
+            The whole file is plain <code>key="value"</code> pairs with comments.
+            It is readable by a person who has never seen it before, which is the
+            point.
+          </p>
+        </div>
+
+        <div>
+<pre><code><span class="c"># A locked-down lab build, in full.</span>
+<span class="k">inherit</span>=<span class="s">"desktop"</span>
+
+<span class="k">profile_id</span>=<span class="s">"lab-kiosk"</span>
+<span class="k">profile_name</span>=<span class="s">"Library Kiosk"</span>
+
+<span class="c"># Branding</span>
+<span class="k">brand_name</span>=<span class="s">"Your Organization"</span>
+<span class="k">theme</span>=<span class="s">"sandstone"</span>
+
+<span class="c"># One app, and nothing else</span>
+<span class="k">packages_apps</span>=<span class="s">"firefox"</span>
+<span class="k">packages_extra</span>=<span class="s">"cups-client"</span>
+
+<span class="c"># Policy</span>
+<span class="k">kiosk_mode</span>=<span class="s">"yes"</span>
+<span class="k">allowed_apps</span>=<span class="s">"firefox"</span>
+<span class="k">allow_user_install</span>=<span class="s">"no"</span>
+<span class="k">allow_settings_change</span>=<span class="s">"no"</span>
+<span class="k">allow_theme_change</span>=<span class="s">"no"</span>
+<span class="k">allow_tty</span>=<span class="s">"no"</span>
+<span class="k">auto_login</span>=<span class="s">"yes"</span>
+<span class="k">default_user</span>=<span class="s">"student"</span>
+
+<span class="c"># Fleet</span>
+<span class="k">enrollment_url</span>=<span class="s">"https://mdm.example/enroll"</span>
+<span class="k">update_channel</span>=<span class="s">"managed"</span>
+<span class="k">telemetry</span>=<span class="s">"off"</span></code></pre>
+          <p class="small">
+            Eighteen lines, inheriting everything else from the default profile.
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ───────────────────────── lockdown ───────────────────────── -->
+  <section class="alt">
+    <div class="shell" id="lockdown">
+      <div class="sec-head">
+        <h2>Lockdown</h2>
+        <p>
+          The policy section of a profile. These are the controls that exist today,
+          named exactly as they appear in the file.
+        </p>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <caption>Every policy key in a profile, with its default.</caption>
+          <thead>
+            <tr>
+              <th scope="col">Key</th>
+              <th scope="col">Default</th>
+              <th scope="col">What it does</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th scope="row"><code>kiosk_mode</code></th>
+              <td><code>no</code></td>
+              <td>Single application, full screen. No desktop, no launcher, no shell access. The machine starts, the app appears, and that is the whole system.</td>
+            </tr>
+            <tr>
+              <th scope="row"><code>allowed_apps</code></th>
+              <td>empty</td>
+              <td>An allow-list. Empty means everything installed may be run; naming applications restricts to those.</td>
+            </tr>
+            <tr>
+              <th scope="row"><code>blocked_apps</code></th>
+              <td>empty</td>
+              <td>A deny-list, for when an allow-list is too blunt.</td>
+            </tr>
+            <tr>
+              <th scope="row"><code>allow_user_install</code></th>
+              <td><code>yes</code></td>
+              <td>Whether a signed-in user may install software at all.</td>
+            </tr>
+            <tr>
+              <th scope="row"><code>allow_settings_change</code></th>
+              <td><code>yes</code></td>
+              <td>Whether the settings surfaces are writable or read-only.</td>
+            </tr>
+            <tr>
+              <th scope="row"><code>allow_theme_change</code></th>
+              <td><code>yes</code></td>
+              <td>Whether users can reskin the machine away from your branding.</td>
+            </tr>
+            <tr>
+              <th scope="row"><code>allow_tty</code></th>
+              <td><code>yes</code></td>
+              <td>Whether the text consoles behind the desktop are reachable. Set to <code>no</code> for exam and public-access machines.</td>
+            </tr>
+            <tr>
+              <th scope="row"><code>auto_login</code></th>
+              <td><code>no</code></td>
+              <td>Start straight into the session with no password. Correct for kiosks; wrong for staff laptops.</td>
+            </tr>
+            <tr>
+              <th scope="row"><code>default_user</code></th>
+              <td><code>auros</code></td>
+              <td>The account created at build time.</td>
+            </tr>
+            <tr>
+              <th scope="row"><code>telemetry</code></th>
+              <td><code>off</code></td>
+              <td>Off, or anonymous. There is no third setting, and off is the default in every profile including the ones we ship.</td>
+            </tr>
+            <tr>
+              <th scope="row"><code>update_channel</code></th>
+              <td><code>stable</code></td>
+              <td><code>stable</code> for ordinary machines; <code>managed</code> to hold a fleet at a version you have tested.</td>
+            </tr>
+            <tr>
+              <th scope="row"><code>enrollment_url</code></th>
+              <td>empty</td>
+              <td>An endpoint the machine checks in with on first boot, for organizations that already run a device management system.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="note note-warn" style="margin-top:1.6rem">
+        <span class="note-title">What lockdown here means, precisely</span>
+        <p>
+          These controls shape what the desktop offers and what the system will start.
+          They are a good answer to &ldquo;students should not be able to change the
+          wallpaper, install games or reach a terminal&rdquo;. They are
+          <strong>not</strong> a claim to be tamper-proof against a determined,
+          technically capable person with unsupervised physical access to the machine
+          and the ability to boot it from a USB stick. Nothing at this layer is, in any
+          operating system, and you should be suspicious of anyone who says otherwise.
+          Full-disk encryption and firmware passwords are the layer that addresses
+          that, and they sit underneath us, not in this file.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ───────────────────────── languages ──────────────────────── -->
+  <section>
+    <div class="shell" id="languages">
+      <div class="sec-head">
+        <h2>Languages</h2>
+        <p class="lede">
+          &ldquo;Make these machines run natively in Chinese, or French, or
+          Arabic&rdquo; should be a profile edit, not a rebuild. It is.
+        </p>
+      </div>
+
+      <div class="grid grid-2">
+        <div>
+          <p>
+            A profile sets the system language, any number of additional languages,
+            the keyboard layout and variant, and the time zone. The build then pulls
+            in the input methods and the font coverage those languages actually
+            need &mdash; which is the part that usually gets forgotten and produces a
+            machine full of empty boxes where the text should be.
+          </p>
+          <ul class="plain small">
+            <li><code>locale</code> &mdash; the system language, e.g. <code>fr_FR.UTF-8</code></li>
+            <li><code>extra_locales</code> &mdash; additional languages available at sign-in</li>
+            <li><code>keyboard_layout</code> / <code>keyboard_variant</code></li>
+            <li><code>timezone</code></li>
+            <li><code>packages_extra</code> &mdash; input methods and fonts</li>
+          </ul>
+          <p class="small">
+            For a machine migrating from Windows, the language, keyboard layout and
+            time zone are also read off the Windows partition during the move and
+            shown to the user for confirmation &mdash; so a French-configured Windows
+            becomes a French-configured AurOS without anyone choosing anything.
+          </p>
+        </div>
+        <div>
+<pre><code><span class="c"># Four languages, ready at the sign-in screen.</span>
+<span class="k">inherit</span>=<span class="s">"desktop"</span>
+
+<span class="k">locale</span>=<span class="s">"fr_FR.UTF-8"</span>
+<span class="k">extra_locales</span>=<span class="s">"zh_CN.UTF-8 es_ES.UTF-8
+                ar_EG.UTF-8 en_US.UTF-8"</span>
+<span class="k">keyboard_layout</span>=<span class="s">"fr"</span>
+<span class="k">timezone</span>=<span class="s">"Europe/Paris"</span>
+
+<span class="c"># Input methods and the font coverage those</span>
+<span class="c"># locales actually need.</span>
+<span class="k">packages_extra</span>=<span class="s">"ibus ibus-pinyin ibus-m17n
+                 fonts-noto-cjk fonts-noto-core
+                 fonts-noto-color-emoji
+                 language-pack-fr
+                 language-pack-zh-hans
+                 language-pack-es language-pack-ar"</span></code></pre>
+          <p class="small">
+            Right-to-left layout for Arabic and Hebrew is a desktop-shell feature
+            that is implemented but has not been tested at the depth a deployment
+            deserves. Ask us about it before committing to it.
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ───────────────────── apps and hardware ──────────────────── -->
+  <section class="alt">
+    <div class="shell" id="apps">
+      <div class="sec-head">
+        <h2>Applications, and the one that decides procurement</h2>
+      </div>
+      <p>
+        For most school deployments a single question decides everything:
+        <em>does our state testing platform run on it?</em> Those platforms usually
+        mean Chrome specifically, not &ldquo;a browser&rdquo;. An earlier version of
+        AurOS used a minimal system library that made prebuilt Chrome, Zoom, Teams
+        and similar impossible to run at all. We changed it, from scratch, for
+        exactly this reason.
+      </p>
+      <p>
+        The result is that mainstream Linux builds of browsers and conferencing
+        clients install and run normally, and the browser comes from a real package
+        repository rather than a container format that is slow to start on old
+        hardware &mdash; which matters when the machine you are reviving is from 2014.
+      </p>
+      <div class="note note-info">
+        <span class="note-title">Test it, do not take our word for it</span>
+        <p>
+          We will not claim your specific testing platform, proctoring client or
+          classroom management tool works. Several of them are Windows-only, and some
+          require a browser extension available only on a managed Chrome install. That
+          is a pilot question, and the answer is either yes on your ten test machines
+          or the project stops there.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─────────────────── what is not ready ────────────────────── -->
+  <section>
+    <div class="shell" id="not-ready">
+      <div class="sec-head">
+        <h2>What is not ready for you</h2>
+        <p class="lede">
+          If you are responsible for a few hundred machines, this is the section that
+          matters. We would rather lose the deal than be discovered halfway through a
+          rollout.
+        </p>
+      </div>
+
+      <div class="grid grid-2">
+        <article class="card card-warn">
+          <h3>The installer is not finished</h3>
+          <p>
+            The read-only compatibility check is real and will honestly tell you how
+            many machines in a room would be accepted. Everything that changes a disk
+            is still being built. Nothing gets deployed to a student machine until the
+            rescue path is tested by deliberately failing installs.
+            <a href="safety.html#status">Full status</a>.
+          </p>
+        </article>
+        <article class="card card-warn">
+          <h3>Every machine will show one firmware prompt</h3>
+          <p>
+            Until our boot chain is signed by a recognised authority, each machine
+            needs a one-time approval on a firmware screen during its first start. On
+            one laptop that is a mild curiosity. On two hundred it is two hundred
+            people standing in front of two hundred screens, and you should price that
+            in. <a href="safety.html#secure-boot">Why</a>.
+          </p>
+        </article>
+        <article class="card card-warn">
+          <h3>There is no management console</h3>
+          <p>
+            There is a profile file, a build, and an optional check-in endpoint your
+            existing device management system can answer. There is no dashboard, no
+            remote command, no inventory service, no reporting. If your procurement
+            requires one, we are not a candidate this year.
+          </p>
+        </article>
+        <article class="card card-warn">
+          <h3>There is no certified hardware list</h3>
+          <p>
+            Comparable products ship with a list of tested models and tiers of
+            support. We do not have one yet. What we have instead is a rescue
+            environment that tests Wi-Fi, brightness, sound and sleep on each machine
+            before anything is committed, and aborts if they fail &mdash; which turns
+            an unknown model into a wasted twenty minutes rather than a broken
+            computer.
+          </p>
+        </article>
+        <article class="card card-warn">
+          <h3>There is no support contract</h3>
+          <p>
+            No legal entity, no insurance, no service-level agreement, no invoice to
+            pay. All of those are prerequisites we have written down and not yet met.
+            Any pilot today is a pilot with volunteers, on spare machines, with
+            backups.
+          </p>
+        </article>
+        <article class="card card-warn">
+          <h3>Dual-boot at scale needs a decision</h3>
+          <p>
+            Keeping Windows on every machine is the safety property that makes this
+            product defensible, and it costs roughly half the disk. For a lab of small
+            drives you may want the replace-everything path instead &mdash; which is
+            supported, and which removes every undo described on this site. Decide
+            that deliberately, not by accident.
+          </p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <!-- ───────────────────── what a pilot is ────────────────────── -->
+  <section class="alt">
+    <div class="shell" id="pilot">
+      <div class="sec-head">
+        <h2>What an honest pilot looks like</h2>
+      </div>
+      <ol class="steps">
+        <li>
+          <h3>Run the read-only check on every machine in one room</h3>
+          <p>
+            It writes nothing and takes under a minute per machine. You get a list of
+            which machines would be accepted, which would be refused, and why. Several
+            of the refusals &mdash; failing drives especially &mdash; are worth knowing
+            about regardless of whether you ever install anything.
+          </p>
+        </li>
+        <li>
+          <h3>Write one profile for the room</h3>
+          <p>
+            Branding, language, the app list, and the policy keys above. Inherit from
+            the default and change only what differs. Expect this to take an afternoon,
+            most of it spent deciding rather than typing.
+          </p>
+        </li>
+        <li>
+          <h3>Install on spare machines that nobody depends on</h3>
+          <p>
+            With backups, on machines that are not in a timetable. Then try to break
+            the lockdown yourself, and try the restore path deliberately &mdash; boot
+            the rescue entry and press &ldquo;Put Windows back&rdquo; on at least one
+            machine, so you have seen it work with your own eyes.
+          </p>
+        </li>
+        <li>
+          <h3>Put it in front of the people who will use it</h3>
+          <p>
+            A teacher, a librarian, a student. The question is not whether it boots;
+            it is whether the first hour of using it is confusing. If it is, that is
+            our bug, and we would like to hear about it before you roll anything out.
+          </p>
+        </li>
+      </ol>
+
+      <div class="cta" style="margin-top:2.6rem">
+        <h2>Start with the check</h2>
+        <p>
+          It is the only part that is finished, and it is the part that tells you
+          whether the rest is worth your time. It is read-only, it takes under a
+          minute, and it changes nothing on the machine.
+        </p>
+        <p class="btn-row">
+          <a class="btn btn-primary btn-lg" href="download.html">Download page</a>
+          <a class="btn btn-ghost btn-lg" href="safety.html">What can go wrong</a>
+        </p>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer class="site-foot">
+  <div class="shell">
+    <div class="foot-grid">
+      <div>
+        <a class="brand" href="index.html">
+          <span class="glyph" aria-hidden="true">&#9670;</span> AurOS
+        </a>
+        <p class="small" style="margin-top:.8rem">
+          A Linux desktop for old Windows PCs. Pre-release: the read-only
+          compatibility check builds and runs; the installer is still being
+          written and tested.
+        </p>
+      </div>
+      <nav aria-labelledby="foot-pages">
+        <h2 id="foot-pages">Pages</h2>
+        <ul>
+          <li><a href="index.html">Home</a></li>
+          <li><a href="how-it-works.html">How it works</a></li>
+          <li><a href="safety.html">Safety</a></li>
+          <li><a href="organizations.html">Organizations</a></li>
+          <li><a href="download.html">Download</a></li>
+        </ul>
+      </nav>
+      <nav aria-labelledby="foot-honest">
+        <h2 id="foot-honest">The honest bits</h2>
+        <ul>
+          <li><a href="safety.html#what-can-go-wrong">What can go wrong</a></li>
+          <li><a href="safety.html#refuse">What we refuse to do</a></li>
+          <li><a href="safety.html#cannot-migrate">What can&rsquo;t be migrated</a></li>
+          <li><a href="download.html#requirements">Hard requirements</a></li>
+          <li><a href="how-it-works.html#undo">How to go back to Windows</a></li>
+        </ul>
+      </nav>
+    </div>
+    <div class="foot-bottom">
+      <p>
+        No analytics, no cookies, no advertising, no external fonts. This page
+        loads one stylesheet and one small script from this server, and makes no
+        other network request. You can save it and read it offline.
+      </p>
+      <p>AurOS is MIT-licensed. &copy; 2026 AurOS contributors.</p>
+    </div>
+  </div>
+</footer>
+</body>
+</html>

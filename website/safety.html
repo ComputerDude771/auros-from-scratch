@@ -1,0 +1,689 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Safety — what can go wrong with AurOS</title>
+<meta name="description" content="Every way an AurOS install can fail, ranked by damage; what we refuse to build; and exactly what we cannot migrate from Windows.">
+<meta name="color-scheme" content="dark">
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2032%2032'%3E%3Crect%20width='32'%20height='32'%20rx='7'%20fill='%230B0E14'/%3E%3Cpath%20d='M16%205L25%2016L16%2027L7%2016Z'%20fill='%237DD3C0'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="assets/nocturne.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="site-head">
+  <div class="shell">
+    <a class="brand" href="index.html">
+      <span class="glyph" aria-hidden="true">&#9670;</span>
+      AurOS
+      <span class="ver">0.1.0 Nocturne</span>
+    </a>
+    <nav class="site-nav" aria-label="Main">
+      <a href="index.html">Home</a>
+      <a href="how-it-works.html">How it works</a>
+      <a href="safety.html" aria-current="page">Safety</a>
+      <a href="organizations.html">Organizations</a>
+      <a class="btn btn-primary" href="download.html">Download</a>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+
+  <section class="hero hero-sm">
+    <div class="aurora" aria-hidden="true"></div>
+    <div class="aurora-veil" aria-hidden="true"></div>
+    <div class="shell">
+      <p class="eyebrow warm">Safety</p>
+      <h1>Everything that can go wrong, in our own words.</h1>
+      <p class="lede">
+        A hostile review of this product summed it up as
+        &ldquo;a consumer-grade disk-destruction tool with a wizard on it&rdquo;.
+        That verdict is on this page rather than buried in a repository, because
+        the work that followed it is the reason the product is worth shipping at
+        all. Here is what we found, what we built in response, and what remains
+        genuinely dangerous.
+      </p>
+    </div>
+  </section>
+
+  <!-- ──────────────── five things that must be true ───────────── -->
+  <section>
+    <div class="shell">
+      <div class="sec-head">
+        <h2>The five things that must be true</h2>
+        <p>
+          These are the conditions for shipping. If one of them stops being true,
+          the correct response is to stop shipping, not to add a warning dialog.
+        </p>
+      </div>
+      <ol class="grid grid-2 numbered">
+        <li class="card"><p><strong>The installer can always put the machine back.</strong> The rescue area is written before the first destructive byte, and is reachable from the boot menu without a USB stick, a second computer, or us.</p></li>
+        <li class="card"><p><strong>Nothing irreversible happens until the new system has booted and you have said it works.</strong> Windows stays bootable and stays the default until you choose otherwise.</p></li>
+        <li class="card"><p><strong>We know the machine before we touch it, and we refuse the ones we cannot handle.</strong> Refusing is a designed product outcome, not an error dialog.</p></li>
+        <li class="card"><p><strong>Hardware support on old PCs is the unpriced risk.</strong> We test your Wi-Fi, screen and sound from the rescue environment before committing anything.</p></li>
+        <li class="card"><p><strong>A real legal entity, insurance and a lawyer-drafted consent flow exist before the first public download.</strong> They do not yet. That is why there is no public download yet.</p></li>
+      </ol>
+    </div>
+  </section>
+
+  <!-- ─────────────────── what can go wrong ────────────────────── -->
+  <section class="alt">
+    <div class="shell" id="what-can-go-wrong">
+      <div class="sec-head">
+        <h2>What can go wrong</h2>
+        <p class="lede">
+          Ordered by how much damage each one would do. Every item is a real
+          failure mode with a real mechanism &mdash; several of them have already
+          happened to people using other tools that do approximately this.
+        </p>
+      </div>
+
+      <details id="bitlocker">
+        <summary>Windows encrypted your drive and you never knew <span class="risk-id">highest consequence</span></summary>
+        <div class="details-body">
+          <p>
+            <strong>What happens:</strong> recent Windows versions switch on device
+            encryption automatically when you sign in with a Microsoft account, and
+            recent releases relaxed the hardware requirements, so far more machines
+            are encrypted than their owners believe. Changing the disk layout changes
+            what the security chip measures at startup. The next time Windows starts,
+            it asks for a 48-digit recovery key you have never seen &mdash; stored in
+            a Microsoft account you can only reach from a browser, on the computer
+            that is now asking for the key.
+          </p>
+          <p>
+            <strong>Why it is the worst one:</strong> we would have destroyed your
+            data while trying to preserve it, after promising Windows would stay
+            intact. That is worse than wiping the disk, because you trusted us.
+          </p>
+          <p>
+            <strong>What we do:</strong> detect the encryption state before anything
+            else. Require you to <em>type back part of the recovery key</em>, not tick
+            a box &mdash; proof you can actually get in afterwards. Offer to save and
+            print it, and write it into the rescue area. Suspend protection in a way
+            that does not silently expire after one restart. If the key cannot be
+            produced at all, we stop, and there is no override.
+          </p>
+          <p class="small">
+            One disclosure that matters: while protection is suspended, your drive is
+            not encrypted at rest. Turn it back on when the install is finished.
+          </p>
+        </div>
+      </details>
+
+      <details>
+        <summary>Windows was hibernating when you thought it had shut down <span class="risk-id">silent, hours later</span></summary>
+        <div class="details-body">
+          <p>
+            <strong>What happens:</strong> &ldquo;Shut down&rdquo; on Windows 8, 10 and
+            11 usually saves the running system to a file instead of really shutting
+            down. If Windows later resumes from that saved image after we have changed
+            the disk, it writes back its old, now-wrong map of the disk. Both
+            operating systems are destroyed &mdash; silently, and typically hours
+            after everything appeared to work.
+          </p>
+          <p>
+            <strong>What we do:</strong> we detect it two ways, require the feature to
+            be switched off, force a genuine restart, and then verify the flag is
+            actually clear before continuing. We never offer a Windows boot entry that
+            could resume a stale saved session. Notably we do <em>not</em> use the
+            common workaround that forces the volume clean, because it quietly throws
+            away whatever you had unsaved.
+          </p>
+        </div>
+      </details>
+
+      <details>
+        <summary>The install fails halfway and this is your only computer <span class="risk-id">product-existence risk</span></summary>
+        <div class="details-body">
+          <p>
+            <strong>What happens:</strong> the install stops at 70%. The boot path is
+            half-changed, AurOS does not start, Windows does not start, and your
+            photographs are on a partition you cannot reach. You have one computer, no
+            USB stick and no second machine. This is not a support problem, it is the
+            problem that decides whether the product should exist.
+          </p>
+          <p>
+            <strong>What we do:</strong> the rescue area is written <em>first</em>, and
+            is bootable from the machine&rsquo;s own menu. We never remove the ability
+            to start Windows until you have confirmed the new system works. The first
+            AurOS boot is a one-shot request to the firmware that reverts itself if it
+            fails. And the rescue USB is mandatory, because the rescue area cannot
+            help if the disk&rsquo;s layout itself is what broke.
+          </p>
+          <p>
+            <strong>Where there is no mitigation:</strong> a person with one computer,
+            no USB stick, no phone and no second device. For them there is nothing we
+            can build. We gate them out at the front door instead, and that is the
+            right answer.
+          </p>
+        </div>
+      </details>
+
+      <details>
+        <summary>Your hard drive was already failing <span class="risk-id">our market, exactly</span></summary>
+        <div class="details-body">
+          <p>
+            <strong>What happens:</strong> making room moves files around, reading
+            sectors that have not been touched in years, and then writes several
+            gigabytes. That is the most demanding thing that drive has ever been asked
+            to do. A disk that was quietly dying finishes dying during our install.
+          </p>
+          <p>
+            <strong>Why it concentrates here:</strong> our entire pitch is
+            &ldquo;your old PC&rdquo;. We are selecting for exactly the population of
+            drives that are near the end.
+          </p>
+          <p>
+            <strong>What we do:</strong> read the drive&rsquo;s own error counters
+            first and <strong>refuse on any pending or uncorrectable sectors, with no
+            override</strong>. Read-verify the region we intend to reclaim before
+            committing to anything. Read back and verify every block we write.
+          </p>
+          <p class="small">
+            A person told &ldquo;your hard drive is failing, back up today&rdquo; is a
+            person we saved. A person whose drive dies during our install is one we
+            killed. The refusal is the feature.
+          </p>
+        </div>
+      </details>
+
+      <details>
+        <summary>The power goes out at the wrong second <span class="risk-id">irreducible</span></summary>
+        <div class="details-body">
+          <p>
+            <strong>What happens:</strong> the table describing your disk&rsquo;s layout
+            has no undo log. Neither does the movement of data during a resize. Lose
+            power in the middle and the disk can be left describing itself
+            incorrectly.
+          </p>
+          <p>
+            <strong>What we do:</strong> arrange the work so there is exactly one
+            moment that matters. All the data movement happens first, with the old
+            layout still in force and still correct; then everything is verified; then
+            the new layout is written as a single small write. We keep a pristine copy
+            of the original layout in two places, keep a journal on disk so a restarted
+            installer knows which step it died in, and refuse to start on battery or
+            below 50% charge.
+          </p>
+          <p class="small">
+            This is the one item on this page that careful engineering genuinely
+            shrinks rather than removes. The window is small. It is not zero.
+          </p>
+        </div>
+      </details>
+
+      <details>
+        <summary>Windows will not give up as much space as you have free <span class="risk-id">the normal case</span></summary>
+        <div class="details-body">
+          <p>
+            <strong>What happens:</strong> Windows can only shrink a volume from the
+            end, and refuses to move several of its own large files while it is
+            running. A disk with 30&nbsp;GB free commonly offers 2&nbsp;GB. This is the
+            usual outcome, not the unlucky one.
+          </p>
+          <p>
+            <strong>What we do:</strong> we do not shrink from inside running Windows.
+            We do it from the rescue environment with Windows not running, using the
+            standard long-established tool, after a clean disk check. Hibernation, the
+            page file and old restore points are dealt with first &mdash; all
+            disclosed, and everything except the restore points is reversible.
+          </p>
+        </div>
+      </details>
+
+      <details>
+        <summary>Your PC boots the old way, not the new way <span class="risk-id">refused</span></summary>
+        <div class="details-body">
+          <p>
+            <strong>What happens:</strong> on older machines that start in legacy BIOS
+            mode, there is no way to ask the firmware to try an operating system
+            <em>once</em> and fall back by itself. Get the boot record wrong and the
+            machine shows a blinking cursor and nothing else. There is a second trap:
+            that style of disk allows only four main partitions, and a typical
+            manufacturer&rsquo;s Windows 10 layout already uses all four. A fifth one
+            cannot be created at all.
+          </p>
+          <p>
+            <strong>What we do:</strong> refuse. A far better funded project shipping
+            real hardware failed for 20&ndash;30% of users on these machines doing
+            approximately what we do, and concluded that dual-boot was for evaluation
+            rather than daily use. We would rather send you to a mainstream
+            distribution installed from a USB stick than be the 25%.
+          </p>
+        </div>
+      </details>
+
+      <details>
+        <summary>The filesystem was already damaged <span class="risk-id">refused until clean</span></summary>
+        <div class="details-body">
+          <p>
+            <strong>What happens:</strong> feeding a filesystem with a damaged index
+            into a resizer turns &ldquo;a few unreadable files&rdquo; into &ldquo;a
+            disk that will not mount&rdquo;.
+          </p>
+          <p>
+            <strong>What we do:</strong> require a clean full disk check before we
+            proceed, refuse while the volume is flagged dirty, and refuse if the check
+            reported that it had to correct anything. On an old spinning drive that
+            check can take hours; we design the waiting screen for it rather than
+            skipping the check.
+          </p>
+        </div>
+      </details>
+
+      <details>
+        <summary>Your disk is not the shape it appears to be <span class="risk-id">refused</span></summary>
+        <div class="details-body">
+          <p>
+            <strong>What happens:</strong> Windows dynamic disks and Storage Spaces
+            keep the real layout in a private database; the ordinary partition table is
+            decorative, and a tool that believes it gets the geometry completely wrong.
+            Separately, some PCs present their drive through an Intel remapping layer
+            that Linux may not be able to see at all &mdash; the fix for which is a
+            firmware setting we will not talk a non-technical person through.
+          </p>
+          <p>
+            <strong>What we do:</strong> detect all three and refuse cleanly on
+            dynamic disks and Storage Spaces. On Intel remapping we warn, and then
+            verify from the rescue environment that AurOS can actually see your drive
+            before anything is committed. If it cannot, nothing is changed.
+          </p>
+        </div>
+      </details>
+
+      <details>
+        <summary>We write to the wrong disk <span class="risk-id">cheap to prevent</span></summary>
+        <div class="details-body">
+          <p>
+            <strong>What happens:</strong> an old desktop with a small system drive and
+            a large second drive holding fifteen years of photographs. Or an external
+            backup drive plugged in during the install. Pick the wrong one and the
+            damage is total.
+          </p>
+          <p>
+            <strong>What we do:</strong> list every drive with its model, size and a
+            sample of what is on it; require you to type the target drive&rsquo;s size
+            or label back; and refuse to run at all while removable drives are
+            attached. This prevents an entire category of catastrophe for almost no
+            engineering cost, so there is no excuse for not doing it.
+          </p>
+        </div>
+      </details>
+
+      <details>
+        <summary>The small area that starts your operating systems is already full <span class="risk-id">common on OEM PCs</span></summary>
+        <div class="details-body">
+          <p>
+            <strong>What happens:</strong> manufacturers often ship that area at
+            100&nbsp;MB and already 85&ndash;95% full. Reformatting it to make space
+            destroys Windows&rsquo; ability to start.
+          </p>
+          <p>
+            <strong>What we do:</strong> measure the free space first; create our own
+            area rather than clearing yours if there is not enough; never reformat the
+            existing one; keep our own boot files small; and back the whole thing up
+            into the rescue area before touching anything.
+          </p>
+        </div>
+      </details>
+
+      <details>
+        <summary>Linux does not support some part of your hardware <span class="risk-id">highest frequency</span></summary>
+        <div class="details-body">
+          <p>
+            <strong>What happens:</strong> this is the most likely thing to go wrong,
+            by a wide margin, and the most likely single victim is Wi-Fi. A large
+            family of wireless chips found in 2010&ndash;2016 laptops is split across
+            several drivers with conflicting requirements per revision. No Wi-Fi means
+            no internet, no documentation, and no way for us to send you a fix &mdash;
+            and it is invisible until after the restart. Old NVIDIA graphics, screen
+            brightness controls, sleep and audio all have their own versions of this.
+          </p>
+          <p>
+            <strong>What we do:</strong> test Wi-Fi, brightness, sound and sleep from
+            the rescue environment, on your actual machine, <em>before</em> committing
+            anything. If Wi-Fi will not come up there, we abort and leave Windows
+            alone. This single decision is worth more than every other mitigation on
+            this page.
+          </p>
+          <p class="small">
+            Honest context: Google ships its own old-PC operating system with a list of
+            certified models and three support tiers, and does not guarantee anything
+            outside that list. If Google needs a whitelist, so do we, and we do not yet
+            have one. On unlisted hardware the honest answer is that we find out
+            together, in an environment designed so that finding out costs you nothing.
+          </p>
+        </div>
+      </details>
+    </div>
+  </section>
+
+  <!-- ────────────────────── what we refuse ────────────────────── -->
+  <section>
+    <div class="shell" id="refuse">
+      <div class="sec-head">
+        <h2>What we refuse to do</h2>
+        <p class="lede">
+          A list of things that would make this product convert better, and that we
+          are not going to build.
+        </p>
+      </div>
+
+      <div class="grid grid-2">
+        <article class="card card-err">
+          <h3>No override checkboxes</h3>
+          <p>
+            A hard stop is a hard stop. There is no &ldquo;advanced&rdquo; toggle, no
+            &ldquo;I understand the risks, continue anyway&rdquo;, no hidden command
+            line flag that bypasses the disk health refusal. If we let people click
+            past it, the people who click past it are exactly the ones who lose their
+            data.
+          </p>
+        </article>
+        <article class="card card-err">
+          <h3>No install without a rescue USB</h3>
+          <p>
+            We know what mandatory hardware requirements do to conversion rates. We
+            are taking the hit. The rescue area on the internal disk cannot save you
+            from a damaged disk layout, and that case is the one that ends with an
+            unusable computer.
+          </p>
+        </article>
+        <article class="card card-err">
+          <h3>We will not upload your files</h3>
+          <p>
+            An earlier design moved your files to cloud storage and pulled them back
+            afterwards. We rejected it. Keeping your Windows partition and reading it
+            from Linux is safer, faster, free, private and reversible. Your data does
+            not leave the machine.
+          </p>
+        </article>
+        <article class="card card-err">
+          <h3>We will not write our own resizer</h3>
+          <p>
+            Resizing a Windows filesystem is a solved problem with a mature
+            implementation that has been attacked for twenty years. Writing our own
+            would be more fun and would eventually cost somebody their disk.
+          </p>
+        </article>
+        <article class="card card-err">
+          <h3>We will not talk you through firmware menus</h3>
+          <p>
+            &ldquo;Press F2 at boot, find the storage setting, change it from RST to
+            AHCI&rdquo; is how a working computer becomes a non-booting computer over
+            the phone. If a machine needs a firmware change, we refuse the machine.
+          </p>
+        </article>
+        <article class="card card-err">
+          <h3>We will not teach you to click past security warnings</h3>
+          <p>
+            Until our installer is properly signed, Windows will warn about it, and on
+            some PCs will refuse to run it. Writing a friendly guide to bypassing that
+            would train a habit worth more to you than we are. The fix is ours to make,
+            not yours.
+          </p>
+        </article>
+        <article class="card card-err">
+          <h3>No telemetry, no accounts, no tracking</h3>
+          <p>
+            AurOS ships with telemetry off and there is no setting that turns on
+            anything more than anonymous. The installer works with the network cable
+            unplugged. This website has no analytics and sets no cookies.
+          </p>
+        </article>
+        <article class="card card-err">
+          <h3>No shipping before the rescue path is tested</h3>
+          <p>
+            Nothing that shrinks a partition ships until the rescue area and the
+            &ldquo;Put Windows back&rdquo; button exist and have been tested by
+            deliberately failing an install at every single step. That work is why
+            there is no public installer download on this site today.
+          </p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <!-- ────────────────── what cannot migrate ───────────────────── -->
+  <section class="alt">
+    <div class="shell" id="cannot-migrate">
+      <div class="sec-head">
+        <h2>What we cannot bring across</h2>
+        <p class="lede">
+          At the end of the move you get a screen listing everything we could not
+          bring. Here is that list in advance, so it is not a surprise afterwards.
+        </p>
+      </div>
+
+      <div class="grid grid-2">
+        <article class="card card-warn">
+          <h3>Your Windows programs</h3>
+          <p>
+            Windows applications are Windows applications. They do not run on Linux
+            and we do not pretend they do. You get open alternatives for browsing,
+            documents, photographs, music and video calls, and for most people that is
+            the whole list. If you depend on one specific Windows-only program for
+            work, keep Windows in the boot menu &mdash; which is exactly why we leave
+            it there.
+          </p>
+        </article>
+
+        <article class="card card-warn">
+          <h3>Saved passwords, without your old Windows password</h3>
+          <p>
+            Windows encrypts your saved passwords with a key derived from your Windows
+            sign-in password. Without that password they are not
+            <em>difficult</em> to recover offline &mdash; they are mathematically
+            impossible.
+          </p>
+          <ul class="marked dash small" style="margin-top:.8rem">
+            <li class="small"><strong>Chrome, Edge, Brave passwords and cookies:</strong> only if you type your old Windows password when we ask. Skip it and we say plainly that they were skipped.</li>
+            <li class="small"><strong>Firefox passwords:</strong> these do come across, because Firefox does not use the Windows mechanism. Unless you set a Primary Password, in which case you will need it.</li>
+            <li class="small"><strong>Windows Credential Manager, remote desktop credentials, saved app tokens:</strong> not recoverable. Same reason.</li>
+          </ul>
+          <p class="small">
+            A Windows Hello PIN is not the same thing as your password and does not
+            unlock any of this.
+          </p>
+        </article>
+
+        <article class="card card-warn">
+          <h3>OneDrive files that are only in the cloud</h3>
+          <p>
+            Files shown in your OneDrive folder that have not been downloaded are not
+            files. They are markers pointing at a copy on Microsoft&rsquo;s servers.
+            Copying one gives you a stub or an error, not your document.
+          </p>
+          <p>
+            This is the single most dangerous invisible way to lose data in a
+            migration, so we count them, show you the number, and never silently skip
+            them or silently copy the stubs. The fix is to make OneDrive download them
+            before you start, or to sign in to OneDrive afterwards from Linux.
+          </p>
+        </article>
+
+        <article class="card card-warn">
+          <h3>Everything else on the list</h3>
+          <ul class="marked no small">
+            <li>Files you encrypted with Windows&rsquo; own file encryption</li>
+            <li>Anything on a locked encrypted volume we were not given the key for</li>
+            <li>Purchased books, films and music with copy protection</li>
+            <li>Software licences, activations and product keys</li>
+            <li>Outlook&rsquo;s offline mailbox and the Windows Mail store &mdash; re-add the account instead and let it sync</li>
+            <li>Printer and hardware drivers</li>
+            <li>Fingerprint and face sign-in, and anything sealed to the security chip</li>
+            <li>Passkeys stored in Windows</li>
+          </ul>
+        </article>
+      </div>
+
+      <div class="note note-ok" style="margin-top:1.6rem">
+        <span class="note-title">What does come across, for balance</span>
+        <p>
+          Your documents, pictures, music, video, downloads and desktop &mdash; found
+          properly, by asking Windows where you actually keep them rather than
+          assuming. Your saved Wi-Fi networks and their passwords, which work offline
+          without your Windows password, so you are online immediately. Your whole
+          Firefox profile: bookmarks, history, open tabs, cookies and logins. Your
+          language, keyboard layout, time zone, wallpaper and accessibility settings.
+          Bookmarks and history from Chrome, Edge and Brave.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ──────────────────────── secure boot ─────────────────────── -->
+  <section>
+    <div class="shell" id="secure-boot">
+      <div class="sec-head">
+        <h2>The firmware screen you will see, and why</h2>
+      </div>
+      <p>
+        Most PCs only start software signed by a key their firmware already trusts.
+        Getting a new operating system added to that list requires a legal entity,
+        a review process measured in months, and a certificate we are in the process
+        of arranging. We are not going to tell you to switch Secure Boot off &mdash;
+        that is a real reduction in your computer&rsquo;s security and it interacts
+        badly with Windows&rsquo; own encryption.
+      </p>
+      <p>
+        What happens instead: on your first start, the firmware shows one blue screen
+        asking you to approve our key. It is one screen, it happens once, and the
+        installer shows you what it will look like before it appears so it is not a
+        surprise. If you are reading this on a very old PC, there is an additional
+        honest caveat: the industry changed signing keys in 2026, and some older
+        firmware cannot be updated to recognise the new ones. On those machines we
+        may never be able to offer a no-prompt start.
+      </p>
+      <div class="note note-warn">
+        <span class="note-title">And the Windows-side version of the same problem</span>
+        <p>
+          Until our installer is signed by a recognised certificate authority, Windows
+          will show an &ldquo;unknown publisher&rdquo; warning, and on a recently
+          installed Windows 11 with Smart App Control on, it will simply refuse to
+          run. For a product aimed at non-technical people, that is not a rough edge,
+          it is a wall &mdash; and it is ours to remove, not yours to click past.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ───────────────────── project status ─────────────────────── -->
+  <section class="alt">
+    <div class="shell" id="status">
+      <div class="sec-head">
+        <h2>Where this project actually is</h2>
+        <p class="lede">
+          The most common way an ambitious systems project fails is that the
+          interesting parts get built and the load-bearing parts do not. Here is our
+          own status, without rounding up.
+        </p>
+      </div>
+
+      <div class="grid grid-2">
+        <article class="card">
+          <h3>Built and working</h3>
+          <ul class="marked yes small">
+            <li>The theme engine: inheritance, colour algebra, nine render targets, four themes</li>
+            <li>The wallpaper renderer, including its own image encoder &mdash; no image files anywhere in the system</li>
+            <li>The source-to-package build system, with dependency resolution</li>
+            <li>The installer&rsquo;s read-only preflight, building as a native Windows program</li>
+            <li>The profile system this site&rsquo;s <a href="organizations.html">organizations page</a> describes</li>
+          </ul>
+        </article>
+        <article class="card">
+          <h3>Not built yet</h3>
+          <ul class="marked no small">
+            <li>Every destructive installer phase: consent, rescue kit, shrink, write, boot handoff</li>
+            <li>The rescue environment and the &ldquo;Put Windows back&rdquo; path</li>
+            <li>The migration engine &mdash; specified in detail, not yet written</li>
+            <li>Code signing, the Secure Boot chain, and the update channel</li>
+            <li>A legal entity, insurance, and a lawyer-drafted consent flow</li>
+            <li>A tested hardware list</li>
+          </ul>
+        </article>
+      </div>
+
+      <div class="note note-err" style="margin-top:1.6rem">
+        <span class="note-title">The thing most likely to kill this project</span>
+        <p>
+          Our own assessment, written down so we cannot quietly forget it: the gap
+          between the code that exists and the code that matters. Building a
+          from-scratch operating system is a gravity well of interesting, tractable,
+          aesthetically satisfying problems. Writing an image encoder is fun. Writing
+          the encryption-detection path that correctly refuses to run is not. We have
+          therefore put the installer&rsquo;s safety engine ahead of further desktop
+          work, and this page exists partly to keep us to it.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="shell">
+      <div class="cta">
+        <h2>Still interested?</h2>
+        <p>
+          Then start where we would start: the read-only check that tells you whether
+          your PC is a machine we would accept, and what it would find if you asked
+          us to install.
+        </p>
+        <p class="btn-row">
+          <a class="btn btn-primary btn-lg" href="download.html">The pre-download checklist</a>
+          <a class="btn btn-ghost btn-lg" href="how-it-works.html">What the install does</a>
+        </p>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer class="site-foot">
+  <div class="shell">
+    <div class="foot-grid">
+      <div>
+        <a class="brand" href="index.html">
+          <span class="glyph" aria-hidden="true">&#9670;</span> AurOS
+        </a>
+        <p class="small" style="margin-top:.8rem">
+          A Linux desktop for old Windows PCs. Pre-release: the read-only
+          compatibility check builds and runs; the installer is still being
+          written and tested.
+        </p>
+      </div>
+      <nav aria-labelledby="foot-pages">
+        <h2 id="foot-pages">Pages</h2>
+        <ul>
+          <li><a href="index.html">Home</a></li>
+          <li><a href="how-it-works.html">How it works</a></li>
+          <li><a href="safety.html">Safety</a></li>
+          <li><a href="organizations.html">Organizations</a></li>
+          <li><a href="download.html">Download</a></li>
+        </ul>
+      </nav>
+      <nav aria-labelledby="foot-honest">
+        <h2 id="foot-honest">The honest bits</h2>
+        <ul>
+          <li><a href="safety.html#what-can-go-wrong">What can go wrong</a></li>
+          <li><a href="safety.html#refuse">What we refuse to do</a></li>
+          <li><a href="safety.html#cannot-migrate">What can&rsquo;t be migrated</a></li>
+          <li><a href="download.html#requirements">Hard requirements</a></li>
+          <li><a href="how-it-works.html#undo">How to go back to Windows</a></li>
+        </ul>
+      </nav>
+    </div>
+    <div class="foot-bottom">
+      <p>
+        No analytics, no cookies, no advertising, no external fonts. This page
+        loads one stylesheet and one small script from this server, and makes no
+        other network request. You can save it and read it offline.
+      </p>
+      <p>AurOS is MIT-licensed. &copy; 2026 AurOS contributors.</p>
+    </div>
+  </div>
+</footer>
+</body>
+</html>

@@ -55,6 +55,7 @@ packages_boot="shim-signed grub-efi-amd64-signed grub-efi-amd64
 
 # Minimum userland for a system that can repair and explain itself.
 packages_base="systemd-sysv dbus udev sudo less nano
+                   initramfs-tools
                ca-certificates curl wget
                e2fsprogs dosfstools ntfs-3g gdisk parted
                zstd xz-utils bzip2

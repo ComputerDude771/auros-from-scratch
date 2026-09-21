@@ -172,7 +172,7 @@ stage_overlay() {
     # they link the same way every other package on the system does.
     install -d "$RFS/usr/src/auros"
     cp -r "$ROOT/src/common" "$ROOT/src/aurinit" "$ROOT/src/aurwall" \
-          "$ROOT/src/aurfetch" "$RFS/usr/src/auros/" 2>/dev/null || true
+          "$ROOT/src/aurfetch" "$ROOT/src/ferry" "$RFS/usr/src/auros/" 2>/dev/null || true
 
     chroot_prep
     inchroot "apt-get update -qq && apt-get install -y --no-install-recommends gcc libc6-dev make" >/dev/null 2>&1 || true
@@ -181,13 +181,31 @@ stage_overlay() {
         gcc -O2 -std=gnu11 -o /usr/bin/aurctl  aurinit/aurctl.c && \
         gcc -O2 -std=gnu11 -o /usr/bin/aurwall aurwall/main.c common/theme.c common/wall.c common/png.c -lm" \
         || die "building the AurOS stack inside the image failed"
+
+    # Ferry — first-boot migration. The shell tools and data tables
+    # install verbatim; the two C helpers (which parse hostile on-disk
+    # data as root, hence the warning set) compile in place next to
+    # them. The directory is created BEFORE the in-chroot compile that
+    # writes into it.
+    install -d "$RFS/usr/lib/ferry" "$RFS/usr/share/ferry"
+    for t in ferry ferry-detect ferry-wifi ferry-files ferry-firefox \
+             ferry-settings ferry-report ferry-hive ferry-dpapi ferry-common.sh; do
+        install -Dm755 "$ROOT/src/ferry/$t" "$RFS/usr/lib/ferry/$t"
+    done
+    cp "$ROOT/src/ferry/data"/*.tab "$RFS/usr/share/ferry/" 2>/dev/null || true
+    ln -sf /usr/lib/ferry/ferry "$RFS/usr/bin/ferry"
+    inchroot "cd /usr/src/auros/ferry && \
+        gcc -O2 -std=gnu11 -Wall -Wextra -o /usr/lib/ferry/ferry-hivepeek hivepeek.c && \
+        gcc -O2 -std=gnu11 -Wall -Wextra -o /usr/lib/ferry/ferry-winattr  winattr.c" \
+        || die "building Ferry's helpers inside the image failed"
+
     inchroot "apt-get purge -y gcc libc6-dev make >/dev/null 2>&1; apt-get autoremove -y >/dev/null 2>&1" || true
     chroot_done
     rm -rf "$RFS/usr/src/auros"
 
     install -d "$RFS/etc/auros/services"
     cp "$ROOT/rootfs/etc/auros/services"/*.service "$RFS/etc/auros/services/" 2>/dev/null || true
-    note "aurinit, aurctl, aurwall, aurora installed"
+    note "aurinit, aurctl, aurwall, aurora, ferry installed"
 }
 
 # ── stage 4: identity, locale, users, policy ───────────────────────
@@ -195,7 +213,13 @@ stage_configure() {
     step "stage 4/7  configure"
     chroot_prep
 
-    cat > "$RFS/etc/os-release" <<EOL
+    # On Ubuntu /etc/os-release is a symlink into /usr/lib, so the real
+    # file is written there and /etc just points at it. Writing through
+    # the symlink and then replacing it is how you end up with a
+    # dangling /etc/os-release and a system that cannot name itself.
+    rm -f "$RFS/etc/os-release"
+    mkdir -p "$RFS/usr/lib"
+    cat > "$RFS/usr/lib/os-release" <<EOL
 NAME="$brand_name"
 PRETTY_NAME="$brand_name $os_version"
 ID=$brand_short
@@ -206,7 +230,25 @@ VERSION_CODENAME=$os_codename
 HOME_URL="$brand_url"
 LOGO=auros
 EOL
+    ln -sf ../usr/lib/os-release "$RFS/etc/os-release"
     echo "$brand_short" > "$RFS/etc/hostname"
+
+    # Branding the login prompts. Without this the first thing a user
+    # sees after install is "Ubuntu 24.04 LTS", which is both confusing
+    # and a promise we did not make.
+    printf '%s %s \\n \\l\n\n' "$brand_name" "$os_version" > "$RFS/etc/issue"
+    printf '%s %s\n' "$brand_name" "$os_version" > "$RFS/etc/issue.net"
+    : > "$RFS/etc/motd"
+    # Ubuntu's dynamic MOTD advertises Ubuntu Pro and Landscape.
+    for f in 10-help-text 50-motd-news 88-esm-announce 91-contract-ua-esm-status 91-release-upgrade; do
+        rm -f "$RFS/etc/update-motd.d/$f"
+    done
+    [ -d "$RFS/etc/update-motd.d" ] && cat > "$RFS/etc/update-motd.d/00-auros" <<'EOM'
+#!/bin/sh
+[ -f /etc/auros/motd ] && cat /etc/auros/motd
+EOM
+    [ -f "$RFS/etc/update-motd.d/00-auros" ] && chmod +x "$RFS/etc/update-motd.d/00-auros"
+
     printf '127.0.0.1\tlocalhost\n127.0.1.1\t%s\n' "$brand_short" > "$RFS/etc/hosts"
 
     inchroot "ln -sf /usr/share/zoneinfo/$timezone /etc/localtime" || true

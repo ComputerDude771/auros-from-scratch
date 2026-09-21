@@ -1,0 +1,58 @@
+#!/bin/sh
+# ═══════════════════════════════════════════════════════════════════
+#  ferry-dpapi — the offline DPAPI decryption call-out. NOT YET REAL.
+#
+#  This file exists so the seam is honest and named. ferry-wifi looks
+#  for exactly this program (or $FERRY_DPAPI_HELPER) to turn a saved
+#  WiFi PSK's DPAPI ciphertext back into a passphrase. Everything up to
+#  the crypto is implemented and tested; the crypto itself is not, and
+#  pretending otherwise by shipping a helper that silently fails would
+#  be worse than shipping this one, which fails LOUDLY and truthfully.
+#
+#  WHAT A REAL IMPLEMENTATION MUST DO (spec §2, §3 — recoverable offline
+#  WITHOUT the user's Windows password, because this is machine DPAPI):
+#
+#    1. From the SYSTEM hive read the boot key ("SYSKEY"), assembled by
+#       descrambling the Class attributes of four keys under
+#       CurrentControlSet\Control\Lsa\{JD,Skew1,GBG,Data}.
+#    2. With the boot key, decrypt the LSA secrets in the SECURITY hive
+#       (Policy\PolEKList on Vista+ → the LSA key → Policy\Secrets),
+#       and read the DPAPI_SYSTEM secret. This is what impacket's
+#       `secretsdump.py -system SYSTEM -security SECURITY LOCAL` does.
+#    3. DPAPI_SYSTEM contains the machine and user(SYSTEM) master-key
+#       seeds. Use them to decrypt the SYSTEM DPAPI master key found in
+#       C:\Windows\System32\Microsoft\Protect\S-1-5-18\User\<GUID>.
+#    4. With that master key, decrypt the DPAPI blob (the standard
+#       CryptUnprotectData container: derive the session key from the
+#       master key + the blob's salt via HMAC, verify the HMAC, then
+#       decrypt — AES-256/SHA-512 on modern Windows, 3DES/SHA-1 on old).
+#    5. The plaintext is the Wlansvc keyMaterial: the WPA passphrase.
+#
+#  All of that is self-contained arithmetic on files already on the
+#  mounted volume — no network, no Windows, no user password. It is
+#  perhaps 400 lines of C against the two hives plus the Protect
+#  directory. Until it exists, ferry-wifi still imports every network
+#  and simply flags the ones whose password it could not fill in, so
+#  the user types each once instead of losing them.
+#
+#    ferry-dpapi wifi-psk <hex-ciphertext>
+#      env: FERRY_SECURITY_HIVE, FERRY_SYSTEM_HIVE (paths, read-only)
+#      out: the cleartext PSK on stdout, exit 0
+#      NOT IMPLEMENTED -> exit 75 (EX_TEMPFAIL: "could be done, wasn't")
+# ═══════════════════════════════════════════════════════════════════
+set -eu
+
+case "${1:-}" in
+    wifi-psk)
+        # An external, complete implementation can be dropped in by
+        # setting FERRY_DPAPI_HELPER to it; this stub never guesses.
+        echo "ferry-dpapi: offline SYSTEM-DPAPI decryption is not implemented in this build" >&2
+        echo "ferry-dpapi: the WiFi network will be imported without its saved password" >&2
+        exit 75 ;;
+    -h|--help|"")
+        sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'
+        exit 0 ;;
+    *)
+        echo "ferry-dpapi: unknown request '$1'" >&2
+        exit 2 ;;
+esac

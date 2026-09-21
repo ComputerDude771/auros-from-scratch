@@ -1,0 +1,154 @@
+#!/bin/sh
+# ═══════════════════════════════════════════════════════════════════
+#  ferry — first-boot migration, orchestrated.
+#
+#  Runs the stages in the exact order the spec prescribes (§8), because
+#  the order is load-bearing: WiFi first so the machine is online, which
+#  is what makes every later re-sync possible; then the safe, no-prompt
+#  imports; then the things that need the user to decide.
+#
+#      AUTOMATIC (safe, no prompts)          ASK FIRST
+#      1  wifi      -> get online            onedrive   (ferry-files --include-onedrive)
+#      2  settings  -> tz/locale/keyboard    chromium   (needs old password)
+#      3  files     -> known folders         mail       (re-add IMAP)
+#      4  firefox   -> whole profile         printers / mapped drives
+#      5  wallpaper (part of settings)       apps       (user picks)
+#      ── always at the end: the report ──
+#
+#  Every stage is idempotent and records its own completion, so `ferry
+#  run` after a crash resumes: finished stages are skipped, a
+#  part-finished one re-runs and copies only what is missing. The one
+#  hard gate is the volume state — a hibernated or dirty partition is
+#  refused before any stage starts, with the reason and the fix.
+#
+#    ferry detect [...]        find Windows (read-only), print JSON
+#    ferry run [--auto]        mount, run the automatic stages, report
+#    ferry <stage> [...]       one stage (wifi|files|firefox|settings|…)
+#    ferry report [--json]     the what-could-not-migrate report
+#    ferry status              where a resumed run would pick up
+#    ferry unmount             release the read-only mount
+# ═══════════════════════════════════════════════════════════════════
+set -eu
+SELF=$(cd "$(dirname "$0")" && pwd)
+. "$SELF/ferry-common.sh"
+
+MOUNTED_HERE=0
+
+# Bring up the read-only mount if we were given a device, or find one.
+ensure_mounted() {
+    if [ -n "$FERRY_ROOT" ]; then
+        is_windows_root "$FERRY_ROOT" || die "$FERRY_ROOT is not a Windows volume"
+        return 0
+    fi
+    if [ -z "$FERRY_DEV" ]; then
+        # Auto-pick the one Windows volume. Refuse to guess between two.
+        _cands=""
+        for _n in $(awk 'NR>2{print $4}' /proc/partitions 2>/dev/null); do
+            case "$_n" in *[0-9]) : ;; *) continue ;; esac
+            _d="/dev/$_n"; [ -b "$_d" ] || continue
+            _m="$FERRY_MNT/probe.$_n"
+            mount_ro "$_d" "$_m" 2>/dev/null || continue
+            if is_windows_root "$_m"; then _cands="$_cands $_d"; fi
+            unmount_ro "$_m"; rmdir "$_m" 2>/dev/null || true
+        done
+        set -- $_cands
+        [ $# -ge 1 ] || die "no Windows partition found on any disk"
+        [ $# -eq 1 ] || die "found more than one Windows partition ($*); choose one with --device"
+        FERRY_DEV=$1
+    fi
+    mount_ro "$FERRY_DEV" "$FERRY_MNT" || \
+        die "could not mount $FERRY_DEV read-only (is ntfs3 or ntfs-3g available?)"
+    FERRY_ROOT=$FERRY_MNT
+    MOUNTED_HERE=1
+    say "mounted $FERRY_DEV read-only at $FERRY_MNT"
+}
+
+maybe_unmount() {
+    [ "$MOUNTED_HERE" = 1 ] || return 0
+    unmount_ro "$FERRY_MNT" && say "unmounted $FERRY_MNT" || \
+        warn "could not unmount $FERRY_MNT"
+    MOUNTED_HERE=0
+}
+
+# Pass the resolved mount + destination down to a stage tool, so a stage
+# invoked through `ferry run` sees exactly what the orchestrator chose.
+run_stage() {
+    _tool=$1; shift
+    "$SELF/$_tool" \
+        ${FERRY_ROOT:+--root "$FERRY_ROOT"} \
+        ${FERRY_DEV:+--device "$FERRY_DEV"} \
+        ${FERRY_WINUSER:+--user "$FERRY_WINUSER"} \
+        ${FERRY_HOME:+--home "$FERRY_HOME"} \
+        ${FERRY_OWNER:+--owner "$FERRY_OWNER"} \
+        ${FERRY_STATE:+--state "$FERRY_STATE"} \
+        ${FERRY_PROGRESS:+--progress "$FERRY_PROGRESS"} \
+        $([ "$FERRY_DRYRUN" = 1 ] && echo --dry-run) \
+        "$@"
+}
+
+# A stage runs unless it already finished — that is the whole of resume.
+stage_if_needed() {
+    _name=$1 _tool=$2; shift 2
+    if [ "$(stage_status "$_name")" = done ] && [ "${FERRY_FORCE:-0}" != 1 ]; then
+        say "$_name: already done, skipping (use --force to redo)"
+        return 0
+    fi
+    say "── $_name ──"
+    run_stage "$_tool" "$@" || warn "$_name did not complete cleanly (see report)"
+}
+
+cmd_run() {
+    _auto=1
+    for _a in "$@"; do case "$_a" in --auto) _auto=1 ;; --all) _auto=0 ;; esac; done
+    ferry_state_init
+    ensure_mounted
+    # The gate: refuse the whole run on a bad volume, once, up front, so
+    # the user gets one clear message instead of five stage failures.
+    require_clean_volume "$FERRY_ROOT" "$FERRY_DEV"
+
+    # Spec §8 automatic order.
+    stage_if_needed wifi     ferry-wifi
+    stage_if_needed settings ferry-settings
+    stage_if_needed files    ferry-files
+    stage_if_needed firefox  ferry-firefox
+
+    maybe_unmount
+    printf '\n'
+    "$SELF/ferry-report" ${FERRY_STATE:+--state "$FERRY_STATE"}
+    say "migration run complete"
+}
+
+cmd_status() {
+    ferry_state_init
+    printf '  %sFerry stage status%s\n' "$C_OK" "$C_RST"
+    for _s in wifi settings files firefox; do
+        _st=$(stage_status "$_s")
+        printf '    %-10s %s\n' "$_s" "$_st"
+    done
+}
+
+_cmd=${1:-help}; [ $# -gt 0 ] && shift || true
+case "$_cmd" in
+    detect)   "$SELF/ferry-detect" "$@" ;;
+    wifi|settings|files|firefox)
+        # A single stage: parse common opts to find --root/--device, then
+        # mount if needed and delegate.
+        while [ $# -gt 0 ]; do
+            common_opt "$@"
+            if [ "${_consumed:-0}" -gt 0 ]; then shift "$_consumed"; continue; fi
+            break
+        done
+        ensure_mounted
+        run_stage "ferry-$_cmd" "$@"
+        maybe_unmount ;;
+    run)      cmd_run "$@" ;;
+    report)   "$SELF/ferry-report" "$@" ;;
+    status)   cmd_status "$@" ;;
+    unmount|umount)
+        while [ $# -gt 0 ]; do common_opt "$@"; [ "${_consumed:-0}" -gt 0 ] && shift "$_consumed" || break; done
+        unmount_ro "$FERRY_MNT" && say "unmounted $FERRY_MNT" || warn "nothing mounted at $FERRY_MNT" ;;
+    backend)  ferry-hive backend ;;
+    version|--version) printf 'ferry %s\n' "$FERRY_VERSION" ;;
+    help|-h|--help) sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//' ;;
+    *) die "unknown command '$_cmd' (try: ferry help)" ;;
+esac

@@ -1,0 +1,361 @@
+#!/bin/sh
+# ═══════════════════════════════════════════════════════════════════
+#  ferry-detect — find Windows, and say exactly what is on it.
+#
+#  The first thing that runs, and the only thing that runs before the
+#  user has agreed to anything. It is therefore STRICTLY READ-ONLY in
+#  both directions: it mounts read-only, and it unmounts everything it
+#  mounted before it exits, leaving the machine exactly as it found it.
+#
+#  It is also the stage that is allowed to survive a refusal. Every
+#  other stage aborts on a hibernated or dirty volume; this one reports
+#  the condition, because a user staring at "we can't import your files"
+#  deserves the sentence that explains why and what to do about it.
+#
+#  Output is JSON, because a UI reads it. --human prints the same facts
+#  for a person in a terminal.
+#
+#    ferry-detect                     scan every disk
+#    ferry-detect --device /dev/sda2  one partition
+#    ferry-detect --root /mnt/win     an already-mounted volume
+#    ferry-detect --quick             skip folder sizing (fast)
+#    ferry-detect --human             human-readable
+# ═══════════════════════════════════════════════════════════════════
+set -eu
+. "$(dirname "$0")/ferry-common.sh"
+
+HUMAN=0
+QUICK=0
+MOUNTED=""          # what we mounted, so we can put it all back
+
+cleanup() {
+    for _m in $MOUNTED; do unmount_ro "$_m"; rmdir "$_m" 2>/dev/null || true; done
+}
+trap cleanup EXIT INT TERM
+
+while [ $# -gt 0 ]; do
+    common_opt "$@"
+    if [ "${_consumed:-0}" -gt 0 ]; then shift "$_consumed"; continue; fi
+    case $1 in
+        --human) HUMAN=1; shift ;;
+        --quick) QUICK=1; shift ;;
+        -h|--help) sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        *) die "unknown option '$1'" ;;
+    esac
+done
+
+# ── Candidate partitions. We do not trust a partition type byte: the
+#    only proof that a volume holds Windows is Windows\System32 on it.
+#    blkid is used to skip the obviously-not-NTFS quickly, never to
+#    decide that something IS Windows.
+scan_devices() {
+    [ -r /proc/partitions ] || return 0
+    awk 'NR > 2 { print $4 }' /proc/partitions | while read -r _name; do
+        case "$_name" in
+            loop*|ram*|dm-*|sr*|fd*|zram*) continue ;;
+            *[0-9]) : ;;                        # partitions, not whole disks
+            *) continue ;;
+        esac
+        _dev="/dev/$_name"
+        [ -b "$_dev" ] || continue
+        if command -v blkid >/dev/null 2>&1; then
+            _t=$(blkid -o value -s TYPE "$_dev" 2>/dev/null || true)
+            case "$_t" in
+                ntfs|ntfs3|"") printf '%s\t%s\n' "$_dev" "${_t:-unknown}" ;;
+                BitLocker) printf '%s\t%s\n' "$_dev" "BitLocker" ;;
+                *) : ;;
+            esac
+        else
+            printf '%s\t%s\n' "$_dev" "unknown"
+        fi
+    done
+}
+
+dev_size()  { _n=$(basename "$1"); _s=$(cat "/sys/class/block/$_n/size" 2>/dev/null || echo 0)
+              echo $(( _s * 512 )); }
+dev_field() { blkid -o value -s "$2" "$1" 2>/dev/null || true; }
+
+count_files() { [ "$QUICK" = 1 ] && { echo -1; return; }
+                find "$1" -type f 2>/dev/null | wc -l | tr -d ' '; }
+count_bytes() { [ "$QUICK" = 1 ] && { echo -1; return; }
+                _k=$(du -sk "$1" 2>/dev/null | awk '{print $1; exit}')
+                echo $(( ${_k:-0} * 1024 )); }
+
+# ── One user profile, as JSON.
+emit_profile() {
+    _sid=$1 _name=$2 _winpath=$3 _kind=$4
+
+    _pdir=$(path_ci "$FERRY_ROOT" "$(win_to_rel "$_winpath")" 2>/dev/null || true)
+    _WIN_USERNAME=$_name
+    _WIN_PROFILE=$_winpath
+    _WIN_PROFILE_DIR=$_pdir
+    _WIN_NTUSER=""
+    [ -n "$_pdir" ] && _WIN_NTUSER=$(path_ci "$_pdir" "NTUSER.DAT" 2>/dev/null || true)
+    _WIN_ONEDRIVE=$(onedrive_root "$_WIN_NTUSER")
+
+    printf '      {\n'
+    printf '        "sid": "%s",\n'           "$(jstr "$_sid")"
+    printf '        "username": "%s",\n'      "$(jstr "$_name")"
+    printf '        "kind": "%s",\n'          "$_kind"
+    printf '        "windows_path": "%s",\n'  "$(jstr "$_winpath")"
+    printf '        "profile_dir": "%s",\n'   "$(jstr "${_pdir:-}")"
+    printf '        "exists": %s,\n'          "$(jbool "$([ -n "$_pdir" ] && echo 1 || echo 0)")"
+    printf '        "ntuser_dat": %s,\n'      "$(jbool "$([ -n "$_WIN_NTUSER" ] && echo 1 || echo 0)")"
+    printf '        "onedrive_root": "%s",\n' "$(jstr "$_WIN_ONEDRIVE")"
+    if [ -n "$_WIN_NTUSER" ]; then
+        printf '        "last_used": "%s",\n' \
+            "$(date -u -r "$_WIN_NTUSER" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || echo '')"
+    else
+        printf '        "last_used": "",\n'
+    fi
+
+    # ── Known folders. This is the part that must never guess.
+    printf '        "folders": [\n'
+    _ffirst=1
+    printf '%s\n' "$FERRY_FOLDERS" | while IFS='|' read -r _label _val _xdg _def; do
+        [ -n "$_label" ] || continue
+        _r=$(resolve_known_folder "$_val" "$_def")
+        _status=$(printf '%s' "$_r" | cut -f1)
+        _path=$(printf '%s' "$_r" | cut -f2)
+        _src=$(printf '%s' "$_r" | cut -f3)
+        _raw=$(printf '%s' "$_r" | cut -f4)
+        _files=0 _bytes=0
+        if [ "$_status" = ok ]; then
+            _files=$(count_files "$_path")
+            _bytes=$(count_bytes "$_path")
+        fi
+        [ "$_ffirst" = 1 ] || printf ',\n'
+        _ffirst=0
+        printf '          {"label": "%s", "status": "%s", "path": "%s", "source": "%s", "registry_value": "%s", "files": %s, "bytes": %s}' \
+            "$_label" "$_status" "$(jstr "$_path")" "$_src" "$(jstr "$_raw")" \
+            "${_files:-0}" "${_bytes:-0}"
+    done
+    printf '\n        ],\n'
+
+    # ── Browsers. Enumerate every profile, per the spec: a second
+    #    Firefox profile holds a second person's bookmarks.
+    printf '        "browsers": {\n'
+    _ff=$(path_ci "$_pdir" "AppData/Roaming/Mozilla/Firefox/Profiles" 2>/dev/null || true)
+    _ffn=0
+    [ -n "$_ff" ] && _ffn=$(find "$_ff" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')
+    printf '          "firefox": {"present": %s, "profiles": %s, "path": "%s"}' \
+        "$(jbool "$([ -n "$_ff" ] && echo 1 || echo 0)")" "$_ffn" "$(jstr "${_ff:-}")"
+    for _b in "chrome:Google/Chrome" "edge:Microsoft/Edge" "brave:BraveSoftware/Brave-Browser"; do
+        _bn=${_b%%:*}; _bp=${_b#*:}
+        _d=$(path_ci "$_pdir" "AppData/Local/$_bp/User Data" 2>/dev/null || true)
+        _n=0
+        if [ -n "$_d" ]; then
+            _n=$(find "$_d" -maxdepth 2 -name 'Preferences' 2>/dev/null | wc -l | tr -d ' ')
+        fi
+        printf ',\n          "%s": {"present": %s, "profiles": %s, "path": "%s"}' \
+            "$_bn" "$(jbool "$([ -n "$_d" ] && echo 1 || echo 0)")" "$_n" "$(jstr "${_d:-}")"
+    done
+    printf '\n        },\n'
+
+    # ── Mail. Counted, never migrated by this tool: .ost is a server
+    #    cache and re-syncs, .pst needs a conversion the user must okay.
+    _pst=0 _ost=0
+    for _md in "Documents/Outlook Files" "AppData/Local/Microsoft/Outlook"; do
+        _m=$(path_ci "$_pdir" "$_md" 2>/dev/null || true)
+        [ -n "$_m" ] || continue
+        _pst=$(( _pst + $(find "$_m" -maxdepth 2 -iname '*.pst' 2>/dev/null | wc -l) ))
+        _ost=$(( _ost + $(find "$_m" -maxdepth 2 -iname '*.ost' 2>/dev/null | wc -l) ))
+    done
+    printf '        "mail": {"pst": %s, "ost": %s},\n' "$_pst" "$_ost"
+
+    # ── Credential stores, counted so the report can be specific about
+    #    what is locked rather than vaguely warning about "passwords".
+    _cred=0
+    _cd=$(path_ci "$_pdir" "AppData/Roaming/Microsoft/Credentials" 2>/dev/null || true)
+    [ -n "$_cd" ] && _cred=$(find "$_cd" -type f 2>/dev/null | wc -l | tr -d ' ')
+    printf '        "credential_blobs": %s\n' "$_cred"
+    printf '      }'
+}
+
+# ── One Windows installation, as JSON.
+emit_install() {
+    _dev=$1 _fstype=$2
+    _soft=$(win_hive SOFTWARE || true)
+    _sys=$(win_hive SYSTEM || true)
+    _sec=$(win_hive SECURITY || true)
+
+    _product="" _disp="" _build="" _edition="" _owner=""
+    if [ -n "$_soft" ]; then
+        _k='Microsoft\Windows NT\CurrentVersion'
+        _product=$(hive_get "$_soft" "$_k" ProductName 2>/dev/null || true)
+        _disp=$(hive_get "$_soft" "$_k" DisplayVersion 2>/dev/null || \
+                hive_get "$_soft" "$_k" ReleaseId 2>/dev/null || true)
+        _build=$(hive_get "$_soft" "$_k" CurrentBuild 2>/dev/null || true)
+        _edition=$(hive_get "$_soft" "$_k" EditionID 2>/dev/null || true)
+        _owner=$(hive_get "$_soft" "$_k" RegisteredOwner 2>/dev/null || true)
+    fi
+    # Windows 11 still reports ProductName "Windows 10"; build 22000+ is
+    # the only honest discriminator, and a wrong OS name in the report
+    # makes a user distrust everything else in it.
+    case "$_build" in
+        ''|*[!0-9]*) : ;;
+        *) [ "$_build" -ge 22000 ] 2>/dev/null && _product="Windows 11" ;;
+    esac
+
+    _cname="" _tzkey=""
+    if [ -n "$_sys" ]; then
+        _cs=$(hive_get "$_sys" 'Select' Current 2>/dev/null || echo 1)
+        case "$_cs" in ''|*[!0-9]*) _cs=1 ;; esac
+        _csk=$(printf 'ControlSet%03d' "$_cs")
+        _cname=$(hive_get "$_sys" "$_csk\\Control\\ComputerName\\ComputerName" \
+                 ComputerName 2>/dev/null || true)
+        _tzkey=$(hive_get "$_sys" "$_csk\\Control\\TimeZoneInformation" \
+                 TimeZoneKeyName 2>/dev/null || true)
+    fi
+
+    _vs=$(vol_state "$FERRY_ROOT" "$_dev")
+    _vstate=$(printf '%s' "$_vs" | cut -f1)
+    _vwhy=$(printf '%s' "$_vs" | cut -f2)
+
+    _wifi=0
+    _wdir=$(path_ci "$FERRY_ROOT" "ProgramData/Microsoft/Wlansvc/Profiles/Interfaces" 2>/dev/null || true)
+    [ -n "$_wdir" ] && _wifi=$(find "$_wdir" -name '*.xml' 2>/dev/null | wc -l | tr -d ' ')
+
+    printf '    {\n'
+    printf '      "device": "%s",\n'     "$(jstr "$_dev")"
+    printf '      "fstype": "%s",\n'     "$(jstr "$_fstype")"
+    printf '      "label": "%s",\n'      "$(jstr "$(dev_field "$_dev" LABEL)")"
+    printf '      "uuid": "%s",\n'       "$(jstr "$(dev_field "$_dev" UUID)")"
+    printf '      "size_bytes": %s,\n'   "$([ -b "$_dev" ] && dev_size "$_dev" || echo 0)"
+    printf '      "mounted_at": "%s",\n' "$(jstr "$FERRY_ROOT")"
+    printf '      "mounted_read_only": true,\n'
+    printf '      "windows": {\n'
+    printf '        "product": "%s",\n'        "$(jstr "$_product")"
+    printf '        "display_version": "%s",\n' "$(jstr "$_disp")"
+    printf '        "build": "%s",\n'          "$(jstr "$_build")"
+    printf '        "edition": "%s",\n'        "$(jstr "$_edition")"
+    printf '        "registered_owner": "%s",\n' "$(jstr "$_owner")"
+    printf '        "computer_name": "%s",\n'  "$(jstr "$_cname")"
+    printf '        "timezone_key": "%s"\n'    "$(jstr "$_tzkey")"
+    printf '      },\n'
+    printf '      "volume": {"state": "%s", "reason": "%s", "can_import": %s},\n' \
+        "$_vstate" "$(jstr "$_vwhy")" "$(jbool "$([ "$_vstate" = clean ] && echo 1 || echo 0)")"
+    printf '      "hives": {"software": %s, "system": %s, "security": %s},\n' \
+        "$(jbool "$([ -n "$_soft" ] && echo 1 || echo 0)")" \
+        "$(jbool "$([ -n "$_sys" ] && echo 1 || echo 0)")" \
+        "$(jbool "$([ -n "$_sec" ] && echo 1 || echo 0)")"
+    printf '      "registry_backend": "%s",\n' "$(ferry-hive backend)"
+    printf '      "wifi_profiles": %s,\n' "$_wifi"
+    printf '      "profiles": [\n'
+    _first=1
+    list_profiles | while IFS='	' read -r _sid _name _winpath _kind; do
+        [ -n "$_name" ] || continue
+        [ "$_first" = 1 ] || printf ',\n'
+        _first=0
+        emit_profile "$_sid" "$_name" "$_winpath" "$_kind"
+    done
+    printf '\n      ]\n'
+    printf '    }'
+}
+
+# ── Human rendering, from the same facts. Deliberately short: this is
+#    a debugging view, the UI reads the JSON.
+human_install() {
+    printf '\n  %sWindows found%s  %s\n' "$C_OK" "$C_RST" "${1:-}"
+    _soft=$(win_hive SOFTWARE || true)
+    if [ -n "$_soft" ]; then
+        printf '  %-18s %s %s (build %s)\n' "Version" \
+            "$(hive_get "$_soft" 'Microsoft\Windows NT\CurrentVersion' ProductName 2>/dev/null || echo '?')" \
+            "$(hive_get "$_soft" 'Microsoft\Windows NT\CurrentVersion' DisplayVersion 2>/dev/null || echo '')" \
+            "$(hive_get "$_soft" 'Microsoft\Windows NT\CurrentVersion' CurrentBuild 2>/dev/null || echo '?')"
+    fi
+    _vs=$(vol_state "$FERRY_ROOT" "${2:-}")
+    printf '  %-18s %s — %s\n' "Volume" "$(printf '%s' "$_vs" | cut -f1)" \
+        "$(printf '%s' "$_vs" | cut -f2)"
+    _wdir=$(path_ci "$FERRY_ROOT" "ProgramData/Microsoft/Wlansvc/Profiles/Interfaces" 2>/dev/null || true)
+    printf '  %-18s %s\n' "WiFi profiles" \
+        "$([ -n "$_wdir" ] && find "$_wdir" -name '*.xml' 2>/dev/null | wc -l | tr -d ' ' || echo 0)"
+    list_profiles | while IFS='	' read -r _sid _name _winpath _kind; do
+        [ "$_kind" = user ] || continue
+        printf '\n  %-18s %s  %s(%s)%s\n' "User" "$_name" "$C_DIM" "$_winpath" "$C_RST"
+        _pdir=$(path_ci "$FERRY_ROOT" "$(win_to_rel "$_winpath")" 2>/dev/null || true)
+        _WIN_USERNAME=$_name; _WIN_PROFILE=$_winpath; _WIN_PROFILE_DIR=$_pdir
+        _WIN_NTUSER=$([ -n "$_pdir" ] && path_ci "$_pdir" "NTUSER.DAT" 2>/dev/null || true)
+        _WIN_ONEDRIVE=$(onedrive_root "$_WIN_NTUSER")
+        printf '%s\n' "$FERRY_FOLDERS" | while IFS='|' read -r _label _val _xdg _def; do
+            _r=$(resolve_known_folder "$_val" "$_def")
+            _st=$(printf '%s' "$_r" | cut -f1)
+            _p=$(printf '%s' "$_r" | cut -f2)
+            _sc=$(printf '%s' "$_r" | cut -f3)
+            if [ "$_st" = ok ]; then
+                printf '    %-12s %6s files  %8s  %s%s%s\n' "$_label" \
+                    "$(count_files "$_p")" \
+                    "$(_b=$(count_bytes "$_p"); awk -v b="$_b" 'BEGIN{ s="B KB MB GB TB"; n=split(s,u," "); i=1; while (b>=1024 && i<n) { b/=1024; i++ }; printf "%.1f %s", b, u[i] }')" \
+                    "$C_DIM" "[$_sc]" "$C_RST"
+            else
+                printf '    %-12s %s%s%s\n' "$_label" "$C_WARN" "$_st" "$C_RST"
+            fi
+        done
+    done
+    printf '\n'
+}
+
+# ── Inspect one candidate, mounting it read-only if it is not already.
+inspect() {
+    _dev=$1 _fstype=$2
+    if [ -n "$FERRY_ROOT" ]; then
+        is_windows_root "$FERRY_ROOT" || return 1
+    else
+        _m="$FERRY_MNT/$(basename "$_dev")"
+        mount_ro "$_dev" "$_m" || return 1
+        MOUNTED="$MOUNTED $_m"
+        FERRY_ROOT=$_m
+        if ! is_windows_root "$FERRY_ROOT"; then
+            unmount_ro "$_m"
+            MOUNTED=$(printf '%s' "$MOUNTED" | sed "s| $_m||")
+            rmdir "$_m" 2>/dev/null || true
+            FERRY_ROOT=""
+            return 1
+        fi
+    fi
+    if [ "$HUMAN" = 1 ]; then human_install "$_dev" "$_dev"
+    else emit_install "$_dev" "$_fstype"; fi
+    return 0
+}
+
+_saved_root=$FERRY_ROOT
+_found=0
+
+if [ "$HUMAN" = 0 ]; then
+    printf '{\n'
+    printf '  "ferry": {"version": "%s", "tool": "ferry-detect", "generated": "%s", "read_only": true},\n' \
+        "$FERRY_VERSION" "$(now)"
+    printf '  "installs": [\n'
+fi
+
+if [ -n "$FERRY_ROOT" ]; then
+    inspect "${FERRY_DEV:-}" "${FERRY_DEV:+device}" && _found=1 || true
+elif [ -n "$FERRY_DEV" ]; then
+    inspect "$FERRY_DEV" "$(dev_field "$FERRY_DEV" TYPE)" && _found=1 || true
+else
+    _list=$(scan_devices)
+    printf '%s\n' "$_list" | while IFS='	' read -r _d _t; do
+        [ -n "$_d" ] || continue
+        FERRY_ROOT=$_saved_root
+        if [ "$_t" = BitLocker ]; then
+            # A locked BitLocker volume cannot be read at all. It is a
+            # finding, not a silent skip: the user can unlock it in
+            # Windows and run Ferry again.
+            [ "$HUMAN" = 1 ] && warn "$_d is BitLocker-encrypted and locked; nothing on it is readable" || true
+            continue
+        fi
+        inspect "$_d" "$_t" || continue
+    done
+    _found=1
+fi
+
+if [ "$HUMAN" = 0 ]; then
+    printf '\n  ],\n'
+    printf '  "notes": [\n'
+    printf '    "Every partition above was mounted read-only and unmounted again.",\n'
+    printf '    "A volume whose state is not \\"clean\\" is reported here but will be refused by every import stage."\n'
+    printf '  ]\n'
+    printf '}\n'
+fi
+[ "$_found" = 1 ] || exit 1
+exit 0

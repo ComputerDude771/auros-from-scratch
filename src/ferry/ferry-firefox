@@ -1,0 +1,145 @@
+#!/bin/sh
+# ═══════════════════════════════════════════════════════════════════
+#  ferry-firefox — the clean win.
+#
+#  Firefox is the one browser whose entire signed-in life migrates
+#  offline with no Windows password (spec §2, §5). It uses NSS, not
+#  DPAPI: the key that unlocks saved logins lives in key4.db, right
+#  next to logins.json, self-contained. So the strategy is not to parse
+#  anything — it is to copy the whole profile folder verbatim. Bookmarks,
+#  history, open tabs, cookies AND saved passwords all just work on the
+#  other side, because Firefox on Linux reads the exact same files.
+#
+#  The only thing that blocks this is a Primary Password: then key4.db
+#  is itself encrypted under a passphrase we do not have. The logins
+#  still migrate (Firefox will ask for the Primary Password once), so we
+#  copy anyway and note it.
+#
+#  What we deliberately DROP from the copy:
+#    - cache2/, startupCache/, thumbnails/ — regenerated, and big;
+#    - lock / .parentlock — a stale lock stops Firefox starting;
+#    - compatibility.ini — pins the profile to the old binary's path;
+#    - crashes/, minidumps/, datareporting/ telemetry.
+#  Everything else is copied byte for byte.
+#
+#    ferry-firefox                import every Firefox profile
+#    ferry-firefox --dry-run      show what would copy
+# ═══════════════════════════════════════════════════════════════════
+set -eu
+. "$(dirname "$0")/ferry-common.sh"
+
+while [ $# -gt 0 ]; do
+    common_opt "$@"
+    if [ "${_consumed:-0}" -gt 0 ]; then shift "$_consumed"; continue; fi
+    case $1 in
+        -h|--help) sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        *) die "unknown option '$1'" ;;
+    esac
+done
+
+[ -n "$FERRY_ROOT" ] || die "ferry-firefox needs a mounted Windows volume (--root)"
+stage_begin firefox
+require_clean_volume "$FERRY_ROOT" "$FERRY_DEV"
+resolve_target
+select_profile || die "could not identify which Windows profile to import (pass --user NAME)"
+
+_ffsrc=$(path_ci "$_WIN_PROFILE_DIR" "AppData/Roaming/Mozilla/Firefox" 2>/dev/null || true)
+if [ -z "$_ffsrc" ]; then
+    say "no Firefox profile found for $_WIN_USERNAME"
+    note firefox info "Firefox" "no Firefox installation was found in this profile"
+    stage_done firefox
+    exit 0
+fi
+
+_dest="$FERRY_HOME/.mozilla/firefox"
+[ "$FERRY_DRYRUN" = 1 ] || mkdir -p "$_dest"
+
+# The names we refuse to copy. Matched on a path component so a folder
+# called cache2 anywhere in the profile is dropped, but a bookmark whose
+# title contains "cache" is not.
+SKIP_COMPONENTS="cache2 startupCache shader-cache thumbnails crashes minidumps datareporting"
+SKIP_FILES=".parentlock parent.lock lock compatibility.ini"
+
+# Uniquely-named locals: POSIX sh has no lexical scope, and the caller's
+# loop variable is $_f. A plain `for _f in ...` here would overwrite the
+# file the caller is about to copy — which is exactly the bug this note
+# exists to stop anyone reintroducing.
+should_skip() {
+    _ssrel=$1
+    for _ssc in $SKIP_COMPONENTS; do
+        case "/$_ssrel/" in */"$_ssc"/*) return 0 ;; esac
+    done
+    for _ssf in $SKIP_FILES; do
+        [ "$(basename "$_ssrel")" = "$_ssf" ] && return 0
+    done
+    return 1
+}
+
+# Copy one profile directory tree, honouring the skip list, idempotent.
+copy_profile_tree() {
+    _src=$1 _dst=$2
+    _n=0 _copied=0 _skipped=0
+    _total=$(find "$_src" -type f 2>/dev/null | wc -l | tr -d ' ')
+    find "$_src" -type f 2>/dev/null | while read -r _f; do
+        _n=$((_n+1))
+        _rel=${_f#"$_src"/}
+        progress firefox "$_n" "$_total" "$(basename "$_f")"
+        if should_skip "$_rel"; then continue; fi
+        _act=$(safe_copy "$_f" "$_dst/$_rel")
+    done
+}
+
+# Enumerate profiles from profiles.ini (authoritative) and fall back to
+# every *.default* directory, so a profiles.ini we cannot read does not
+# lose a profile.
+_ini=$(path_ci "$_ffsrc" "profiles.ini" 2>/dev/null || true)
+_profdir=$(path_ci "$_ffsrc" "Profiles" 2>/dev/null || true)
+
+# Copy profiles.ini and installs.ini so Firefox picks the same default.
+for _meta in profiles.ini installs.ini; do
+    _m=$(path_ci "$_ffsrc" "$_meta" 2>/dev/null || true)
+    [ -n "$_m" ] || continue
+    if [ "$FERRY_DRYRUN" = 0 ]; then safe_copy "$_m" "$_dest/$_meta" >/dev/null; fi
+done
+
+_count=0
+if [ -n "$_profdir" ]; then
+    for _p in "$_profdir"/*; do
+        [ -d "$_p" ] || continue
+        _pname=$(basename "$_p")
+        _pw=$(path_ci "$_p" "key4.db" 2>/dev/null || true)
+        _logins=$(path_ci "$_p" "logins.json" 2>/dev/null || true)
+        say "Firefox profile: $_pname"
+        if [ "$FERRY_DRYRUN" = 1 ]; then
+            _files=$(find "$_p" -type f 2>/dev/null | wc -l | tr -d ' ')
+            say "  would copy $_files files (minus caches) to .mozilla/firefox/$_pname"
+        else
+            copy_profile_tree "$_p" "$_dest/Profiles/$_pname"
+        fi
+
+        # Report what came, and the one caveat that can apply.
+        if [ -n "$_logins" ] && [ -n "$_pw" ]; then
+            # A Primary Password leaves a recognisable marker in key4.db,
+            # but we cannot read it reliably offline; state the condition
+            # rather than claim certainty.
+            note firefox info "Firefox/$_pname" \
+                "bookmarks, history, cookies, open tabs and saved logins copied verbatim — if this profile had a Primary Password, Firefox will ask for it once"
+        else
+            note firefox info "Firefox/$_pname" \
+                "bookmarks, history, cookies and open tabs copied verbatim"
+        fi
+        _count=$((_count+1))
+    done
+fi
+
+if [ "$FERRY_DRYRUN" = 0 ]; then own "$_dest"; fi
+
+if [ "$_count" = 0 ]; then
+    note firefox partial "Firefox" \
+        "a Firefox folder existed but no profiles could be enumerated; copied what metadata was present"
+fi
+
+_written=$(awk -F'\t' -v s=firefox '$2==s && $3=="copy"' "$FERRY_STATE/manifest.tsv" 2>/dev/null | wc -l | tr -d ' ')
+say "firefox: $_count profile(s), $_written file(s) copied"
+stage_done firefox "$_count profiles"
+exit 0

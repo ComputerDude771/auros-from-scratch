@@ -1,0 +1,315 @@
+#!/bin/bash
+# ═══════════════════════════════════════════════════════════════════
+#  mkimage — turn a forged rootfs into a bootable disk image
+#
+#  The output is exactly what AurBridge writes byte-for-byte into the
+#  partition it creates on the user's disk. Building it here, and booting
+#  it here, is what makes the installer's job a verified copy rather than
+#  an unverified assembly on a stranger's machine.
+#
+#  Layout: GPT, ESP (FAT32) + root (ext4). UEFI only -- see R8 in the
+#  risk register for why legacy BIOS is refused.
+# ═══════════════════════════════════════════════════════════════════
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PROFILE="${1:-desktop}"
+RFS="$ROOT/work/forge/$PROFILE/rootfs"
+OUT="$ROOT/out"
+IMG="$OUT/auros-$PROFILE.img"
+ESP_MB="${ESP_MB:-512}"
+SLACK_MB="${SLACK_MB:-1536}"
+
+C_OK=$'\033[38;2;125;211;192m'; C_DIM=$'\033[38;2;110;120;134m'; C_RST=$'\033[0m'
+step() { printf '\n%s▸%s %s\n' "$C_OK" "$C_RST" "$*"; }
+note() { printf '%s   %s%s\n' "$C_DIM" "$*" "$C_RST"; }
+die()  { printf '\033[38;2;242;120;141m::%s %s\n' "$C_RST" "$*" >&2; exit 1; }
+
+[ -d "$RFS" ] || die "no rootfs for profile '$PROFILE' — run: forge build $PROFILE"
+mkdir -p "$OUT"
+
+LOOP=""; MNT="$ROOT/work/mnt-$PROFILE"
+cleanup() {
+    set +e
+    mountpoint -q "$MNT/boot/efi" && umount -lf "$MNT/boot/efi"
+    for m in dev/pts dev sys proc; do mountpoint -q "$MNT/$m" && umount -lf "$MNT/$m"; done
+    mountpoint -q "$MNT" && umount -lf "$MNT"
+    for l in $LOOP; do losetup -d "$l" 2>/dev/null; done
+    rmdir "$MNT" 2>/dev/null
+    set -e
+}
+trap cleanup EXIT
+
+step "sizing"
+RFS_MB=$(du -sm --apparent-size "$RFS" | cut -f1)
+TOTAL_MB=$(( RFS_MB + ESP_MB + SLACK_MB + 64 ))
+note "rootfs ${RFS_MB}MB + esp ${ESP_MB}MB + slack ${SLACK_MB}MB = ${TOTAL_MB}MB"
+
+step "creating $IMG"
+rm -f "$IMG"
+# Sparse: the file only occupies what is written, which keeps the build
+# host's disk usage near the real content size.
+truncate -s "${TOTAL_MB}M" "$IMG"
+
+step "partitioning (GPT)"
+sgdisk --zap-all "$IMG" >/dev/null
+sgdisk -n 1:1MiB:+${ESP_MB}MiB -t 1:ef00 -c 1:"AUROS-ESP" "$IMG" >/dev/null
+sgdisk -n 2:0:0               -t 2:8304 -c 2:"AUROS-ROOT" "$IMG" >/dev/null
+sgdisk -p "$IMG" | tail -4
+
+# This container's loop module is built with max_part=0, so --partscan
+# produces no pN devices and cannot be re-loaded. Mapping each partition
+# with its own offset-bounded loop device works everywhere and does not
+# depend on kernel partition scanning at all.
+SEC=512
+p_start() { sgdisk -i "$1" "$IMG" | sed -n 's/^First sector: \([0-9]*\).*/\1/p'; }
+p_end()   { sgdisk -i "$1" "$IMG" | sed -n 's/^Last sector: \([0-9]*\).*/\1/p'; }
+
+P1_OFF=$(( $(p_start 1) * SEC )); P1_SZ=$(( ($(p_end 1) - $(p_start 1) + 1) * SEC ))
+P2_OFF=$(( $(p_start 2) * SEC )); P2_SZ=$(( ($(p_end 2) - $(p_start 2) + 1) * SEC ))
+[ "$P1_SZ" -gt 0 ] && [ "$P2_SZ" -gt 0 ] || die "could not read the partition table back"
+
+LOOP1=$(losetup --find --show --offset "$P1_OFF" --sizelimit "$P1_SZ" "$IMG")
+LOOP2=$(losetup --find --show --offset "$P2_OFF" --sizelimit "$P2_SZ" "$IMG")
+LOOP="$LOOP1 $LOOP2"
+note "esp  $LOOP1  (offset $P1_OFF, $((P1_SZ/1048576))MB)"
+note "root $LOOP2  (offset $P2_OFF, $((P2_SZ/1048576))MB)"
+
+step "filesystems"
+mkfs.vfat -F32 -n AUROS-ESP "$LOOP1" >/dev/null
+mkfs.ext4 -q -L AUROS-ROOT -O ^has_journal,^metadata_csum_seed "$LOOP2"
+ROOT_UUID=$(blkid -s UUID -o value "$LOOP2")
+ESP_UUID=$(blkid -s UUID -o value "$LOOP1")
+note "root UUID $ROOT_UUID"
+
+step "copying rootfs"
+mkdir -p "$MNT"
+mount "$LOOP2" "$MNT"
+tar -C "$RFS" --exclude=./.forge-bootstrapped -cf - . | tar -C "$MNT" -xf -
+# The ESP is staged as a plain directory and copied into the FAT
+# partition with mtools at the end. This container's kernel has no vfat
+# driver, and mounting is unnecessary anyway -- mtools writes FAT
+# images directly, which is how image builders normally do it and
+# removes a kernel dependency from the build.
+mkdir -p "$MNT/boot/efi"
+
+cat > "$MNT/etc/fstab" <<EOF
+UUID=$ROOT_UUID  /          ext4  defaults,noatime  0 1
+UUID=$ESP_UUID   /boot/efi  vfat  umask=0077        0 2
+EOF
+
+step "bootloader + initramfs"
+for m in proc sys dev dev/pts; do mkdir -p "$MNT/$m"; done
+mount -t proc proc "$MNT/proc"
+mount -t sysfs sysfs "$MNT/sys"
+mount --bind /dev "$MNT/dev"
+mount -t devpts devpts "$MNT/dev/pts"
+cp /etc/resolv.conf "$MNT/etc/resolv.conf" 2>/dev/null || true
+
+cat > "$MNT/etc/default/grub" <<'EOF'
+GRUB_DEFAULT=0
+GRUB_TIMEOUT=3
+GRUB_TIMEOUT_STYLE=menu
+GRUB_DISTRIBUTOR="AurOS"
+GRUB_CMDLINE_LINUX_DEFAULT="console=tty0 console=ttyS0,115200n8"
+GRUB_CMDLINE_LINUX=""
+GRUB_TERMINAL="console serial"
+GRUB_SERIAL_COMMAND="serial --unit=0 --speed=115200"
+GRUB_GFXMODE=auto
+GRUB_GFXPAYLOAD_LINUX=keep
+EOF
+
+chroot "$MNT" /usr/bin/env -i \
+  HOME=/root PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+  DEBIAN_FRONTEND=noninteractive /bin/bash -c '
+    set -e
+    [ -f /boot/initrd.img-$(uname -r) ] || update-initramfs -c -k all 2>&1 | tail -1
+    ls /boot/initrd.img-* >/dev/null 2>&1 || update-initramfs -c -k all 2>&1 | tail -1
+    true
+  '
+
+# ── grub.cfg, written deterministically ──────────────────────────
+#
+# grub-mkconfig is not used. Inside a chroot on offset-mapped loop
+# devices grub-probe cannot resolve /boot to a device, so 10_linux
+# silently emits zero menu entries and produces a grub.cfg that looks
+# fine and boots nothing. An image builder knows the root UUID and the
+# kernel version already, so generating the file directly is both
+# deterministic and brandable.
+step "writing grub.cfg"
+KVER=$(basename "$(ls -1 "$MNT"/boot/vmlinuz-* | sort -V | tail -1)" | sed 's/^vmlinuz-//')
+[ -n "$KVER" ] || die "no kernel in the image"
+note "kernel $KVER"
+
+# Theme colours, if aurora has rendered them into the image.
+THEME_CFG="$MNT/etc/auros/grub-theme.cfg"
+GRUB_COLOURS=""
+[ -f "$THEME_CFG" ] && GRUB_COLOURS="source /etc/auros/grub-theme.cfg"
+
+mkdir -p "$MNT/boot/grub"
+cat > "$MNT/boot/grub/grub.cfg" <<EOF
+# Generated by mkimage. Regenerate with build/mkimage, not grub-mkconfig.
+set default=0
+set timeout=3
+set timeout_style=menu
+
+insmod all_video
+insmod gfxterm
+insmod part_gpt
+insmod ext2
+insmod search_fs_uuid
+
+search --no-floppy --fs-uuid --set=root $ROOT_UUID
+
+if loadfont /boot/grub/fonts/unicode.pf2 ; then
+  set gfxmode=auto
+  set gfxpayload=keep
+  terminal_output gfxterm
+fi
+serial --unit=0 --speed=115200
+terminal_input  console serial
+terminal_output console serial gfxterm
+$GRUB_COLOURS
+
+menuentry 'AurOS' --class auros --id auros {
+    linux  /boot/vmlinuz-$KVER root=UUID=$ROOT_UUID ro quiet splash console=tty0 console=ttyS0,115200n8
+    initrd /boot/initrd.img-$KVER
+}
+
+menuentry 'AurOS (verbose boot)' --class auros --id auros-verbose {
+    linux  /boot/vmlinuz-$KVER root=UUID=$ROOT_UUID ro console=tty0 console=ttyS0,115200n8 systemd.show_status=1
+    initrd /boot/initrd.img-$KVER
+}
+
+# aurinit is AurOS's own PID 1. It supervises our service model; the
+# Ubuntu userland in this image still expects systemd, so this entry is
+# for appliance and kiosk builds where the service set is entirely ours.
+menuentry 'AurOS (aurinit — experimental)' --class auros --id auros-aurinit {
+    linux  /boot/vmlinuz-$KVER root=UUID=$ROOT_UUID ro init=/usr/sbin/aurinit console=tty0 console=ttyS0,115200n8
+    initrd /boot/initrd.img-$KVER
+}
+
+menuentry 'AurOS (recovery shell)' --class recovery --id auros-recovery {
+    linux  /boot/vmlinuz-$KVER root=UUID=$ROOT_UUID ro single init=/bin/bash console=tty0 console=ttyS0,115200n8
+    initrd /boot/initrd.img-$KVER
+}
+EOF
+
+# grub needs its modules on the root filesystem at the prefix the ESP
+# config points to.
+if [ -d "$MNT/usr/lib/grub/x86_64-efi" ]; then
+    mkdir -p "$MNT/boot/grub/x86_64-efi"
+    cp -a "$MNT/usr/lib/grub/x86_64-efi/." "$MNT/boot/grub/x86_64-efi/" 2>/dev/null || true
+    note "grub modules staged ($(ls "$MNT/boot/grub/x86_64-efi"/*.mod 2>/dev/null | wc -l) .mod files)"
+fi
+mkdir -p "$MNT/boot/grub/fonts"
+[ -f /usr/share/grub/unicode.pf2 ] && cp /usr/share/grub/unicode.pf2 "$MNT/boot/grub/fonts/" 2>/dev/null || true
+
+# ── The signed Secure Boot chain ─────────────────────────────────
+#
+# grub-install is deliberately NOT used. It builds and installs an
+# UNSIGNED grub image, which Secure Boot rejects. The whole reason for
+# sitting on Ubuntu is that Canonical already ships binaries signed by
+# Microsoft, so the correct action is to copy them, not rebuild them.
+#
+# shimx64.efi.dualsigned carries signatures from BOTH the Microsoft
+# UEFI CA 2011 and the 2023 CA. That matters more than anything else in
+# this file: the 2011 CA is the one old firmware trusts, and since the
+# dual-signing window closed in June 2026 a new distro applying on its
+# own can only obtain a 2023-only shim -- which would not boot on
+# exactly the old PCs this product exists for.
+step "installing the signed boot chain"
+SHIM_SRC=""
+for cand in usr/lib/shim/shimx64.efi.dualsigned \
+            usr/lib/shim/shimx64.efi.signed.latest \
+            usr/lib/shim/shimx64.efi.signed; do
+    [ -f "$MNT/$cand" ] && { SHIM_SRC="$MNT/$cand"; break; }
+done
+[ -n "$SHIM_SRC" ] || die "no signed shim found in the image"
+GRUB_SRC="$MNT/usr/lib/grub/x86_64-efi-signed/grubx64.efi.signed"
+[ -f "$GRUB_SRC" ] || die "no signed grub found in the image"
+note "shim: $(basename "$SHIM_SRC")  ($(sbverify --list "$SHIM_SRC" 2>/dev/null | grep -c '^signature') signature(s))"
+
+ESP="$MNT/boot/efi"
+# ── ESP layout ───────────────────────────────────────────────────
+#
+# /EFI/BOOT   the removable path. Any firmware boots BOOTX64.EFI here
+#             with no NVRAM entry, which is what makes the image work
+#             on a machine AurBridge has not yet registered.
+# /EFI/AurOS  our vendor directory. shim's fallback (fbx64.efi) scans
+#             /EFI/*/BOOTX64.CSV, creates a real NVRAM boot entry from
+#             it, and resets once. Without that CSV the fallback finds
+#             nothing to install, resets anyway, and the machine sits in
+#             a reset loop -- which is exactly what happened before this
+#             file existed.
+# /EFI/ubuntu holds only grub.cfg: the prefix is baked into Canonical's
+#             signed grubx64.efi and cannot be changed without breaking
+#             the signature that lets Secure Boot trust it.
+mkdir -p "$ESP/EFI/BOOT" "$ESP/EFI/ubuntu" "$ESP/EFI/AurOS"
+
+cp "$SHIM_SRC"                          "$ESP/EFI/BOOT/BOOTX64.EFI"
+cp "$GRUB_SRC"                          "$ESP/EFI/BOOT/grubx64.efi"
+cp "$MNT/usr/lib/shim/mmx64.efi"        "$ESP/EFI/BOOT/mmx64.efi" 2>/dev/null || true
+cp "$MNT/usr/lib/shim/fbx64.efi"        "$ESP/EFI/BOOT/fbx64.efi" 2>/dev/null || true
+
+cp "$SHIM_SRC"                          "$ESP/EFI/AurOS/shimx64.efi"
+cp "$GRUB_SRC"                          "$ESP/EFI/AurOS/grubx64.efi"
+cp "$MNT/usr/lib/shim/mmx64.efi"        "$ESP/EFI/AurOS/mmx64.efi" 2>/dev/null || true
+
+# UTF-16LE, no BOM: <loader>,<vendor dir>,<options>,<description>
+printf 'shimx64.efi,AurOS,,AurOS\n' | iconv -f UTF-8 -t UTF-16LE > "$ESP/EFI/AurOS/BOOTX64.CSV"
+note "fallback CSV: $(iconv -f UTF-16LE -t UTF-8 < "$ESP/EFI/AurOS/BOOTX64.CSV" | tr -d '\n')"
+
+for d in ubuntu AurOS BOOT; do
+cat > "$ESP/EFI/$d/grub.cfg" <<EOF
+search --no-floppy --fs-uuid --set=root $ROOT_UUID
+set prefix=(\$root)/boot/grub
+configfile (\$root)/boot/grub/grub.cfg
+EOF
+done
+
+step "writing the ESP with mtools"
+export MTOOLS_SKIP_CHECK=1
+mcopy_tree() {
+    local src=$1 dstdir=$2
+    ( cd "$src" && find . -type d ! -name . -printf '%P\n' ) | while read -r d; do
+        mmd -i "$LOOP1" "::/$d" 2>/dev/null || true
+    done
+    ( cd "$src" && find . -type f -printf '%P\n' ) | while read -r f; do
+        mcopy -i "$LOOP1" -o "$src/$f" "::/$f" || die "mcopy failed for $f"
+    done
+}
+if [ -d "$MNT/boot/efi/EFI" ]; then
+    mcopy_tree "$MNT/boot/efi" ""
+    note "ESP contents: $(mdir -i "$LOOP1" ::/EFI/BOOT 2>/dev/null | grep -c . || echo 0) entries under /EFI/BOOT"
+else
+    die "grub-install produced no EFI directory"
+fi
+
+step "verifying the boot chain"
+ok=1
+[ -e "$MNT/boot/grub/grub.cfg" ] && note "present: /boot/grub/grub.cfg" || { echo "MISSING grub.cfg"; ok=0; }
+# Verify inside the FAT image, not the staging dir -- the staging dir
+# existing proves nothing about what the firmware will actually find.
+if mdir -i "$LOOP1" ::/EFI/BOOT 2>/dev/null | grep -qi "BOOTX64"; then
+    note "present: ESP:/EFI/BOOT/BOOTX64.EFI"
+else
+    echo "MISSING: BOOTX64.EFI inside the ESP"; ok=0
+fi
+if mdir -i "$LOOP1" ::/EFI/BOOT 2>/dev/null | grep -qi "GRUBX64"; then
+    note "present: ESP:/EFI/BOOT/GRUBX64.EFI"
+fi
+ls "$MNT"/boot/vmlinuz-* >/dev/null 2>&1 && note "present: kernel" || { echo "MISSING kernel"; ok=0; }
+ls "$MNT"/boot/initrd.img-* >/dev/null 2>&1 && note "present: initramfs" || { echo "MISSING initramfs"; ok=0; }
+NENT=$(grep -c "^menuentry" "$MNT/boot/grub/grub.cfg" || echo 0)
+NLIN=$(grep -cE "^\s+linux\s+/boot/vmlinuz" "$MNT/boot/grub/grub.cfg" || echo 0)
+if [ "$NENT" -ge 1 ] && [ "$NLIN" -ge 1 ]; then
+    note "grub.cfg: $NENT menu entries, $NLIN booting a kernel"
+else
+    echo "grub.cfg has $NENT entries and $NLIN kernel lines"; ok=0
+fi
+[ "$ok" = 1 ] || die "boot chain incomplete — this image would not boot"
+
+sync
+cleanup; trap - EXIT
+printf '\n%s::%s %s  (%s)\n' "$C_OK" "$C_RST" "$IMG" "$(du -h --apparent-size "$IMG" | cut -f1)"

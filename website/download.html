@@ -1,0 +1,463 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Download AurOS — the checklist first</title>
+<meta name="description" content="Before you download AurOS: does your PC qualify, do you have a backup, a USB stick, and mains power. Plus the full list of what can go wrong.">
+<meta name="color-scheme" content="dark">
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2032%2032'%3E%3Crect%20width='32'%20height='32'%20rx='7'%20fill='%230B0E14'/%3E%3Cpath%20d='M16%205L25%2016L16%2027L7%2016Z'%20fill='%237DD3C0'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="assets/nocturne.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="site-head">
+  <div class="shell">
+    <a class="brand" href="index.html">
+      <span class="glyph" aria-hidden="true">&#9670;</span>
+      AurOS
+      <span class="ver">0.1.0 Nocturne</span>
+    </a>
+    <nav class="site-nav" aria-label="Main">
+      <a href="index.html">Home</a>
+      <a href="how-it-works.html">How it works</a>
+      <a href="safety.html">Safety</a>
+      <a href="organizations.html">Organizations</a>
+      <a class="btn btn-primary" href="download.html" aria-current="page">Download</a>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+
+  <section class="hero hero-sm">
+    <div class="aurora" aria-hidden="true"></div>
+    <div class="aurora-veil" aria-hidden="true"></div>
+    <div class="shell">
+      <p class="eyebrow">Download</p>
+      <h1>Five questions before you download anything.</h1>
+      <p class="lede">
+        This program can repartition the disk your photographs live on. The
+        checklist below is not a formality and it is not a liability shield &mdash;
+        it is the same list our own engineers work through before running a test
+        install on a machine they care about.
+      </p>
+    </div>
+  </section>
+
+  <!-- ────────────────────────── checklist ─────────────────────── -->
+  <section>
+    <div class="shell">
+      <div class="sec-head">
+        <h2>The pre-download checklist</h2>
+        <p>
+          Tick each one honestly. Nothing you tick is sent anywhere &mdash; there is
+          no server on the other end of these boxes, and nothing is stored in your
+          browser. They are here to slow you down for two minutes.
+        </p>
+      </div>
+
+      <ul class="checklist" data-checklist>
+
+        <li>
+          <label>
+            <input type="checkbox">
+            <span class="ck-title">1. My PC qualifies</span>
+          </label>
+          <div class="ck-body">
+            <p>
+              Windows 10 or 11, 64-bit, booting in <strong>UEFI</strong> mode (not
+              legacy BIOS), with roughly <strong>28 GB free</strong> on the Windows
+              drive and a hard drive that is not reporting errors.
+            </p>
+            <p>
+              If you are not sure &mdash; and most people are not &mdash; that is
+              exactly what the compatibility check is for. It is read-only and
+              answers all of this for you.
+              <a href="#requirements">The full requirement list</a>.
+            </p>
+          </div>
+        </li>
+
+        <li>
+          <label>
+            <input type="checkbox">
+            <span class="ck-title">2. I have a backup, on a different physical drive</span>
+          </label>
+          <div class="ck-body">
+            <p>
+              Not another folder, not another partition on the same disk, not
+              &ldquo;most of it is in the cloud&rdquo;. A separate physical drive, or a
+              cloud copy you have actually confirmed is complete by opening a few
+              files from it.
+            </p>
+            <p>
+              <strong>Why we are strict:</strong> the step that makes room for AurOS
+              moves files around inside your Windows partition. On a drive that has
+              been quietly failing for years, that is the workload which finally
+              exposes it. We check the drive&rsquo;s health first and refuse if it
+              looks bad &mdash; but a backup is the only thing that makes a bad
+              outcome survivable.
+            </p>
+          </div>
+        </li>
+
+        <li>
+          <label>
+            <input type="checkbox">
+            <span class="ck-title">3. I have a USB stick I can erase (8&nbsp;GB or larger)</span>
+          </label>
+          <div class="ck-body">
+            <p>
+              The installer writes a rescue USB before it changes anything, and it
+              <strong>will not proceed without one</strong>. Everything on that stick
+              is erased.
+            </p>
+            <p>
+              We know this costs us users who would otherwise have installed. We are
+              taking the hit on purpose. A rescue partition on the internal disk
+              covers &ldquo;AurOS will not start&rdquo;; the USB covers &ldquo;the
+              disk&rsquo;s partition table is gone&rdquo;. Neither one substitutes for
+              the other, and the second case is the one that ends with a person
+              holding a computer that will not boot at all.
+            </p>
+          </div>
+        </li>
+
+        <li>
+          <label>
+            <input type="checkbox">
+            <span class="ck-title">4. My PC is plugged into mains power</span>
+          </label>
+          <div class="ck-body">
+            <p>
+              On a laptop: the charger in the wall, and the battery above 50%.
+              The installer refuses below that, with no override.
+            </p>
+            <p>
+              <strong>Why:</strong> a partition table is not journalled. There is a
+              single moment where the old layout stops being true and the new one
+              starts, and losing power inside that window is the one failure mode we
+              cannot engineer away completely. We shrink the window to one sector
+              write, and we refuse to open it at all on battery.
+            </p>
+          </div>
+        </li>
+
+        <li>
+          <label>
+            <input type="checkbox">
+            <span class="ck-title">5. I have the time, and my BitLocker key if I need one</span>
+          </label>
+          <div class="ck-body">
+            <p>
+              Set aside an evening, not ten minutes. The disk check that has to pass
+              before we touch anything can take hours on an older spinning hard
+              drive, and it is not safe to interrupt. Do not start this at 11pm the
+              night before you need the machine.
+            </p>
+            <p>
+              If Windows encrypted your drive &mdash; which recent versions often do
+              silently, when you sign in with a Microsoft account &mdash; you will
+              need your 48-digit recovery key, and the installer will ask you to type
+              part of it back before continuing. Not tick a box:
+              <strong>type it</strong>. Find it now, on your phone or another
+              computer, in your Microsoft account&rsquo;s device page. If it cannot be
+              retrieved, we stop, because continuing would lock you out of your own
+              Windows for good. <a href="safety.html#bitlocker">More on this</a>.
+            </p>
+          </div>
+        </li>
+
+      </ul>
+
+      <div class="gate" data-gate>
+        <p class="gate-count" data-gate-count role="status">
+          Work through the checklist above.
+        </p>
+        <p class="btn-row">
+          <a class="btn btn-primary btn-lg" data-gate-link href="#build">
+            Continue to the download
+          </a>
+        </p>
+        <p class="small">
+          The boxes are a speed bump, not a lock. If you have JavaScript turned off,
+          the link works normally and the checklist still reads the same.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ───────────────────────── build status ───────────────────── -->
+  <section class="alt">
+    <div class="shell" id="build">
+      <div class="sec-head">
+        <h2>What you can download today</h2>
+      </div>
+
+      <div class="grid grid-2">
+        <article class="card card-accent">
+          <h3>AurBridge Check &mdash; read-only</h3>
+          <p>
+            A small Windows program that inspects this PC and prints a report: what
+            passed, what we would warn you about, and what would stop us. It opens
+            your disks for reading, reads your firmware variables, your drive&rsquo;s
+            health counters and your encryption state, and then exits.
+          </p>
+          <ul class="marked yes small">
+            <li>Never writes to any disk, ever. There is no code path in it that can.</li>
+            <li>Sends nothing anywhere. It works with the network cable unplugged.</li>
+            <li>Prints a report you can read, and a machine-readable copy you can send to someone who knows more than you do.</li>
+          </ul>
+        </article>
+
+        <article class="card card-warn">
+          <h3>The installer &mdash; not yet</h3>
+          <p>
+            AurBridge&rsquo;s destructive phases are specified and not yet written.
+            Nothing that shrinks a partition or writes a boot entry ships until the
+            rescue partition and the one-button &ldquo;Put Windows back&rdquo; path
+            exist and have been tested by deliberately failing an install at every
+            single step.
+          </p>
+          <p class="small">
+            We would rather have this sentence on our download page than a support
+            queue full of people whose family photos are on a partition they cannot
+            reach.
+          </p>
+        </article>
+      </div>
+
+      <div class="note note-warn" style="margin-top:1.6rem">
+        <span class="note-title">There is no public build published yet</span>
+        <p>
+          When there is, it will appear here as a single file
+          &mdash; <code>aurbridge-check-0.1.0.exe</code> &mdash; alongside its
+          SHA-256 checksum and its Authenticode signature, and this page will tell
+          you how to check both. Until then this button has nothing to hand you, and
+          we are not going to pretend otherwise by linking you to a file that does
+          not exist.
+        </p>
+        <p class="small">
+          If you build from source in the meantime, the preflight component is the
+          one that compiles today: <code>src/aurbridge/</code>. It returns exit code
+          <code>0</code> for go and <code>1</code> for blocked.
+        </p>
+      </div>
+
+      <div class="note note-info">
+        <span class="note-title">What Windows will say when you run it</span>
+        <p>
+          Honestly: for now, it will warn you. Windows shows &ldquo;unknown
+          publisher&rdquo; for any program whose publisher has not yet been verified
+          by a certificate we have to buy from a certificate authority, and on a
+          recently-installed Windows 11 with Smart App Control switched on, an
+          unsigned program is not merely warned about &mdash; it is
+          <strong>refused outright</strong>.
+        </p>
+        <p>
+          We are not going to write a page teaching non-technical people to click
+          past their operating system&rsquo;s security warnings. That habit is worth
+          more to them than we are. The correct fix is on our side: buy the
+          certificate, sign the binary, and build the reputation. Until that is done,
+          this software is for people who are comfortable checking a checksum.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ───────────────────────── requirements ───────────────────── -->
+  <section>
+    <div class="shell" id="requirements">
+      <div class="sec-head">
+        <h2>Hard requirements</h2>
+        <p>
+          Each of these is a hard stop in the installer, with no &ldquo;advanced&rdquo;
+          checkbox and no override. If your PC fails one, AurBridge tells you which
+          one and what to do about it, and then it stops.
+        </p>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <caption>Checked before anything is touched. All of these are read-only tests.</caption>
+          <thead>
+            <tr>
+              <th scope="col">We require</th>
+              <th scope="col">Because</th>
+              <th scope="col">If you fail it</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th scope="row">UEFI firmware</th>
+              <td>On legacy BIOS there is no one-shot, self-reverting boot attempt. A bad boot record means a blinking cursor and no way back.</td>
+              <td>Refused. Some PCs can be switched to UEFI in firmware settings, but that is a change we will not talk you through.</td>
+            </tr>
+            <tr>
+              <th scope="row">Administrator rights</th>
+              <td>Reading raw disk structures and firmware variables needs them.</td>
+              <td>Right-click, &ldquo;Run as administrator&rdquo;.</td>
+            </tr>
+            <tr>
+              <th scope="row">Mains power, battery above 50%</th>
+              <td>Power loss during repartitioning is unrecoverable in the worst case.</td>
+              <td>Plug in and charge. Then re-check.</td>
+            </tr>
+            <tr>
+              <th scope="row">About 28 GB free</th>
+              <td>Room for the system, your files, and the rescue partition that can put Windows back.</td>
+              <td>Empty the Recycle Bin, run Disk Cleanup, move large files off. Then re-check.</td>
+            </tr>
+            <tr>
+              <th scope="row">Fast Startup switched off</th>
+              <td>Windows &ldquo;shut down&rdquo; usually hibernates instead. If it later resumes from that saved image after we have changed the disk, it writes back a stale map of the disk and destroys both systems &mdash; silently, hours later.</td>
+              <td>Refused until it is off and the machine has been genuinely restarted. The installer verifies that, it does not take your word for it.</td>
+            </tr>
+            <tr>
+              <th scope="row">No pending Windows updates</th>
+              <td>A half-applied update finishing after we repartition is the same class of problem.</td>
+              <td>Let Windows finish updating and restart.</td>
+            </tr>
+            <tr>
+              <th scope="row">A healthy drive</th>
+              <td>We read the drive&rsquo;s own error counters. Pending or uncorrectable sectors mean the disk is failing now.</td>
+              <td>Refused, with no override. Back your data up today, on any machine, and replace the drive.</td>
+            </tr>
+            <tr>
+              <th scope="row">A clean, non-encrypted-by-strangers filesystem</th>
+              <td>Feeding a damaged filesystem into a resizer turns a few unreadable files into an unmountable disk. Third-party whole-disk encryption sits underneath everything we would do.</td>
+              <td>Refused on a dirty filesystem until a full disk check passes. Refused outright under third-party disk encryption.</td>
+            </tr>
+            <tr>
+              <th scope="row">One ordinary disk layout</th>
+              <td>Windows dynamic disks and Storage Spaces keep the real layout somewhere our tools do not read. Intel RST remapping can hide the drive from Linux entirely.</td>
+              <td>Refused on dynamic disks. Warned on Intel RST, and verified from the rescue environment before anything is committed.</td>
+            </tr>
+            <tr>
+              <th scope="row">External drives unplugged</th>
+              <td>The single cheapest way to prevent writing to the wrong disk.</td>
+              <td>Unplug them. You will also be asked to type the size or label of the target disk back.</td>
+            </tr>
+            <tr>
+              <th scope="row">Your BitLocker key, if the drive is encrypted</th>
+              <td>Changing the disk layout changes what the security chip measures at boot. Windows will then ask for a 48-digit key most people have never seen.</td>
+              <td>Refused if the key cannot be produced. This one has cost people their entire Windows install elsewhere; we will not risk it.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p class="small" style="margin-top:1rem">
+        Secure Boot being switched on is a warning rather than a block, and it has a
+        real consequence: on first boot you will see one firmware screen asking you
+        to approve our key. <a href="safety.html#secure-boot">Why that screen exists</a>.
+      </p>
+    </div>
+  </section>
+
+  <!-- ─────────────────────── if we refuse ─────────────────────── -->
+  <section class="alt">
+    <div class="shell">
+      <div class="sec-head">
+        <h2>If we refuse your PC</h2>
+        <p class="lede">
+          Being refused is a designed outcome, not an error. It means the check
+          worked.
+        </p>
+      </div>
+      <div class="grid grid-2">
+        <article class="card">
+          <h3>What a refusal gets you</h3>
+          <p>
+            A named reason, in plain English, with what would have to change. Not a
+            code, not a dialog box with an OK button. Several of the refusals &mdash;
+            a failing drive especially &mdash; are worth knowing about whether or not
+            you ever install Linux.
+          </p>
+          <p class="small">
+            A person told &ldquo;your hard drive is failing, back up today&rdquo; is a
+            person we helped. A person whose drive dies during our install is one we
+            harmed.
+          </p>
+        </article>
+        <article class="card">
+          <h3>What you can do instead</h3>
+          <ul class="marked warnmark small">
+            <li><strong>Failing drive:</strong> back up now. A replacement SSD for an old laptop is inexpensive, and afterwards the PC qualifies and is faster than it has ever been.</li>
+            <li><strong>Not enough space:</strong> Disk Cleanup, empty the Recycle Bin, move video and photo archives to an external drive.</li>
+            <li><strong>Legacy BIOS:</strong> a mainstream distribution installed from a USB stick is a better fit for that machine than we are. We would rather say so than take the risk.</li>
+            <li><strong>No USB stick and no backup:</strong> fix that first, for reasons that have nothing to do with us.</li>
+          </ul>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="shell">
+      <div class="cta">
+        <h2>Read the safety page before you run anything</h2>
+        <p>
+          It lists every way this can go wrong, ranked by how much damage it would
+          do, and what we do about each one. It also lists the things we refuse to
+          build, and the data we know we cannot bring across.
+        </p>
+        <p class="btn-row">
+          <a class="btn btn-primary btn-lg" href="safety.html">What can go wrong</a>
+          <a class="btn btn-ghost btn-lg" href="how-it-works.html">The install, step by step</a>
+        </p>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer class="site-foot">
+  <div class="shell">
+    <div class="foot-grid">
+      <div>
+        <a class="brand" href="index.html">
+          <span class="glyph" aria-hidden="true">&#9670;</span> AurOS
+        </a>
+        <p class="small" style="margin-top:.8rem">
+          A Linux desktop for old Windows PCs. Pre-release: the read-only
+          compatibility check builds and runs; the installer is still being
+          written and tested.
+        </p>
+      </div>
+      <nav aria-labelledby="foot-pages">
+        <h2 id="foot-pages">Pages</h2>
+        <ul>
+          <li><a href="index.html">Home</a></li>
+          <li><a href="how-it-works.html">How it works</a></li>
+          <li><a href="safety.html">Safety</a></li>
+          <li><a href="organizations.html">Organizations</a></li>
+          <li><a href="download.html">Download</a></li>
+        </ul>
+      </nav>
+      <nav aria-labelledby="foot-honest">
+        <h2 id="foot-honest">The honest bits</h2>
+        <ul>
+          <li><a href="safety.html#what-can-go-wrong">What can go wrong</a></li>
+          <li><a href="safety.html#refuse">What we refuse to do</a></li>
+          <li><a href="safety.html#cannot-migrate">What can&rsquo;t be migrated</a></li>
+          <li><a href="download.html#requirements">Hard requirements</a></li>
+          <li><a href="how-it-works.html#undo">How to go back to Windows</a></li>
+        </ul>
+      </nav>
+    </div>
+    <div class="foot-bottom">
+      <p>
+        No analytics, no cookies, no advertising, no external fonts. This page
+        loads one stylesheet and one small script from this server, and makes no
+        other network request. You can save it and read it offline.
+      </p>
+      <p>AurOS is MIT-licensed. &copy; 2026 AurOS contributors.</p>
+    </div>
+  </div>
+</footer>
+<script src="assets/site.js"></script>
+</body>
+</html>

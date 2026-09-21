@@ -1,0 +1,58 @@
+# Windows Keyboard Layout ID (KLID, the 8-hex-digit value under
+# HKCU\Keyboard Layout\Preload) -> XKB layout[,variant].
+#
+# The low 16 bits are a language id (LCID); the common layouts are
+# listed by their full KLID because a bare LCID does not distinguish
+# e.g. US-QWERTY from Dvorak. Unlisted KLIDs fall back to the low-word
+# language mapping in ferry-settings, which is why this table only needs
+# the layouts that differ from their language's default.
+# Format: <KLID uppercase><TAB><xkb layout>[<TAB><variant>]
+00000409	us
+00010409	us	dvorak
+00020409	us	intl
+00000809	gb
+00000407	de
+0001040C	fr	bepo
+0000040C	fr
+0000080C	be
+0000100C	ch	fr
+00000807	ch
+00000410	it
+0000040A	es
+0000080A	es	 
+00000416	br
+00000816	pt
+0000041D	se
+00000406	dk
+00000414	no
+0000040B	fi
+00000413	nl
+00000419	ru
+00000422	ua
+00000415	pl
+0000041B	sk
+00000405	cz
+0000040E	hu
+00000418	ro
+0000040F	is
+0000042A	vn
+00000439	in
+00000411	jp
+00000412	kr
+00000404	tw
+00000804	cn
+0000041F	tr
+0000041E	th
+0000040D	il
+00000401	ara
+0000042C	az
+0000043F	kz
+00000437	ge
+00000408	gr
+00000426	lv
+00000427	lt
+00000425	ee
+0000041A	hr
+00000424	si
+00000402	bg
+00000403	es	cat

@@ -85,9 +85,14 @@ export_theme() {
 RENDER_AWK='
 function clamp(v){ return v<0?0:(v>255?255:int(v+0.5)) }
 function hx(s,  t){ t=s; sub(/^#/,"",t); if(length(t)==3){t=substr(t,1,1) substr(t,1,1) substr(t,2,1) substr(t,2,1) substr(t,3,1) substr(t,3,1)} return toupper(t) }
-function R(s){ return strtonum("0x" substr(hx(s),1,2)) }
-function G(s){ return strtonum("0x" substr(hx(s),3,2)) }
-function B(s){ return strtonum("0x" substr(hx(s),5,2)) }
+# Hex parsing by hand rather than strtonum(): strtonum is a gawk
+# extension and the target system ships mawk, where it does not exist.
+# This cost a silent theming failure on the first real image build.
+function hexdigit(c){ return index("0123456789ABCDEF", toupper(c)) - 1 }
+function hex2i(s,  i,v){ v=0; for(i=1;i<=length(s);i++) v = v*16 + hexdigit(substr(s,i,1)); return v }
+function R(s){ return hex2i(substr(hx(s),1,2)) }
+function G(s){ return hex2i(substr(hx(s),3,2)) }
+function B(s){ return hex2i(substr(hx(s),5,2)) }
 function mk(r,g,b){ return sprintf("#%02X%02X%02X", clamp(r), clamp(g), clamp(b)) }
 function lighten(c,p,  f){ f=p/100.0; return mk(R(c)+(255-R(c))*f, G(c)+(255-G(c))*f, B(c)+(255-B(c))*f) }
 function darken(c,p,   f){ f=1-p/100.0; return mk(R(c)*f, G(c)*f, B(c)*f) }

@@ -1,0 +1,132 @@
+#!/bin/sh
+# ═══════════════════════════════════════════════════════════════════
+#  ferry-hive — one way to ask a Windows registry hive a question.
+#
+#  Two backends, same answers:
+#    hivex    — libhivex's hivexget/hivexsh, if the system has them.
+#               Preferred: it is the mature, widely-exercised parser.
+#    hivepeek — ours (src/ferry/hivepeek.c), always present, no
+#               dependencies. Used when libhivex is not installed,
+#               which on a from-source first boot is the normal case.
+#
+#  Honest note on coverage: the hivepeek path is the one exercised by
+#  Ferry's test suite, because libhivex is not in the build environment.
+#  The hivex parsing below follows hivexsh's documented `lsval` output
+#  (`"name"=type:value`) and is defensive about anything it does not
+#  recognise — if it cannot normalise a line it drops it rather than
+#  hand a caller a half-parsed path. Set FERRY_HIVE_BACKEND=hivepeek or
+#  =hivex to pin one, which is also how the tests pin theirs.
+#
+#    ferry-hive get    HIVE KEY VALUE   one value, bare
+#    ferry-hive values HIVE KEY         NAME <tab> TYPE <tab> VALUE
+#    ferry-hive keys   HIVE KEY         subkey names
+#    ferry-hive backend                 which backend is in use
+#
+#  Key paths use backslashes, as the registry does. Missing key or
+#  value exits 1 — that is a normal answer, not an error.
+# ═══════════════════════════════════════════════════════════════════
+set -eu
+
+_self=$(cd "$(dirname "$0")" && pwd)
+PATH="$_self:$_self/build:$PATH"
+
+backend() {
+    if [ -n "${FERRY_HIVE_BACKEND:-}" ]; then printf '%s\n' "$FERRY_HIVE_BACKEND"; return; fi
+    if command -v hivexget >/dev/null 2>&1; then printf 'hivex\n'; return; fi
+    if command -v ferry-hivepeek >/dev/null 2>&1; then printf 'hivepeek\n'; return; fi
+    printf 'none\n'
+}
+
+# hivexsh speaks in `"name"=str(1):"value"`; normalise to our TSV. Types
+# are mapped to the same words hivepeek prints so callers never branch.
+hivex_lsval_awk='
+{
+    line = $0
+    if (line !~ /^"/) next
+    q = index(substr(line, 2), "\"")
+    if (q == 0) next
+    name = substr(line, 2, q - 1)
+    rest = substr(line, q + 3)          # past the closing quote and "="
+    eq = index(rest, ":")
+    type = eq ? substr(rest, 1, eq - 1) : rest
+    val  = eq ? substr(rest, eq + 1) : ""
+    sub(/\(.*/, "", type)
+    if (type == "str" || type == "expandstr" || type == "link") {
+        sub(/^"/, "", val); sub(/"$/, "", val)
+        type = (type == "expandstr") ? "expand" : "string"
+    } else if (type == "dword" || type == "dword-be") {
+        val = strtonum("0x" val) ""
+    } else if (type == "multi") {
+        gsub(/" *, *"/, ";", val); sub(/^"/, "", val); sub(/"$/, "", val)
+    } else if (type == "hex") {
+        gsub(/[^0-9a-fA-F]/, "", val); type = "binary"
+    }
+    gsub(/\t/, " ", val)
+    printf "%s\t%s\t%s\n", name, type, val
+}'
+
+hivex_sh() {                       # hive key command...
+    _hive=$1; _key=$2; shift 2
+    { printf 'cd \\%s\n' "$(printf '%s' "$_key" | sed 's,^\\*,,')"
+      for _c in "$@"; do printf '%s\n' "$_c"; done
+      printf 'quit\n'
+    } | hivexsh "$_hive" 2>/dev/null
+}
+
+cmd_get() {
+    case "$(backend)" in
+        hivex)
+            _v=$(hivexget "$1" "\\$(printf '%s' "$2" | sed 's,^\\*,,')" "$3" 2>/dev/null) || _v=""
+            [ -n "$_v" ] || return 1
+            printf '%s\n' "$_v" ;;
+        hivepeek)
+            ferry-hivepeek "$1" "$2" "$3" ;;
+        *)  return 1 ;;
+    esac
+}
+
+cmd_values() {
+    case "$(backend)" in
+        hivex)
+            if command -v hivexsh >/dev/null 2>&1; then
+                hivex_sh "$1" "$2" lsval | awk "$hivex_lsval_awk"
+            else
+                ferry-hivepeek "$1" "$2"
+            fi ;;
+        hivepeek) ferry-hivepeek "$1" "$2" ;;
+        *) return 1 ;;
+    esac
+}
+
+cmd_keys() {
+    case "$(backend)" in
+        hivex)
+            if command -v hivexsh >/dev/null 2>&1; then
+                # hivexsh `ls` prints one subkey name per line.
+                hivex_sh "$1" "$2" ls | sed '/^$/d'
+            else
+                ferry-hivepeek -k "$1" "$2"
+            fi ;;
+        hivepeek) ferry-hivepeek -k "$1" "$2" ;;
+        *) return 1 ;;
+    esac
+}
+
+case "${1:-}" in
+    get)     shift; [ $# -eq 3 ] || { echo "usage: ferry-hive get HIVE KEY VALUE" >&2; exit 2; }
+             cmd_get "$@" ;;
+    values)  shift; [ $# -eq 2 ] || { echo "usage: ferry-hive values HIVE KEY" >&2; exit 2; }
+             cmd_values "$@" ;;
+    keys)    shift; [ $# -eq 2 ] || { echo "usage: ferry-hive keys HIVE KEY" >&2; exit 2; }
+             cmd_keys "$@" ;;
+    backend) backend ;;
+    *) cat >&2 <<'USAGE'
+ferry-hive — read a Windows registry hive
+
+  ferry-hive get    HIVE KEY VALUE
+  ferry-hive values HIVE KEY
+  ferry-hive keys   HIVE KEY
+  ferry-hive backend
+USAGE
+       exit 2 ;;
+esac

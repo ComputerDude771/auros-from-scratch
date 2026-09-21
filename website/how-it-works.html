@@ -1,0 +1,441 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>How the AurOS install works</title>
+<meta name="description" content="The AurOS install explained step by step: what happens, what changes on your Windows PC, and how to go back.">
+<meta name="color-scheme" content="dark">
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2032%2032'%3E%3Crect%20width='32'%20height='32'%20rx='7'%20fill='%230B0E14'/%3E%3Cpath%20d='M16%205L25%2016L16%2027L7%2016Z'%20fill='%237DD3C0'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="assets/nocturne.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="site-head">
+  <div class="shell">
+    <a class="brand" href="index.html">
+      <span class="glyph" aria-hidden="true">&#9670;</span>
+      AurOS
+      <span class="ver">0.1.0 Nocturne</span>
+    </a>
+    <nav class="site-nav" aria-label="Main">
+      <a href="index.html">Home</a>
+      <a href="how-it-works.html" aria-current="page">How it works</a>
+      <a href="safety.html">Safety</a>
+      <a href="organizations.html">Organizations</a>
+      <a class="btn btn-primary" href="download.html">Download</a>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+
+  <section class="hero hero-sm">
+    <div class="aurora" aria-hidden="true"></div>
+    <div class="aurora-veil" aria-hidden="true"></div>
+    <div class="shell">
+      <p class="eyebrow">How it works</p>
+      <h1>One evening, two restarts, nothing you cannot undo.</h1>
+      <p class="lede">
+        You click through a wizard and then you wait. Below is every step of what
+        the wizard is doing while you wait, including the parts that are genuinely
+        risky &mdash; written for someone who has never heard the word
+        &ldquo;partition&rdquo; and does not need to.
+      </p>
+    </div>
+  </section>
+
+  <!-- ─────────────────── a partition, briefly ─────────────────── -->
+  <section>
+    <div class="shell">
+      <div class="note note-info">
+        <span class="note-title">One word you will need: partition</span>
+        <p>
+          Your hard drive is one physical thing, but the computer divides it into
+          labelled areas called partitions, the way a warehouse is divided into
+          bays. Windows lives in one of them. Installing AurOS means making that
+          bay a bit smaller and building a new bay in the space we free up. Your
+          Windows bay keeps everything that was in it.
+        </p>
+        <p class="small">
+          Shrinking a bay while the warehouse is running is the risky part. Almost
+          everything on this page exists to make that one step survivable.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ────────────────────────── the steps ─────────────────────── -->
+  <section class="alt">
+    <div class="shell">
+      <div class="sec-head">
+        <h2>Step by step</h2>
+        <p>
+          Until step 5, nothing on your disk has changed in a way that matters. You
+          can close the window, walk away, and the machine is exactly as it was.
+          That is a tested requirement, not an intention.
+        </p>
+      </div>
+
+      <ol class="steps">
+
+        <li>
+          <span class="phase">Phase 0 &middot; inspect</span>
+          <h3>We look at your PC and write nothing</h3>
+          <p>
+            The check reads your firmware mode, how your disks are laid out, your
+            drive&rsquo;s own error counters, whether Windows encrypted itself,
+            whether Fast Startup is on, whether you are on battery. It produces a
+            list: passed, worth telling you, and stop.
+          </p>
+          <p class="small">
+            Any single stop ends it here. There is no override checkbox anywhere in
+            the program, because the entire point of a hard stop is that a person in
+            a hurry cannot click past it.
+          </p>
+        </li>
+
+        <li>
+          <span class="phase">Phase 1 &middot; consent</span>
+          <h3>We tell you exactly what will change, and you agree to it</h3>
+          <p>
+            Not a licence agreement. A short, specific list: this drive, this much
+            space, these settings changed, this is how you undo it. If your drive is
+            encrypted by Windows, this is where you type part of your 48-digit
+            recovery key back to us &mdash; proof that you can actually get into your
+            own Windows afterwards.
+          </p>
+        </li>
+
+        <li>
+          <span class="phase">Phase 2 &middot; prepare</span>
+          <h3>We build the rescue kit before we build anything else</h3>
+          <p>
+            Your USB stick becomes a rescue disk. A small rescue area is created on
+            your hard drive in space that was already free. Both contain a copy of
+            your original disk layout, your original Windows boot files, and a
+            program whose only prominent button says
+            <strong>&ldquo;Put Windows back&rdquo;</strong>.
+          </p>
+          <p class="small">
+            This ordering is deliberate and it is the single most valuable decision
+            in the whole design: the thing that undoes the install is written before
+            the first byte of the install.
+          </p>
+        </li>
+
+        <li class="restart">
+          <h3>Restart one &mdash; into our rescue environment</h3>
+          <p>
+            The PC restarts into a small AurOS environment, branded the same as
+            everything else, that you did not have to install, choose from a boot
+            menu, or press F12 for. It looks like the next screen of the same
+            wizard.
+          </p>
+        </li>
+
+        <li id="staging">
+          <span class="phase">Phase 6 &middot; probe</span>
+          <h3>We test your actual hardware before committing to anything</h3>
+          <p>
+            Does your Wi-Fi card work? Does your screen brightness control respond?
+            Does sound come out? Does the machine suspend and wake? These are tested
+            <em>here</em>, on your real hardware, while Windows is still completely
+            intact and still the only operating system on the disk.
+          </p>
+          <p>
+            <strong>If Wi-Fi will not come up, we abort and put you back into
+            Windows.</strong> Discovering a dead Wi-Fi card after the install means a
+            person with no internet, no documentation and no way for us to send a
+            fix &mdash; on the one computer they own. This test is the most valuable
+            thing the second restart buys.
+          </p>
+        </li>
+
+        <li>
+          <span class="phase">Phase 3 &middot; shrink</span>
+          <h3>We make room &mdash; the one genuinely destructive step</h3>
+          <p>
+            Your Windows partition is shrunk from the end, with Windows not running.
+            Files are moved out of the space being reclaimed first, while the old
+            layout is still the one in force. Only when all the moving is finished
+            and verified does the new layout get written, as a single small write.
+          </p>
+          <p class="small">
+            We use the standard, long-established tool for resizing Windows
+            filesystems rather than writing our own. Writing your own resizer is how
+            a few unreadable files become an unmountable disk.
+          </p>
+        </li>
+
+        <li>
+          <span class="phase">Phase 4 &middot; write</span>
+          <h3>AurOS is written into the new space, then read back and checked</h3>
+          <p>
+            A prebuilt system image is copied into the new partition byte for byte,
+            then read back off the disk and compared against its fingerprint. If a
+            single byte differs, we stop and roll back rather than boot something we
+            are not sure about.
+          </p>
+        </li>
+
+        <li>
+          <span class="phase">Phase 5 &middot; handoff</span>
+          <h3>We add a boot entry &mdash; and we do not touch yours</h3>
+          <p>
+            Your PC keeps a small area holding the programs that start operating
+            systems. We add ours to it. We never reformat it, and if it is too full
+            we create our own rather than clear space in yours.
+          </p>
+          <p>
+            Then we ask the firmware to start AurOS <em>once</em>. Just once. If that
+            boot fails for any reason, the firmware falls back to Windows by itself,
+            with nothing for you to do. Your normal boot order is not changed at
+            this point at all.
+          </p>
+        </li>
+
+        <li class="restart">
+          <h3>Restart two &mdash; into your new desktop</h3>
+          <p>
+            The filesystem grows to fill its partition, your hardware is set up, and
+            the desktop starts.
+          </p>
+        </li>
+
+        <li>
+          <span class="phase">Phase 7&ndash;8 &middot; your files</span>
+          <h3>Your files, Wi-Fi and settings arrive</h3>
+          <p>
+            AurOS mounts your Windows partition <strong>read-only</strong> &mdash; it
+            can look but physically cannot write &mdash; and copies your documents,
+            pictures, music, video, downloads and desktop across. Your saved Wi-Fi
+            networks come over too, so you are online without typing anything. So do
+            your language, keyboard layout, time zone and wallpaper.
+          </p>
+          <p>
+            At the end you get a report titled
+            <strong>&ldquo;What we could not bring&rdquo;</strong>. It is not an
+            apology and it is not hidden in a log file; it is a screen, and it is a
+            feature. <a href="safety.html#cannot-migrate">What is usually on it</a>.
+          </p>
+        </li>
+
+        <li>
+          <span class="phase">Phase 8 &middot; commit</span>
+          <h3>You say whether it works</h3>
+          <p>
+            Only after you have used the desktop and told us it works does anything
+            become permanent: only then do we offer to make AurOS the default
+            startup choice. Say no and Windows stays the default, with AurOS one
+            menu entry away.
+          </p>
+        </li>
+
+      </ol>
+    </div>
+  </section>
+
+  <!-- ──────────────────── what we change ──────────────────────── -->
+  <section>
+    <div class="shell" id="changes">
+      <div class="sec-head">
+        <h2>What we change on your Windows installation</h2>
+        <p>
+          The complete list. Every one of these is disclosed before it happens, and
+          every one of them is reversible.
+        </p>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <caption>Changes made to the Windows side of your PC, and how each one goes back.</caption>
+          <thead>
+            <tr>
+              <th scope="col">What we change</th>
+              <th scope="col">Why</th>
+              <th scope="col">How it goes back</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th scope="row">The Windows partition gets smaller</th>
+              <td>To make room. Your files stay where they are; the empty space at the end is what we take.</td>
+              <td>The rescue tool restores the original layout. Windows&rsquo; own disk manager can also extend the partition back afterwards.</td>
+            </tr>
+            <tr>
+              <th scope="row">Fast Startup is switched off</th>
+              <td>It makes &ldquo;shut down&rdquo; into a hibernate. Resuming a stale saved session after the disk has changed destroys both systems.</td>
+              <td>Windows setting, switch it back on at any time. Shutdowns get a few seconds slower; nothing else changes.</td>
+            </tr>
+            <tr>
+              <th scope="row">Hibernation and the page file are disabled during the install</th>
+              <td>They are large unmovable files sitting exactly where we need to shrink.</td>
+              <td>Re-enabled after the install, or by you, with two Windows commands we print for you.</td>
+            </tr>
+            <tr>
+              <th scope="row">Shadow copies are deleted</th>
+              <td>Windows&rsquo; own restore points occupy the space being reclaimed and cannot be moved.</td>
+              <td>This one genuinely cannot be undone: old restore points are gone. Windows makes new ones. Disclosed before we do it.</td>
+            </tr>
+            <tr>
+              <th scope="row">BitLocker protection is suspended</th>
+              <td>An encrypted volume cannot be resized, and the layout change would otherwise make Windows demand a recovery key on next start.</td>
+              <td>Turn protection back on in Windows when you are done. Be aware: while suspended, the drive&rsquo;s contents are not protected at rest.</td>
+            </tr>
+            <tr>
+              <th scope="row">A boot entry is added</th>
+              <td>So the machine can start AurOS.</td>
+              <td>Removable from the rescue tool or from Windows. Your existing entries are backed up before we add ours.</td>
+            </tr>
+            <tr>
+              <th scope="row">Two new areas appear on the disk</th>
+              <td>AurOS itself, and the rescue area holding the &ldquo;Put Windows back&rdquo; button.</td>
+              <td>Deleting them and extending Windows back over the space is a supported, documented path.</td>
+            </tr>
+            <tr>
+              <th scope="row">Nothing inside your Windows files</th>
+              <td>&mdash;</td>
+              <td>We do not edit your registry, your documents, your programs or your accounts. The migration reads your files; it never writes to them.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- ───────────────────────── going back ─────────────────────── -->
+  <section class="alt">
+    <div class="shell" id="undo">
+      <div class="sec-head">
+        <h2>How to go back to Windows</h2>
+        <p class="lede">
+          Three ways, in order of how little has to be working for them to help.
+        </p>
+      </div>
+
+      <div class="grid grid-3">
+        <article class="card">
+          <h3>Just pick Windows</h3>
+          <p>
+            AurOS installed and you tried it and it is not for you. Restart, pick
+            Windows in the menu, carry on. It has been sitting there the whole time.
+            Delete the AurOS partitions later at your leisure.
+          </p>
+        </article>
+        <article class="card">
+          <h3>Use the rescue area</h3>
+          <p>
+            AurOS will not start, or something went wrong during the install. Your
+            boot menu has a rescue entry. Its main button restores your original
+            disk layout and Windows boot files and restarts. No USB stick, no second
+            computer, and no contact with us required.
+          </p>
+        </article>
+        <article class="card">
+          <h3>Use the rescue USB</h3>
+          <p>
+            The disk&rsquo;s layout itself is damaged and even the rescue area cannot
+            be found. This is what the mandatory USB stick is for. It carries the
+            same restore path, plus your original layout, from outside the disk.
+          </p>
+        </article>
+      </div>
+
+      <div class="note note-err" style="margin-top:1.6rem">
+        <span class="note-title">And the honest case: when going back does not work</span>
+        <p>
+          If the drive itself fails during the install, no rescue path helps, because
+          the thing that stores your data has stopped storing data. If the power is
+          cut in the one-second window where the new disk layout is being written,
+          the rescue USB is what you will need and it may still take a technically
+          confident person to drive it. If you have no backup in either case, the
+          data is gone.
+        </p>
+        <p>
+          That is the truthful shape of this product: a carefully engineered set of
+          escape hatches around a small number of moments that remain dangerous.
+          Anyone telling you a disk repartition is risk-free is selling something.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ───────────────────────── timing ─────────────────────────── -->
+  <section>
+    <div class="shell">
+      <div class="sec-head">
+        <h2>How long it takes</h2>
+        <p>
+          Wildly variable, and anyone quoting you a single number is guessing.
+          These are the ranges that matter.
+        </p>
+      </div>
+      <ul class="facts">
+        <li><span class="k">The read-only check</span><span class="v">Under a minute</span></li>
+        <li><span class="k">Disk check, if needed</span><span class="v">Minutes to several hours</span></li>
+        <li><span class="k">Download</span><span class="v">Your connection, a few GB</span></li>
+        <li><span class="k">Making room + writing</span><span class="v">15&ndash;60 minutes typically</span></li>
+        <li><span class="k">Bringing your files over</span><span class="v">Depends on how many</span></li>
+      </ul>
+      <p class="small">
+        The disk check is the one that surprises people. On an old spinning hard
+        drive, a full surface scan of a 1&nbsp;TB disk can run for hours, and
+        interrupting it is not safe. Start in the morning.
+      </p>
+      <p class="btn-row" style="margin-top:2rem">
+        <a class="btn btn-primary btn-lg" href="download.html">Go to the checklist</a>
+        <a class="btn btn-ghost btn-lg" href="safety.html">Read what can go wrong</a>
+      </p>
+    </div>
+  </section>
+
+</main>
+
+<footer class="site-foot">
+  <div class="shell">
+    <div class="foot-grid">
+      <div>
+        <a class="brand" href="index.html">
+          <span class="glyph" aria-hidden="true">&#9670;</span> AurOS
+        </a>
+        <p class="small" style="margin-top:.8rem">
+          A Linux desktop for old Windows PCs. Pre-release: the read-only
+          compatibility check builds and runs; the installer is still being
+          written and tested.
+        </p>
+      </div>
+      <nav aria-labelledby="foot-pages">
+        <h2 id="foot-pages">Pages</h2>
+        <ul>
+          <li><a href="index.html">Home</a></li>
+          <li><a href="how-it-works.html">How it works</a></li>
+          <li><a href="safety.html">Safety</a></li>
+          <li><a href="organizations.html">Organizations</a></li>
+          <li><a href="download.html">Download</a></li>
+        </ul>
+      </nav>
+      <nav aria-labelledby="foot-honest">
+        <h2 id="foot-honest">The honest bits</h2>
+        <ul>
+          <li><a href="safety.html#what-can-go-wrong">What can go wrong</a></li>
+          <li><a href="safety.html#refuse">What we refuse to do</a></li>
+          <li><a href="safety.html#cannot-migrate">What can&rsquo;t be migrated</a></li>
+          <li><a href="download.html#requirements">Hard requirements</a></li>
+          <li><a href="how-it-works.html#undo">How to go back to Windows</a></li>
+        </ul>
+      </nav>
+    </div>
+    <div class="foot-bottom">
+      <p>
+        No analytics, no cookies, no advertising, no external fonts. This page
+        loads one stylesheet and one small script from this server, and makes no
+        other network request. You can save it and read it offline.
+      </p>
+      <p>AurOS is MIT-licensed. &copy; 2026 AurOS contributors.</p>
+    </div>
+  </div>
+</footer>
+</body>
+</html>

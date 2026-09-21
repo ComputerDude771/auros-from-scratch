@@ -1,0 +1,261 @@
+#!/bin/sh
+# ═══════════════════════════════════════════════════════════════════
+#  ferry-wifi — bring the user's saved WiFi networks across.
+#
+#  First in the spec's import order (§8), and deliberately so: getting
+#  online is what makes every later re-sync — mail, browser accounts,
+#  OneDrive — possible at all. It is also the one high-value secret that
+#  is recoverable OFFLINE WITHOUT the user's Windows password, because
+#  the PSK is encrypted under the SYSTEM/machine DPAPI key, whose master
+#  key is protected by the DPAPI_SYSTEM LSA secret sitting in the
+#  SECURITY and SYSTEM hives on this very disk (spec §2, §3).
+#
+#  WHAT THIS FILE IMPLEMENTS FULLY, and is tested:
+#    - finding and parsing every Wlansvc profile XML;
+#    - SSID (including the hex form, for SSIDs with odd bytes);
+#    - auth/encryption -> NetworkManager key-mgmt;
+#    - open networks, WPA2-PSK, WPA3-SAE, hidden networks;
+#    - writing correct .nmconnection keyfiles, mode 0600 root:root,
+#      with a deterministic UUID so a re-run does not duplicate them;
+#    - classifying 802.1X/EAP as not-recoverable and reporting it;
+#    - idempotency and the no-overwrite rule.
+#
+#  WHAT THIS FILE DOES NOT DECRYPT ITSELF — and says so, out loud, in
+#  the report rather than writing a broken connection:
+#    - the DPAPI-protected PSK ciphertext. Turning that hex blob back
+#      into a passphrase needs the SYSTEM DPAPI master key unwrapped
+#      from the LSA DPAPI_SYSTEM secret. That is a self-contained crypto
+#      routine (what `secretsdump -system -security` does offline), and
+#      it is isolated behind ONE call-out below: $FERRY_DPAPI_HELPER, or
+#      the bundled `ferry-dpapi` if it exists. When no helper answers,
+#      the network is still created, marked to prompt the user for the
+#      password once, and recorded in the report. We never write a
+#      connection with a wrong or empty PSK and pretend it works.
+#
+#    ferry-wifi                 import into /etc/NetworkManager
+#    ferry-wifi --dry-run       parse and show, write nothing
+#    ferry-wifi --to DIR        write keyfiles somewhere else (testing)
+# ═══════════════════════════════════════════════════════════════════
+set -eu
+. "$(dirname "$0")/ferry-common.sh"
+
+NM_DIR="/etc/NetworkManager/system-connections"
+RELOAD=1
+
+while [ $# -gt 0 ]; do
+    common_opt "$@"
+    if [ "${_consumed:-0}" -gt 0 ]; then shift "$_consumed"; continue; fi
+    case $1 in
+        --to)       NM_DIR=${2:?--to needs a dir}; RELOAD=0; shift 2 ;;
+        --no-reload) RELOAD=0; shift ;;
+        -h|--help)  sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        *) die "unknown option '$1'" ;;
+    esac
+done
+
+[ -n "$FERRY_ROOT" ] || die "ferry-wifi needs a mounted Windows volume (--root)"
+stage_begin wifi
+require_clean_volume "$FERRY_ROOT" "$FERRY_DEV"
+
+WLAN=$(path_ci "$FERRY_ROOT" "ProgramData/Microsoft/Wlansvc/Profiles/Interfaces" 2>/dev/null || true)
+if [ -z "$WLAN" ]; then
+    say "no saved WiFi profiles on this PC"
+    note wifi info "WiFi" "no Wlansvc profiles were present on the Windows volume"
+    stage_done wifi
+    exit 0
+fi
+
+# One XML field, namespace-agnostic. The Wlansvc schema is fixed and
+# these tags do not nest inside same-named tags, so a tolerant extractor
+# beats dragging in an XML library that the base system does not have.
+xml_field() {
+    awk -v tag="$2" '
+    BEGIN { RS=">"; FS="<"; want="^[^ ]*" tag "[ >]?$"; hit=0 }
+    {
+        if (hit) { v = $1; gsub(/^[ \t\r\n]+|[ \t\r\n]+$/, "", v); print v; exit }
+        # $2 is the tag that just opened (text after the last "<")
+        t = $2
+        sub(/[ \t\r\n].*/, "", t); sub(/\/.*/, "", t)
+        # strip namespace prefix
+        sub(/^[^:]*:/, "", t)
+        if (t == tag) hit = 1
+    }' "$1"
+}
+# The value that sits between <sharedKey>...<keyMaterial>HERE</keyMaterial>.
+key_material() { xml_field "$1" keyMaterial; }
+
+hex_to_ascii() {
+    printf '%s' "$1" | awk '
+    { s=$0; out=""
+      for (i=1; i<=length(s); i+=2) {
+          h=substr(s,i,2); if (length(h)<2) break
+          out = out sprintf("%c", strtonum("0x" h))
+      }
+      printf "%s", out }'
+}
+
+# Is a keyMaterial value DPAPI ciphertext or the passphrase in the
+# clear? Cleartext when <protected> is false; ciphertext otherwise, and
+# a DPAPI blob always begins 01000000 D08C9DDF (the DPAPI provider GUID),
+# which we also check so a mislabelled profile does not fool us.
+is_dpapi() {
+    case "$1" in
+        01000000[dD]08[cC]9[dD][dD][fF]*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# ── The one isolated DPAPI call-out. Everything about the SYSTEM-DPAPI
+#    decryption lives behind this single function so it can be filled in
+#    (or swapped for SharpDPAPI-offline, impacket secretsdump, or a
+#    native helper) without touching any of the parsing or NM logic.
+#
+#    Contract: given the hex ciphertext on argv and the two hives in the
+#    environment, print the cleartext PSK on stdout and exit 0, or exit
+#    non-zero if it cannot. It is handed ONLY what it needs.
+dpapi_decrypt() {
+    _cipher=$1
+    _helper=${FERRY_DPAPI_HELPER:-}
+    [ -n "$_helper" ] || _helper=$(command -v ferry-dpapi 2>/dev/null || true)
+    [ -n "$_helper" ] || return 1
+    _sec=$(win_hive SECURITY || true)
+    _sys=$(win_hive SYSTEM || true)
+    [ -n "$_sec" ] && [ -n "$_sys" ] || return 1
+    FERRY_SECURITY_HIVE="$_sec" FERRY_SYSTEM_HIVE="$_sys" \
+        "$_helper" wifi-psk "$_cipher" 2>/dev/null || return 1
+}
+
+# auth/encryption -> NM key-mgmt. Returns the key-mgmt token, or empty
+# for "not something we can express as a PSK connection".
+nm_keymgmt() {
+    _auth=$(printf '%s' "$1" | tr 'A-Z' 'a-z')
+    case "$_auth" in
+        open)                 printf 'none' ;;
+        wpapsk|wpa2psk|wpa-psk) printf 'wpa-psk' ;;
+        wpa3sae|sae)          printf 'sae' ;;
+        wpa|wpa2|wpa3)        printf 'eap' ;;   # enterprise, no PSK
+        *)                    printf '' ;;
+    esac
+}
+
+emit_nmconnection() {
+    _ssid=$1 _keymgmt=$2 _psk=$3 _hidden=$4 _autoconnect=$5
+    _uuid=$(stable_uuid "wifi:$_ssid")
+    printf '[connection]\n'
+    printf 'id=%s\n' "$_ssid"
+    printf 'uuid=%s\n' "$_uuid"
+    printf 'type=wifi\n'
+    printf 'autoconnect=%s\n' "$_autoconnect"
+    printf '\n[wifi]\n'
+    printf 'mode=infrastructure\n'
+    printf 'ssid=%s\n' "$_ssid"
+    [ "$_hidden" = 1 ] && printf 'hidden=true\n'
+    if [ "$_keymgmt" != none ]; then
+        printf '\n[wifi-security]\n'
+        printf 'key-mgmt=%s\n' "$_keymgmt"
+        if [ -n "$_psk" ]; then printf 'psk=%s\n' "$_psk"; fi
+    fi
+    printf '\n[ipv4]\nmethod=auto\n'
+    printf '\n[ipv6]\naddr-gen-mode=default\nmethod=auto\n'
+}
+
+TOTAL=$(find "$WLAN" -name '*.xml' 2>/dev/null | wc -l | tr -d ' ')
+say "found $TOTAL saved WiFi profile(s)"
+[ "$FERRY_DRYRUN" = 1 ] || mkdir -p "$NM_DIR"
+
+_n=0 _ok=0 _prompt=0 _eap=0 _skip=0
+find "$WLAN" -name '*.xml' 2>/dev/null | sort | while read -r _xml; do
+    _n=$((_n+1))
+    _ssid=$(xml_field "$_xml" name)
+    # The <SSID><name> is authoritative; the profile filename is a GUID.
+    _ssid=$(printf '%s' "$_ssid" | head -1)
+    if [ -z "$_ssid" ]; then
+        _hex=$(xml_field "$_xml" hex | head -1)
+        [ -n "$_hex" ] && _ssid=$(hex_to_ascii "$_hex")
+    fi
+    [ -n "$_ssid" ] || { note wifi skipped "$(basename "$_xml")" "profile has no SSID"; continue; }
+
+    _auth=$(xml_field "$_xml" authentication | head -1)
+    _keymgmt=$(nm_keymgmt "$_auth")
+    _nb=$(xml_field "$_xml" nonBroadcast | head -1)
+    _hidden=0; [ "$_nb" = true ] && _hidden=1
+
+    progress wifi "$_n" "$TOTAL" "$_ssid"
+
+    if [ -z "$_keymgmt" ]; then
+        note wifi skipped "$_ssid" "unsupported authentication '$_auth'"
+        continue
+    fi
+    if [ "$_keymgmt" = eap ]; then
+        # 802.1X/EAP creds are per-user DPAPI and not recoverable; the
+        # spec says the user re-enters them. Record it, do not fake it.
+        note wifi manual "$_ssid" \
+            "enterprise (802.1X/EAP) network — credentials are per-user encrypted and cannot be recovered offline; reconnect and sign in once"
+        _eap=$((_eap+1))
+        continue
+    fi
+
+    _psk="" _need_prompt=0
+    if [ "$_keymgmt" != none ]; then
+        _km=$(key_material "$_xml" | head -1)
+        if [ -z "$_km" ]; then
+            _need_prompt=1
+        elif is_dpapi "$_km"; then
+            if _psk=$(dpapi_decrypt "$_km"); then :; else
+                _psk=""; _need_prompt=1
+            fi
+        else
+            _psk=$_km          # <protected>false</protected>: cleartext
+        fi
+    fi
+
+    _dest="$NM_DIR/$_ssid.nmconnection"
+    _content=$(emit_nmconnection "$_ssid" "$_keymgmt" "$_psk" "$_hidden" true)
+
+    if [ "$FERRY_DRYRUN" = 1 ]; then
+        say "would write $_dest ($_keymgmt${_need_prompt:+, needs password})"
+        [ "$_need_prompt" = 1 ] && { note wifi manual "$_ssid" "PSK is DPAPI-encrypted; no DPAPI helper available, so the network was created without a saved password — enter it once on first connect"; _prompt=$((_prompt+1)); }
+        _ok=$((_ok+1))
+        continue
+    fi
+
+    if [ -e "$_dest" ]; then
+        # Idempotent: if what is there is already ours, leave it.
+        if grep -q "uuid=$(stable_uuid "wifi:$_ssid")" "$_dest" 2>/dev/null; then
+            say "$_ssid already imported"
+            record already 0 "$_xml" "$_dest"
+            continue
+        fi
+        _dest="$NM_DIR/$_ssid (from Windows).nmconnection"
+        note wifi partial "$_ssid" "a connection with this name already existed; imported alongside it"
+    fi
+
+    umask 077
+    printf '%s\n' "$_content" > "$_dest.ferrypart" || { note wifi skipped "$_ssid" "could not write keyfile"; continue; }
+    mv -f "$_dest.ferrypart" "$_dest"
+    chown root:root "$_dest" 2>/dev/null || true
+    chmod 0600 "$_dest"
+    record copy "$(file_size "$_dest")" "$_xml" "$_dest"
+    _ok=$((_ok+1))
+
+    if [ "$_need_prompt" = 1 ]; then
+        note wifi manual "$_ssid" \
+            "the saved password is DPAPI-encrypted and no offline DPAPI helper was available; the network was added without a password — you will be asked for it once when you first connect"
+        _prompt=$((_prompt+1))
+    fi
+    say "imported $_ssid ($_keymgmt)"
+done
+
+# The subshell above (piped `while`) cannot export counters back, so the
+# summary is recomputed from the manifest — which is the source of truth
+# anyway, and one the report also reads.
+_written=$(awk -F'\t' -v s=wifi '$2==s && $3=="copy"' "$FERRY_STATE/manifest.tsv" 2>/dev/null | wc -l | tr -d ' ')
+say "wifi: $_written connection(s) written to $NM_DIR"
+
+if [ "$RELOAD" = 1 ] && [ "$FERRY_DRYRUN" = 0 ] && command -v nmcli >/dev/null 2>&1; then
+    nmcli connection reload >/dev/null 2>&1 && say "NetworkManager reloaded" || \
+        warn "could not reload NetworkManager; connections apply on next start"
+fi
+
+stage_done wifi "$_written connections"
+exit 0

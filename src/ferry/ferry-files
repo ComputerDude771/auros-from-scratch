@@ -1,0 +1,248 @@
+#!/bin/sh
+# ═══════════════════════════════════════════════════════════════════
+#  ferry-files — bring the user's documents across, and never lie about
+#  what came.
+#
+#  This is where a migration is trusted or not. The failure mode we
+#  refuse to have is the invisible one: a filename appears in the new
+#  Documents folder and the user believes the file is there, when in
+#  fact only a OneDrive placeholder was copied (a stub, or an I/O error
+#  turned into a zero-byte file). The spec calls this "the #1 invisible
+#  data-loss path", and everything below is built around not taking it.
+#
+#  Two rules, both absolute:
+#    1. NEVER assume \Users\<name>\Documents. The location of every
+#       known folder is resolved from the User Shell Folders registry
+#       key, because OneDrive's "back up your folders" silently moves
+#       Desktop/Documents/Pictures into the sync root. (Resolution lives
+#       in ferry-common.sh:resolve_known_folder and is shared with
+#       detect so the two never disagree.)
+#    2. NEVER silently copy a stub, NEVER silently skip one. Every file
+#       is classified by ferry-winattr BEFORE it is copied. Hydrated
+#       files are copied; placeholders, reparse points, encrypted files
+#       and anything ambiguous are LISTED in the report, by name, with
+#       what they are — so the user can hydrate them in OneDrive and
+#       run Ferry again, or knows exactly what did not come.
+#
+#  Idempotent and resumable: safe_copy writes through a temp file and
+#  never overwrites; a re-run copies only what is missing. Progress is
+#  emitted per file so the UI has a live bar.
+#
+#    ferry-files                 import into the XDG dirs
+#    ferry-files --only Pictures import one folder
+#    ferry-files --dry-run       classify and report, copy nothing
+#    ferry-files --include-onedrive   also traverse into the sync root
+# ═══════════════════════════════════════════════════════════════════
+set -eu
+. "$(dirname "$0")/ferry-common.sh"
+
+ONLY=""
+INCLUDE_ONEDRIVE=0
+
+while [ $# -gt 0 ]; do
+    common_opt "$@"
+    if [ "${_consumed:-0}" -gt 0 ]; then shift "$_consumed"; continue; fi
+    case $1 in
+        --only) ONLY=${2:?--only needs a folder label}; shift 2 ;;
+        --include-onedrive) INCLUDE_ONEDRIVE=1; shift ;;
+        -h|--help) sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        *) die "unknown option '$1'" ;;
+    esac
+done
+
+[ -n "$FERRY_ROOT" ] || die "ferry-files needs a mounted Windows volume (--root)"
+stage_begin files
+require_clean_volume "$FERRY_ROOT" "$FERRY_DEV"
+resolve_target
+select_profile || die "could not identify which Windows profile to import (pass --user NAME)"
+say "importing files for '$_WIN_USERNAME' -> $FERRY_HOME"
+
+# ── Names Windows scatters through user folders that are never the
+#    user's data. Copying them is not harmful, but it clutters the new
+#    home and makes the "what came across" count untrustworthy.
+is_junk() {
+    case "$(basename "$1")" in
+        desktop.ini|Thumbs.db|ehthumbs.db|.DS_Store|Desktop.ini) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# ── The classifier, run over a whole folder in one process. We feed it
+#    NUL-separated paths so a newline in a filename cannot split one,
+#    and read back its TSV: CLASS attrib tag size blocks flags PATH.
+#    This is the ONLY thing allowed to decide a file holds real bytes.
+classify_folder() {
+    _dir=$1
+    find "$_dir" -type f -print0 2>/dev/null | ferry-winattr -0
+}
+
+import_folder() {
+    _label=$1 _srcdir=$2 _destdir=$3
+
+    _copied=0 _already=0 _placeholder=0 _reparse=0 _encrypted=0
+    _suspect=0 _unknown=0 _junk=0 _failed=0 _bytes=0
+    _total=$(find "$_srcdir" -type f 2>/dev/null | wc -l | tr -d ' ')
+    _seen=0
+    say "$_label: $_total item(s) under $(printf '%s' "$_srcdir" | sed "s|$FERRY_ROOT||")"
+
+    # A temp ledger for this folder, so the (subshell) loop can hand its
+    # counts back — a piped while cannot mutate the parent's variables.
+    _tally="$FERRY_STATE/plan/files.$_label.tally"
+    : > "$_tally"
+
+    classify_folder "$_srcdir" | while IFS='	' read -r _class _attr _tag _sz _blk _flags _path; do
+        [ -n "$_path" ] || continue
+        _seen=$((_seen+1))
+        progress files "$_seen" "$_total" "$_label: $(basename "$_path")"
+
+        if is_junk "$_path"; then echo junk >> "$_tally"; continue; fi
+
+        _rel=${_path#"$_srcdir"/}
+        _dest="$_destdir/$_rel"
+
+        case "$_class" in
+            hydrated)
+                _act=$(safe_copy "$_path" "$_dest")
+                case "$_act" in
+                    copied)    echo "copied $_sz" >> "$_tally" ;;
+                    already)   echo already >> "$_tally" ;;
+                    collision) echo "copied $_sz" >> "$_tally" ;;
+                    *)         echo failed >> "$_tally" ;;
+                esac ;;
+            placeholder)
+                # The whole point. A cloud-only file: name known, bytes
+                # absent. Reported by name so the user can hydrate it.
+                note files skipped "$_label/$_rel" \
+                    "OneDrive online-only placeholder ($(printf '%s' "$_sz" | awk '{printf "%.0f", $1}') bytes on the server, nothing on disk) — right-click it in OneDrive and choose 'Always keep on this device', then re-run"
+                echo placeholder >> "$_tally" ;;
+            encrypted)
+                note files blocked "$_label/$_rel" \
+                    "EFS-encrypted; the file's contents are unreadable without the user's Windows encryption certificate and cannot be migrated offline"
+                echo encrypted >> "$_tally" ;;
+            reparse)
+                note files skipped "$_label/$_rel" \
+                    "NTFS reparse point (junction/symlink, tag $_tag) — not a real file; skipped rather than followed"
+                echo reparse >> "$_tally" ;;
+            suspect)
+                # size but no blocks, and not a known-good compressed
+                # file. Might be a placeholder our attribute read missed,
+                # might be a genuine sparse file. We do not guess: copy
+                # what is there AND flag it so the user can check.
+                _act=$(safe_copy "$_path" "$_dest")
+                note files partial "$_label/$_rel" \
+                    "claims $_sz bytes but occupies no disk blocks — copied what was present, but verify this file opened correctly (it may have been a cloud placeholder)"
+                echo "suspect $_sz" >> "$_tally" ;;
+            unknown|dir|link|special|missing)
+                note files skipped "$_label/$_rel" \
+                    "could not classify (state '$_class'); not copied, so nothing was silently assumed about it"
+                echo unknown >> "$_tally" ;;
+            *)
+                echo unknown >> "$_tally" ;;
+        esac
+    done
+
+    # Fold the tally back into the report and the return summary.
+    # grep -c always PRINTS a count (0 when nothing matches) and exits 1
+    # on no match; a `|| echo 0` would print a second 0 and poison the
+    # arithmetic below. So take grep's number and only default an empty.
+    # grep -c prints a count and exits 1 when nothing matched. Under
+    # set -e a failing assignment aborts the (subshell) loop, and a
+    # `|| echo 0` would print a second 0 — so use `|| _x=0`, which keeps
+    # the matched count and cleanly zeroes the no-match case.
+    _copied=$(grep -c '^copied' "$_tally" 2>/dev/null) || _copied=0
+    _already=$(grep -c '^already' "$_tally" 2>/dev/null) || _already=0
+    _placeholder=$(grep -c '^placeholder' "$_tally" 2>/dev/null) || _placeholder=0
+    _suspect=$(grep -c '^suspect' "$_tally" 2>/dev/null) || _suspect=0
+    _reparse=$(grep -c '^reparse' "$_tally" 2>/dev/null) || _reparse=0
+    _encrypted=$(grep -c '^encrypted' "$_tally" 2>/dev/null) || _encrypted=0
+    _bytes=$(awk '/^copied|^suspect/ { s += $2 } END { print s+0 }' "$_tally")
+    rm -f "$_tally"
+
+    say "$_label: $_copied copied, $_already already present, $_placeholder cloud-only, $_suspect to verify, $((_reparse+_encrypted)) skipped"
+    note files info "$_label" \
+        "$_copied copied, $_already already present, $_placeholder OneDrive placeholders, $_suspect to verify, $_reparse reparse points, $_encrypted encrypted"
+}
+
+# Ensure the XDG dirs exist, and a user-dirs.dirs mapping too, so the
+# desktop's file manager shows the folders we just filled.
+[ "$FERRY_DRYRUN" = 1 ] || mkdir -p "$FERRY_HOME/.config"
+
+_imported_any=0
+printf '%s\n' "$FERRY_FOLDERS" | while IFS='|' read -r _label _val _xdg _def; do
+    [ -n "$_label" ] || continue
+    [ -z "$ONLY" ] || [ "$ONLY" = "$_label" ] || continue
+
+    _r=$(resolve_known_folder "$_val" "$_def")
+    _status=$(printf '%s' "$_r" | cut -f1)
+    _src=$(printf '%s' "$_r" | cut -f2)
+    _how=$(printf '%s' "$_r" | cut -f3)
+    _raw=$(printf '%s' "$_r" | cut -f4)
+
+    case "$_status" in
+        ok) : ;;
+        off-volume)
+            note files skipped "$_label" \
+                "redirected to '$_raw', which is on a drive that is not part of this migration — copy it across by hand"
+            continue ;;
+        unc)
+            note files skipped "$_label" \
+                "redirected to a network location '$_raw' — reconnect the share and copy it across"
+            continue ;;
+        unresolved)
+            note files skipped "$_label" \
+                "the registry points it at '$_raw', which Ferry could not turn into a real path — reported rather than guessed"
+            continue ;;
+        missing)
+            note files info "$_label" \
+                "the folder the registry names ('$_raw') does not exist on the volume; nothing to import"
+            continue ;;
+    esac
+
+    _dest=$(xdg_dir "$_xdg" "$_def")
+    [ "$FERRY_DRYRUN" = 1 ] || mkdir -p "$_dest"
+    import_folder "$_label" "$_src" "$_dest"
+    own "$_dest"
+    _imported_any=1
+done
+
+# ── OneDrive is opt-in (spec §8, "ask first"), because it can be huge
+#    and much of it is placeholders. When asked, traverse the sync root
+#    and classify everything — the placeholder reporting is identical,
+#    which is the whole reason placeholder handling lives in one place.
+if [ "$INCLUDE_ONEDRIVE" = 1 ] && [ -n "$_WIN_ONEDRIVE" ]; then
+    _odrel=$(win_to_rel "$_WIN_ONEDRIVE")
+    _od=$(path_ci "$FERRY_ROOT" "$_odrel" 2>/dev/null || true)
+    if [ -n "$_od" ] && [ -d "$_od" ]; then
+        _dest="$FERRY_HOME/OneDrive"
+        [ "$FERRY_DRYRUN" = 1 ] || mkdir -p "$_dest"
+        import_folder "OneDrive" "$_od" "$_dest"
+        own "$_dest"
+    fi
+elif [ -n "$_WIN_ONEDRIVE" ]; then
+    _od=$(path_ci "$FERRY_ROOT" "$(win_to_rel "$_WIN_ONEDRIVE")" 2>/dev/null || true)
+    if [ -n "$_od" ]; then
+        _ph=$(find "$_od" -type f -print0 2>/dev/null | ferry-winattr -0 | grep -c '^placeholder' || echo 0)
+        note files manual "OneDrive" \
+            "a OneDrive folder is present with $_ph online-only file(s); re-run with --include-onedrive to import the downloaded ones, or sign in to OneDrive on Linux to get everything"
+    fi
+fi
+
+# Write user-dirs.dirs so the desktop honours the same folders.
+if [ "$FERRY_DRYRUN" = 0 ]; then
+    _ud="$FERRY_HOME/.config/user-dirs.dirs"
+    if [ ! -f "$_ud" ]; then
+        {
+            echo '# Written by Ferry. XDG user directories.'
+            printf '%s\n' "$FERRY_FOLDERS" | while IFS='|' read -r _l _v _x _d; do
+                [ -n "$_l" ] || continue
+                printf '%s="$HOME/%s"\n' "$_x" "$_d"
+            done
+        } > "$_ud"
+        own "$_ud"
+    fi
+fi
+
+_copied=$(awk -F'\t' -v s=files '$2==s && ($3=="copy"||$3=="collision")' "$FERRY_STATE/manifest.tsv" 2>/dev/null | wc -l | tr -d ' ')
+say "files: $_copied file(s) imported for $_WIN_USERNAME"
+stage_done files "$_copied files"
+exit 0

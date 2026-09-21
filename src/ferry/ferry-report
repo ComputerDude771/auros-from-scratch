@@ -1,0 +1,179 @@
+#!/bin/sh
+# ═══════════════════════════════════════════════════════════════════
+#  ferry-report — the "what we could NOT migrate" report.
+#
+#  The spec is emphatic (§7, §8): this is a FEATURE, not an apology.
+#  Every honest limitation stated here is a support case that never
+#  happens and a moment of trust that does. The one thing this report
+#  must never do is imply everything came across when it did not — so
+#  it reads from the ledger that every stage wrote to as it worked
+#  ($FERRY_STATE/report.d/*.tsv), never from a fresh guess, and it
+#  prints the caveats before the wins.
+#
+#  It also states, unprompted, the categories the research says are
+#  simply not recoverable offline (Chromium/Credential-Manager secrets
+#  without the old password, EFS files, DRM, drivers, …), whether or not
+#  a stage happened to hit one — because "we didn't try" and "it can't
+#  be done" are different sentences and the user deserves the true one.
+#
+#    ferry-report              human-readable
+#    ferry-report --json       machine-readable, for the welcome UI
+#    ferry-report --brief      just the headline counts
+# ═══════════════════════════════════════════════════════════════════
+set -eu
+. "$(dirname "$0")/ferry-common.sh"
+
+MODE=human
+while [ $# -gt 0 ]; do
+    common_opt "$@"
+    if [ "${_consumed:-0}" -gt 0 ]; then shift "$_consumed"; continue; fi
+    case $1 in
+        --brief) MODE=brief; shift ;;
+        -h|--help) sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        *) die "unknown option '$1'" ;;
+    esac
+done
+# common_opt already ate --json (setting FERRY_JSON); honour it here so
+# `ferry report --json` and `ferry-report --json` mean the same thing.
+[ "${FERRY_JSON:-0}" = 1 ] && MODE=json
+ferry_state_init
+
+LEDGER="$FERRY_STATE/report.d"
+MANIFEST="$FERRY_STATE/manifest.tsv"
+
+# All ledger rows, oldest stage first in the order the user experienced.
+all_notes() {
+    for _s in wifi settings files firefox chromium mail apps; do
+        [ -f "$LEDGER/$_s.tsv" ] && cat "$LEDGER/$_s.tsv"
+    done
+    # Any stage we did not name explicitly, so nothing is ever dropped.
+    for _f in "$LEDGER"/*.tsv; do
+        [ -f "$_f" ] || continue
+        case "$(basename "$_f" .tsv)" in
+            wifi|settings|files|firefox|chromium|mail|apps) ;;
+            *) cat "$_f" ;;
+        esac
+    done
+}
+
+count_notes() { all_notes | awk -F'\t' -v s="$1" '$2==s' | wc -l | tr -d ' '; }
+count_copied() {
+    awk -F'\t' '$3=="copy"||$3=="collision"' "$MANIFEST" 2>/dev/null | wc -l | tr -d ' '
+}
+count_bytes() {
+    awk -F'\t' '$3=="copy"||$3=="collision" { b+=$4 } END { print b+0 }' "$MANIFEST" 2>/dev/null
+}
+human_bytes() {
+    awk -v b="${1:-0}" 'BEGIN { s="B KB MB GB TB"; n=split(s,u," "); i=1;
+        while (b>=1024 && i<n) { b/=1024; i++ } printf "%.1f %s", b, u[i] }'
+}
+
+# The always-true limitations. These are printed even when no stage hit
+# them, because the honesty is the point: the user should not have to
+# discover next week that Chrome passwords were never coming.
+CANNOT='Chromium (Chrome/Edge/Brave) saved passwords and cookies|need your old Windows sign-in password to decrypt; skippable, and re-enterable from the browser once you sign back in
+Windows Credential Manager entries, RDP and app tokens|encrypted to your Windows login and unrecoverable offline
+OneDrive online-only files|live on the server, not the disk; hydrate them in OneDrive (or sign in on Linux) and they come across
+EFS-encrypted files|need your Windows encryption certificate to read
+Files on a locked BitLocker volume|unreadable until unlocked in Windows
+DRM-protected media (Kindle, some iTunes/Audible)|licensed to the old machine
+Installed Windows programs themselves|are Windows binaries; the report lists Linux equivalents to reinstall
+Print and device drivers|are hardware- and OS-specific; Linux supplies its own
+Windows Hello PIN, fingerprint and face|are sealed to this PC'\''s TPM
+Outlook .ost caches and the Windows Mail store|are server copies; re-add the account and it re-syncs'
+
+sev_label() {
+    case "$1" in
+        blocked) printf 'could not migrate' ;;
+        partial) printf 'migrated with a caveat' ;;
+        skipped) printf 'not migrated' ;;
+        manual)  printf 'needs a manual step' ;;
+        info)    printf 'note' ;;
+        *)       printf '%s' "$1" ;;
+    esac
+}
+
+emit_human() {
+    _copied=$(count_copied); _bytes=$(count_bytes)
+    printf '\n  %s━━ Ferry migration report ━━%s\n\n' "$C_OK" "$C_RST"
+    printf '  %s%s file(s), %s%s brought across.\n\n' \
+        "$C_OK" "$_copied" "$(human_bytes "$_bytes")" "$C_RST"
+
+    # The wins, briefly (from the info rows each stage leaves).
+    printf '  %sWhat came across%s\n' "$C_OK" "$C_RST"
+    all_notes | awk -F'\t' '$2=="info"' | while IFS='	' read -r _c _s _i _d; do
+        printf '    %s%s%s  %s\n' "$C_DIM" "•" "$C_RST" "$_i — $_d"
+    done
+    [ "$(all_notes | awk -F'\t' '$2=="info"' | wc -l)" -eq 0 ] && \
+        printf '    %s(nothing recorded yet — run the import stages first)%s\n' "$C_DIM" "$C_RST"
+    printf '\n'
+
+    # The caveats, grouped by how much they matter — this is the report.
+    for _sev in blocked partial manual skipped; do
+        _rows=$(all_notes | awk -F'\t' -v s="$_sev" '$2==s')
+        [ -n "$_rows" ] || continue
+        _clr=$C_WARN
+        [ "$_sev" = blocked ] && _clr=$C_ERR
+        printf '  %s%s%s\n' "$_clr" "$(sev_label "$_sev" | tr a-z A-Z)" "$C_RST"
+        printf '%s\n' "$_rows" | while IFS='	' read -r _c _s _i _d; do
+            printf '    %s%s%s  %s\n' "$_clr" "‣" "$C_RST" "$_i"
+            printf '        %s%s%s\n' "$C_DIM" "$_d" "$C_RST"
+        done
+        printf '\n'
+    done
+
+    # The unconditional truths.
+    printf '  %sWhat cannot be migrated from an offline disk%s\n' "$C_DIM" "$C_RST"
+    printf '  %s(true for every migration, not just yours)%s\n' "$C_DIM" "$C_RST"
+    printf '%s\n' "$CANNOT" | while IFS='|' read -r _what _why; do
+        [ -n "$_what" ] || continue
+        printf '    %s•%s %s\n' "$C_DIM" "$C_RST" "$_what"
+        printf '        %s%s%s\n' "$C_DIM" "$_why" "$C_RST"
+    done
+    printf '\n  %sYour Windows partition has not been changed and still boots.%s\n\n' \
+        "$C_DIM" "$C_RST"
+}
+
+emit_brief() {
+    printf 'copied=%s bytes=%s blocked=%s partial=%s manual=%s skipped=%s\n' \
+        "$(count_copied)" "$(count_bytes)" \
+        "$(count_notes blocked)" "$(count_notes partial)" \
+        "$(count_notes manual)" "$(count_notes skipped)"
+}
+
+emit_json() {
+    printf '{\n'
+    printf '  "ferry": {"version": "%s", "tool": "ferry-report", "generated": "%s"},\n' \
+        "$FERRY_VERSION" "$(now)"
+    printf '  "summary": {"files_copied": %s, "bytes_copied": %s, "blocked": %s, "partial": %s, "manual": %s, "skipped": %s},\n' \
+        "$(count_copied)" "$(count_bytes)" "$(count_notes blocked)" \
+        "$(count_notes partial)" "$(count_notes manual)" "$(count_notes skipped)"
+    printf '  "items": [\n'
+    _first=1
+    all_notes | while IFS='	' read -r _c _s _i _d; do
+        [ -n "$_c" ] || continue
+        [ "$_first" = 1 ] || printf ',\n'
+        _first=0
+        printf '    {"category": "%s", "severity": "%s", "item": "%s", "detail": "%s"}' \
+            "$(jstr "$_c")" "$(jstr "$_s")" "$(jstr "$_i")" "$(jstr "$_d")"
+    done
+    printf '\n  ],\n'
+    printf '  "cannot_migrate": [\n'
+    _first=1
+    printf '%s\n' "$CANNOT" | while IFS='|' read -r _what _why; do
+        [ -n "$_what" ] || continue
+        [ "$_first" = 1 ] || printf ',\n'
+        _first=0
+        printf '    {"what": "%s", "why": "%s"}' "$(jstr "$_what")" "$(jstr "$_why")"
+    done
+    printf '\n  ],\n'
+    printf '  "windows_partition": "unchanged, still bootable"\n'
+    printf '}\n'
+}
+
+case "$MODE" in
+    human) emit_human ;;
+    brief) emit_brief ;;
+    json)  emit_json ;;
+esac
+exit 0
