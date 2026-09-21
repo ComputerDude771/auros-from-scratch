@@ -12,3 +12,6 @@
 
 # Compiled helpers — rebuilt by the Makefile / forge in-chroot.
 /src/ferry/build/
+
+# Agent worktrees and session scratch.
+/.claude/
