@@ -912,19 +912,13 @@ static void install_tick(void)
 #define OPT_MAX 10
 static wchar_t g_langs[OPT_MAX][96]; static int g_n_langs;
 static wchar_t g_kbds [OPT_MAX][96]; static int g_n_kbds;
-static wchar_t g_tzs  [OPT_MAX][128]; static int g_n_tzs;
+static wchar_t g_tzs  [OPT_MAX][96];  static int g_n_tzs;
 
 static void opt_push(wchar_t (*list)[96], int *n, const wchar_t *s)
 {
     if (!s || !*s || *n >= OPT_MAX) return;
     for (int i = 0; i < *n; i++) if (!_wcsicmp(list[i], s)) return;
     wcsncpy(list[*n], s, 95); list[*n][95] = 0; (*n)++;
-}
-static void opt_push_tz(const wchar_t *s)
-{
-    if (!s || !*s || g_n_tzs >= OPT_MAX) return;
-    for (int i = 0; i < g_n_tzs; i++) if (!_wcsicmp(g_tzs[i], s)) return;
-    wcsncpy(g_tzs[g_n_tzs], s, 127); g_tzs[g_n_tzs][127] = 0; g_n_tzs++;
 }
 
 static void detect_defaults(void)
@@ -974,16 +968,16 @@ static void detect_defaults(void)
     opt_push(g_kbds, &g_n_kbds, L"German (QWERTZ)");
     opt_push(g_kbds, &g_n_kbds, L"Portuguese (Brazil)");
 
-    opt_push_tz(g_det_tz);
-    opt_push_tz(L"GMT Standard Time");
-    opt_push_tz(L"Central European Time");
-    opt_push_tz(L"Eastern Time (US & Canada)");
-    opt_push_tz(L"Central Time (US & Canada)");
-    opt_push_tz(L"Pacific Time (US & Canada)");
+    opt_push(g_tzs, &g_n_tzs, g_det_tz);
+    opt_push(g_tzs, &g_n_tzs, L"GMT Standard Time");
+    opt_push(g_tzs, &g_n_tzs, L"Central European Time");
+    opt_push(g_tzs, &g_n_tzs, L"Eastern Time (US & Canada)");
+    opt_push(g_tzs, &g_n_tzs, L"Central Time (US & Canada)");
+    opt_push(g_tzs, &g_n_tzs, L"Pacific Time (US & Canada)");
 
     if (!g_n_langs) opt_push(g_langs, &g_n_langs, L"English (United States)");
     if (!g_n_kbds)  opt_push(g_kbds,  &g_n_kbds,  L"US");
-    if (!g_n_tzs)   opt_push_tz(L"GMT Standard Time");
+    if (!g_n_tzs)   opt_push(g_tzs, &g_n_tzs, L"GMT Standard Time");
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -1662,7 +1656,7 @@ static int page_personalize(int x, int y, int w)
     y += chip_row(ID_KBD, g_kbds, g_n_kbds, g_sel_kbd, x, y, narrow) + S(22);
 
     y += section_head(L"TIME ZONE", C_SUBTLE, x, y, narrow);
-    y += chip_row(ID_TZ, (wchar_t (*)[96])g_tzs, g_n_tzs, g_sel_tz, x, y, narrow) + S(22);
+    y += chip_row(ID_TZ, g_tzs, g_n_tzs, g_sel_tz, x, y, narrow) + S(22);
 
     y += section_head(L"LOOK", C_SUBTLE, x, y, narrow);
     {
@@ -1679,4 +1673,330 @@ static int page_personalize(int x, int y, int w)
     y += text_draw(THEMES[g_sel_theme].desc, g_f_small, C_SUBTLE, x, y, narrow,
                    DT_WORDBREAK);
     return y - y0;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+ *  8 · READY
+ * ═══════════════════════════════════════════════════════════════════ */
+static const pf_disk *sys_disk(void)
+{
+    if (g_report.system_disk >= 0 && g_report.system_disk < g_report.n_disks)
+        return &g_report.disks[g_report.system_disk];
+    return NULL;
+}
+static const pf_volume *sys_volume(void)
+{
+    for (int i = 0; i < g_report.n_volumes; i++)
+        if (g_report.volumes[i].mount[0] == 'C') return &g_report.volumes[i];
+    return g_report.n_volumes ? &g_report.volumes[0] : NULL;
+}
+
+static int sum_row(const wchar_t *label, const wchar_t *value, uint32_t vc,
+                   int x, int y, int w)
+{
+    int lw = S(170);
+    int vh = text_draw(value, g_f_body, vc, x + lw, y, w - lw, DT_WORDBREAK);
+    text_draw(label, g_f_small, C_SUBTLE, x, y + S(2), lw - S(14), DT_WORDBREAK);
+    return vh + S(16);
+}
+
+static int page_ready(int x, int y, int w)
+{
+    int y0 = y;
+    int narrow = w > S(720) ? S(720) : w;
+    wchar_t buf[256], sz[32];
+
+    y += text_draw(L"Ready when you are", g_f_title, C_FG_HI, x, y, w,
+                   DT_WORDBREAK) + S(12);
+    y += text_draw(L"This is everything that is about to happen. Nothing has been "
+                   L"changed on this PC yet.",
+                   g_f_body, C_SUBTLE, x, y, narrow, DT_WORDBREAK) + S(26);
+
+    const pf_disk *d = sys_disk();
+    if (d) {
+        wchar_t model[160];
+        a2w(d->model[0] ? d->model : "(unnamed drive)", model, 160);
+        human_size(d->size_bytes, sz, 32);
+        _snwprintf(buf, 255, L"%s — %s", model, sz);
+    } else {
+        wcscpy(buf, L"the drive Windows starts from");
+    }
+    buf[255] = 0;
+    y += sum_row(L"The drive we will use", buf, C_FG_HI, x, y, narrow);
+
+    y += sum_row(L"What we will do",
+                 g_choice == 0
+                   ? L"Install AurOS next to Windows, and let you choose at start-up."
+                   : L"Erase this PC completely and install only AurOS.",
+                 g_choice == 0 ? C_FG : C_ERR, x, y, narrow);
+
+    const pf_volume *v = sys_volume();
+    if (g_choice == 0 && v) {
+        human_size(v->free_bytes, sz, 32);
+        _snwprintf(buf, 255, L"About 28 GB, taken from the %s of empty space on "
+                             L"drive %hs. Your Windows files stay where they are.",
+                   sz, v->mount);
+        buf[255] = 0;
+        y += sum_row(L"Room for AurOS", buf, C_FG, x, y, narrow);
+    }
+
+    y += sum_row(L"Windows",
+                 g_choice == 0
+                   ? L"Stays, with all of its files, and keeps starting by default "
+                     L"until you say otherwise."
+                   : L"Will be erased, along with everything else on this drive.",
+                 g_choice == 0 ? C_ACCENT : C_ERR, x, y, narrow);
+
+    y += sum_row(L"If something goes wrong",
+                 L"A rescue area is built on the drive before anything else, and a "
+                 L"rescue USB stick alongside it. Either one puts this PC back.",
+                 C_FG, x, y, narrow);
+
+    _snwprintf(buf, 255, L"%s  ·  %s keyboard  ·  %s",
+               g_langs[g_sel_lang], g_kbds[g_sel_kbd], g_tzs[g_sel_tz]);
+    buf[255] = 0;
+    y += sum_row(L"Language and region", buf, C_FG, x, y, narrow);
+    y += sum_row(L"Look", THEMES[g_sel_theme].name, C_FG, x, y, narrow);
+    y += sum_row(L"How long",
+                 L"About 40 minutes. This PC restarts once part way through, on its "
+                 L"own.", C_FG, x, y, narrow);
+
+    y += S(8);
+    if (g_choice == 1) {
+        int h = S(64);
+        fill_rr((float)x, (float)y, (float)narrow, (float)h, (float)S(12), C_ERR, 0.12f);
+        stroke_rr((float)x, (float)y, (float)narrow, (float)h, (float)S(12), 1.2f,
+                  C_ERR, 0.4f);
+        text_draw(L"Everything on this PC will be erased and cannot be brought back.",
+                  g_f_bodyb, C_ERR, x + S(20), y + S(12), narrow - S(40), DT_WORDBREAK);
+        text_draw(L"There is no way back from this one.",
+                  g_f_small, C_ERR, x + S(20), y + S(36), narrow - S(40), DT_SINGLELINE);
+        y += h + S(16);
+    }
+
+    if (d) {
+        human_size(d->size_bytes, sz, 32);
+        wchar_t model[160];
+        a2w(d->model[0] ? d->model : "the drive Windows starts from", model, 160);
+        _snwprintf(buf, 255, L"Yes: %s (%s) is the drive I want to change.", model, sz);
+    } else {
+        wcscpy(buf, L"Yes: the drive Windows starts from is the one I want to change.");
+    }
+    buf[255] = 0;
+    y += draw_check(ID_CHK_READY, &g_ready_confirm, buf,
+                    L"If this PC has more than one drive, check the name and the size "
+                    L"above. Only this drive is touched.",
+                    x, y, narrow, g_choice == 1 ? C_ERR : C_ACCENT) + S(18);
+
+    y += text_draw(L"You can still stop. Nothing is changed until the rescue area is "
+                   L"finished, and nothing is permanent until AurOS has started and "
+                   L"you have told us it works.",
+                   g_f_small, C_MUTED, x, y, narrow, DT_WORDBREAK);
+    return y - y0;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+ *  9 · PROGRESS   (every phase below is a stub; see PHASE_STUB[])
+ * ═══════════════════════════════════════════════════════════════════ */
+static int page_progress(int x, int y, int w)
+{
+    int y0 = y;
+    int narrow = w > S(760) ? S(760) : w;
+
+    y += text_draw(g_install_finished ? L"That is as far as this build goes"
+                                      : L"Setting up AurOS",
+                   g_f_title, C_FG_HI, x, y, w, DT_WORDBREAK) + S(12);
+
+    /* Honesty banner. This build cannot change anything, and the screen
+     * that looks the most like a real install is the one that must say so. */
+    {
+        int h = S(56);
+        fill_rr((float)x, (float)y, (float)narrow, (float)h, (float)S(12), C_WARM, 0.12f);
+        stroke_rr((float)x, (float)y, (float)narrow, (float)h, (float)S(12), 1.2f,
+                  C_WARM, 0.35f);
+        glyph_bang((float)(x + S(26)), (float)(y + h / 2), (float)S(15), C_WARM, 1.f);
+        text_draw(L"Stub build: every step below is simulated. Nothing on this PC is "
+                  L"opened for writing, and nothing is changed.",
+                  g_f_small, C_WARM, x + S(48), y + S(11), narrow - S(70), DT_WORDBREAK);
+        y += h + S(22);
+    }
+
+    for (int i = 0; i < N_PHASES; i++) {
+        int st = g_ph[i];
+        int rh = S(58);
+        uint32_t tc = st == PH_DONE ? C_FG : (st == PH_RUNNING ? C_FG_HI : C_MUTED);
+
+        if (st == PH_RUNNING)
+            fill_rr((float)x, (float)y, (float)narrow, (float)rh, (float)S(10),
+                    C_ACCENT, 0.07f);
+
+        float cx = (float)(x + S(18)), cy = (float)(y + rh / 2);
+        if (st == PH_DONE) {
+            fill_circle(cx, cy, (float)S(11), C_ACCENT, 0.9f);
+            glyph_check(cx, cy, (float)S(14), C_BG, 1.f);
+        } else if (st == PH_RUNNING) {
+            status_icon(cx, cy, (float)S(11), 1, PF_PASS);
+        } else {
+            stroke_circle(cx, cy, (float)S(10), 1.3f, C_OVERLAY, 1.f);
+            wchar_t n[4]; _snwprintf(n, 3, L"%d", i + 1); n[3] = 0;
+            RECT b = { x + S(8), y + rh / 2 - S(9), x + S(28), y + rh / 2 + S(9) };
+            text_in(n, g_f_tiny, C_MUTED, b, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+        }
+
+        int tx = x + S(46);
+        text_draw(PHASES[i].name, g_f_bodyb, tc, tx, y + S(8),
+                  narrow - S(160), DT_SINGLELINE);
+        text_draw(PHASES[i].desc, g_f_small,
+                  st == PH_PENDING || st == PH_LATER ? C_MUTED : C_SUBTLE,
+                  tx, y + S(28), narrow - S(160), DT_SINGLELINE);
+
+        if (st == PH_LATER) {
+            const wchar_t *tag = L"after the restart";
+            int pw = text_w(tag, g_f_tiny) + S(18);
+            RECT b = { x + narrow - pw, y + S(14), x + narrow, y + S(35) };
+            fill_rr((float)b.left, (float)b.top, (float)pw, (float)S(21),
+                    (float)S(10), C_ACCENT_ALT, 0.12f);
+            text_in(tag, g_f_tiny, C_ACCENT_ALT, b, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+        }
+        if (st == PH_RUNNING) {
+            int bw = S(96), bx = x + narrow - bw - S(6);
+            fill_rr((float)bx, (float)(y + rh / 2 - S(3)), (float)bw, (float)S(6),
+                    (float)S(3), C_OVERLAY, 1.f);
+            fill_rr((float)bx, (float)(y + rh / 2 - S(3)),
+                    (float)bw * clampf(g_ph_prog, 0.f, 1.f), (float)S(6),
+                    (float)S(3), C_ACCENT, 1.f);
+        }
+        y += rh + S(2);
+    }
+
+    y += S(18);
+    {
+        int lines = 7;
+        int lh = S(19);
+        int h = lines * lh + S(28);
+        fill_rr((float)x, (float)y, (float)narrow, (float)h, (float)S(12), C_BG, 0.55f);
+        stroke_rr((float)x, (float)y, (float)narrow, (float)h, (float)S(12), 1.f,
+                  C_OVERLAY, 1.f);
+        int first = g_log_n > lines ? g_log_n - lines : 0;
+        for (int i = first; i < g_log_n; i++)
+            text_draw(g_log[i], g_f_tiny, C_MUTED, x + S(16),
+                      y + S(14) + (i - first) * lh, narrow - S(32), DT_SINGLELINE);
+        y += h;
+    }
+    return y - y0;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+ *  Footer, and what the primary button means on each page
+ * ═══════════════════════════════════════════════════════════════════ */
+static int primary_enabled(void)
+{
+    switch (g_page) {
+    case PAGE_WELCOME:     return 1;
+    case PAGE_CHECKING:    return g_pf_valid && g_reveal >= N_CHK && pf_is_go(&g_report);
+    case PAGE_BLOCKED:     return 1;
+    case PAGE_BACKUP:      return nav_allowed(PAGE_CONSENT);
+    case PAGE_CONSENT:     return nav_allowed(PAGE_CHOOSE);
+    case PAGE_CHOOSE:      return nav_allowed(PAGE_PERSONALIZE);
+    case PAGE_PERSONALIZE: return nav_allowed(PAGE_READY);
+    case PAGE_READY:       return nav_allowed(PAGE_PROGRESS);
+    case PAGE_PROGRESS:    return g_install_finished;
+    default:               return 0;
+    }
+}
+
+static const wchar_t *primary_label(void)
+{
+    switch (g_page) {
+    case PAGE_WELCOME:     return L"Get started";
+    case PAGE_CHECKING:    return L"Continue";
+    case PAGE_BLOCKED:     return L"Check again";
+    case PAGE_BACKUP:      return L"Continue";
+    case PAGE_CONSENT:     return L"I agree — continue";
+    case PAGE_CHOOSE:      return L"Continue";
+    case PAGE_PERSONALIZE: return L"Continue";
+    case PAGE_READY:       return g_choice == 1 ? L"Erase and install"
+                                                : L"Start installing";
+    case PAGE_PROGRESS:    return L"Close";
+    default:               return L"Continue";
+    }
+}
+
+static const wchar_t *footer_hint(void)
+{
+    switch (g_page) {
+    case PAGE_WELCOME:
+        return L"Nothing is changed until you have read what will happen and said yes.";
+    case PAGE_CHECKING:
+        return L"Reading only. Nothing on this PC is written to.";
+    case PAGE_BLOCKED:
+        return L"Nothing has been changed. You can close this and keep using Windows.";
+    case PAGE_BACKUP:
+        return L"Both need to be true before we can go on.";
+    case PAGE_CONSENT:
+        return L"Type AGREE above to continue.";
+    case PAGE_CHOOSE:
+        return g_choice == 1 ? L"This choice erases everything on this PC."
+                             : L"Windows is kept, and stays the default.";
+    case PAGE_PERSONALIZE:
+        return L"All of this can be changed later.";
+    case PAGE_READY:
+        return L"Last chance to stop without anything having happened.";
+    case PAGE_PROGRESS:
+        return L"Stub build — nothing on this PC has been changed.";
+    default: return L"";
+    }
+}
+
+static int back_visible(void)
+{
+    switch (g_page) {
+    case PAGE_WELCOME: case PAGE_BLOCKED: case PAGE_PROGRESS: return 0;
+    default: return 1;
+    }
+}
+static page_id back_target(void)
+{
+    switch (g_page) {
+    case PAGE_CHECKING:    return PAGE_WELCOME;
+    case PAGE_BACKUP:      return PAGE_CHECKING;
+    case PAGE_CONSENT:     return PAGE_BACKUP;
+    case PAGE_CHOOSE:      return PAGE_CONSENT;
+    case PAGE_PERSONALIZE: return PAGE_CHOOSE;
+    case PAGE_READY:       return PAGE_PERSONALIZE;
+    default:               return PAGE_WELCOME;
+    }
+}
+
+static void draw_footer(void)
+{
+    int pad = S(44);
+    aa_line((float)(g_card.left + pad), (float)g_foot.top,
+            (float)(g_card.right - pad), (float)g_foot.top, 1.f, C_OVERLAY, 1.f);
+
+    int bh = S(48);
+    int by = g_foot.top + (g_foot.bottom - g_foot.top - bh) / 2;
+    int bx = g_card.right - pad;
+
+    const wchar_t *plab = primary_label();
+    int pw = text_w(plab, g_f_bodyb) + S(56);
+    if (pw < S(150)) pw = S(150);
+    bx -= pw;
+    uint32_t tone = (g_page == PAGE_READY && g_choice == 1) ? C_ERR : C_ACCENT;
+    draw_button(ID_PRIMARY, plab, bx, by, pw, bh, 1, primary_enabled(), tone);
+
+    if (g_page == PAGE_BLOCKED) {
+        int sw = S(120);
+        bx -= sw + S(12);
+        draw_button(ID_QUIT, L"Close", bx, by, sw, bh, 0, 1, C_ACCENT);
+    } else if (back_visible()) {
+        int sw = S(110);
+        bx -= sw + S(12);
+        draw_button(ID_BACK, L"Back", bx, by, sw, bh, 0, 1, C_ACCENT);
+    }
+
+    RECT h = { g_card.left + pad, g_foot.top, bx - S(24), g_foot.bottom };
+    if (h.right > h.left + S(80))
+        text_in(footer_hint(), g_f_small, C_MUTED, h,
+                DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
 }

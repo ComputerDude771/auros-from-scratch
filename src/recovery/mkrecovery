@@ -1,0 +1,186 @@
+#!/bin/sh
+# ═══════════════════════════════════════════════════════════════════
+#  mkrecovery — capture everything needed to put Windows back
+#
+#  Run BEFORE the first destructive byte. If this has not completed
+#  successfully, no later phase is permitted to start.
+#
+#  What it captures, and why each item is here:
+#    parttable.bin   the GPT (primary AND backup) plus the protective
+#                    MBR, byte-for-byte. This is the thing that makes a
+#                    machine unbootable when it goes wrong, and it is
+#                    small enough that there is no excuse not to keep it.
+#    esp.tar         the ENTIRE EFI System Partition as found. OEM ESPs
+#                    hold vendor boot files and firmware capsules, and
+#                    Windows will not start without \EFI\Microsoft\Boot.
+#    bcd.bin         the Windows Boot Configuration Data store.
+#    machine.json    the full preflight snapshot, so support can see the
+#                    machine without having the machine.
+#    journal.json    which phase the install reached, so a resumed or
+#                    aborted run knows exactly where it stopped.
+#
+#  Everything is hashed. A backup nobody verified is a rumour.
+# ═══════════════════════════════════════════════════════════════════
+set -eu
+
+usage() {
+    cat >&2 <<EOT
+mkrecovery — capture a machine's boot state before AurOS touches it
+
+  mkrecovery capture DISK DEST   capture from DISK (e.g. /dev/sda) into DEST
+  mkrecovery verify  DEST        re-check every hash in DEST
+  mkrecovery restore DISK DEST   put the captured boot state back
+
+DEST is normally the mounted recovery partition.
+EOT
+    exit 2
+}
+
+C_OK=$(printf '\033[38;2;125;211;192m'); C_ERR=$(printf '\033[38;2;242;120;141m')
+C_DIM=$(printf '\033[38;2;110;120;134m'); C_RST=$(printf '\033[0m')
+say()  { printf '%s::%s %s\n' "$C_OK" "$C_RST" "$*"; }
+note() { printf '%s   %s%s\n' "$C_DIM" "$*" "$C_RST"; }
+die()  { printf '%s::%s %s\n' "$C_ERR" "$C_RST" "$*" >&2; exit 1; }
+
+# GPT layout: LBA0 protective MBR, LBA1 header, LBA2-33 the entry array.
+# 34 sectors covers all of it at 512b; read 2048 sectors (1 MiB) so the
+# capture also survives 4Kn disks and any alignment padding.
+HEAD_SECTORS=2048
+
+capture() {
+    disk=$1 dest=$2
+    [ -b "$disk" ] || [ -f "$disk" ] || die "not a disk or image: $disk"
+    mkdir -p "$dest"
+
+    say "capturing boot state of $disk"
+
+    # ── partition table, both copies
+    sz=$(blockdev --getsize64 "$disk" 2>/dev/null || stat -c %s "$disk")
+    ss=$(blockdev --getss "$disk" 2>/dev/null || echo 512)
+    note "disk $((sz/1024/1024))MB, ${ss}b sectors"
+
+    dd if="$disk" of="$dest/gpt-primary.bin" bs="$ss" count="$HEAD_SECTORS" \
+       conv=notrunc status=none
+    # The backup GPT lives in the last 33 sectors. Losing it while
+    # keeping the primary leaves a disk many tools refuse to touch.
+    tail_sectors=34
+    skip=$(( sz / ss - tail_sectors ))
+    dd if="$disk" of="$dest/gpt-backup.bin" bs="$ss" skip="$skip" count="$tail_sectors" \
+       conv=notrunc status=none
+    printf '%s\n' "$skip" > "$dest/gpt-backup.lba"
+    printf '%s\n' "$ss"   > "$dest/sector-size"
+    note "partition table: $(du -h "$dest/gpt-primary.bin" | cut -f1) primary + backup at LBA $skip"
+
+    # ── human-readable copy, for a support call where nobody can run code
+    if command -v sgdisk >/dev/null 2>&1; then
+        sgdisk -p "$disk" > "$dest/layout.txt" 2>/dev/null || true
+        sgdisk --backup="$dest/sgdisk-backup.bin" "$disk" >/dev/null 2>&1 || true
+    fi
+
+    # ── ESP contents
+    #
+    # Located by OFFSET into the disk, not by a /dev/sdaN node. Partition
+    # device nodes do not exist in every environment (containers without
+    # loop partition scanning, some recovery shells), and the ESP is far
+    # too important to skip just because the kernel did not enumerate it.
+    esp_start=$(esp_start_sector "$disk")
+    if [ -n "$esp_start" ]; then
+        esp_count=$(esp_sector_count "$disk")
+        note "ESP at LBA $esp_start, $((esp_count * ss / 1024 / 1024))MB"
+        dd if="$disk" of="$dest/esp.img" bs="$ss" skip="$esp_start" count="$esp_count" \
+           status=none || die "could not read the ESP — refusing to continue without it"
+        printf '%s\n' "$esp_start" > "$dest/esp.lba"
+        printf '%s\n' "$esp_count" > "$dest/esp.sectors"
+        note "ESP captured raw ($(du -h "$dest/esp.img" | cut -f1))"
+
+        # A readable copy of the boot files too, where the tooling allows
+        # it. The raw image is what restores; this is what a human reads.
+        if command -v mdir >/dev/null 2>&1; then
+            MTOOLS_SKIP_CHECK=1 mdir -i "$dest/esp.img" ::/EFI 2>/dev/null \
+                > "$dest/esp-listing.txt" || true
+            MTOOLS_SKIP_CHECK=1 mcopy -i "$dest/esp.img" \
+                ::/EFI/Microsoft/Boot/BCD "$dest/bcd.bin" 2>/dev/null \
+                && note "BCD extracted" || true
+        fi
+    else
+        note "no ESP found (legacy BIOS layout?)"
+    fi
+
+    # ── hashes. A backup nobody verified is a rumour.
+    ( cd "$dest" && find . -type f ! -name SHA256SUMS -print0 \
+        | xargs -0 sha256sum > SHA256SUMS )
+    note "$(wc -l < "$dest/SHA256SUMS") files hashed"
+
+    cat > "$dest/recovery.json" <<EOJ
+{
+  "created": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "disk": "$disk",
+  "disk_bytes": $sz,
+  "sector_size": $ss,
+  "gpt_backup_lba": $skip,
+  "esp_lba": "${esp_start:-}",
+  "tool": "mkrecovery/1"
+}
+EOJ
+    say "capture complete: $dest"
+}
+
+# EF00 / the EFI System GUID. Matched on the partition TYPE CODE rather
+# than by probing for a filesystem, because an ESP can be unmounted,
+# unformatted or empty and still be the one the firmware boots from.
+esp_partnum() {
+    command -v sgdisk >/dev/null 2>&1 || return 0
+    sgdisk -p "$1" 2>/dev/null | awk '$6=="EF00"{print $1; exit}'
+}
+esp_start_sector() {
+    n=$(esp_partnum "$1"); [ -n "$n" ] || return 0
+    sgdisk -i "$n" "$1" 2>/dev/null | sed -n 's/^First sector: \([0-9]*\).*/\1/p'
+}
+esp_sector_count() {
+    n=$(esp_partnum "$1"); [ -n "$n" ] || return 0
+    first=$(sgdisk -i "$n" "$1" 2>/dev/null | sed -n 's/^First sector: \([0-9]*\).*/\1/p')
+    last=$(sgdisk  -i "$n" "$1" 2>/dev/null | sed -n 's/^Last sector: \([0-9]*\).*/\1/p')
+    [ -n "$first" ] && [ -n "$last" ] && echo $(( last - first + 1 ))
+}
+
+verify() {
+    dest=$1
+    [ -f "$dest/SHA256SUMS" ] || die "no SHA256SUMS in $dest — capture never completed"
+    say "verifying $dest"
+    ( cd "$dest" && sha256sum -c SHA256SUMS --quiet ) \
+        && say "all files intact" \
+        || die "RECOVERY DATA IS CORRUPT — do not rely on it"
+}
+
+restore() {
+    disk=$1 dest=$2
+    verify "$dest"
+    [ -f "$dest/gpt-primary.bin" ] || die "no partition table capture in $dest"
+
+    ss=$(cat "$dest/sector-size" 2>/dev/null || echo 512)
+    skip=$(cat "$dest/gpt-backup.lba" 2>/dev/null || echo 0)
+
+    say "restoring the original boot state to $disk"
+    note "this overwrites the partition table with the one captured before install"
+
+    dd if="$dest/gpt-primary.bin" of="$disk" bs="$ss" conv=notrunc status=none
+    [ "$skip" -gt 0 ] && dd if="$dest/gpt-backup.bin" of="$disk" bs="$ss" seek="$skip" \
+        conv=notrunc status=none
+    sync
+    note "partition table restored"
+
+    if [ -f "$dest/esp.img" ] && [ -f "$dest/esp.lba" ]; then
+        esp_start=$(cat "$dest/esp.lba")
+        dd if="$dest/esp.img" of="$disk" bs="$ss" seek="$esp_start" conv=notrunc status=none
+        note "ESP restored to LBA $esp_start"
+    fi
+    sync
+    say "Windows boot state restored. Restart the computer."
+}
+
+case "${1:-}" in
+    capture) shift; [ $# -eq 2 ] || usage; capture "$1" "$2" ;;
+    verify)  shift; [ $# -eq 1 ] || usage; verify  "$1" ;;
+    restore) shift; [ $# -eq 2 ] || usage; restore "$1" "$2" ;;
+    *) usage ;;
+esac

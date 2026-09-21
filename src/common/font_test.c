@@ -131,6 +131,25 @@ static int counter_pixels(const probe *p)
     return holes;
 }
 
+/* Is this codepoint actually in the font?
+ *
+ * There is no API for it on purpose -- callers should not care -- but a
+ * test does: OpenSymbol has no accented Latin at all, and a subset font
+ * has almost nothing, so every miss comes back as .notdef and a naive
+ * assertion would call that a rendering bug. Comparing against a
+ * codepoint no font maps identifies the .notdef bitmap. */
+static int has_glyph(font *f, const char *utf8, float px)
+{
+    probe want = probe_text(f, utf8, px);
+    probe nope = probe_text(f, "\xF4\x8F\xBF\xBD", px);    /* U+10FFFD */
+    int same = 0;
+    if (want.c.px && nope.c.px && want.c.w == nope.c.w && want.c.h == nope.c.h)
+        same = memcmp(want.c.px, nope.c.px,
+                      (size_t)want.c.w * want.c.h * 4) == 0;
+    free(want.c.px); free(nope.c.px);
+    return !same;
+}
+
 /* ── the specimen sheet ──────────────────────────────────────────── */
 static const char *SAMPLES[] = {
     "The quick brown fox jumps over the lazy dog. 0123456789",
@@ -173,17 +192,23 @@ static int sheet(const char *ttf, const char *out)
                  (double)px, (double)font_ascent(f), (double)font_descent(f),
                  (double)font_line_height(f));
         font_draw(hdr, cv.px, cv.w, cv.h, 32.0f, y, lab, ACC, 0.85f);
-        y += 26.0f;
+        y += 22.0f;
 
-        float lh = font_line_height(f);
-        if (lh < px) lh = px * 1.3f;
-        int lines = px >= 64.0f ? 3 : (px >= 32.0f ? 3 : NSAMPLES);
+        /* Big sizes get the short samples so the sheet stays inside the
+         * canvas; the clipping path is exercised by the self-test. */
+        int lines = px >= 32.0f ? 3 : NSAMPLES;
         for (int i = 0; i < lines; i++) {
+            const char *txt = SAMPLES[i];
+            if (px >= 64.0f && i == 0) txt = "Hamburgefonstiv 1982";
+            if (px >= 64.0f && i == 1) txt = "AVATAR Wavy To. Yo,";
+            if (px >= 32.0f && i == 2) txt = "\xC3\xA9 \xC3\xA0 \xC3\xBC \xC3\xB1 "
+                "\xC3\xA7 \xC3\xB6 \xC3\x85 \xC3\x98 \xC5\x93 \xC3\x9F \xC3\x86 "
+                "\xD0\x9F\xD1\x80\xD0\xB8\xD0\xB2\xD0\xB5\xD1\x82";
             y += font_ascent(f);
-            font_draw(f, cv.px, cv.w, cv.h, 32.0f, y, SAMPLES[i], FG, 1.0f);
+            font_draw(f, cv.px, cv.w, cv.h, 32.0f, y, txt, FG, 1.0f);
             y += font_line_height(f) - font_ascent(f);
         }
-        y += 18.0f;
+        y += 26.0f;
         font_free(f);
     }
 
@@ -248,7 +273,7 @@ static void selftest(const char *ttf)
      * interior must be saturated and its area must be close to the
      * advance times the block height. */
     probe blk = probe_text(f, "\xE2\x96\x88", 48.0f);
-    if (blk.x0 >= 0) {
+    if (blk.x0 >= 0 && has_glyph(f, "\xE2\x96\x88", 48.0f)) {
         check(blk.n_on > 0, "solid block has saturated interior");
         int iw = blk.x1 - blk.x0 + 1, ih = blk.y1 - blk.y0 + 1;
         check(blk.n_on >= (iw - 2) * (ih - 2),
@@ -288,7 +313,10 @@ static void selftest(const char *ttf)
      * and the measured width must match where the ink actually stops. */
     float wi = font_text_width(f, "iiiiiiiiii");
     float wm = font_text_width(f, "mmmmmmmmmm");
-    check(wm > wi * 1.5f, "proportional advances (m wider than i)");
+    if (fabsf(wi - wm) < 0.01f)
+        check(wi > 0.0f, "monospaced font: i and m share one advance");
+    else
+        check(wm > wi * 1.5f, "proportional advances (m wider than i)");
 
     probe ptxt = probe_text(f, "Hamburgefonstiv", 48.0f);
     float want = font_text_width(f, "Hamburgefonstiv");
@@ -372,17 +400,28 @@ static int fuzz(const char *ttf, int iters)
     for (int it = 0; it < iters; it++) {
         size_t len = (size_t)n;
         memcpy(buf, orig, len);
-        int mode = it % 3;
+        int mode = it % 4;
         if (mode == 0) {                       /* truncation */
             len = (size_t)(rnd() % (uint32_t)n);
         } else if (mode == 1) {                /* byte corruption */
             int k = 1 + (int)(rnd() % 64);
             for (int i = 0; i < k; i++) buf[rnd() % len] = (uint8_t)rnd();
-        } else {                               /* both */
+        } else if (mode == 2) {                /* both */
             len = (size_t)(rnd() % (uint32_t)n);
             if (len > 16) {
                 int k = 1 + (int)(rnd() % 32);
                 for (int i = 0; i < k; i++) buf[rnd() % len] = (uint8_t)rnd();
+            }
+        } else {
+            /* Leave the sfnt header and table directory intact so the
+             * font still loads: corruption that never gets past
+             * font_load() never reaches the glyph and cmap parsers,
+             * which are where the interesting arithmetic lives. */
+            size_t keep = 12 + 16 * 64;
+            if (len > keep + 64) {
+                int k = 1 + (int)(rnd() % 512);
+                for (int i = 0; i < k; i++)
+                    buf[keep + rnd() % (uint32_t)(len - keep)] = (uint8_t)rnd();
             }
         }
         FILE *o = fopen(tmp, "wb");
