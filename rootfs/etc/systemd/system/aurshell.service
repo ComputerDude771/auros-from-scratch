@@ -96,7 +96,11 @@ RuntimeDirectoryMode=0700
 #
 # The User= itself is written by build/forge into a drop-in, because the
 # account name is a profile setting and this file is not templated.
-SupplementaryGroups=video input audio
+#   bluetooth  talking to bluez, whose D-Bus policy names this group
+#   lpadmin    setting up a printer, which is cups's whole idea of
+#              authorisation -- neither of those two goes through
+#              polkit at all
+SupplementaryGroups=video input audio bluetooth lpadmin
 TTYPath=/dev/tty1
 TTYReset=yes
 TTYVHangup=yes

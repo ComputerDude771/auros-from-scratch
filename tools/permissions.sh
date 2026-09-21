@@ -102,7 +102,33 @@ printf '%s\n' "$OFFERS" | while IFS='|' read -r what act; do
     fi
 done
 
-# 3. And nothing in our rule may name an action that does not exist.
+# 3. Not everything is polkit, and assuming it is gives a false pass.
+#
+#    BlueZ is gated by its D-Bus policy, which names a GROUP. CUPS is
+#    gated by cups-files.conf, which names a GROUP. Neither has a
+#    polkit action at all -- five were added for them from memory, and
+#    the check above answered "NO SUCH ACTION" to every one. A harness
+#    that only knew about polkit would have said all was well while
+#    she could not pair her headphones or add her printer.
+echo
+echo "and is she in the groups the rest of it uses?"
+USER_NAME=$(sed -n 's/^default_user *= *//p' "$RFS/etc/auros/policy.conf" 2>/dev/null)
+[ -n "$USER_NAME" ] || USER_NAME=auros
+printf '%s\n' \
+  'bluetooth|pairing headphones and a mouse' \
+  'lpadmin|setting up a printer' \
+  'video|the screen brightness' \
+  'input|the keyboard and touchpad' \
+  'audio|the sound card' | while IFS='|' read -r grp what; do
+    if grep -q "^$grp:.*[:,]$USER_NAME\(,\|$\)" "$RFS/etc/group" 2>/dev/null; then
+        printf '  %-32s %s\n' "$what" "$USER_NAME is in $grp"
+    else
+        printf '  %-32s %s\n' "$what" "$USER_NAME is NOT in $grp"
+        echo HIT >> /tmp/permissions.hits
+    fi
+done
+
+# 4. And nothing in our rule may name an action that does not exist.
 #    polkit says nothing about an id it has never heard of, so a typo
 #    is a grant that silently is not one.
 echo

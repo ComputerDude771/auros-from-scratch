@@ -701,7 +701,32 @@ XKBVARIANT="${keyboard_variant:-}"
 BACKSPACE="guess"
 EOL
 
-    inchroot "id -u $default_user >/dev/null 2>&1 || useradd -m -s /bin/bash -G sudo,audio,video,input,netdev $default_user"
+    # The groups this account needs, and why each one is here. Every
+    # one of them is a thing that is refused without it, and refused
+    # silently -- which is the shape of bug this product keeps finding.
+    #
+    #   sudo       a person who set the machine up can repair it
+    #   audio      the sound card
+    #   video      /dev/dri, and the backlight, via the udev rule in
+    #              rootfs/usr/lib/udev/rules.d/60-auros-backlight.rules
+    #   input      the keyboard, mouse and touchpad, read directly
+    #   netdev     the network
+    #   bluetooth  talking to bluez. Its D-Bus policy names this group
+    #              explicitly -- Bluetooth does NOT go through polkit,
+    #              which is worth writing down because five polkit
+    #              grants were added for it from memory and every one
+    #              of them named an action that does not exist
+    #   lpadmin    adding a printer. cups-files.conf says
+    #              "SystemGroup lpadmin root", and that is the whole of
+    #              its authorisation: without this she can print to a
+    #              printer somebody else set up and can never set one
+    #              up herself
+    AUROS_GROUPS="sudo,audio,video,input,netdev,bluetooth,lpadmin"
+    inchroot "id -u $default_user >/dev/null 2>&1 || \
+              useradd -m -s /bin/bash -G $AUROS_GROUPS $default_user"
+    # And on an image whose account already existed from an earlier
+    # build, the groups are added rather than assumed.
+    inchroot "usermod -aG $AUROS_GROUPS $default_user" >/dev/null 2>&1 || true
     # Placeholder credential. First boot forces a change; a shipped
     # image must never carry a usable password.
     inchroot "echo '$default_user:auros' | chpasswd; passwd -e $default_user" || true
