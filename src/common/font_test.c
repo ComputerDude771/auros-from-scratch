@@ -1,7 +1,7 @@
 /* font_test.c — specimen sheet, self-checks and fuzz driver for font.c.
  *
  *   font_test [font] [out.png]              specimen + assertions
- *   font_test --fuzz [font] [n]             truncate/corrupt a font n times
+ *   font_test --fuzz [font] [n] [seed]      truncate/corrupt a font n times
  *   font_test --compare A.ttf B.otf a.png b.png [twin.png]
  *
  * --compare runs the whole suite over two fonts and renders the SAME
@@ -675,6 +675,10 @@ int main(int argc, char **argv)
     if (argc > 1 && !strcmp(argv[1], "--fuzz")) {
         const char *ttf = argc > 2 ? argv[2] : DEFAULT_TTF;
         int n = argc > 3 ? atoi(argv[3]) : 300;
+        /* The seed is an argument so a crash found in CI can be
+         * replayed exactly; the default keeps plain runs deterministic. */
+        if (argc > 4) { rnd_state = (uint32_t)strtoul(argv[4], NULL, 0);
+                        if (!rnd_state) rnd_state = 1; }
         return fuzz(ttf, n);
     }
     const char *ttf = argc > 1 ? argv[1] : DEFAULT_TTF;
