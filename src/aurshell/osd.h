@@ -23,10 +23,15 @@
 #include "shell.h"
 
 /* What it is showing. */
-typedef enum { OSD_NONE, OSD_VOLUME, OSD_BRIGHTNESS, OSD_MUTED } osd_kind;
+typedef enum { OSD_NONE, OSD_VOLUME, OSD_BRIGHTNESS, OSD_MUTED,
+               /* One line, no bar: where a picture was saved, what
+                * could not be done. Same shape, same timing, same
+                * reason -- it is the echo of something she just did. */
+               OSD_SAID } osd_kind;
 
 /* Show one, from now. `value` is 0..100. */
 void osd_show(osd_kind kind, int value);
+void osd_say(const char *line);
 
 /* True while one is on screen; the host repaints while this holds. */
 int  osd_visible(void);

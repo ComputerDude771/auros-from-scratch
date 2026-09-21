@@ -194,6 +194,9 @@ typedef struct shell_ctx_s {
      * toggle it without dragging the whole panel into every harness
      * that links the band. src/aurshell/settings.c owns the rest. */
     int   settings_open;
+    /* The headphones-and-mice panel. Same arrangement as the other
+     * two: only the flag lives here, src/aurshell/bt.c owns the rest. */
+    int   bt_open;
     /* Set by a panel that has changed something the shell reads from a
      * file -- the archetype, the theme. The host notices it, rereads
      * everything and rebuilds, which is the same path a SIGHUP takes.
@@ -205,6 +208,17 @@ typedef struct shell_ctx_s {
      * the host carries it out. `1` off, `2` start again, `3` sleep. */
     int   want_power_off;
     int   power_open;          /* the three choices are on screen       */
+    /* She pressed "Close this". Only the band sets it; the host does
+     * the closing, because which window is "this" is the session's
+     * business and not the band's. */
+    int   want_close_win;
+    /* She pressed the picture-of-the-screen key. The host takes it,
+     * because the host is the only thing that has the screen. */
+    int   want_screenshot;
+    /* One line the host wants said, briefly, in the middle of the
+     * screen: where a picture was saved, what could not be done. Empty
+     * when there is nothing to say. */
+    char  say[128];
 
     /* ── the running system ─────────────────────────────────────── */
     /* The Wayland server applications connect to, or NULL. It is NULL

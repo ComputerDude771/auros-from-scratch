@@ -40,10 +40,11 @@
 #define SCALE_MAX   2.00f
 #define SCALE_STEP  0.15f
 
-enum { B_HELP, B_NET, B_SETTINGS, B_SMALLER, B_BIGGER, B_POWER, B_N };
+enum { B_HELP, B_NET, B_SETTINGS, B_CLOSE, B_SMALLER, B_BIGGER,
+       B_POWER, B_N };
 
-static const char *LABEL[B_N] = { "Help", "Internet", "Settings", "Smaller",
-                                  "Bigger", "Turn off" };
+static const char *LABEL[B_N] = { "Help", "Internet", "Settings", "Close this",
+                                  "Smaller", "Bigger", "Turn off" };
 
 /* ── where the buttons are ──────────────────────────────────────────
  *
@@ -73,6 +74,16 @@ int foot_buttons(const shell_ctx *c, int sw, int sh, rect *out, int *which)
      * that refuses: it gets no button. A control that looks like a
      * control and is not is the failure this product keeps finding. */
     if (!c->kiosk && c->allow_settings) left[nl++] = B_SETTINGS;
+    /* Only when there is something to close, and last in the left
+     * group so that the three buttons before it never move. A control
+     * that changes position between one visit and the next is a
+     * control she has to find again every time.
+     *
+     * It is here because five of the six archetypes have no way to
+     * close a window at all -- only `taskbar` grew a close button --
+     * so a program that will not close itself was permanent on this
+     * machine. */
+    if (!c->kiosk && c->n_wins > 0) left[nl++] = B_CLOSE;
     if (!c->kiosk) right[nr++] = B_POWER;
     if (c->allow_settings) { right[nr++] = B_BIGGER; right[nr++] = B_SMALLER; }
 
@@ -278,6 +289,8 @@ void foot_paint(shell_ctx *c, surface *s, shell_fonts *f)
                 "",
                 "Settings has the brightness, the sound and the clock.",
                 "",
+                "Close this shuts whatever you are looking at.",
+                "",
                 "Turn off shuts the computer down properly.",
                 "",
                 "Press Help again to close this.",
@@ -436,6 +449,9 @@ int foot_click(shell_ctx *c, int x, int y)
             if (c->text_scale > SCALE_MAX) c->text_scale = SCALE_MAX;
             c->text_changed = 1;
             foot_save_text_scale(c->text_scale);
+            return 1;
+        case B_CLOSE:
+            c->want_close_win = 1;
             return 1;
         case B_POWER:
             /* It used to turn the machine off, here, on one press of a

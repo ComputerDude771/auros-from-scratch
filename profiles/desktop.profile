@@ -70,9 +70,25 @@ keyboard_variant=""
 # that a profile which drops network-manager does not silently lose the
 # other two as well. Without it those controls appear, press, and
 # refuse: controls that look like controls and are not.
+# bluez is the Bluetooth stack. It is here because a laptop's mouse,
+# its headphones and its keyboard are increasingly all Bluetooth, and a
+# machine that cannot pair one is a machine somebody has to find a
+# cable for.
+#
+# cups and its discovery are printing. A person who has had a printer
+# for fifteen years expects to press Print. avahi is what finds a
+# network printer without being told its address, which is the only
+# kind of printing setup she will complete unaided; printer-driver-*
+# are the drivers for printers that do not speak a standard language,
+# and they are the difference between "it printed" and "it printed
+# nothing and said nothing".
 packages_hardware="linux-image-generic linux-firmware
                    network-manager wireless-tools wpasupplicant
                    polkitd
+                   bluez
+                   cups cups-filters avahi-daemon avahi-utils
+                   printer-driver-gutenprint printer-driver-hpcups
+                   system-config-printer-common
                    pciutils usbutils"
 
 # Boot chain. Signed, so Secure Boot does not have to be disabled.

@@ -21,6 +21,7 @@
 
 static osd_kind  cur = OSD_NONE;
 static int       cur_val;
+static char      cur_line[128];
 static uint32_t  until_ms;
 
 static uint32_t now_ms(void)
@@ -39,6 +40,18 @@ void osd_show(osd_kind kind, int value)
     until_ms = now_ms() + OSD_MS;
 }
 
+/* Words stay up longer than a bar, because a bar is understood at a
+ * glance and a sentence has to be read. */
+#define OSD_SAID_MS 3200
+
+void osd_say(const char *line)
+{
+    if (!line || !*line) return;
+    snprintf(cur_line, sizeof cur_line, "%s", line);
+    cur = OSD_SAID;
+    until_ms = now_ms() + OSD_SAID_MS;
+}
+
 int osd_visible(void)
 {
     if (cur == OSD_NONE) return 0;
@@ -53,8 +66,9 @@ void osd_paint(shell_ctx *c, surface *s, shell_fonts *f)
     if (!osd_visible()) return;
 
     float k = (c->text_scale > 0.1f) ? c->text_scale : 1.f;
-    int w = (int)(360.f * k); if (w > s->w - 40) w = s->w - 40;
-    int h = (int)(96.f * k);
+    int w = (int)((cur == OSD_SAID ? 560.f : 360.f) * k);
+    if (w > s->w - 40) w = s->w - 40;
+    int h = (int)((cur == OSD_SAID ? 72.f : 96.f) * k);
     int x = (s->w - w) / 2;
     /* Low, but clear of the band: over the middle of what she is
      * reading is the one place it must not be. */
@@ -68,12 +82,20 @@ void osd_paint(shell_ctx *c, surface *s, shell_fonts *f)
     const char *label = cur == OSD_MUTED      ? "Sound off"
                       : cur == OSD_VOLUME     ? "Sound"
                       : cur == OSD_BRIGHTNESS ? "Screen"
+                      : cur == OSD_SAID       ? cur_line
                                               : "";
     font *ft = f->mid ? f->mid : f->small;
     int pad = (int)(18.f * k);
-    if (ft)
-        shell_text(s, ft, (float)(x + pad),
-                   (float)y + pad + font_ascent(ft), label, OSD_INK, 1.f);
+    if (ft) {
+        if (cur == OSD_SAID)
+            shell_text_elided(s, ft, (float)(x + pad),
+                              shell_baseline(ft, (float)y, (float)h),
+                              (float)(w - 2 * pad), label, OSD_INK, 1.f);
+        else
+            shell_text(s, ft, (float)(x + pad),
+                       (float)y + pad + font_ascent(ft), label, OSD_INK, 1.f);
+    }
+    if (cur == OSD_SAID) return;      /* words only: no number, no bar */
 
     /* The number as well as the bar. A bar alone cannot be compared
      * with the one she saw a moment ago. */

@@ -37,6 +37,7 @@
 #include "power.h"
 #include "osd.h"
 #include "settings.h"
+#include "bt.h"
 #include "run.h"
 #include "../aurwl/aurwl.h"
 #include "pad.h"
@@ -531,6 +532,9 @@ static int media_key(shell_ctx *c, int code)
         osd_show(m ? OSD_MUTED : OSD_VOLUME, power_volume());
         return 1;
     }
+    case KEY_SYSRQ:                 /* Print Screen, on every keyboard */
+        c->want_screenshot = 1;
+        return 1;
     case KEY_BRIGHTNESSUP:
     case KEY_BRIGHTNESSDOWN: {
         v = power_brightness();
@@ -989,6 +993,7 @@ int main(int argc, char **argv)
      * before it took it. See the transition handler in the loop. */
     int net_open_last = 0;
     int set_open_last = 0;
+    int bt_open_last  = 0;
     aurwl_win *net_prev_focus = NULL;
 
     while (!want_quit) {
@@ -1048,6 +1053,12 @@ int main(int argc, char **argv)
          * browser's address bar as well as into the box she is looking
          * at. The leave that goes with it is also what makes the
          * application let go of any key it thought was held. */
+        if (c.bt_open != bt_open_last) {
+            if (c.bt_open) bt_opened(&c);
+            else           bt_closed(&c);
+            bt_open_last = c.bt_open;
+            dirty = 1;
+        }
         if (c.settings_open != set_open_last) {
             if (c.settings_open) settings_opened(&c);
             else                 settings_closed(&c);
@@ -1079,6 +1090,7 @@ int main(int argc, char **argv)
          * nmcli is not the compositor's to collect, and there may be
          * no compositor at all. */
         net_reap();
+        bt_reap();
         run_reap();
         /* The indicator fades on a clock rather than on an event, so
          * the loop has to keep coming round while one is up. */
@@ -1108,6 +1120,17 @@ int main(int argc, char **argv)
          * fall back to the kernel -- a machine that cannot be shut down
          * is a machine she unplugs, and unplugging is how filesystems
          * get corrupted. */
+        /* She asked for whatever she is looking at to be closed. The
+         * band sets the flag and the host does it, because which
+         * window is "this" is the session's business. */
+        if (c.want_close_win) {
+            c.want_close_win = 0;
+            int w = (c.focus >= 0 && c.focus < c.n_wins) ? c.focus
+                  : (c.n_wins > 0 ? c.n_wins - 1 : -1);
+            if (w >= 0) shell_close_win(&c, w);
+            dirty = 1;
+        }
+
         if (c.want_power_off) {
             int what = c.want_power_off;
             c.want_power_off = 0;
@@ -1161,11 +1184,52 @@ int main(int argc, char **argv)
             session_paint_popups(&c, &body);
             net_paint(&c, fb, &f);
             settings_paint(&c, fb, &f);
+            bt_paint(&c, fb, &f);
             foot_paint(&c, fb, &f);
             /* Last, over everything including the band: it is the
              * answer to a key that was just pressed, and an answer
              * behind a window is not one. */
             osd_paint(&c, fb, &f);
+            /* A picture of the screen, taken HERE -- after everything
+             * has been painted and before it is handed to the display
+             * -- because that is the only moment the thing she is
+             * looking at exists in one buffer. The band and the panels
+             * included, which is the point: a picture that leaves out
+             * the thing she is asking about is not evidence.
+             *
+             * Not a developer's convenience. It is what a person is
+             * asked for when they telephone somebody about a computer,
+             * and this product's whole audience is people who will be
+             * doing exactly that. */
+            if (c.want_screenshot) {
+                c.want_screenshot = 0;
+                char dir[512], path[640];
+                const char *home = getenv("HOME");
+                if (home && *home) {
+                    snprintf(dir, sizeof dir, "%s/Pictures", home);
+                    mkdir(dir, 0755);
+                } else {
+                    snprintf(dir, sizeof dir, "%s", "/tmp");
+                }
+                time_t tt = time(NULL);
+                struct tm tm_;
+                char when[40] = "picture";
+                if (localtime_r(&tt, &tm_))
+                    strftime(when, sizeof when, "Screen %Y-%m-%d %H.%M.%S", &tm_);
+                snprintf(path, sizeof path, "%s/%s.png", dir, when);
+                /* It says WHERE it put it, because a file she cannot
+                 * find is a file that does not exist. */
+                if (png_write_rgb(path, fb->px, fb->w, fb->h) == 0) {
+                    char msg[200];
+                    snprintf(msg, sizeof msg,
+                             "Picture saved in your Pictures folder: %s", when);
+                    osd_say(msg);
+                } else {
+                    osd_say("That picture could not be saved.");
+                }
+                dirty = 1;
+            }
+
             paint_cursor(fb, c.mouse_x, c.mouse_y, cur_fill, cur_edge);
             /* A failed flip is not cosmetic: it means we no longer own
              * the display. Say so once rather than painting into the
@@ -1189,7 +1253,7 @@ int main(int argc, char **argv)
         /* Animating: poll briefly so the next frame is soon. Idle: wait
          * a full second; with damage tracking there is nothing to do
          * until an event arrives, and the clock is handled above. */
-        struct pollfd pfd[MAX_INPUT_DEV + 3];
+        struct pollfd pfd[MAX_INPUT_DEV + 4];
         int np = 0;
         for (int i = 0; i < in.n; i++) { pfd[np].fd = in.fd[i]; pfd[np].events = POLLIN; np++; }
         int noti = -1;
@@ -1206,6 +1270,11 @@ int main(int argc, char **argv)
             netslot = np; pfd[np].fd = netfd;
             pfd[np].events = POLLIN; np++;
         }
+        int btfd = -1, btslot = -1;
+        if ((btfd = bt_fd()) >= 0) {
+            btslot = np; pfd[np].fd = btfd;
+            pfd[np].events = POLLIN; np++;
+        }
         /* With a client on screen the wait is short: it is drawing, and
          * the next thing to happen is its next buffer, not a keystroke. */
         int wait_ms = (animating || osd_visible() || settings_dragging()) ? 8
@@ -1215,6 +1284,8 @@ int main(int argc, char **argv)
 
         if (netslot >= 0 && (pfd[netslot].revents & (POLLIN | POLLHUP | POLLERR)))
             if (net_pump(&c)) dirty = 1;
+        if (btslot >= 0 && (pfd[btslot].revents & (POLLIN | POLLHUP | POLLERR)))
+            if (bt_pump(&c)) dirty = 1;
 
         if (noti >= 0 && (pfd[noti].revents & POLLIN)) {
             char buf[4096];
@@ -1266,7 +1337,7 @@ int main(int argc, char **argv)
                      * doing it over the panel used to scroll the
                      * application hidden behind it. */
                     if ((ev.code == REL_WHEEL || ev.code == REL_HWHEEL) &&
-                        !c.net_open && !c.settings_open)
+                        !c.net_open && !c.settings_open && !c.bt_open)
                         session_scroll(&c, c.mouse_x, c.mouse_y,
                                        ev.code == REL_HWHEEL, -(double)ev.value);
                     clamp_pointer(&c, disp->width, disp->height);
@@ -1322,6 +1393,8 @@ int main(int argc, char **argv)
                         if (!pad_taken)
                             pad_taken = settings_click(&c, c.mouse_x, c.mouse_y);
                         if (!pad_taken)
+                            pad_taken = bt_click(&c, c.mouse_x, c.mouse_y);
+                        if (!pad_taken)
                             pad_taken = session_button(&c, c.mouse_x, c.mouse_y,
                                                        BTN_LEFT, 1);
                         if (!pad_taken && L->click) L->click(&c, c.mouse_x, c.mouse_y);
@@ -1366,7 +1439,10 @@ int main(int argc, char **argv)
                             taken = net_click(&c, c.mouse_x, c.mouse_y);
                             if (!taken)
                                 taken = settings_click(&c, c.mouse_x, c.mouse_y);
-                        } else if (!taken && (c.net_open || c.settings_open)) {
+                            if (!taken)
+                                taken = bt_click(&c, c.mouse_x, c.mouse_y);
+                        } else if (!taken && (c.net_open || c.settings_open ||
+                                              c.bt_open)) {
                             taken = 1;
                         }
 
@@ -1384,7 +1460,8 @@ int main(int argc, char **argv)
                         }
                         dirty = 1;
                     } else if ((ev.code == BTN_RIGHT || ev.code == BTN_MIDDLE) &&
-                               !c.net_open && !c.help_open) {
+                               !c.net_open && !c.help_open &&
+                               !c.settings_open && !c.bt_open) {
                         /* Not while a panel is covering the screen: a
                          * right-click on the wifi panel used to open a
                          * context menu in the hidden application and
@@ -1480,6 +1557,12 @@ int main(int argc, char **argv)
                             dirty = 1;
                             continue;
                         }
+                        if (c.bt_open) {
+                            if (ev.value) bt_key(&c, ev.code);
+                            c.key_text[0] = 0;
+                            dirty = 1;
+                            continue;
+                        }
                         if (!consumed && ev.value && L->key) L->key(&c, ev.code);
                         c.key_text[0] = 0;
                         dirty = 1;
@@ -1497,12 +1580,14 @@ int main(int argc, char **argv)
             foot_motion(&c, c.mouse_x, c.mouse_y);
             net_motion(&c, c.mouse_x, c.mouse_y);
             settings_motion(&c, c.mouse_x, c.mouse_y);
+            bt_motion(&c, c.mouse_x, c.mouse_y);
             session_motion(&c, c.mouse_x, c.mouse_y);
             if (L->motion) L->motion(&c, c.mouse_x, c.mouse_y);
         }
     }
 
     net_fini();
+    bt_fini();
     if (c.wl) aurwl_destroy(c.wl);
     for (int i = 0; i < in.n; i++) { ioctl(in.fd[i], EVIOCGRAB, 0); close(in.fd[i]); }
     if (in.notify_fd >= 0) close(in.notify_fd);

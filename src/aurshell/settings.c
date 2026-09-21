@@ -23,6 +23,7 @@ enum {
     R_SOUND,       /* volume                  */
     R_WORDS,       /* the text scale           */
     R_BATTERY,     /* a readout, not a control */
+    R_BT,          /* opens the headphones panel */
     R_TIME,        /* opens a page             */
     R_SHELL,       /* opens a page             */
     R_LOOK,        /* opens a page             */
@@ -504,6 +505,7 @@ static const char *row_name(int which)
     case R_SOUND:   return "How loud the sound is";
     case R_WORDS:   return "How big the words are";
     case R_BATTERY: return "Battery";
+    case R_BT:      return "Headphones and mice";
     case R_TIME:    return "The time and date";
     case R_SHELL:   return "How this computer works";
     case R_LOOK:    return "How it looks";
@@ -531,6 +533,9 @@ static void row_value(const shell_ctx *c, int which, char *out, size_t n)
                      S.bat.percent, S.bat.minutes);
         else
             snprintf(out, n, "%d%%", S.bat.percent);
+        break;
+    case R_BT:
+        snprintf(out, n, "%s", "Connect one without a cable");
         break;
     case R_TIME: {
         time_t t = time(NULL);
@@ -976,6 +981,13 @@ int settings_click(shell_ctx *c, int x, int y)
         }
         if (in_rect(g.rows[i], x, y)) {
             if (v.page != SET_PAGE_MAIN) { choose(c, from + i); return 1; }
+            /* Bluetooth is its own panel rather than a page here.
+             * It is the same act as joining a wifi -- find a thing,
+             * press it, wait -- so it is the same panel shape, and two
+             * screens that do the same kind of job must not behave
+             * differently. Settings is the index; the panel is the
+             * thing. */
+            if (which == R_BT) { c->settings_open = 0; c->bt_open = 1; }
             if (which == R_TIME)  { S.page = SET_PAGE_TIME;  S.first_row = 0;
                                     S.sel = -1; fill_page(c); }
             if (which == R_SHELL) { S.page = SET_PAGE_SHELL; S.first_row = 0;
@@ -1021,6 +1033,7 @@ int settings_key(shell_ctx *c, int k)
     }
     if (k == 28 && S.sel >= 0) {                              /* Enter */
         int which = row_at(&v, S.sel);
+        if (which == R_BT) { c->settings_open = 0; c->bt_open = 1; }
         if (which == R_TIME)  { S.page = SET_PAGE_TIME;  S.first_row = 0;
                                 S.sel = -1; fill_page(c); }
         if (which == R_SHELL) { S.page = SET_PAGE_SHELL; S.first_row = 0;

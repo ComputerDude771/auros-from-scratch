@@ -39,6 +39,7 @@
 #include "../src/aurshell/foot.h"
 #include "../src/aurshell/net.h"
 #include "../src/aurshell/settings.h"
+#include "../src/aurshell/bt.h"
 
 #define FLOOR 44
 
@@ -307,6 +308,63 @@ int main(void)
     band("settings locked down", 0, 0, 1);
     band("the network pinned as well", 0, 0, 0);
     band("a kiosk", 1, 0, 0);
+
+    printf("\nand the headphones panel, on every screen it has\n");
+    {
+        int before = checked;
+        quiet = 1;
+        static const struct { int w, h; } RES[] = {
+            { 1024, 600 }, { 1366, 768 }, { 1920, 1080 },
+        };
+        for (size_t r = 0; r < sizeof RES / sizeof RES[0]; r++)
+         for (size_t k = 0; k < sizeof SCALES / sizeof SCALES[0]; k++)
+          for (int page = 0; page < BT_PAGE_N; page++)
+           for (int tr = 0; tr < (page == BT_TROUBLE ? BTT_N : 1); tr++)
+            for (int nd = 0; nd <= 24; nd += (nd < 3 ? 3 : 21)) {
+                shell_ctx c; memset(&c, 0, sizeof c);
+                theme_t t = {0};
+                shell_theme_load(&c, &t);
+                c.allow_settings = 1;
+                c.text_scale = SCALES[k];
+                c.screen_w = RES[r].w;
+                c.screen_h = RES[r].h - foot_height(&c);
+                bt_view v = { page, tr, nd, 0 };
+                rect b[64];
+                int n = bt_targets(&c, c.screen_w, c.screen_h, &v, b, 64);
+                for (int i = 0; i < n; i++) {
+                    char nm[72];
+                    snprintf(nm, sizeof nm, "bt page %d, %d near, text %.0f%%",
+                             page, nd, (double)(SCALES[k] * 100.f));
+                    measure(nm, b[i], RES[r].w, RES[r].h);
+                }
+                for (int i = 0; i < n; i++) {
+                    for (int j = i + 1; j < n; j++) {
+                        int ox = !(b[i].x + b[i].w <= b[j].x ||
+                                   b[j].x + b[j].w <= b[i].x);
+                        int oy = !(b[i].y + b[i].h <= b[j].y ||
+                                   b[j].y + b[j].h <= b[i].y);
+                        if (ox && oy) {
+                            printf("    FAIL bt page %d: targets %d and %d "
+                                   "overlap at %dx%d\n", page, i + 1, j + 1,
+                                   RES[r].w, RES[r].h);
+                            fail++;
+                        }
+                    }
+                    if (b[i].x < 0 || b[i].y < 0 ||
+                        b[i].x + b[i].w > c.screen_w ||
+                        b[i].y + b[i].h > c.screen_h) {
+                        printf("    FAIL bt page %d: target %d is outside the "
+                               "panel at %dx%d\n", page, i + 1,
+                               RES[r].w, RES[r].h);
+                        fail++;
+                    }
+                }
+            }
+        quiet = 0;
+        printf("    %d measured across %d screens, every text size and\n",
+               checked - before, BT_PAGE_N);
+        printf("    every panel size, with nothing near and a room full\n");
+    }
 
     printf("\nand Settings, on every screen and every machine\n");
     {
