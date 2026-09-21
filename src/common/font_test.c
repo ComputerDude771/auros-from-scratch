@@ -450,6 +450,32 @@ static void exercise(font *f)
     free(c.px);
 }
 
+/* Find a table in the sfnt directory of a buffer, so corruption can be
+ * aimed at it. Random bytes scattered over a 600 KB file essentially
+ * never land on a CFF header or an INDEX offset array -- twenty-odd
+ * bytes each -- and those are precisely where a parser bug turns into a
+ * wild offset. Undirected fuzzing tests the charstring interpreter and
+ * almost nothing else. */
+static int find_tbl(const uint8_t *b, size_t n, const char *tag,
+                    size_t *off, size_t *len)
+{
+    if (n < 12) return 0;
+    unsigned nt = ((unsigned)b[4] << 8) | b[5];
+    if (nt > 512 || 12 + (size_t)nt * 16 > n) return 0;
+    for (unsigned i = 0; i < nt; i++) {
+        const uint8_t *e = b + 12 + (size_t)i * 16;
+        if (memcmp(e, tag, 4)) continue;
+        size_t to = ((size_t)e[8]  << 24) | ((size_t)e[9]  << 16)
+                  | ((size_t)e[10] <<  8) |  (size_t)e[11];
+        size_t tl = ((size_t)e[12] << 24) | ((size_t)e[13] << 16)
+                  | ((size_t)e[14] <<  8) |  (size_t)e[15];
+        if (to >= n || tl > n - to) return 0;
+        *off = to; *len = tl;
+        return 1;
+    }
+    return 0;
+}
+
 static int fuzz(const char *ttf, int iters)
 {
     FILE *fp = fopen(ttf, "rb");
@@ -469,7 +495,7 @@ static int fuzz(const char *ttf, int iters)
     for (int it = 0; it < iters; it++) {
         size_t len = (size_t)n;
         memcpy(buf, orig, len);
-        int mode = it % 4;
+        int mode = it % 5;
         if (mode == 0) {                       /* truncation */
             len = (size_t)(rnd() % (uint32_t)n);
         } else if (mode == 1) {                /* byte corruption */
@@ -481,7 +507,7 @@ static int fuzz(const char *ttf, int iters)
                 int k = 1 + (int)(rnd() % 32);
                 for (int i = 0; i < k; i++) buf[rnd() % len] = (uint8_t)rnd();
             }
-        } else {
+        } else if (mode == 3) {
             /* Leave the sfnt header and table directory intact so the
              * font still loads: corruption that never gets past
              * font_load() never reaches the glyph and cmap parsers,
@@ -491,6 +517,20 @@ static int fuzz(const char *ttf, int iters)
                 int k = 1 + (int)(rnd() % 512);
                 for (int i = 0; i < k; i++)
                     buf[keep + rnd() % (uint32_t)(len - keep)] = (uint8_t)rnd();
+            }
+        } else {
+            /* Aimed at whichever outline table this font has. The first
+             * few KiB of a `CFF ` table hold the header and the Name,
+             * Top DICT, String and Global Subr INDEXes -- every length,
+             * offSize and offset the container parser trusts -- and the
+             * head of `loca` plays the same role for TrueType. */
+            size_t to, tl;
+            if (find_tbl(buf, len, "CFF ", &to, &tl) ||
+                find_tbl(buf, len, "loca", &to, &tl)) {
+                if (tl > 8192) tl = 8192;
+                int k = 1 + (int)(rnd() % 24);
+                for (int i = 0; i < k && tl; i++)
+                    buf[to + rnd() % (uint32_t)tl] = (uint8_t)rnd();
             }
         }
         FILE *o = fopen(tmp, "wb");
@@ -564,20 +604,22 @@ static int twin(const char *fa, const char *fb, const char *out)
     hline(&cv, (int)y, 0x1A2030);
     y += 18.0f;
     font_draw(hdr, cv.px, cv.w, cv.h, 32.0f, y,
-              "4x zoom \xE2\x80\x94 counters and curve quality, A above B", ACC, 0.85f);
+              "3x zoom \xE2\x80\x94 counters and curve quality, A above B", ACC, 0.85f);
     y += 14.0f;
 
     for (int k = 0; k < 2; k++) {
         font *f = font_load(k ? fb : fa, 40.0f);
         if (!f) continue;
-        canvas s = canvas_new(300, 54, BG);
+        /* 400px of scratch at 3x is 1200 wide: the widest strip that
+         * still fits the sheet with its left margin intact. */
+        canvas s = canvas_new(400, 54, BG);
         if (s.px) {
             font_draw(f, s.px, s.w, s.h, 4.0f, 40.0f, "oeaBg@8%SR&",
                       k ? ACC : FG, 1.0f);
-            blit_zoom(&cv, 32, (int)y, &s, 4);
+            blit_zoom(&cv, 32, (int)y, &s, 3);
             free(s.px);
         }
-        y += 54 * 4 + 8;
+        y += 54 * 3 + 10;
         font_free(f);
     }
 

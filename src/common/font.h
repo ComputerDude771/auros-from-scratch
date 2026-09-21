@@ -1,16 +1,16 @@
-/* font.h — self-contained anti-aliased TrueType rasteriser.
+/* font.h — self-contained anti-aliased TrueType/OpenType rasteriser.
  *
  * The shell needs text before it needs a toolkit, and pulling FreeType
  * into the base system drags in a build-time dependency chain that the
- * ISO has no room for. This renders `glyf` outlines directly: sfnt
- * parsing, UTF-8, composite glyphs, kerning, and an exact-area scanline
- * rasteriser, in one .c file with no dependency beyond libm.
+ * ISO has no room for. This renders outlines directly: sfnt parsing,
+ * UTF-8, `glyf` quadratics with composite glyphs, `CFF ` cubics,
+ * kerning, and an exact-area scanline rasteriser, in one .c file with
+ * no dependency beyond libm.
  *
  * It deliberately does NOT do: hinting (the bytecode interpreter is a
- * VM we do not want to expose to untrusted fonts), CFF/OTF outlines
- * (`OTTO` files are rejected at load), GPOS, or shaping. Latin and
- * Cyrillic UI strings at 10-72px are the target; anything needing a
- * shaper is out of scope by design.
+ * VM we do not want to expose to untrusted fonts), GPOS, or shaping.
+ * Latin and Cyrillic UI strings at 10-72px are the target; anything
+ * needing a shaper is out of scope by design.
  *
  * Every offset inside a font file is attacker-controlled data, so each
  * read is bounds-checked against the file size. A corrupt font makes

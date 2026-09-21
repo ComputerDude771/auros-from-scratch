@@ -2452,7 +2452,9 @@ static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM wp, LPARAM lp)
         g_dpi  = dpi_for(h);
         fonts_make();
         dark_titlebar(h);
-        SetTimer(h, 1, 60, NULL);
+        /* The self-test drives its own clock so a slow emulated desktop
+         * cannot stretch a 7-second script into minutes. */
+        if (!g_selftest) SetTimer(h, 1, 60, NULL);
         return 0;
 
     case WM_SIZE:
@@ -2717,6 +2719,21 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
     UpdateWindow(h);
 
     MSG msg;
+    if (g_selftest) {
+        int quit = 0;
+        while (!quit) {
+            while (PeekMessageW(&msg, NULL, 0, 0, PM_REMOVE)) {
+                if (msg.message == WM_QUIT) { quit = 1; break; }
+                TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+            if (quit) break;
+            tick();
+            Sleep(10);
+        }
+        fonts_free();
+        return 0;
+    }
     while (GetMessageW(&msg, NULL, 0, 0) > 0) {
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
