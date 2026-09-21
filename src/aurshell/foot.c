@@ -40,10 +40,10 @@
 #define SCALE_MAX   2.00f
 #define SCALE_STEP  0.15f
 
-enum { B_HELP, B_NET, B_SMALLER, B_BIGGER, B_POWER, B_N };
+enum { B_HELP, B_NET, B_SETTINGS, B_SMALLER, B_BIGGER, B_POWER, B_N };
 
-static const char *LABEL[B_N] = { "Help", "Internet", "Smaller", "Bigger",
-                                  "Turn off" };
+static const char *LABEL[B_N] = { "Help", "Internet", "Settings", "Smaller",
+                                  "Bigger", "Turn off" };
 
 /* ── where the buttons are ──────────────────────────────────────────
  *
@@ -69,6 +69,10 @@ int foot_buttons(const shell_ctx *c, int sw, int sh, rect *out, int *which)
     int left[FOOT_MAX], right[FOOT_MAX], nl = 0, nr = 0;
     left[nl++] = B_HELP;
     if (!c->kiosk && c->allow_network) left[nl++] = B_NET;
+    /* A build that forbids changing settings does not get a button
+     * that refuses: it gets no button. A control that looks like a
+     * control and is not is the failure this product keeps finding. */
+    if (!c->kiosk && c->allow_settings) left[nl++] = B_SETTINGS;
     if (!c->kiosk) right[nr++] = B_POWER;
     if (c->allow_settings) { right[nr++] = B_BIGGER; right[nr++] = B_SMALLER; }
 
@@ -204,6 +208,8 @@ void foot_paint(shell_ctx *c, surface *s, shell_fonts *f)
                 "",
                 "Internet shows the wifi in range, so you can join yours.",
                 "",
+                "Settings has the brightness, the sound and the clock.",
+                "",
                 "Turn off shuts the computer down properly.",
                 "",
                 "Press Help again to close this.",
@@ -293,11 +299,15 @@ int foot_click(shell_ctx *c, int x, int y)
         switch (which[i]) {
         case B_HELP:
             c->help_open = !c->help_open;
-            if (c->help_open) c->net_open = 0;
+            if (c->help_open) { c->net_open = 0; c->settings_open = 0; }
             return 1;
         case B_NET:
             c->net_open = !c->net_open;
-            if (c->net_open) c->help_open = 0;
+            if (c->net_open) { c->help_open = 0; c->settings_open = 0; }
+            return 1;
+        case B_SETTINGS:
+            c->settings_open = !c->settings_open;
+            if (c->settings_open) { c->help_open = 0; c->net_open = 0; }
             return 1;
         case B_SMALLER:
             c->text_scale -= SCALE_STEP;

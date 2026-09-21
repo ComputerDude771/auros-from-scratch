@@ -9,6 +9,10 @@
  * It carries exactly what she had no way to do at all:
  *
  *   Help          one thing, same place, in all six archetypes
+ *   Settings      the brightness, the sound, the clock, and which of
+ *                 the six desktops this machine uses -- every one of
+ *                 which was decided when the image was built, by
+ *                 somebody else, for everybody
  *   Internet      her wifi. NetworkManager was installed and running
  *                 from the first image and there was not one pixel
  *                 between it and her, so a machine that came up off
@@ -52,7 +56,7 @@
  * tools/targets.c can check rule 4 against the real geometry rather
  * than against a number copied out of this file. FOOT_MAX is the most
  * it ever returns. */
-#define FOOT_MAX 5
+#define FOOT_MAX 6
 int  foot_buttons(const shell_ctx *c, int sw, int sh, rect *out, int *which);
 
 /* Rows to reserve at the bottom of the screen. 0 when the profile has

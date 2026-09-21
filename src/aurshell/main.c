@@ -34,6 +34,10 @@
 #include "session.h"
 #include "foot.h"
 #include "net.h"
+#include "power.h"
+#include "osd.h"
+#include "settings.h"
+#include "run.h"
 #include "../aurwl/aurwl.h"
 #include "pad.h"
 #include "kms.h"
@@ -492,10 +496,79 @@ static void load_policy(shell_ctx *c, const char *path)
              theme_str(&p, "blocked_apps", ""));
 }
 
+/* Volume, mute and brightness. Returns 1 if the key was one of them.
+ *
+ * Steps of five, not one: a key held down repeats, and a control that
+ * needs twenty presses to cross its range is one nobody uses. Five is
+ * twenty presses end to end, which is about right for a held key and
+ * not so coarse that the quiet end is unreachable. */
+#define STEP 5
+
+static int media_key(shell_ctx *c, int code)
+{
+    int v;
+    switch (code) {
+    case KEY_VOLUMEUP:
+        v = power_volume();
+        if (v < 0) return 1;                 /* no sound: swallow it
+                                              * anyway, or the key
+                                              * types into whatever is
+                                              * focused */
+        v += STEP; if (v > 100) v = 100;
+        power_volume_set(v);
+        osd_show(OSD_VOLUME, v);
+        return 1;
+    case KEY_VOLUMEDOWN:
+        v = power_volume();
+        if (v < 0) return 1;
+        v -= STEP; if (v < 0) v = 0;
+        power_volume_set(v);
+        osd_show(power_muted() ? OSD_MUTED : OSD_VOLUME, v);
+        return 1;
+    case KEY_MUTE: {
+        int m = !power_muted();
+        power_mute_set(m);
+        osd_show(m ? OSD_MUTED : OSD_VOLUME, power_volume());
+        return 1;
+    }
+    case KEY_BRIGHTNESSUP:
+    case KEY_BRIGHTNESSDOWN: {
+        v = power_brightness();
+        if (v < 0) return 1;                 /* no backlight */
+        v += (code == KEY_BRIGHTNESSUP) ? STEP : -STEP;
+        int got = power_brightness_set(v);
+        if (got >= 0) osd_show(OSD_BRIGHTNESS, got);
+        return 1;
+    }
+    default:
+        break;
+    }
+    (void)c;
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
-    const char *conf   = "/etc/auros/shell.conf";
-    const char *shellf = "/etc/auros/shell/active.shell";
+    /* HER copy first, the machine's second.
+     *
+     * /etc/auros belongs to whoever set the computer up, and it has to
+     * stay that way: policy.conf lives beside these and a user who
+     * could write it could lift their own lock-down. So the settings
+     * she is allowed to change are written into her own config
+     * directory and read from there in preference, which needs no
+     * privilege at all and is what every Unix desktop has always done.
+     *
+     * policy.conf is deliberately NOT in this list. */
+    char user_conf[512] = {0}, user_shell[512] = {0};
+    const char *home = getenv("HOME");
+    if (home && *home) {
+        snprintf(user_conf,  sizeof user_conf,  "%s/.config/auros/shell.conf", home);
+        snprintf(user_shell, sizeof user_shell, "%s/.config/auros/active.shell", home);
+    }
+    const char *conf   = (user_conf[0]  && access(user_conf,  R_OK) == 0)
+                         ? user_conf  : "/etc/auros/shell.conf";
+    const char *shellf = (user_shell[0] && access(user_shell, R_OK) == 0)
+                         ? user_shell : "/etc/auros/shell/active.shell";
     const char *policy = "/etc/auros/policy.conf";
     const char *card = NULL, *png_out = NULL;
     int png_w = 1600, png_h = 900, nopen = 0, once = 0, frames = 1;
@@ -915,11 +988,13 @@ int main(int argc, char **argv)
     /* The wifi panel as of the last pass, and what had the keyboard
      * before it took it. See the transition handler in the loop. */
     int net_open_last = 0;
+    int set_open_last = 0;
     aurwl_win *net_prev_focus = NULL;
 
     while (!want_quit) {
-        if (want_reload) {
+        if (want_reload || c.want_reload) {
             want_reload = 0;
+            c.want_reload = 0;
             theme_t nt = {0};
             if (theme_load(&nt, conf) == 0) {
                 t = nt;
@@ -973,6 +1048,13 @@ int main(int argc, char **argv)
          * browser's address bar as well as into the box she is looking
          * at. The leave that goes with it is also what makes the
          * application let go of any key it thought was held. */
+        if (c.settings_open != set_open_last) {
+            if (c.settings_open) settings_opened(&c);
+            else                 settings_closed(&c);
+            set_open_last = c.settings_open;
+            dirty = 1;
+        }
+        if (settings_step(&c)) dirty = 1;
         if (c.net_open != net_open_last) {
             if (c.net_open) {
                 net_opened(&c);
@@ -997,6 +1079,10 @@ int main(int argc, char **argv)
          * nmcli is not the compositor's to collect, and there may be
          * no compositor at all. */
         net_reap();
+        run_reap();
+        /* The indicator fades on a clock rather than on an event, so
+         * the loop has to keep coming round while one is up. */
+        if (osd_visible()) dirty = 1;
         if (c.wl) {
             aurwl_dispatch(c.wl);
             aurwl_reap(c.wl);
@@ -1060,7 +1146,12 @@ int main(int argc, char **argv)
             L->paint(&c, &body, &f, wall);
             session_paint_popups(&c, &body);
             net_paint(&c, fb, &f);
+            settings_paint(&c, fb, &f);
             foot_paint(&c, fb, &f);
+            /* Last, over everything including the band: it is the
+             * answer to a key that was just pressed, and an answer
+             * behind a window is not one. */
+            osd_paint(&c, fb, &f);
             paint_cursor(fb, c.mouse_x, c.mouse_y, cur_fill, cur_edge);
             /* A failed flip is not cosmetic: it means we no longer own
              * the display. Say so once rather than painting into the
@@ -1103,7 +1194,8 @@ int main(int argc, char **argv)
         }
         /* With a client on screen the wait is short: it is drawing, and
          * the next thing to happen is its next buffer, not a keystroke. */
-        int wait_ms = animating ? 8 : (c.n_wins > 0 ? 16 : 1000);
+        int wait_ms = (animating || osd_visible() || settings_dragging()) ? 8
+                    : (c.n_wins > 0 ? 16 : 1000);
         if (poll(pfd, np, wait_ms) <= 0) continue;
         (void)wlfd;
 
@@ -1160,7 +1252,7 @@ int main(int argc, char **argv)
                      * doing it over the panel used to scroll the
                      * application hidden behind it. */
                     if ((ev.code == REL_WHEEL || ev.code == REL_HWHEEL) &&
-                        !c.net_open)
+                        !c.net_open && !c.settings_open)
                         session_scroll(&c, c.mouse_x, c.mouse_y,
                                        ev.code == REL_HWHEEL, -(double)ev.value);
                     clamp_pointer(&c, disp->width, disp->height);
@@ -1214,6 +1306,8 @@ int main(int argc, char **argv)
                         int pad_taken = foot_click(&c, c.mouse_x, c.mouse_y);
                         if (!pad_taken) pad_taken = net_click(&c, c.mouse_x, c.mouse_y);
                         if (!pad_taken)
+                            pad_taken = settings_click(&c, c.mouse_x, c.mouse_y);
+                        if (!pad_taken)
                             pad_taken = session_button(&c, c.mouse_x, c.mouse_y,
                                                        BTN_LEFT, 1);
                         if (!pad_taken && L->click) L->click(&c, c.mouse_x, c.mouse_y);
@@ -1254,9 +1348,13 @@ int main(int argc, char **argv)
                          * up, so it answers before the desktop does --
                          * for the same reason the band answers before
                          * it. */
-                        if (!taken && ev.value)
+                        if (!taken && ev.value) {
                             taken = net_click(&c, c.mouse_x, c.mouse_y);
-                        else if (!taken && c.net_open) taken = 1;
+                            if (!taken)
+                                taken = settings_click(&c, c.mouse_x, c.mouse_y);
+                        } else if (!taken && (c.net_open || c.settings_open)) {
+                            taken = 1;
+                        }
 
                         /* A click that lands on an application's own
                          * pixels is that application's. Letting the
@@ -1313,6 +1411,23 @@ int main(int argc, char **argv)
                             aurwl_key_utf8(c.wl, ev.code, c.key_text,
                                            sizeof c.key_text);
 
+                        /* The keys that are printed on the keyboard
+                         * and pressed without being taught: volume,
+                         * mute and brightness. They are handled here,
+                         * before anything else gets a say, because
+                         * they belong to the machine rather than to
+                         * whatever is on screen -- the same reason
+                         * the band is tested before the archetype.
+                         *
+                         * A person turning the sound down while a
+                         * video is playing is not talking to the
+                         * video. */
+                        if (ev.value && media_key(&c, ev.code)) {
+                            c.key_text[0] = 0;
+                            dirty = 1;
+                            continue;
+                        }
+
                         /* session_key() ALWAYS runs, whatever is on
                          * screen, because aurwl_key() underneath it is
                          * the one place in this program where xkb
@@ -1345,6 +1460,12 @@ int main(int argc, char **argv)
                             dirty = 1;
                             continue;
                         }
+                        if (c.settings_open) {
+                            if (ev.value) settings_key(&c, ev.code);
+                            c.key_text[0] = 0;
+                            dirty = 1;
+                            continue;
+                        }
                         if (!consumed && ev.value && L->key) L->key(&c, ev.code);
                         c.key_text[0] = 0;
                         dirty = 1;
@@ -1361,6 +1482,7 @@ int main(int argc, char **argv)
             }
             foot_motion(&c, c.mouse_x, c.mouse_y);
             net_motion(&c, c.mouse_x, c.mouse_y);
+            settings_motion(&c, c.mouse_x, c.mouse_y);
             session_motion(&c, c.mouse_x, c.mouse_y);
             if (L->motion) L->motion(&c, c.mouse_x, c.mouse_y);
         }

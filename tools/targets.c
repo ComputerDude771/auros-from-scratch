@@ -38,6 +38,7 @@
 #include "../src/aurshell/shell.h"
 #include "../src/aurshell/foot.h"
 #include "../src/aurshell/net.h"
+#include "../src/aurshell/settings.h"
 
 #define FLOOR 44
 
@@ -193,6 +194,76 @@ static void wifi(const char *label, int allow_settings)
                     }
 }
 
+/* Every screen of Settings, on every machine it can be shown on: with
+ * a battery and without, with a backlight and without, with sound and
+ * without -- because which rows exist depends on what the machine has,
+ * and a row that only appears on a laptop is a row only a laptop can
+ * prove is big enough. */
+static void settings(const char *label)
+{
+    static const struct { int w, h; } RES[] = {
+        { 1024, 600 }, { 1366, 768 }, { 1920, 1080 },
+    };
+    printf("  %s\n", label);
+    for (size_t r = 0; r < sizeof RES / sizeof RES[0]; r++)
+     for (size_t k = 0; k < sizeof SCALES / sizeof SCALES[0]; k++)
+      for (int page = 0; page < SET_PAGE_N; page++)
+       for (int hw = 0; hw < 8; hw++)        /* battery/backlight/sound */
+        for (int first = 0; first < 2; first++) {
+            shell_ctx c; memset(&c, 0, sizeof c);
+            theme_t t = {0};
+            shell_theme_load(&c, &t);
+            c.allow_settings = c.allow_network = c.allow_theme_change = 1;
+            c.text_scale = SCALES[k];
+            c.screen_w = RES[r].w;
+            c.screen_h = RES[r].h - foot_height(&c);
+
+            set_view v;
+            memset(&v, 0, sizeof v);
+            v.page      = page;
+            v.battery   = (hw >> 0) & 1;
+            v.backlight = (hw >> 1) & 1;
+            v.sound     = (hw >> 2) & 1;
+            /* A list page with forty places on it, and the same page
+             * scrolled -- the paged view has its own geometry and the
+             * wifi panel's harness never measured one. */
+            v.n_rows    = (page == SET_PAGE_MAIN) ? 0 : 40;
+            v.first_row = first ? 20 : 0;
+
+            rect b[96];
+            int n = settings_targets(&c, c.screen_w, c.screen_h, &v, b, 96);
+            for (int i = 0; i < n; i++) {
+                char nm[80];
+                snprintf(nm, sizeof nm, "settings page %d, text %.0f%%",
+                         page, (double)(SCALES[k] * 100.f));
+                measure(nm, b[i], RES[r].w, RES[r].h);
+            }
+            for (int i = 0; i < n; i++) {
+                for (int j = i + 1; j < n; j++) {
+                    int ox = !(b[i].x + b[i].w <= b[j].x ||
+                               b[j].x + b[j].w <= b[i].x);
+                    int oy = !(b[i].y + b[i].h <= b[j].y ||
+                               b[j].y + b[j].h <= b[i].y);
+                    if (ox && oy) {
+                        printf("    FAIL settings page %d: targets %d and %d "
+                               "overlap at %dx%d text %.0f%%\n", page,
+                               i + 1, j + 1, RES[r].w, RES[r].h,
+                               (double)(SCALES[k] * 100.f));
+                        fail++;
+                    }
+                }
+                if (b[i].x < 0 || b[i].y < 0 ||
+                    b[i].x + b[i].w > c.screen_w ||
+                    b[i].y + b[i].h > c.screen_h) {
+                    printf("    FAIL settings page %d: target %d is outside "
+                           "the panel at %dx%d\n", page, i + 1,
+                           RES[r].w, RES[r].h);
+                    fail++;
+                }
+            }
+        }
+}
+
 int main(void)
 {
     printf("is everything she has to press big enough to press?\n");
@@ -200,6 +271,18 @@ int main(void)
     band("settings locked down", 0, 0, 1);
     band("the network pinned as well", 0, 0, 0);
     band("a kiosk", 1, 0, 0);
+
+    printf("\nand Settings, on every screen and every machine\n");
+    {
+        int before = checked;
+        quiet = 1;
+        settings("an ordinary machine");
+        quiet = 0;
+        printf("    %d measured across %d pages, every text size, every\n",
+               checked - before, SET_PAGE_N);
+        printf("    panel size, and every combination of battery, backlight\n");
+        printf("    and sound a machine can have\n");
+    }
 
     printf("\nand the wifi panel, on every screen it has\n");
     int before = checked;

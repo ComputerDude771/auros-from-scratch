@@ -189,6 +189,16 @@ typedef struct shell_ctx_s {
      * dragging the whole network module into every harness that links
      * the band. src/aurshell/net.c owns everything else about it. */
     int   net_open;
+    /* The settings panel, behind the band's Settings button. Only the
+     * FLAG lives here, for the same reason net_open does: foot.c can
+     * toggle it without dragging the whole panel into every harness
+     * that links the band. src/aurshell/settings.c owns the rest. */
+    int   settings_open;
+    /* Set by a panel that has changed something the shell reads from a
+     * file -- the archetype, the theme. The host notices it, rereads
+     * everything and rebuilds, which is the same path a SIGHUP takes.
+     * A panel does not get to reach into the host's state directly. */
+    int   want_reload;
     int   foot_hover;          /* which button, -1 for none             */
     int   no_foot;             /* a profile turned the band off         */
     int   want_power_off;      /* she pressed Turn off                  */

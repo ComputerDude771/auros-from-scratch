@@ -61,7 +61,8 @@ Internet: connect|org.freedesktop.NetworkManager.network-control
 Install a downloaded program|com.ubuntu.pkexec.gdebi.gtk
 Get more programs (the store)|org.freedesktop.packagekit.package-install
 Remove a program|org.freedesktop.packagekit.package-remove
-Update this computer|org.freedesktop.packagekit.system-update'
+Update this computer|org.freedesktop.packagekit.system-update
+Settings: where you are|org.freedesktop.timedate1.set-timezone'
 
 echo "can this computer do the things it offers to do?"
 echo

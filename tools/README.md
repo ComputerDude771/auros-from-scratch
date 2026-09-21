@@ -38,6 +38,18 @@ sh tools/plainwords.sh
 sh tools/permissions.sh    # needs a rootfs a build has produced
 sudo sh tools/failtest.sh  # needs a built image, qemu and OVMF
 
+cc -O2 -std=gnu11 -o /tmp/powertest tools/powertest.c src/aurshell/power.c \
+   src/aurshell/run.c && /tmp/powertest
+
+# every screen of Settings, against a laptop made out of directories
+cc -O2 -std=gnu11 -o /tmp/setsheet tools/setsheet.c src/aurshell/power.c \
+   src/aurshell/run.c src/aurshell/foot.c src/aurshell/draw.c \
+   src/aurshell/shellcommon.c src/aurshell/anim.c src/aurshell/layouts/*.c \
+   src/common/theme.c src/common/font.c src/common/png.c -lm
+AUROS_BACKLIGHT=/tmp/bl AUROS_POWER_SUPPLY=/tmp/ps \
+  AUROS_SHELLS=$PWD/shells AUROS_THEME_DIR=$PWD/themes \
+  /tmp/setsheet /tmp/nocturne.conf /tmp/set.png 1024 600 2.0
+
 cc -O2 -std=gnu11 -o /tmp/kiosktest tools/kiosktest.c src/aurshell/apps.c \
    src/aurshell/shellcommon.c src/aurshell/draw.c src/aurshell/anim.c \
    src/aurshell/layouts/*.c src/common/theme.c src/common/font.c -lm && /tmp/kiosktest
@@ -205,6 +217,24 @@ not text produce none; and the layout is read from
 already uses and `build/forge` already writes. Its last case feeds it a
 layout name that does not exist, because a typo in a profile must leave
 a keyboard in the wrong language rather than no keyboard at all.
+
+`powertest` and `setsheet` exist because every laptop this product is
+for has a battery and a backlight, and no build host has either. So the
+machines are made out of directories: the kernel publishes all of it as
+small files, and a tree of small files is a laptop as far as this code
+is concerned. The cases are the ones that are wrong on real hardware —
+two batteries, a full battery on the mains (plugged in and *not*
+charging, which is not the same sentence), an empty battery bay
+reporting zeros that must not read as a flat battery, a panel that
+counts to 96000 and one that counts to 7, and a laptop exposing both a
+real panel control and the firmware's seven-step version of it, where
+picking the wrong one is how a brightness slider moves and changes
+nothing.
+
+`setsheet` earned itself on its first render: the percentage on each
+slider was painted straight through the `+` button, the archetype and
+theme lists came up empty, and a machine set to UTC — which every
+shipped image is — showed forty cities with nothing marked as current.
 
 `failtest.sh` checks the one screen in this product that only appears
 when everything else has gone wrong, the only way it can be checked: by

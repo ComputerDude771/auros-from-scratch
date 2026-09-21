@@ -907,6 +907,7 @@ polkit.addRule(function(action, subject) {
     case "org.freedesktop.udisks2.filesystem-mount":
     case "org.freedesktop.udisks2.filesystem-mount-system":
     case "org.freedesktop.udisks2.eject-media":
+    case "org.freedesktop.timedate1.set-timezone":
 $install_cases
 $net_cases
         return polkit.Result.YES;
