@@ -241,6 +241,24 @@ static inline float sd_rr(float px, float py, float cx, float cy,
     return sqrtf(ax * ax + ay * ay) + m - r;
 }
 
+/* One horizontal run of constant coverage. The rounded-rect fill below
+ * routes everything that is not within a corner through here, which is
+ * what keeps a full-window repaint cheap on the ten-year-old PCs this
+ * installer exists for. */
+static inline void span(int py, int xa, int xb, uint32_t col, float a)
+{
+    if (py < g_clip.top || py >= g_clip.bottom) return;
+    if (xa < g_clip.left)  xa = g_clip.left;
+    if (xb > g_clip.right) xb = g_clip.right;
+    if (xa >= xb || a <= 0.003f) return;
+    if (a >= 0.997f) {
+        uint32_t *p = &g_px[(size_t)py * (size_t)g_mw + (size_t)xa];
+        for (int i = xb - xa; i > 0; i--) *p++ = col;
+        return;
+    }
+    for (int x = xa; x < xb; x++) blend_px(x, py, col, a);
+}
+
 static void fill_rr(float x, float y, float w, float h, float r,
                     uint32_t col, float alpha)
 {
@@ -250,19 +268,46 @@ static void fill_rr(float x, float y, float w, float h, float r,
     if (r > hw) r = hw;
     if (r > hh) r = hh;
     float cx = x + hw, cy = y + hh;
+
     int x0 = (int)floorf(x) - 1, x1 = (int)ceilf(x + w) + 1;
     int y0 = (int)floorf(y) - 1, y1 = (int)ceilf(y + h) + 1;
     if (x0 < g_clip.left) x0 = g_clip.left;
     if (y0 < g_clip.top)  y0 = g_clip.top;
     if (x1 > g_clip.right)  x1 = g_clip.right;
     if (y1 > g_clip.bottom) y1 = g_clip.bottom;
-    for (int py = y0; py < y1; py++)
-        for (int px = x0; px < x1; px++) {
-            float d = sd_rr((float)px + 0.5f, (float)py + 0.5f, cx, cy, hw, hh, r);
-            blend_px(px, py, col, clampf(0.5f - d, 0.f, 1.f) * alpha);
+
+    int m  = (int)ceilf(r) + 1;
+    int mx0 = (int)ceilf(x)  + m, mx1 = (int)floorf(x + w) - m;
+    int my0 = (int)ceilf(y)  + m, my1 = (int)floorf(y + h) - m;
+
+    for (int py = y0; py < y1; py++) {
+        float fy = (float)py + 0.5f;
+        if (py >= my0 && py < my1) {
+            /* straight part: coverage depends on x alone */
+            for (int px = x0; px < x1 && px < mx0; px++)
+                blend_px(px, py, col,
+                         clampf(0.5f - (fabsf((float)px + 0.5f - cx) - hw), 0.f, 1.f) * alpha);
+            span(py, mx0 > x0 ? mx0 : x0, mx1 < x1 ? mx1 : x1, col, alpha);
+            for (int px = mx1 > x0 ? mx1 : x0; px < x1; px++)
+                blend_px(px, py, col,
+                         clampf(0.5f - (fabsf((float)px + 0.5f - cx) - hw), 0.f, 1.f) * alpha);
+        } else {
+            /* corner band: SDF at the ends, flat coverage in between */
+            for (int px = x0; px < x1 && px < mx0; px++)
+                blend_px(px, py, col,
+                         clampf(0.5f - sd_rr((float)px + 0.5f, fy, cx, cy, hw, hh, r),
+                                0.f, 1.f) * alpha);
+            float covy = clampf(0.5f - (fabsf(fy - cy) - hh), 0.f, 1.f);
+            span(py, mx0 > x0 ? mx0 : x0, mx1 < x1 ? mx1 : x1, col, covy * alpha);
+            for (int px = mx1 > x0 ? mx1 : x0; px < x1; px++)
+                blend_px(px, py, col,
+                         clampf(0.5f - sd_rr((float)px + 0.5f, fy, cx, cy, hw, hh, r),
+                                0.f, 1.f) * alpha);
         }
+    }
 }
 
+/* Only the four border strips are visited, never the interior. */
 static void stroke_rr(float x, float y, float w, float h, float r,
                       float t, uint32_t col, float alpha)
 {
@@ -272,18 +317,34 @@ static void stroke_rr(float x, float y, float w, float h, float r,
     if (r > hw) r = hw;
     if (r > hh) r = hh;
     float cx = x + hw, cy = y + hh, ht = t * 0.5f;
+
     int x0 = (int)floorf(x - t) - 1, x1 = (int)ceilf(x + w + t) + 1;
     int y0 = (int)floorf(y - t) - 1, y1 = (int)ceilf(y + h + t) + 1;
     if (x0 < g_clip.left) x0 = g_clip.left;
     if (y0 < g_clip.top)  y0 = g_clip.top;
     if (x1 > g_clip.right)  x1 = g_clip.right;
     if (y1 > g_clip.bottom) y1 = g_clip.bottom;
-    for (int py = y0; py < y1; py++)
-        for (int px = x0; px < x1; px++) {
-            float d = fabsf(sd_rr((float)px + 0.5f, (float)py + 0.5f,
-                                  cx, cy, hw, hh, r)) - ht;
-            blend_px(px, py, col, clampf(0.5f - d, 0.f, 1.f) * alpha);
+
+    int band = (int)ceilf(r + t) + 2;
+    int ytop = (int)ceilf(y) + band, ybot = (int)floorf(y + h) - band;
+    int xl   = (int)ceilf(x) + band, xr   = (int)floorf(x + w) - band;
+
+    for (int py = y0; py < y1; py++) {
+        float fy = (float)py + 0.5f;
+        int edge_row = (py < ytop || py >= ybot);
+        if (edge_row) {
+            for (int px = x0; px < x1; px++) {
+                float d = fabsf(sd_rr((float)px + 0.5f, fy, cx, cy, hw, hh, r)) - ht;
+                blend_px(px, py, col, clampf(0.5f - d, 0.f, 1.f) * alpha);
+            }
+        } else {
+            for (int px = x0; px < x1; px++) {
+                if (px >= xl && px < xr) { px = xr - 1; continue; }
+                float d = fabsf(fabsf((float)px + 0.5f - cx) - hw) - ht;
+                blend_px(px, py, col, clampf(0.5f - d, 0.f, 1.f) * alpha);
+            }
         }
+    }
 }
 
 /* The AurOS mark. Drawn, not typed: a missing glyph in a substituted
@@ -2384,6 +2445,20 @@ static void tick(void)
      * then keep pressing Enter and see how far the wizard will go. On a
      * machine preflight refuses, the answer must stay at BLOCKED. */
     if (g_selftest) {
+        static DWORD t0;
+        if (!t0) t0 = GetTickCount();
+        if (g_ticks % 10 == 0) {
+            char pp[MAX_PATH + 40];
+            _snprintf(pp, sizeof pp - 1, "%s/progress.txt", g_selftest_dir);
+            pp[sizeof pp - 1] = 0;
+            FILE *pf = fopen(pp, "w");
+            if (pf) {
+                fprintf(pf, "tick=%d ms=%lu page=%d paints=%d pf_state=%ld\n",
+                        g_ticks, (unsigned long)(GetTickCount() - t0),
+                        (int)g_page, g_paints, (long)g_pf_state);
+                fclose(pf);
+            }
+        }
         if (g_ticks == 10 || (g_ticks >= 70 && g_ticks <= 110 && g_ticks % 6 == 0))
             PostMessageW(g_hwnd, WM_KEYDOWN, VK_RETURN, 0);
         if (g_ticks == 60) {

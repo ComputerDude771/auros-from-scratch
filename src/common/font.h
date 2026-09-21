@@ -8,9 +8,11 @@
  * no dependency beyond libm.
  *
  * It deliberately does NOT do: hinting (the bytecode interpreter is a
- * VM we do not want to expose to untrusted fonts), GPOS, or shaping.
- * Latin and Cyrillic UI strings at 10-72px are the target; anything
- * needing a shaper is out of scope by design.
+ * VM we do not want to expose to untrusted fonts), `CFF2` variable
+ * fonts (a different charstring dialect behind the same containers --
+ * detected and refused rather than misparsed), GPOS, or shaping. Latin
+ * and Cyrillic UI strings at 10-72px are the target; anything needing a
+ * shaper is out of scope by design.
  *
  * Every offset inside a font file is attacker-controlled data, so each
  * read is bounds-checked against the file size. A corrupt font makes
@@ -24,9 +26,16 @@
 
 typedef struct font font;
 
-/* Load a TrueType file and fix the size at `px` pixels per em. Size is
+/* Load a font file and fix the size at `px` pixels per em. Size is
  * baked in at load because the glyph cache holds rasterised bitmaps;
  * two sizes means two font handles, which is what a UI wants anyway.
+ *
+ * .ttf, .otf and .ttc all go through this one call and behave
+ * identically afterwards: which outline format a file uses is decided
+ * from its tables, never from its extension, and never surfaces here.
+ * Nothing a caller can ask distinguishes a `glyf` font from a `CFF `
+ * one, which is the point -- the theme names a font, not a format.
+ *
  * Returns NULL for an unreadable, unsupported or malformed file. */
 font *font_load(const char *path, float px);
 void  font_free(font *f);
