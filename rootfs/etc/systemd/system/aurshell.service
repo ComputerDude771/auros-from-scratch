@@ -62,11 +62,23 @@ PAMName=aurshell
 ExecStart=/usr/bin/dbus-run-session -- /usr/bin/aurshell
 
 # A Wayland socket has to live somewhere a client can find it, and a
-# system service gets no XDG_RUNTIME_DIR from anybody. Without this the
-# compositor has nowhere to bind and not one application can start.
+# system service gets no XDG_RUNTIME_DIR from anybody. This unit used
+# to answer that with Environment=XDG_RUNTIME_DIR=/run/auros.
+#
+# That is no longer the right answer, and it was quietly costing us
+# more than the Wayland socket. Now that PAMName= above gives this
+# service a real login session, logind creates /run/user/<uid> and
+# tells us about it -- and that is where the REST of the desktop's
+# sockets live. pipewire's is the one that matters: the sound server
+# is started by the user's own systemd, puts its socket there, and
+# nothing that looked in /run/auros was ever going to find it. The
+# machine had sound and no way to reach it.
+#
+# So the override is gone and PAM's answer is used. RuntimeDirectory
+# stays, because aurshell falls back to /run/auros if there is no
+# session at all, and the directory has to exist for that to work.
 RuntimeDirectory=auros
 RuntimeDirectoryMode=0700
-Environment=XDG_RUNTIME_DIR=/run/auros
 
 # The shell owns the display and reads evdev directly, so it needs the
 # tty and these groups rather than a seat from a display manager.

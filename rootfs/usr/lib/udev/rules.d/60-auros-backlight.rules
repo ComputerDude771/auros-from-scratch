@@ -1,0 +1,23 @@
+# Let the desktop change the brightness of its own screen.
+#
+# /sys/class/backlight/*/brightness is root's. Without this the shell
+# reads the current brightness perfectly well, draws a control for it,
+# and then cannot write -- a slider that moves and changes nothing,
+# which is the exact failure this product keeps finding in itself.
+#
+# The group is `video`, which aurshell.service already carries in its
+# SupplementaryGroups= for the same reason it carries `input`: the
+# requirement belongs to the service, not to whoever happens to run it.
+#
+# This is what every desktop Linux does; systemd ships the same rule
+# for `leds`. It is written here rather than left to a package because
+# the package that usually provides it is part of a desktop environment
+# this product does not install.
+ACTION=="add", SUBSYSTEM=="backlight", \
+  RUN+="/bin/chgrp video /sys/class/backlight/%k/brightness", \
+  RUN+="/bin/chmod g+w /sys/class/backlight/%k/brightness"
+
+# Keyboard backlights too, on the machines that have one.
+ACTION=="add", SUBSYSTEM=="leds", KERNEL=="*kbd_backlight", \
+  RUN+="/bin/chgrp video /sys/class/leds/%k/brightness", \
+  RUN+="/bin/chmod g+w /sys/class/leds/%k/brightness"

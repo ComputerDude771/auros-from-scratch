@@ -841,17 +841,28 @@ int main(int argc, char **argv)
     c.screen_w = disp->width;
     c.screen_h = disp->height - foot_height(&c);
 
-    /* A Wayland socket has to live somewhere a client can find it. The
-     * shell is a system service, not a user session, so nothing has set
-     * XDG_RUNTIME_DIR for us -- and without it aurwl has nowhere to
-     * bind and not one application can start. */
-    if (!getenv("XDG_RUNTIME_DIR")) {
+    /* A Wayland socket has to live somewhere a client can find it, and
+     * so does the sound server's, and the portal's, and everything
+     * else a desktop talks to. Normally logind has already made
+     * /run/user/<uid> and put it in the environment, which is where
+     * every one of those things looks -- so the right thing is to use
+     * what we were given and not invent our own.
+     *
+     * This is only a fallback for the case where nothing gave us one:
+     * a build with no session, or a PAM stack that did not run. The
+     * shell still comes up; it is the other half of the desktop that
+     * quietly will not be found. */
+    const char *rt = getenv("XDG_RUNTIME_DIR");
+    if (!rt || !*rt) {
         char rd[64];
         snprintf(rd, sizeof rd, "/run/user/%u", (unsigned)getuid());
         if (mkdir(rd, 0700) < 0 && errno != EEXIST)
-            snprintf(rd, sizeof rd, "%s", "/tmp");
+            snprintf(rd, sizeof rd, "%s", "/run/auros");
+        if (access(rd, W_OK) < 0) snprintf(rd, sizeof rd, "%s", "/tmp");
         setenv("XDG_RUNTIME_DIR", rd, 1);
-        fprintf(stderr, "aurshell: XDG_RUNTIME_DIR was unset — using %s\n", rd);
+        fprintf(stderr, "aurshell: no XDG_RUNTIME_DIR — using %s. Sound and "
+                        "anything else in the user session will not be "
+                        "found.\n", rd);
     }
     c.wl = aurwl_create(disp->width, disp->height, disp->refresh_mhz);
     if (c.wl) {
