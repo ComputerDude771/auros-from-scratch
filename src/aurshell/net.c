@@ -34,6 +34,8 @@ static struct {
     int   n_saved;
 
     int   have_wifi;             /* 1 yes, 0 no, -1 no answer         */
+    char  wifi_dev[32];          /* what the radio is called, so that
+                                  * Stop can actually stop            */
     int   asked_devices;         /* we have looked at least once      */
     int   scanning;              /* the slow look is still running    */
 
@@ -217,9 +219,10 @@ static int named_in(const char *name, const char saved[][NET_NAME_MAX],
  * of its own". On first boot, in the house the machine was carried
  * into, opening the panel a few seconds early told a laptop with a
  * wifi card that it had none, and offered nothing but Close. */
-int net_parse_devices(char *terse)
+int net_parse_devices(char *terse, char *dev, size_t devn)
 {
     int have_wifi = 0, lines = 0;
+    if (dev && devn) dev[0] = 0;
     char *save = NULL;
     for (char *line = strtok_r(terse, "\n", &save); line;
          line = strtok_r(NULL, "\n", &save)) {
@@ -228,7 +231,12 @@ int net_parse_devices(char *terse)
         char *f[4];
         if (split_t(line, f, 4) < 2) continue;
         lines++;
-        if (!strcmp(f[1], "wifi")) have_wifi = 1;
+        if (!strcmp(f[1], "wifi")) {
+            have_wifi = 1;
+            /* The first one. A machine with two radios is rare and the
+             * first is the one nmcli would have used anyway. */
+            if (dev && devn && !dev[0]) snprintf(dev, devn, "%s", f[0]);
+        }
     }
     /* Not one device at all, not even loopback: nmcli said nothing we
      * can read, which is not the same as "no wifi". */
@@ -315,7 +323,7 @@ static int is_saved(const char *name)
 
 static void parse_devices(void)
 {
-    N.have_wifi = net_parse_devices(N.out);
+    N.have_wifi = net_parse_devices(N.out, N.wifi_dev, sizeof N.wifi_dev);
     N.asked_devices = 1;
 }
 
@@ -1120,6 +1128,16 @@ static void do_action(shell_ctx *c, int a)
         break;
     case A_STOP:
         child_stop();
+        /* Killing nmcli does not cancel the join: NetworkManager was
+         * asked and goes on trying, so she would press Stop, be put
+         * back on the list, and find the machine connected anyway. A
+         * button called Stop has to stop the thing it is under. */
+        if (N.wifi_dev[0]) {
+            const char *off[] = { "nmcli", "device", "disconnect",
+                                  N.wifi_dev, NULL };
+            child_start(J_RADIO, off);   /* its result is not read; the
+                                          * next list says the truth */
+        }
         N.page = P_LIST;
         break;
     }
@@ -1190,7 +1208,18 @@ int net_key(shell_ctx *c, int k)
             }
             return 1;
         }
+        /* The keymap's answer, or the plain table when there is no
+         * keymap to ask. A machine whose compositor failed to start
+         * can run no applications at all, and the one thing still
+         * worth doing on it is getting it onto the network so somebody
+         * can repair it -- which needs a box that accepts characters. */
+        char one[2];
         const char *t = c->key_text;
+        if (!*t) {
+            char ch = shell_key_char(k);
+            one[0] = ch; one[1] = 0;
+            t = ch ? one : "";
+        }
         size_t len = strlen(t);
         if (len && N.pw_n + (int)len < PW_MAX - 1) {
             memcpy(N.pw + N.pw_n, t, len);

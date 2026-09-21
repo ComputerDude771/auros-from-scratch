@@ -132,7 +132,12 @@ typedef struct {
 int net_parse_list(char *terse, net_ap *out, int max,
                    const char saved[][NET_NAME_MAX], int n_saved);
 int net_parse_saved(char *terse, char out[][NET_NAME_MAX], int max);
-int net_parse_devices(char *terse);         /* 1 if this machine has wifi */
+/* 1 there is wifi, 0 there is none, -1 the machine did not answer --
+ * three answers and not two, because reading "nmcli failed" as "this
+ * computer has no wifi" told a laptop with a good card that it had
+ * none. `dev` receives the radio's name, which is what lets Stop
+ * actually stop a join. */
+int net_parse_devices(char *terse, char *dev, size_t devn);
 int net_parse_trouble(const char *output);  /* one of T_*                 */
 
 /* ── measuring it ───────────────────────────────────────────────────

@@ -275,6 +275,13 @@ void shell_text_tracked(surface *s, font *f, float x, float y_baseline,
 float shell_text_tracked_w(font *f, const char *t, float track);
 /* Baseline that vertically centres text in a band of height h at y. */
 float shell_baseline(font *f, float y, float h);
+
+/* What an evdev key types when there is no keymap to ask -- the
+ * preview renderer, the harnesses, and the fallback mode on a real
+ * machine whose compositor could not start. Unshifted US QWERTY, 0 for
+ * keys that are not text. Anything with a keymap reads c->key_text
+ * instead and never calls this. */
+char shell_key_char(int evdev_code);
 void shell_clock(char *hm, size_t hm_n, char *date, size_t date_n);
 
 void shell_theme_load(shell_ctx *c, const theme_t *t);

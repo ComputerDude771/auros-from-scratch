@@ -12,6 +12,39 @@
 
 float shell_text_w(font *f, const char *t) { return (f && t) ? font_text_width(f, t) : 0.f; }
 
+/* ── what a key types when there is no keymap to ask ───────────────
+ *
+ * A real session fills c->key_text from the keymap the machine is
+ * actually configured with, and everything that reads typing prefers
+ * it. This is the answer when there is nothing to ask: the preview
+ * renderer, the contact sheet, the harnesses -- and, on a real machine,
+ * the fallback mode where the compositor could not start at all.
+ *
+ * That last one is why this is here rather than private to one
+ * archetype. A machine whose compositor failed can run no applications,
+ * and the one thing still worth doing on it is getting it onto the
+ * network so it can be repaired -- which needs a password field that
+ * accepts characters. The wifi panel could not type into one, because
+ * the only table in the product was a static in dock.c.
+ *
+ * It is unshifted US QWERTY and it is not trying to be more. A machine
+ * with a keymap does not consult it.
+ */
+char shell_key_char(int evdev_code)
+{
+    static const struct { int base; const char *row; } R[] = {
+        {  2, "1234567890-=" }, { 16, "qwertyuiop[]" },
+        { 30, "asdfghjkl;'"  }, { 44, "zxcvbnm,./"   },
+    };
+    if (evdev_code == 57) return ' ';
+    for (size_t i = 0; i < sizeof R / sizeof R[0]; i++) {
+        int len = (int)strlen(R[i].row);
+        if (evdev_code >= R[i].base && evdev_code < R[i].base + len)
+            return R[i].row[evdev_code - R[i].base];
+    }
+    return 0;
+}
+
 void shell_text(surface *s, font *f, float x, float y, const char *t, uint32_t c, float a)
 {
     if (f && t && *t) font_draw(f, s->px, s->w, s->h, s->stride, x, y, t, c, a);

@@ -40,6 +40,10 @@
 
 #include "../src/aurshell/net.h"
 
+/* The device name is not what these cases are about. */
+static char devbuf[32];
+#define net_parse_devices_T(x) net_parse_devices((x), devbuf, sizeof devbuf)
+
 static int fail = 0, checked = 0;
 
 static void ok(const char *what, int cond)
@@ -133,23 +137,31 @@ int main(void)
 
     /* ── is there wifi in this machine at all ────────────────────── */
     printf("\n  what this computer has\n");
-    ok("a laptop with wifi", net_parse_devices(dup_(
+    ok("a laptop with wifi", net_parse_devices_T(dup_(
         "wlp3s0:wifi:connected\n"
         "enp0s25:ethernet:unavailable\n"
         "lo:loopback:unmanaged\n", buf, sizeof buf)) == 1);
-    ok("a desktop with only a cable", net_parse_devices(dup_(
+    ok("a desktop with only a cable", net_parse_devices_T(dup_(
         "enp0s25:ethernet:connected\n"
         "lo:loopback:unmanaged\n", buf, sizeof buf)) == 0);
     /* Three answers, not two. "nmcli did not answer" must never be
      * read as "this computer has no wifi": on first boot she can open
      * the panel before NetworkManager has finished starting, and a
      * laptop with a perfectly good card would be told it had none. */
-    ok("a machine that reports nothing at all", net_parse_devices(dup_(
+    ok("a machine that reports nothing at all", net_parse_devices_T(dup_(
         "", buf, sizeof buf)) == -1);
-    ok("the network service is not running yet", net_parse_devices(dup_(
+    /* Stop depends on knowing what the radio is called: killing nmcli
+     * does not cancel a join NetworkManager has already been asked to
+     * make, so Stop disconnects the device by name. */
+    net_parse_devices(dup_("enp0s25:ethernet:connected\n"
+                           "wlp3s0:wifi:disconnected\n", buf, sizeof buf),
+                      devbuf, sizeof devbuf);
+    ok("the radio's name comes back with the answer",
+       !strcmp(devbuf, "wlp3s0"));
+    ok("the network service is not running yet", net_parse_devices_T(dup_(
         "Error: NetworkManager is not running.\n", buf, sizeof buf)) == -1);
     ok("a laptop whose wifi is switched off still HAS wifi",
-       net_parse_devices(dup_(
+       net_parse_devices_T(dup_(
         "wlp3s0:wifi:unavailable\n"
         "lo:loopback:unmanaged\n", buf, sizeof buf)) == 1);
 
