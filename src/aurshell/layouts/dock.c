@@ -647,10 +647,70 @@ static void find_open(shell_ctx *c, int open)
     tween_to(&p->veil, open ? 1.f : 0.f, 0.18f, EASE_OUT_CUBIC);
 }
 
+/* Which dock slot is under (x,y)? -1 for none.
+ *
+ * ONE function, called by both motion and click. They used to test
+ * slightly different bands: motion accepted a 4px lead-in above the
+ * strip so an icon starts growing as the pointer arrives, and click did
+ * not -- so that 4px row magnified an icon and then swallowed the click
+ * without doing anything. That is the exact row a person hits when they
+ * shove the pointer at the dock and click the moment it responds, which
+ * is how docks are used. Found by the affordance check in
+ * tools/hittest.c, which flags anything that highlights and then
+ * ignores a click.
+ *
+ * `band` says whether (x,y) is on the strip at all, so the strip can
+ * still swallow clicks that land between icons. */
+#define DOCK_LEADIN 4
+static int dock_hit(shell_ctx *c, int sw, int sh, int x, int y, int *band)
+{
+    rect strip = dock_rect(c, sw, sh, -1);
+    int on = (y >= strip.y - DOCK_LEADIN && y < strip.y + strip.h &&
+              x >= strip.x && x < strip.x + strip.w);
+    if (band) *band = on;
+    if (!on) return -1;
+
+    dock_slot sl[MAX_SLOTS];
+    int n = dock_slots(c, sl);
+    for (int i = 0; i < n; i++) {
+        rect r = dock_rect(c, sw, sh, i);
+        if (x >= r.x && x < r.x + r.w) return i;
+    }
+    return -1;
+}
+
+/* Both sides of this copy live inside the same shell_ctx, so the
+ * compiler cannot prove they do not overlap and warns about snprintf.
+ * They never do -- they are different members. */
+static void copy_str(char *dst, size_t n, const char *src)
+{
+    size_t i = 0;
+    while (i + 1 < n && src[i]) { dst[i] = src[i]; i++; }
+    if (n) dst[i] = '\0';
+}
+
+/* Activate a favourite.
+ *
+ * If it is running, raise it. If it is NOT running, START it -- which
+ * is the primary action of this entire archetype and used to be a
+ * `return` with a comment saying a real shell would do it here. The
+ * dock's promise, in docs/SHELLS.md, is a strip of your programs
+ * "always in the same order, WHETHER RUNNING OR NOT, so the thing you
+ * want is always in the same spot". Clicking a favourite that was not
+ * already open did nothing at all, silently, while the icon obligingly
+ * magnified under the pointer to say it could be clicked. */
 static void raise_app(shell_ctx *c, int app)
 {
+    if (app < 0 || app >= c->n_apps) return;
     int wi = app_window(c, app);
-    if (wi < 0) return;                 /* not running: a real shell spawns it here */
+    if (wi < 0) {
+        if (c->n_wins >= SHELL_MAX_WINS) return;
+        wi = c->n_wins++;
+        memset(&c->wins[wi], 0, sizeof c->wins[wi]);
+        c->wins[wi].app = app;
+        copy_str(c->wins[wi].title,    sizeof c->wins[wi].title,    c->apps[app].name);
+        copy_str(c->wins[wi].subtitle, sizeof c->wins[wi].subtitle, c->apps[app].hint);
+    }
     c->wins[wi].minimised = 0;
     c->focus = wi;
 }
@@ -681,20 +741,30 @@ static int l_click(shell_ctx *c, int x, int y)
      * the icon they wanted should not have to dismiss anything first:
      * a favourite is one click away from anywhere, which is the promise
      * the whole archetype makes. */
-    dock_slot sl[MAX_SLOTS];
-    int n = dock_slots(c, sl);
-    rect strip = dock_rect(c, sw, sh, -1);
-    if (y >= strip.y && y < strip.y + strip.h && x >= strip.x && x < strip.x + strip.w) {
-        for (int i = 0; i < n; i++) {
-            rect r = dock_rect(c, sw, sh, i);
-            if (x < r.x || x >= r.x + r.w) continue;
-            if (sl[i].kind == SLOT_FIND) { find_open(c, !p->find_open); return 1; }
-            if (p->find_open) find_open(c, 0);
-            raise_app(c, sl[i].app);
+    int on_strip = 0;
+    int slot = dock_hit(c, sw, sh, x, y, &on_strip);
+    if (slot >= 0) {
+        dock_slot sl[MAX_SLOTS];
+        dock_slots(c, sl);
+        if (sl[slot].kind == SLOT_FIND) { find_open(c, !p->find_open); return 1; }
+        if (p->find_open) find_open(c, 0);
+        /* Clicking the one you are already looking at puts it away.
+         * Otherwise that click is the one place in the dock where
+         * something magnifies under the pointer and then does nothing
+         * at all -- and `taskbar` already behaves this way, so the two
+         * archetypes agree rather than each inventing an answer. */
+        int wi = app_window(c, sl[slot].app);
+        if (wi >= 0 && wi == c->focus && !c->wins[wi].minimised) {
+            c->wins[wi].minimised = 1;
+            c->focus = -1;
+            for (int i = 0; i < c->n_wins; i++)
+                if (!c->wins[i].minimised) { c->focus = i; break; }
             return 1;
         }
-        return 1;                       /* the strip itself swallows the click */
+        raise_app(c, sl[slot].app);
+        return 1;
     }
+    if (on_strip) return 1;             /* the strip itself swallows the click */
 
     if (p->find_open) { find_open(c, 0); return 1; }   /* anywhere else dismisses */
 
@@ -737,16 +807,7 @@ static void l_motion(shell_ctx *c, int x, int y)
         }
     }
 
-    int hv = -1;
-    rect strip = dock_rect(c, sw, sh, -1);
-    if (y >= strip.y - 4 && y < strip.y + strip.h) {
-        dock_slot sl[MAX_SLOTS];
-        int n = dock_slots(c, sl);
-        for (int i = 0; i < n; i++) {
-            rect r = dock_rect(c, sw, sh, i);
-            if (x >= r.x && x < r.x + r.w) { hv = i; break; }
-        }
-    }
+    int hv = dock_hit(c, sw, sh, x, y, NULL);
     if (hv != p->hover) {
         p->hover = hv;
         float want = (hv >= 0) ? 1.f : 0.f;

@@ -256,9 +256,60 @@ static void l_paint(shell_ctx *c, surface *s, shell_fonts *f, const surface *wal
     }
 }
 
+/* Both sides of this copy live inside the same shell_ctx, so the
+ * compiler cannot prove they do not overlap and warns about snprintf.
+ * They never do -- they are different members -- but a bounded copy
+ * says so plainly and costs nothing. */
+static void put_str(char *dst, size_t n, const char *src)
+{
+    size_t i = 0;
+    while (i + 1 < n && src[i]) { dst[i] = src[i]; i++; }
+    if (n) dst[i] = '\0';
+}
+
+/* Open a thing from the Home card.
+ *
+ * If it is already open, go to it rather than opening a second copy.
+ * Rail's whole promise is that nothing can hide, and two cards showing
+ * the same thing is a way to get lost in the one archetype that is
+ * supposed to make that impossible. */
+static void open_app(shell_ctx *c, int app)
+{
+    if (app < 0 || app >= c->n_apps) return;
+    for (int i = 0; i < c->n_wins; i++)
+        if (c->wins[i].app == app) { focus_card(c, i + 1, 0.36f); return; }
+    if (c->n_wins >= SHELL_MAX_WINS) return;
+    int i = c->n_wins++;
+    c->wins[i].app = app;
+    c->wins[i].minimised = 0;
+    put_str(c->wins[i].title,    sizeof c->wins[i].title,    c->apps[app].name);
+    put_str(c->wins[i].subtitle, sizeof c->wins[i].subtitle, c->apps[app].hint);
+    focus_card(c, i + 1, 0.36f);
+}
+
 static int l_click(shell_ctx *c, int x, int y)
 {
     int n = card_count(c);
+
+    /* The Home card's tiles, FIRST -- before the card hit-test below,
+     * which would otherwise swallow the click.
+     *
+     * They highlight under the pointer, so they promise they can be
+     * clicked. Without this they were a lie: the card consumed the
+     * click and did nothing, so the very first thing anyone ever
+     * clicks in this operating system silently failed. Found by
+     * clicking one on a booted machine. */
+    if ((int)(P(c)->slide.value + 0.5f) == 0) {
+        rect a = card_rect(c, c->screen_w, c->screen_h, 0);
+        for (int i = 0; i < HOME_TILES && i < c->n_apps; i++) {
+            rect t = tile_rect(c, a, i);
+            if (x >= t.x && x < t.x + t.w && y >= t.y && y < t.y + t.h) {
+                open_app(c, i);
+                return 1;
+            }
+        }
+    }
+
     /* Front to back: the focused card is on top. */
     for (int pass = 0; pass < 2; pass++) {
         for (int i = 0; i < n; i++) {

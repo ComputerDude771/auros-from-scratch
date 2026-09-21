@@ -21,6 +21,18 @@
  * few are legitimate (a full-screen dismiss layer, the transparent
  * margin of a card), so the bar is a percentage, not zero -- and the
  * bug moves rail's number far past it.
+ *
+ * The second check is for a different lie. An element that lights up
+ * under the pointer has promised it can be clicked. `rail` -- the
+ * DEFAULT archetype -- highlighted the six tiles on its Home card and
+ * its click handler never looked at them: the card underneath swallowed
+ * the click and did nothing, so the first thing anyone ever clicked in
+ * this operating system silently failed. Nothing caught it, because the
+ * click WAS consumed and it DID land on painted pixels.
+ *
+ * So: wherever moving the pointer changes the frame, clicking must
+ * change the frame too. A highlight that leads nowhere is a UI telling
+ * the user something untrue.
  */
 #include <stdio.h>
 #include <string.h>
@@ -122,12 +134,107 @@ static int check(const shell_layout *L, const char *id, int w, int h, int verbos
     return pct > 0.25;
 }
 
+/* Render one settled frame and hash it.
+ *
+ * `doclick` also dispatches a press/release at (mx,my) first. Both
+ * paths run step() to completion afterwards, so a change that is only
+ * animated still shows up, and so the two hashes are comparable. */
+static unsigned long render_state(const shell_layout *L, const char *id,
+                                  int w, int h, int mx, int my,
+                                  int doclick, int nwin)
+{
+    shell_ctx c;
+    seed(&c, id, nwin);
+    c.screen_w = w; c.screen_h = h;
+    c.mouse_x = mx; c.mouse_y = my;
+    if (L->init) L->init(&c);
+
+    if (L->motion) L->motion(&c, mx, my);
+    if (doclick) {
+        c.mouse_down = 1;
+        if (L->click) L->click(&c, mx, my);
+        c.mouse_down = 0;
+        if (L->motion) L->motion(&c, mx, my);
+    }
+    for (int k = 0; k < 200 && L->step; k++)
+        if (!L->step(&c, 1.f / 60.f)) break;
+
+    surface *wall = surface_new(w, h), *s = surface_new(w, h);
+    for (int i = 0; i < w * h; i++) wall->px[i] = 0xFF000000u | WALL_RGB;
+    shell_fonts f = {0};
+    L->paint(&c, s, &f, wall);
+
+    unsigned long hsh = 1469598103934665603UL;          /* FNV-1a */
+    for (int i = 0; i < w * h; i++) { hsh ^= s->px[i]; hsh *= 1099511628211UL; }
+    surface_free(s); surface_free(wall);
+    if (L->fini) L->fini(&c);
+    return hsh;
+}
+
+/* Wherever hovering changes the frame, clicking must change it FURTHER.
+ *
+ * The comparison that matters is click-frame against HOVER-frame, not
+ * against the resting frame. Comparing against rest was the first
+ * version of this test and it passed with the bug still in: the
+ * post-click frame still carries the hover highlight, so it always
+ * differed from rest and nothing ever looked dead.
+ *
+ * Two practical concessions, both stated rather than hidden:
+ *
+ * - A full repaint per probe is the only generic way to ask "did
+ *   hovering here change anything", and it is expensive. So this runs
+ *   on a small canvas at a coarse step. It is built to catch a REGION
+ *   of dead affordances -- six tiles that do nothing -- not a single
+ *   two-pixel target.
+ * - A few isolated dead points are legitimate: clicking the thing that
+ *   is already selected can reasonably leave the frame unchanged. So
+ *   the bar is a share of the reactive points, not zero -- though every
+ *   archetype currently sits at zero. rail's bug put
+ *   every one of its six Home tiles over it.
+ */
+#define AFF_W    800
+#define AFF_H    500
+#define AFF_STEP  25
+#define AFF_TOLERANCE 0.02          /* share of reactive points allowed to be inert */
+
+static int affordances(const shell_layout *L, const char *id, int verbose)
+{
+    const int w = AFF_W, h = AFF_H, nwin = 3;
+    unsigned long rest = render_state(L, id, w, h, -10000, -10000, 0, nwin);
+    int hot = 0, dead = 0;
+    int dx[12], dy[12], nd = 0;
+
+    for (int y = 0; y < h; y += AFF_STEP)
+        for (int x = 0; x < w; x += AFF_STEP) {
+            unsigned long hover = render_state(L, id, w, h, x, y, 0, nwin);
+            if (hover == rest) continue;             /* nothing lit up */
+            hot++;
+            if (render_state(L, id, w, h, x, y, 1, nwin) != hover) continue;
+            dead++;                                  /* lit up, then ignored the click */
+            if (nd < 12) { dx[nd] = x; dy[nd] = y; nd++; }
+        }
+
+    double share = hot ? (double)dead / hot : 0.0;
+    if (verbose)
+        printf("   %d points react to the pointer, %d of those ignore a click (%.0f%%)\n",
+               hot, dead, share * 100.0);
+    if (share > AFF_TOLERANCE) {
+        printf("   FAIL %s: %d of %d hover-reactive points highlight and then ignore "
+               "a click, on a %dx%d screen. Dead points:\n", id, dead, hot, w, h);
+        for (int i = 0; i < nd; i++) printf("          %d,%d\n", dx[i], dy[i]);
+        if (dead > nd) printf("          ...and %d more\n", dead - nd);
+        return 1;
+    }
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     static const char *ids[] = { "rail","tiles","locked","taskbar","dock","workbench" };
     struct { int w, h; } res[] = { {1366,768}, {1920,1080}, {1024,600}, {2560,1440} };
     int fail = 0, verbose = (argc < 2 || strcmp(argv[1], "-q") != 0);
 
+    printf("clicks land where the archetype paints\n");
     for (unsigned i = 0; i < sizeof ids / sizeof *ids; i++) {
         const shell_layout *L = shell_layout_by_id(ids[i]);
         if (verbose) printf("%s\n", ids[i]);
@@ -138,7 +245,16 @@ int main(int argc, char **argv)
                 fail = 1;
             }
     }
-    printf("%s\n", fail ? "FAIL" :
-           "every archetype hit-tests where it paints, at every resolution");
+
+    printf("\nwhat lights up can be clicked\n");
+    for (unsigned i = 0; i < sizeof ids / sizeof *ids; i++) {
+        const shell_layout *L = shell_layout_by_id(ids[i]);
+        if (verbose) printf("%s\n", ids[i]);
+        if (affordances(L, ids[i], verbose)) fail = 1;
+    }
+
+    printf("\n%s\n", fail ? "FAIL" :
+           "every archetype hit-tests where it paints, and nothing highlights "
+           "that cannot be clicked");
     return fail;
 }

@@ -8,7 +8,7 @@ exit non-zero when they fail.
 |---|---|
 | `recip_proof.c` | The blur's multiply-and-shift replacement for integer division is **exact** — checked over every (window, sum) pair a blur can produce, all 4.2 million of them, for radius 1..128. Not a spot check. |
 | `blur_equiv.c` | The rewritten blur matches the one it replaced pixel for pixel, on adversarial full-contrast noise across 9 radii × 8 region shapes including off-screen, 1×1 and 1-pixel-wide slivers. Also times both. |
-| `hittest.c` | Every archetype hit-tests where it paints, at 1024×600, 1366×768, 1920×1080 and 2560×1440. Sweeps `click()` across the screen and checks each consumed click against a mask of what was actually drawn. |
+| `hittest.c` | Two things. **Clicks land where the archetype paints** — sweeps `click()` across four resolutions and checks each consumed click against a mask of what was actually drawn. **Nothing highlights that cannot be clicked** — wherever hovering changes the frame, clicking must change it further. |
 
 ```sh
 cc -O2 -o /tmp/recip_proof tools/recip_proof.c && /tmp/recip_proof
@@ -33,3 +33,24 @@ clipped by the screen edge changes size even when the geometry behind it
 is constant. Comparing clicks against painted pixels catches it at every
 resolution. Checked by putting the bug back: 0.7–7.9% of clicks land on
 bare wallpaper, against 0.0% when it is fixed.
+
+`hittest`'s second check exists because of a different kind of lie. `rail`
+— the **default** archetype — highlighted the six tiles on its Home card,
+and its click handler never looked at them: the card underneath swallowed
+the click and did nothing. The first thing anyone ever clicked in this
+operating system silently failed. The first check could not catch it,
+because the click *was* consumed and it *did* land on painted pixels.
+
+Its first version compared the post-click frame against the **resting**
+frame and passed with the bug still in — the post-click frame still
+carries the hover highlight, so it always differed and nothing ever
+looked dead. It has to compare click against **hover**. Checked by
+putting the bug back: 135 of 135 reactive points go dead.
+
+That check then found two more of the same kind in `dock`: clicking a
+favourite that was not already running did nothing (the archetype's
+entire promise is that your programs are there "whether running or
+not"), and the 4px lead-in band where an icon starts growing as the
+pointer arrives magnified the icon and then swallowed the click — which
+is precisely the row you hit when you shove the pointer at a dock and
+click the moment it responds.
