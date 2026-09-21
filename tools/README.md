@@ -8,11 +8,18 @@ exit non-zero when they fail.
 |---|---|
 | `recip_proof.c` | The blur's multiply-and-shift replacement for integer division is **exact** — checked over every (window, sum) pair a blur can produce, all 4.2 million of them, for radius 1..128. Not a spot check. |
 | `blur_equiv.c` | The rewritten blur matches the one it replaced pixel for pixel, on adversarial full-contrast noise across 9 radii × 8 region shapes including off-screen, 1×1 and 1-pixel-wide slivers. Also times both. |
+| `contactsheet.c` | All six archetypes for one theme, in one image, at a real panel size. A design decision is not judged one screen at a time — what separates a system from a look is whether it survives six different interaction models. |
 | `hittest.c` | Two things. **Clicks land where the archetype paints** — sweeps `click()` across four resolutions and checks each consumed click against a mask of what was actually drawn. **Nothing highlights that cannot be clicked** — wherever hovering changes the frame, clicking must change it further. |
 
 ```sh
 cc -O2 -o /tmp/recip_proof tools/recip_proof.c && /tmp/recip_proof
 cc -O2 -std=gnu11 -o /tmp/blur_equiv tools/blur_equiv.c src/aurshell/draw.c -lm && /tmp/blur_equiv
+cc -O2 -std=gnu11 -o /tmp/sheet tools/contactsheet.c src/aurshell/draw.c \
+   src/aurshell/shellcommon.c src/aurshell/anim.c src/aurshell/layouts/*.c \
+   src/common/theme.c src/common/wall.c src/common/font.c src/common/png.c -lm
+# the conf is a RESOLVED shell.conf, not a .theme -- see below
+/tmp/sheet /tmp/nocturne.conf /tmp/sheet.png
+
 cc -O2 -std=gnu11 -o /tmp/hittest tools/hittest.c src/aurshell/draw.c \
    src/aurshell/shellcommon.c src/aurshell/anim.c src/aurshell/layouts/*.c \
    src/common/theme.c src/common/font.c -lm && /tmp/hittest
@@ -54,3 +61,21 @@ not"), and the 4px lead-in band where an icon starts growing as the
 pointer arrives magnified the icon and then swallowed the click — which
 is precisely the row you hit when you shove the pointer at a dock and
 click the moment it responds.
+
+**Resolving a theme to a `shell.conf`.** Several of these take a
+*resolved* config (`col_bg = 0x...`), not a `.theme` file
+(`bg="#..."`). Passing a `.theme` does not fail — it silently falls back
+to the built-in defaults, which look like the current theme, so you see
+the old colours and conclude your change did nothing:
+
+```sh
+S=$(mktemp -d); printf 'sandstone\n' > $S/theme
+tail -n +2 themes/templates/shell.conf.tpl | \
+  AURORA_THEMES=themes AURORA_TEMPLATES=themes/templates \
+  AURORA_STATE=$S AURORA_CACHE=$S/c ./src/aurora/aurora render > /tmp/sandstone.conf
+```
+
+`AURSHELL_CLOCK=<unix seconds>` pins the clock, so two renders differ
+only where you changed something. Without it a comparison picks up
+whatever minute each run happened to land in, which reads as a
+hundred-level regression in the top bar.
