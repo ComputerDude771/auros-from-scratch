@@ -642,6 +642,14 @@ static void glyf_outline(font *f, int gid, path *P, xform t, int depth)
 static void acc_edge(float *acc, int stride, int w, int h,
                      float ax, float ay, float bx, float by)
 {
+    /* Valid arithmetic on int16 coordinates cannot produce these, but a
+     * single NaN slipping through would make the min/max bbox in
+     * glyph_build() silently ignore it and then turn into an undefined
+     * float-to-int cast down here, so the invariant is enforced where
+     * it is relied on. */
+    if (!(ax > -1e9f && ax < 1e9f) || !(ay > -1e9f && ay < 1e9f) ||
+        !(bx > -1e9f && bx < 1e9f) || !(by > -1e9f && by < 1e9f)) return;
+
     if (ay == by) return;                      /* horizontal: no winding */
     float dir = 1.0f;
     if (ay > by) {

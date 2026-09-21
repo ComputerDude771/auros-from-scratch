@@ -2000,3 +2000,310 @@ static void draw_footer(void)
         text_in(footer_hint(), g_f_small, C_MUTED, h,
                 DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
 }
+
+/* ═══════════════════════════════════════════════════════════════════
+ *  Render
+ * ═══════════════════════════════════════════════════════════════════ */
+static int g_want_focus_id;
+static int g_hot_idx = -1, g_press_idx = -1;
+static int g_settle;
+
+static int page_dispatch(int x, int y, int w)
+{
+    switch (g_page) {
+    case PAGE_WELCOME:     return page_welcome(x, y, w);
+    case PAGE_CHECKING:    return page_checking(x, y, w);
+    case PAGE_BLOCKED:     return page_blocked(x, y, w);
+    case PAGE_BACKUP:      return page_backup(x, y, w);
+    case PAGE_CONSENT:     return page_consent(x, y, w);
+    case PAGE_CHOOSE:      return page_choose(x, y, w);
+    case PAGE_PERSONALIZE: return page_personalize(x, y, w);
+    case PAGE_READY:       return page_ready(x, y, w);
+    case PAGE_PROGRESS:    return page_progress(x, y, w);
+    default:               return 0;
+    }
+}
+
+static int scroll_max(void)
+{
+    int m = g_content_h - g_view_h;
+    return m > 0 ? m : 0;
+}
+
+static void render(void)
+{
+    if (!g_px) return;
+    layout();
+    clip_reset();
+    backdrop_blit();
+    draw_rail();
+
+    fill_rr((float)g_card.left, (float)g_card.top,
+            (float)(g_card.right - g_card.left), (float)(g_card.bottom - g_card.top),
+            (float)S(18), C_SURFACE, 0.94f);
+    stroke_rr((float)g_card.left, (float)g_card.top,
+              (float)(g_card.right - g_card.left), (float)(g_card.bottom - g_card.top),
+              (float)S(18), 1.2f, C_OVERLAY, 0.9f);
+
+    g_nw = 0;
+    if (g_scroll[g_page] > scroll_max()) g_scroll[g_page] = scroll_max();
+    set_clip(g_card.left + S(2), g_card.top + S(2), g_card.right - S(2), g_foot.top - S(2));
+    g_view_h    = g_body.bottom - g_body.top;
+    g_content_h = page_dispatch(g_body.left, g_body.top - g_scroll[g_page],
+                                g_body.right - g_body.left);
+    clip_reset();
+
+    if (g_content_h > g_view_h) {
+        int tx = g_card.right - S(13);
+        int th = S(6);
+        float frac = (float)g_view_h / (float)g_content_h;
+        int hh = (int)((float)(g_body.bottom - g_body.top) * frac);
+        if (hh < S(40)) hh = S(40);
+        int room = (g_body.bottom - g_body.top) - hh;
+        int off  = scroll_max() ? (int)((float)room * (float)g_scroll[g_page]
+                                        / (float)scroll_max()) : 0;
+        fill_rr((float)tx, (float)g_body.top, (float)th,
+                (float)(g_body.bottom - g_body.top), (float)th * 0.5f,
+                C_OVERLAY, 0.5f);
+        fill_rr((float)tx, (float)(g_body.top + off), (float)th, (float)hh,
+                (float)th * 0.5f, C_SUBTLE, 0.8f);
+    }
+
+    draw_footer();
+
+    if (g_want_focus_id) {
+        for (int i = 0; i < g_nw; i++)
+            if (g_w[i].id == g_want_focus_id && g_w[i].enabled) { g_focus = i; break; }
+        g_want_focus_id = 0;
+    }
+    if (g_focus >= g_nw) g_focus = -1;
+    GdiFlush();
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+ *  Actions
+ * ═══════════════════════════════════════════════════════════════════ */
+static void start_check(page_id next)
+{
+    g_check_next = next;
+    g_settle = 0;
+    pf_start();
+    goto_page(PAGE_CHECKING);
+}
+
+static void check_advance(void)
+{
+    if (!g_pf_valid) return;
+    if (g_report.n_block > 0) { goto_page(PAGE_BLOCKED); return; }
+    if (g_check_next == PAGE_PROGRESS) {
+        /* Re-ran preflight and it is still clean: this is the only place
+         * the phase list is allowed to start. */
+        if (!nav_allowed(PAGE_PROGRESS)) { goto_page(PAGE_READY); return; }
+        install_begin();
+        goto_page(PAGE_PROGRESS);
+        return;
+    }
+    g_want_focus_id = ID_PRIMARY;      /* Continue is now the obvious move */
+}
+
+static void do_primary(void)
+{
+    if (!primary_enabled()) { MessageBeep(MB_ICONASTERISK); return; }
+    switch (g_page) {
+    case PAGE_WELCOME:     start_check(PAGE_BACKUP); break;
+    case PAGE_BLOCKED:     start_check(PAGE_BACKUP); break;
+    case PAGE_CHECKING:    check_advance(); if (g_page == PAGE_CHECKING)
+                               goto_page(PAGE_BACKUP);
+                           break;
+    case PAGE_BACKUP:      goto_page(PAGE_CONSENT);
+                           g_want_focus_id = ID_INPUT_AGREE; break;
+    case PAGE_CONSENT:     goto_page(PAGE_CHOOSE); break;
+    case PAGE_CHOOSE:      goto_page(PAGE_PERSONALIZE); break;
+    case PAGE_PERSONALIZE: goto_page(PAGE_READY); break;
+    /* Re-run every safety check before the phase list starts, per
+     * AURBRIDGE.md: destructive work re-runs preflight and aborts on
+     * any block, however long the user spent on the pages in between. */
+    case PAGE_READY:       start_check(PAGE_PROGRESS); break;
+    case PAGE_PROGRESS:    PostMessageW(g_hwnd, WM_CLOSE, 0, 0); break;
+    default: break;
+    }
+}
+
+static void widget_activate(int id)
+{
+    switch (id) {
+    case ID_PRIMARY: do_primary(); return;
+    case ID_BACK:    goto_page(back_target()); return;
+    case ID_QUIT:    PostMessageW(g_hwnd, WM_CLOSE, 0, 0); return;
+    case ID_CHK_BACKUP:  g_ack_backup   = !g_ack_backup;   return;
+    case ID_CHK_USB:     g_ack_usb      = !g_ack_usb;      return;
+    case ID_CHK_REPLACE: g_ack_replace  = !g_ack_replace;  return;
+    case ID_CHK_READY:   g_ready_confirm= !g_ready_confirm;return;
+    case ID_CARD_DUAL:   g_choice = 0; g_ack_replace = 0;  return;
+    case ID_CARD_REPLACE:g_choice = 1;                     return;
+    case ID_INPUT_AGREE: return;                 /* click just takes focus */
+    default: break;
+    }
+    if (id >= ID_THEME) { g_sel_theme = id - ID_THEME; return; }
+    if (id >= ID_TZ)    { g_sel_tz    = id - ID_TZ;    return; }
+    if (id >= ID_KBD)   { g_sel_kbd   = id - ID_KBD;   return; }
+    if (id >= ID_LANG)  { g_sel_lang  = id - ID_LANG;  return; }
+}
+
+static void scroll_by(int dy)
+{
+    int m = scroll_max();
+    g_scroll[g_page] += dy;
+    if (g_scroll[g_page] > m) g_scroll[g_page] = m;
+    if (g_scroll[g_page] < 0) g_scroll[g_page] = 0;
+}
+
+static void focus_visible(void)
+{
+    if (g_focus < 0 || g_focus >= g_nw) return;
+    int id = g_w[g_focus].id;
+    if (id == ID_PRIMARY || id == ID_BACK || id == ID_QUIT) return;
+    RECT r = g_w[g_focus].r;
+    if (r.top < g_body.top)        scroll_by(r.top - g_body.top - S(12));
+    else if (r.bottom > g_body.bottom) scroll_by(r.bottom - g_body.bottom + S(12));
+}
+
+static void focus_step(int dir)
+{
+    if (g_nw <= 0) return;
+    int i = (g_focus < 0) ? (dir > 0 ? -1 : 0) : g_focus;
+    for (int n = 0; n < g_nw; n++) {
+        i = (i + dir + g_nw) % g_nw;
+        if (g_w[i].enabled) { g_focus = i; break; }
+    }
+    g_focus_ring = 1;
+    focus_visible();
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+ *  Device plumbing: DPI, fonts, back buffer
+ * ═══════════════════════════════════════════════════════════════════ */
+typedef BOOL (WINAPI *PFN_SPDAC)(HANDLE);
+typedef BOOL (WINAPI *PFN_SPDA)(void);
+typedef UINT (WINAPI *PFN_GDFW)(HWND);
+typedef UINT (WINAPI *PFN_GDFS)(void);
+typedef HRESULT (WINAPI *PFN_DWMSWA)(HWND, DWORD, LPCVOID, DWORD);
+
+static void dpi_opt_in(void)
+{
+    /* Newest API first, then the Win7 one, both through GetProcAddress so
+     * the binary still loads on a machine that has neither. */
+    HMODULE u = GetModuleHandleW(L"user32.dll");
+    if (u) {
+        PFN_SPDAC f = (PFN_SPDAC)(void *)GetProcAddress(u, "SetProcessDpiAwarenessContext");
+        if (f && f((HANDLE)(INT_PTR)-4)) return;   /* PER_MONITOR_AWARE_V2 */
+        PFN_SPDA g = (PFN_SPDA)(void *)GetProcAddress(u, "SetProcessDPIAware");
+        if (g) g();
+    }
+}
+
+static int dpi_for(HWND h)
+{
+    HMODULE u = GetModuleHandleW(L"user32.dll");
+    if (u) {
+        PFN_GDFW f = (PFN_GDFW)(void *)GetProcAddress(u, "GetDpiForWindow");
+        if (f && h) { UINT d = f(h); if (d >= 72) return (int)d; }
+        PFN_GDFS g = (PFN_GDFS)(void *)GetProcAddress(u, "GetDpiForSystem");
+        if (g) { UINT d = g(); if (d >= 72) return (int)d; }
+    }
+    HDC dc = GetDC(NULL);
+    int d = dc ? GetDeviceCaps(dc, LOGPIXELSX) : 96;
+    if (dc) ReleaseDC(NULL, dc);
+    return d >= 72 ? d : 96;
+}
+
+static void dark_titlebar(HWND h)
+{
+    HMODULE m = LoadLibraryW(L"dwmapi.dll");
+    if (!m) return;
+    PFN_DWMSWA f = (PFN_DWMSWA)(void *)GetProcAddress(m, "DwmSetWindowAttribute");
+    BOOL on = TRUE;
+    if (f) { f(h, 20, &on, sizeof on); f(h, 19, &on, sizeof on); }
+    FreeLibrary(m);
+}
+
+static HFONT mkfont(int px, int weight)
+{
+    return CreateFontW(-S(px), 0, 0, 0, weight, 0, 0, 0, DEFAULT_CHARSET,
+                       OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                       VARIABLE_PITCH | FF_SWISS, L"Segoe UI");
+}
+static void fonts_free(void)
+{
+    HFONT *all[] = { &g_f_title, &g_f_h2, &g_f_h3, &g_f_body, &g_f_bodyb,
+                     &g_f_small, &g_f_smallb, &g_f_tiny, &g_f_input, &g_f_brand };
+    for (int i = 0; i < (int)(sizeof all / sizeof all[0]); i++)
+        if (*all[i]) { DeleteObject(*all[i]); *all[i] = NULL; }
+}
+static void fonts_make(void)
+{
+    fonts_free();
+    g_f_title  = mkfont(30, FW_SEMIBOLD);
+    g_f_h2     = mkfont(20, FW_SEMIBOLD);
+    g_f_h3     = mkfont(17, FW_SEMIBOLD);
+    g_f_body   = mkfont(15, FW_NORMAL);
+    g_f_bodyb  = mkfont(15, FW_SEMIBOLD);
+    g_f_small  = mkfont(13, FW_NORMAL);
+    g_f_smallb = mkfont(13, FW_BOLD);
+    g_f_tiny   = mkfont(11, FW_BOLD);
+    g_f_input  = mkfont(20, FW_SEMIBOLD);
+    g_f_brand  = mkfont(22, FW_NORMAL);
+}
+
+static void backbuffer(int w, int h)
+{
+    if (w < 1) w = 1;
+    if (h < 1) h = 1;
+    if (g_mdc && g_mw == w && g_mh == h) return;
+    if (g_mdc) {
+        SelectObject(g_mdc, g_moldbmp);
+        DeleteObject(g_mbmp);
+        DeleteDC(g_mdc);
+        g_mdc = NULL; g_mbmp = NULL; g_px = NULL;
+    }
+    BITMAPINFO bi;
+    memset(&bi, 0, sizeof bi);
+    bi.bmiHeader.biSize        = sizeof(BITMAPINFOHEADER);
+    bi.bmiHeader.biWidth       = w;
+    bi.bmiHeader.biHeight      = -h;          /* top-down */
+    bi.bmiHeader.biPlanes      = 1;
+    bi.bmiHeader.biBitCount    = 32;
+    bi.bmiHeader.biCompression = BI_RGB;
+    HDC sdc = GetDC(NULL);
+    g_mdc  = CreateCompatibleDC(sdc);
+    g_mbmp = CreateDIBSection(sdc, &bi, DIB_RGB_COLORS, (void **)&g_px, NULL, 0);
+    if (sdc) ReleaseDC(NULL, sdc);
+    if (g_mdc && g_mbmp) {
+        g_moldbmp = (HBITMAP)SelectObject(g_mdc, g_mbmp);
+        SetBkMode(g_mdc, TRANSPARENT);
+        SetStretchBltMode(g_mdc, HALFTONE);
+    }
+    g_mw = w; g_mh = h;
+    clip_reset();
+}
+
+/* Dev harness: dump the back buffer. Used by --shot/--selftest only. */
+static int save_bmp(const char *path)
+{
+    if (!g_px) return 0;
+    FILE *f = fopen(path, "wb");
+    if (!f) return 0;
+    uint32_t bytes = (uint32_t)g_mw * (uint32_t)g_mh * 4u;
+    uint16_t tag = 0x4D42, zero = 0;
+    uint32_t off = 14u + 40u, size = off + bytes;
+    BITMAPINFOHEADER ih;
+    memset(&ih, 0, sizeof ih);
+    ih.biSize = sizeof ih; ih.biWidth = g_mw; ih.biHeight = -g_mh;
+    ih.biPlanes = 1; ih.biBitCount = 32; ih.biCompression = BI_RGB;
+    fwrite(&tag, 2, 1, f); fwrite(&size, 4, 1, f);
+    fwrite(&zero, 2, 1, f); fwrite(&zero, 2, 1, f); fwrite(&off, 4, 1, f);
+    fwrite(&ih, 40, 1, f);
+    fwrite(g_px, bytes, 1, f);
+    fclose(f);
+    return 1;
+}

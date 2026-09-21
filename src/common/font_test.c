@@ -288,6 +288,9 @@ static void selftest(const char *ttf)
         { "\xC3\xA9", 1 },       /* e-acute: composite */
     };
     for (int i = 0; i < (int)(sizeof holes / sizeof *holes); i++) {
+        if (!has_glyph(f, holes[i].s, 48.0f)) {
+            printf("  skip  '%s' not in this font\n", holes[i].s); continue;
+        }
         probe p = probe_text(f, holes[i].s, 48.0f);
         int hp = counter_pixels(&p);
         char msg[96];
@@ -298,16 +301,21 @@ static void selftest(const char *ttf)
     }
 
     /* Composite glyphs must actually carry the accent: the accented
-     * form has to be taller than the base letter. */
-    probe pe = probe_text(f, "e", 48.0f), pea = probe_text(f, "\xC3\xA9", 48.0f);
-    check(pe.y0 >= 0 && pea.y0 >= 0 && pea.y0 < pe.y0,
-          "composite 'e-acute' is taller than 'e'");
-    check(pea.n_any > pe.n_any, "composite 'e-acute' has more ink than 'e'");
-    free(pe.c.px); free(pea.c.px);
+     * form has to be taller than the base letter and carry more ink. */
+    if (has_glyph(f, "\xC3\xA9", 48.0f)) {
+        probe pe = probe_text(f, "e", 48.0f), pea = probe_text(f, "\xC3\xA9", 48.0f);
+        check(pe.y0 >= 0 && pea.y0 >= 0 && pea.y0 < pe.y0,
+              "composite 'e-acute' is taller than 'e'");
+        check(pea.n_any > pe.n_any, "composite 'e-acute' has more ink than 'e'");
+        free(pe.c.px); free(pea.c.px);
+    } else printf("  skip  no 'e-acute' in this font\n");
 
-    probe pn = probe_text(f, "n", 48.0f), pnt = probe_text(f, "\xC3\xB1", 48.0f);
-    check(pn.y0 >= 0 && pnt.y0 >= 0 && pnt.y0 < pn.y0, "composite 'n-tilde' is taller");
-    free(pn.c.px); free(pnt.c.px);
+    if (has_glyph(f, "\xC3\xB1", 48.0f)) {
+        probe pn = probe_text(f, "n", 48.0f), pnt = probe_text(f, "\xC3\xB1", 48.0f);
+        check(pn.y0 >= 0 && pnt.y0 >= 0 && pnt.y0 < pn.y0,
+              "composite 'n-tilde' is taller than 'n'");
+        free(pn.c.px); free(pnt.c.px);
+    } else printf("  skip  no 'n-tilde' in this font\n");
 
     /* Widths: proportional fonts must not be measuring a fixed advance,
      * and the measured width must match where the ink actually stops. */
