@@ -36,11 +36,19 @@ typedef struct {
 static struct {
     DBusConnection *conn;
     int      owned;
+    /* The bus address this connection was made on. Compared against
+     * the environment every time, because the shell MOVES: it starts
+     * on the private bus its unit makes and adopts logind's a second
+     * or two later, and that move can be triggered from anywhere --
+     * the frame loop, or a spawn (see session.c). A server that is
+     * still on the old bus is a server nothing can find, so this is
+     * checked here rather than relying on whoever moved to say so. */
+    char     addr[512];
     int32_t  next_try;
     note     n[NOTIFY_MAX];
     int      count;
     uint32_t next_id;
-} N = { NULL, 0, 0, {{0}}, 0, 1 };
+} N = { NULL, 0, {0}, 0, {{0}}, 0, 1 };
 
 static int32_t now_ms(void)
 {
@@ -368,27 +376,65 @@ static DBusHandlerResult on_msg(DBusConnection *c, DBusMessage *m, void *ud)
 
 static const DBusObjectPathVTable VTABLE = { NULL, on_msg, NULL, NULL, NULL, NULL };
 
+static const char *bus_addr_now(void)
+{
+    const char *a = getenv("DBUS_SESSION_BUS_ADDRESS");
+    return (a && *a) ? a : "";
+}
+
 int notify_open(void)
 {
-    if (N.owned && N.conn && dbus_connection_get_is_connected(N.conn)) return 1;
+    if (N.owned && N.conn && dbus_connection_get_is_connected(N.conn)) {
+        if (!strcmp(N.addr, bus_addr_now())) return 1;
+        /* The shell moved. Give the name up here and take it again
+         * over there; the cards on screen are kept, because they are
+         * hers and have nothing to do with which socket they arrived
+         * on. */
+        fprintf(stderr, "aurshell: the session bus changed — announcing "
+                        "notifications on the new one\n");
+        notify_close();
+        N.next_try = 0;                    /* at once, not in a second */
+    }
     if (N.conn && !dbus_connection_get_is_connected(N.conn)) notify_close();
 
     int32_t t = now_ms();
     if (N.next_try && (int32_t)(t - N.next_try) < 0) return 0;
     N.next_try = t + RETRY_MS;
 
+    const char *want = bus_addr_now();
+    if (!*want) return 0;                  /* no bus to be had yet */
+
     DBusError err; dbus_error_init(&err);
-    /* A PRIVATE connection. The shared one is a process-wide singleton
-     * that cannot be closed -- and this one has to be, because the
-     * shell moves from the bus its unit made to the bus logind made,
-     * once, a second into the boot. See run.c. */
-    N.conn = dbus_bus_get_private(DBUS_BUS_SESSION, &err);
+    /* OPENED BY ADDRESS, and privately.
+     *
+     * Privately because the shared connection is a process-wide
+     * singleton that cannot be closed, and this one has to be: the
+     * shell moves from the bus its unit made to the bus logind made.
+     *
+     * By ADDRESS because dbus_bus_get_private() does not re-read the
+     * environment. libdbus caches the session bus address globally on
+     * first use, so after the move it handed back a connection to the
+     * bus we had just left -- and then request_name SUCCEEDED on it,
+     * because we had only just given the name up there. The shell
+     * logged "serving org.freedesktop.Notifications" on the wrong bus
+     * and every application on the right one still found nothing.
+     * Caught by a harness that started a second bus and sent to it. */
+    N.conn = dbus_connection_open_private(want, &err);
     if (!N.conn) {
         static int moaned = 0;
         if (!moaned++)
             fprintf(stderr, "aurshell: no session bus yet for notifications "
                             "(%s)\n", err.message ? err.message : "?");
         dbus_error_free(&err);
+        return 0;
+    }
+    /* open_private() gives a socket; register() makes it a bus client
+     * and gets us a unique name. dbus_bus_get_private() does both. */
+    if (!dbus_bus_register(N.conn, &err)) {
+        fprintf(stderr, "aurshell: could not join the session bus (%s)\n",
+                err.message ? err.message : "?");
+        dbus_error_free(&err);
+        notify_close();
         return 0;
     }
     /* Losing the bus must not kill the desktop. The default for a
@@ -421,6 +467,7 @@ int notify_open(void)
         return 0;
     }
     N.owned = 1;
+    snprintf(N.addr, sizeof N.addr, "%s", bus_addr_now());
     fprintf(stderr, "aurshell: serving %s — programs can say things now\n",
             BUS_NAME);
     return 1;

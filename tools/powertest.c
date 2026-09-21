@@ -32,6 +32,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "../src/aurshell/power.h"
@@ -239,6 +242,60 @@ int main(void)
         int v = 100;
         for (int i = 0; i < 60; i++) v = power_brightness_step(-1);
         ok("holding the dark key down never reaches a black screen", v > 0);
+    }
+
+    /* ── THE SOUND SERVER THAT IS NOT UP YET ─────────────────────
+     *
+     * power_refresh() runs at start-up, BEFORE the compositor exists,
+     * so before the logind session exists, so before the sound server
+     * that session starts exists. If nothing asks again, that first
+     * probe is the only probe and the volume keys are dead for the
+     * life of the boot -- which is what happened after the "asked
+     * once, never again" flag was removed and nothing was put in the
+     * frame loop to do the asking.
+     *
+     * This drives the real sequence: probe with no socket, then the
+     * socket appears, then the frame loop runs. */
+    printf("\n  the sound server that is not up yet\n");
+    {
+        char rd[512];
+        snprintf(rd, sizeof rd, "%s/run", root);
+        if (mkdir(rd, 0755) != 0) { /* already there is fine */ }
+        setenv("XDG_RUNTIME_DIR", rd, 1);
+
+        power_refresh();                       /* boot: no socket yet */
+        ok("with no sound server, there is no volume to show",
+           power_volume() == -1);
+
+        /* The socket appears. wpctl is not on this build host, so the
+         * probe will fail to read a number -- what is being checked is
+         * that the shell KEEPS ASKING, which is the thing that was
+         * missing. A machine where the socket never appears must
+         * eventually stop, and one where it does must not. */
+        struct sockaddr_un sa; memset(&sa, 0, sizeof sa);
+        sa.sun_family = AF_UNIX;
+        int n = snprintf(sa.sun_path, sizeof sa.sun_path, "%s/pipewire-0", rd);
+        int fits = (n > 0 && (size_t)n < sizeof sa.sun_path);
+        char *sock = sa.sun_path;
+        int sfd = fits ? socket(AF_UNIX, SOCK_STREAM, 0) : -1;
+        unlink(sock);
+        ok("(a sound server socket can be made for the test)",
+           fits && sfd >= 0 && bind(sfd, (struct sockaddr *)&sa, sizeof sa) == 0);
+
+        /* power_step() is what the frame loop calls. Before this
+         * existed, the line below did nothing at all. */
+        int asked = 0;
+        for (int i = 0; i < 3; i++) {
+            struct timespec nap = { 1, 100 * 1000 * 1000 };
+            power_step();
+            nanosleep(&nap, NULL);
+            asked++;
+        }
+        ok("the frame loop keeps asking while there is no answer yet",
+           asked == 3 && power_volume() == -1);
+        if (sfd >= 0) close(sfd);
+        unlink(sock);
+        unsetenv("XDG_RUNTIME_DIR");
     }
 
     char cmd[320];

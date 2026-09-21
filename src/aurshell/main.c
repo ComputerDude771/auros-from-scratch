@@ -94,11 +94,52 @@ static console g_con = { -1, 0, 0, 0, 0, {0,0,0,0,0}, 0, 1, 0 };
 #define VT_RELSIG  SIGUSR1
 #define VT_ACQSIG  SIGUSR2
 
+/* THE TTY systemd ALREADY GAVE US, not one we open by name.
+ *
+ * `StandardInput=tty` with `TTYPath=/dev/tty1` means file descriptor 0
+ * IS /dev/tty1, opened by systemd as root before it dropped to
+ * User=auros. Opening /dev/tty0 ourselves fails with EACCES on the
+ * shipped image -- tty0 is root:tty crw--w----, and the desktop does
+ * not run as root -- so every protection below was silently off. The
+ * console went on echoing keys under the desktop's pixels,
+ * Ctrl-Alt-Del rebooted the machine, and Ctrl-Alt-F2 revoked DRM
+ * master with no VT_PROCESS handler to notice: on a school machine, a
+ * three-key way to a screen that never comes back.
+ *
+ * Found by booting the image and reading one line of its journal:
+ * "aurshell: no console (Permission denied)". It cannot be found any
+ * other way, because the code has a graceful fallback and the
+ * graceful fallback is the bug.
+ *
+ * It is also the RIGHT tty rather than merely a usable one. /dev/tty0
+ * means "whichever VT is active right now", while the session this
+ * shell owns is on VT1; the two coincided by luck. */
+static int console_open(void)
+{
+    char kbtype;
+    /* KDGKBTYPE is the standard "is this fd a virtual console?". */
+    if (ioctl(STDIN_FILENO, KDGKBTYPE, &kbtype) == 0) {
+        int fd = fcntl(STDIN_FILENO, F_DUPFD_CLOEXEC, 3);
+        if (fd >= 0) return fd;
+    }
+    /* Not started by systemd, or started without a TTYPath. logind
+     * names the VT this session owns, and logind has chowned it to
+     * this user -- which /dev/tty0 is not. */
+    const char *vtnr = getenv("XDG_VTNR");
+    char path[32];
+    if (vtnr && *vtnr && strspn(vtnr, "0123456789") == strlen(vtnr) &&
+        strlen(vtnr) < 6)
+        snprintf(path, sizeof path, "/dev/tty%s", vtnr);
+    else
+        snprintf(path, sizeof path, "%s", "/dev/tty0");
+    return open(path, O_RDWR | O_CLOEXEC);
+}
+
 static void console_take(console *k, int refuse_switch)
 {
     k->active = 1;
     k->refuse_switch = refuse_switch;
-    k->fd = open("/dev/tty0", O_RDWR | O_CLOEXEC);
+    k->fd = console_open();
     if (k->fd < 0) {
         fprintf(stderr, "aurshell: no console (%s) — the tty keeps the "
                         "keyboard and VT switching stays live\n", strerror(errno));
@@ -1029,6 +1070,10 @@ int main(int argc, char **argv)
     /* One bit per evdev keycode: the keys the shell itself swallowed on
      * the way down, so their release is swallowed too. KEY_MAX is 767. */
     uint32_t media_held[(KEY_MAX + 32) / 32] = {0};
+    /* Which window was last ASKED to close, and when. A second press
+     * inside this window stops it outright. */
+    #define CLOSE_INSIST_MS 6000
+    uint32_t close_asked_wid = 0, close_asked_ms = 0;
 
     while (!want_quit) {
         if (want_reload || c.want_reload) {
@@ -1076,23 +1121,50 @@ int main(int argc, char **argv)
                      * every archetype owns a c->priv it allocated, and
                      * swapping without this leaks it AND hands the new
                      * archetype a pointer to the old one's state. */
+                    /* The one it is leaving puts its own things away.
+                     * Every archetype's priv is a function-scope
+                     * static that its init() memsets, so nothing is
+                     * freed here -- but fini() is still what marks the
+                     * old one as no longer running, and init() is what
+                     * gives the new one a state that is its own. */
                     if (L->fini) L->fini(&c);
                     c.priv = NULL;
                     L = NL;
                     if (L->init) L->init(&c);
                     fprintf(stderr, "aurshell: archetype now '%s' (%s)\n",
                             L->id, c.shell_name);
+                    /* AND THE KEYBOARD GOES WHERE THE NEW ONE SAYS.
+                     *
+                     * init() decides what is focused, and rail's says
+                     * "Home, nothing" -- while the compositor still
+                     * had the browser. Leaving those two disagreeing
+                     * is the "the window drawn as active and the
+                     * window receiving keys are two different windows"
+                     * defect, arrived at from a new direction. It also
+                     * has to survive the panel's focus restore below,
+                     * so the remembered window is dropped too. */
+                    panel_prev_focus = 0;
+                    if (c.wl) {
+                        aurwl_win *nf = (c.focus >= 0 && c.focus < c.n_wins)
+                                      ? session_win(&c, c.wins[c.focus].wid)
+                                      : NULL;
+                        aurwl_set_focus(c.wl, nf);
+                        if (nf) panel_prev_focus = c.wins[c.focus].wid;
+                    }
                 }
-                /* The band's height follows the archetype's target
-                 * size, so the body it leaves has to be remeasured
-                 * whether or not the layout itself changed. */
-                c.screen_h = disp->height - foot_height(&c);
                 dirty = 1;
             } else {
                 /* Unreadable. The running archetype is still the
                  * running one, and the name must go on saying so. */
                 snprintf(c.layout_id, sizeof c.layout_id, "%s", L->id);
             }
+            /* The band's height follows BOTH the archetype's target
+             * size and the theme's font size, so the body it leaves is
+             * remeasured on every reload -- not only on the branch
+             * where the archetype could be read. A theme change with
+             * an unreadable active.shell used to leave the archetype
+             * painting into a body of the wrong height. */
+            c.screen_h = disp->height - foot_height(&c);
         }
 
         /* A VT switch away means another process owns the display.
@@ -1150,13 +1222,12 @@ int main(int argc, char **argv)
          * run.c -- this cannot be an ordering dependency, because the
          * thing to be ordered after is created by this unit's own PAM
          * stack. */
-        if (run_adopt_user_bus()) {
+        if (run_adopt_user_bus())
             fprintf(stderr, "aurshell: using the session bus logind made\n");
-            /* Re-announce there. A notification server on the bus the
-             * applications are NOT on is a server nothing can find. */
-            notify_close();
-        }
-        notify_open();          /* idempotent, and rate-limited inside */
+        /* Idempotent, rate-limited inside, and it notices for itself
+         * when the address has changed -- which the line above is not
+         * the only thing that can do, since a spawn adopts too. */
+        notify_open();
         /* Read the bus HERE, every pass, rather than only when its fd
          * is readable. libdbus buffers: a message can be complete in
          * the connection's own queue with nothing left on the socket,
@@ -1263,10 +1334,24 @@ int main(int argc, char **argv)
          * window is "this" is the session's business. */
         if (c.want_close_win) {
             c.want_close_win = 0;
-            int w = (c.focus >= 0 && c.focus < c.n_wins) ? c.focus
-                  : (c.n_wins > 0 ? c.n_wins - 1 : -1);
+            /* ONLY the window she is looking at, and only when the
+             * archetype says there IS one.
+             *
+             * `c.focus == -1` is not "no windows open". In rail it is
+             * the documented "Home is centred", and in tiles it is
+             * "back on the page of buttons, nothing is on" -- and the
+             * band draws Close this whenever any window exists. So
+             * falling back to the last slot meant that pressing
+             * "Close this" while looking at Home asked the browser to
+             * close. Harmless while the button was a no-op; the moment
+             * it was wired to a real close request it became "a button
+             * that closes a document you are not looking at, with
+             * unsaved work in it". */
+            int w = (c.focus >= 0 && c.focus < c.n_wins) ? c.focus : -1;
             if (w < 0) {
-                osd_say("There is nothing open to close.");
+                osd_say(c.n_wins > 0
+                        ? "Press the thing you want to close first."
+                        : "There is nothing open to close.");
             } else if (c.wins[w].wid) {
                 /* A real window is ASKED, the way its own title bar
                  * button would ask, so a document with unsaved changes
@@ -1280,8 +1365,36 @@ int main(int argc, char **argv)
                  * on screen at all times, did nothing whatsoever: the
                  * failure shell.h calls worse than having no control. */
                 aurwl_win *win = session_win(&c, c.wins[w].wid);
-                if (win) aurwl_win_close(win);
-                else     shell_close_win(&c, w);
+                if (win) {
+                    /* SECOND PRESS MEANS IT. A client is ASKED first,
+                     * so a document with unsaved changes gets to put
+                     * its own question on the screen. But a client
+                     * that is wedged never answers, and a button that
+                     * politely asks a dead program forever is the
+                     * no-op this was written to stop being. So the
+                     * second press within a few seconds takes it. */
+                    uint32_t nowm = (uint32_t)now_ms();
+                    if (close_asked_wid == c.wins[w].wid &&
+                        (uint32_t)(nowm - close_asked_ms) < CLOSE_INSIST_MS) {
+                        aurwl_win_kill(win);
+                        osd_say("That program was not answering, so it was "
+                                "stopped.");
+                        close_asked_wid = 0;
+                    } else {
+                        aurwl_win_close(win);
+                        close_asked_wid = c.wins[w].wid;
+                        close_asked_ms  = nowm;
+                    }
+                } else {
+                    /* The compositor has no such window any more, so
+                     * the slot is the shell's to remove -- and
+                     * shell_close_win() refuses a slot that still
+                     * carries a wid, so the wid is cleared first.
+                     * Without that this arm was unreachable code
+                     * wearing the shape of a handler. */
+                    c.wins[w].wid = 0;
+                    shell_close_win(&c, w);
+                }
             } else {
                 /* A slot with nothing behind it yet -- an application
                  * that is still starting, or one that failed to. That
@@ -1313,30 +1426,45 @@ int main(int argc, char **argv)
              * re-committed one layer up by the code that read its
              * commit message.
              *
-             * Waiting is safe here: poweroff and reboot do not return
-             * (the process is killed with everything else), suspend
-             * returns when the machine comes back, and a refusal
-             * returns at once. Four seconds is the bound on how long
-             * the screen sits still, not on the shutdown. */
-            int rc = run_status(argv_off, 4000);
-            if (rc == 0 || rc == -1) {
-                /* 0: it is doing it. -1: still running after four
-                 * seconds, which for poweroff and reboot is the
-                 * ordinary case -- systemd is stopping units. */
-                dirty = 1;
-                continue;
-            }
-
-            /* It came back, quickly, with a complaint. Say so, in her
-             * words, and leave the machine exactly as it was. */
+             * All three of these are ASYNCHRONOUS logind calls:
+             * systemctl returns as soon as logind has accepted the
+             * job, not when the machine is off. A refusal comes back
+             * just as quickly. So the wait here is short -- it is
+             * bounded by how long the screen may sit still, and 1.2s
+             * is already generous for a D-Bus round trip on a 2013
+             * laptop.
+             *
+             * It must stay short for a reason that is not comfort.
+             * Nothing is painted and nothing is read while this
+             * blocks, and that includes VT_RELDISP: with VT_PROCESS
+             * set, the kernel waits for this process to acknowledge a
+             * VT switch, so a long block here is Ctrl-Alt-F2 hanging
+             * for the whole budget. */
+            int rc = run_status(argv_off, 1200);
             static const char *SORRY[4] = {
                 NULL,
                 "This computer would not turn off. Try again in a moment.",
                 "This computer would not restart. Try again in a moment.",
                 "This computer will not go to sleep."
             };
-            fprintf(stderr, "aurshell: systemctl %s exited %d\n", VERB[what], rc);
-            osd_say(SORRY[what]);
+            if (rc == RUN_NOSTART) {
+                /* It never started -- no fork, no exec, nothing. NOT
+                 * the same answer as "still running", which is what
+                 * both used to be. A machine out of process slots is
+                 * exactly the machine somebody is reaching for Turn
+                 * off on, and it was getting a button that did nothing
+                 * and said nothing. */
+                fprintf(stderr, "aurshell: could not start systemctl %s\n",
+                        VERB[what]);
+                osd_say(SORRY[what]);
+            } else if (rc == RUN_RUNNING || rc == 0) {
+                /* Accepted, or still working on it. Either way the
+                 * machine is on its way and the screen should stop. */
+            } else {
+                fprintf(stderr, "aurshell: systemctl %s exited %d\n",
+                        VERB[what], rc);
+                osd_say(SORRY[what]);
+            }
             dirty = 1;
         }
 

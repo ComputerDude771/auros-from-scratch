@@ -210,7 +210,14 @@ static int bright_read(char *dir, size_t n, long *max, long *now)
     if (backlight_dir(dir, n) < 0) return -1;
     *max = slurp_long(dir, "max_brightness", -1);
     *now = slurp_long(dir, "brightness", -1);
-    if (*max <= 0 || *now < 0) return -1;
+    /* A panel whose only settings are OFF and ON is not a brightness
+     * control, and saying it is one is a lie with a number on it: the
+     * floor forbids off, so the only reachable value is on, and both
+     * keys used to report "100%" over and over while nothing moved.
+     * "This computer has no brightness to change" is the true
+     * sentence, and it is the one the rest of this file is built to
+     * tell. */
+    if (*max <= 1 || *now < 0) return -1;
     return 0;
 }
 
@@ -289,13 +296,23 @@ static int vol_muted = 0;
  * "this machine has no sound" after it has stayed missing past the
  * grace period below -- long enough for a slow boot, short enough
  * that she is still looking at the same screen. */
-#define VOL_GRACE_S 25
+#define VOL_GRACE_MS 25000
+/* How often to look again while there is still no answer. */
+#define VOL_RETRY_MS  1000
 
-static int    vol_have = 0;    /* a real number has been read, once   */
-static int    vol_gone = 0;    /* latched: there is no sound server   */
-static time_t vol_t0   = 0;    /* when we first went looking          */
+static int   vol_have = 0;     /* a real number has been read, once   */
+static int   vol_gone = 0;     /* there is no sound server            */
+static long  vol_t0   = 0;     /* when we first went looking, or 0    */
+static long  vol_asked_ms = 0; /* when we last looked                 */
 
 #define SINK "@DEFAULT_AUDIO_SINK@"
+
+static long mono_ms(void)
+{
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return t.tv_sec * 1000L + t.tv_nsec / 1000000L;
+}
 
 static int sound_socket(void)
 {
@@ -314,15 +331,35 @@ static int sound_socket(void)
 
 static void volume_ask(void)
 {
-    if (vol_gone) return;
-    if (!vol_t0) vol_t0 = time(NULL);
+    /* THE CLOCK HERE IS MONOTONIC, NOT time().
+     *
+     * The grace period below is measured from the earliest moment in
+     * the boot, which is exactly when the wall clock is least
+     * trustworthy: an image built on a fixed date, a laptop with a
+     * dead RTC, and timesyncd stepping the clock forward by years a
+     * second or two in. One forward step consumed the whole grace in
+     * an instant and latched "this computer has no sound" on a machine
+     * whose sound was about to come up.
+     *
+     * And the latch is no longer permanent. A socket that turns up
+     * after we gave up is a sound server that started late, which is
+     * an ordinary thing on slow hardware, not a reason to stay silent
+     * until the next reboot. */
+    long t = mono_ms();
+    if (!vol_t0) vol_t0 = t;
+    vol_asked_ms = t;
 
     if (!sound_socket()) {
-        if (!vol_have && time(NULL) - vol_t0 > VOL_GRACE_S) {
+        if (!vol_have && t - vol_t0 > VOL_GRACE_MS) {
             vol_gone = 1;
             vol_pct  = -1;
         }
         return;                       /* no exec, no stall, no lie */
+    }
+    if (vol_gone) {
+        /* It came back. */
+        vol_gone = 0;
+        fprintf(stderr, "aurshell: the sound server is here after all\n");
     }
 
     char out[128];
@@ -359,13 +396,6 @@ static void volume_ask(void)
 static int  vol_want = -1;        /* asked for, not yet sent          */
 static long vol_sent_ms = 0;
 
-static long mono_ms(void)
-{
-    struct timespec t;
-    clock_gettime(CLOCK_MONOTONIC, &t);
-    return t.tv_sec * 1000L + t.tv_nsec / 1000000L;
-}
-
 static void volume_send(int percent)
 {
     char arg[32];
@@ -374,11 +404,27 @@ static void volume_send(int percent)
     if (run_detached(argv) == 0) vol_sent_ms = mono_ms();
 }
 
-/* Called once per pass of the main loop. Flushes whatever she landed
- * on, so letting go of the slider is always heard even if the last
- * motion arrived inside the window above. */
+/* Called once per pass of the main loop. Two jobs.
+ *
+ * ONE: keep asking until there is an answer. power_refresh() runs at
+ * start-up -- BEFORE the compositor exists, so before the logind
+ * session exists, so before the sound server has been started by it --
+ * and then only when a panel opens. Removing the "asked once, never
+ * again" flag was not enough on its own: with nothing in the frame
+ * loop asking, the first probe was still the only probe, and the
+ * volume keys stayed dead for the life of the boot on a machine whose
+ * sound came up two seconds later. The fix for a stuck answer is to
+ * ask again, which means something has to be doing the asking.
+ *
+ * TWO: flush whatever volume she landed on, so letting go of the
+ * slider is always heard even if the last motion arrived inside the
+ * throttle window. */
 void power_step(void)
 {
+    if (!vol_have && !vol_gone) {
+        long t = mono_ms();
+        if (!vol_asked_ms || t - vol_asked_ms >= VOL_RETRY_MS) volume_ask();
+    }
     if (vol_want < 0) return;
     if (mono_ms() - vol_sent_ms < VOL_SEND_MS) return;
     int v = vol_want;
@@ -395,9 +441,10 @@ void power_refresh(void)
 
 int power_volume(void)
 {
-    /* Nobody has looked yet: look now, so the first thing drawn with
-     * this number is drawn with a real one. */
-    if (!vol_have && !vol_gone && !vol_t0) volume_ask();
+    /* A pure reader. power_step() does the asking, every pass, until
+     * there is an answer -- this used to try to be clever about asking
+     * lazily and the condition it tested (`!vol_t0`) was false from
+     * the first start-up probe onwards, so it never fired again. */
     return vol_pct;
 }
 

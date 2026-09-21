@@ -23,6 +23,7 @@
 #include <string.h>
 
 #include "session.h"
+#include "run.h"
 #include "../aurwl/aurwl.h"
 
 /* An application that has not shown a window in this long has failed to
@@ -336,6 +337,17 @@ void session_paint_popups(shell_ctx *c, surface *fb)
 
 int session_spawn(shell_ctx *c, const char *argv_blob, int n_args)
 {
+    /* THE BUS THIS CHILD WILL LIVE ON, decided before it exists.
+     *
+     * The shell starts on the private bus its unit makes and moves to
+     * the one logind makes a second or two later (see run.c). A child
+     * started in that window inherits the bus the shell is about to
+     * LEAVE -- so the browser would be on one bus and the notification
+     * server, which moved, on another, permanently, for that
+     * program's whole life.
+     *
+     * The window is small and the cost of closing it is one stat. */
+    run_adopt_user_bus();
     if (!c->wl || n_args < 1 || n_args > APP_MAX_ARGS) return -1;
     /* Unpack the NUL-separated tokens into the vector execvp wants. */
     const char *argv[APP_MAX_ARGS + 1];

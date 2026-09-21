@@ -807,9 +807,17 @@ EOL
     # perfectly until the day it was updated, and then quietly stop
     # being able to sleep, with nothing to connect the two events.
     if [ -f "$RFS/etc/default/grub" ]; then
-        sed -i 's/^\(GRUB_CMDLINE_LINUX_DEFAULT="[^"]*\)splash\([^"]*"\)/\1\2/; \
-                s/^\(GRUB_CMDLINE_LINUX_DEFAULT="\)[[:space:]]*/\1/; \
-                s/[[:space:]]*"$/"/' "$RFS/etc/default/grub"
+        # Separate -e flags, with the continuations OUTSIDE the quotes.
+        # Written as one quoted script with backslash-newlines first,
+        # which is not a continuation inside single quotes -- the
+        # backslash and the newline are both part of the string, so sed
+        # got a multi-line script and said "unterminated address
+        # regex". Caught by running the build, which is the only thing
+        # that would have caught it.
+        sed -i -e 's/^\(GRUB_CMDLINE_LINUX_DEFAULT="[^"]*\)splash\([^"]*"\)/\1\2/' \
+               -e 's/^\(GRUB_CMDLINE_LINUX_DEFAULT="\)[[:space:]]*/\1/' \
+               -e 's/[[:space:]]*"$/"/' \
+               "$RFS/etc/default/grub"
         if grep -q 'splash' "$RFS/etc/default/grub"; then
             warn "splash is still on the kernel command line and this image"
             warn "has no plymouth: after the first kernel upgrade the active"

@@ -131,9 +131,9 @@ int run_adopt_user_bus(void)
 
 int run_status(const char *const argv[], int timeout_ms)
 {
-    if (!argv || !argv[0] || !argv[0][0]) return -1;
+    if (!argv || !argv[0] || !argv[0][0]) return RUN_NOSTART;
     pid_t pid = fork();
-    if (pid < 0) return -1;
+    if (pid < 0) return RUN_NOSTART;
     if (pid == 0) { child(argv, -1); }
 
     /* Poll rather than block, so a helper that never exits costs the
@@ -148,9 +148,16 @@ int run_status(const char *const argv[], int timeout_ms)
         if (r == pid) {
             if (WIFEXITED(st))   return WEXITSTATUS(st);
             if (WIFSIGNALED(st)) return 128 + WTERMSIG(st);
-            return -1;
+            return RUN_RUNNING;
         }
-        if (r < 0) { if (errno == EINTR) continue; return -1; }
+        if (r < 0) {
+            if (errno == EINTR) continue;
+            /* It is gone and somebody else collected it, which cannot
+             * happen in this program (every reaper waits on its own
+             * pid table) but is not worth asserting. Nothing is known
+             * about how it ended, so nothing is claimed. */
+            return RUN_RUNNING;
+        }
 
         struct timespec tn;
         clock_gettime(CLOCK_MONOTONIC, &tn);
@@ -161,7 +168,7 @@ int run_status(const char *const argv[], int timeout_ms)
              * long the SCREEN waits, and `systemctl poweroff` taking
              * longer than that is normal. remember() collects it. */
             remember(pid);
-            return -1;
+            return RUN_RUNNING;
         }
         struct timespec nap = { 0, 10 * 1000 * 1000 };
         nanosleep(&nap, NULL);

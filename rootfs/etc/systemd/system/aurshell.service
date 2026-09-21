@@ -1,5 +1,23 @@
 [Unit]
 Description=AurOS desktop shell
+
+# NEVER STOP TRYING. In [Unit], which is where systemd.unit(5)
+# documents it and where systemd actually reads it.
+#
+# It was in [Service], and the booted machine said so on every start:
+# "aurshell.service:153: Unknown key name 'StartLimitIntervalSec' in
+# section 'Service', ignoring." So the setting was not in effect at
+# all -- after five failures in ten seconds the unit would have been
+# given up on, leaving a black screen, which is the one outcome this
+# line exists to prevent. A rate limit that silences the recovery
+# screen is worse than no recovery screen, because the machine looks
+# dead rather than sorry.
+#
+# The ExecStopPost below draws a screen that explains, and drawing it
+# already paces the restarts: a machine that cannot start its desktop
+# spends most of its time showing a person a sentence about that,
+# rather than a few seconds flapping and then giving up.
+StartLimitIntervalSec=0
 # There is no OnFailure= here any more, and that is deliberate.
 #
 # It was getty@tty1.service: a login prompt, on a machine whose owner
@@ -150,7 +168,6 @@ RestartSec=2
 # Ctrl-Alt-F2 still reaches a console on a build with allow_tty="yes".
 # That is the technician's way in, and it is not the same thing as a
 # way in for the person who owns the machine.
-StartLimitIntervalSec=0
 
 [Install]
 WantedBy=graphical.target

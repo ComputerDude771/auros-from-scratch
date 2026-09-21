@@ -311,6 +311,35 @@ int main(void)
     ok("...and still accepts a good one",
        send_notify(&c, "Your files", 0, "Still here", "", 8000) == 0);
 
+    /* ── THE SHELL MOVES BUS ────────────────────────────────────
+     *
+     * It starts on the private bus its unit makes and adopts logind's
+     * a second or two later. A server left on the old bus is a server
+     * nothing can find, and the move can be triggered from more than
+     * one place -- the frame loop, or a spawn -- so notify_open() has
+     * to notice for itself rather than trusting whoever moved to say
+     * so. */
+    printf("\n  and when the shell moves to logind's bus\n");
+    {
+        char first[512];
+        snprintf(first, sizeof first, "%s", bus_addr);
+        pid_t old = bus_pid;
+        bus_pid = -1;
+        ok("(a second bus can be started)", start_bus() == 0);
+        ok("...and it is a different one", strcmp(first, bus_addr) != 0);
+
+        /* start_bus() has already pointed the environment at it. */
+        ok("the shell notices and re-announces itself there",
+           notify_open() == 1);
+        int had = notify_showing();
+        ok("...and a program on the NEW bus can reach it",
+           send_notify(&c, "Your files", 0, "On the new bus", "", 8000) == 0);
+        ok("...and the message arrives", notify_showing() == had + 1 ||
+                                         notify_showing() == NOTIFY_MAX);
+
+        if (old > 0) { kill(old, SIGTERM); waitpid(old, NULL, 0); }
+    }
+
     notify_fini();
     ok("it gives the name up when it is done", notify_fd() < 0);
     stop_bus();

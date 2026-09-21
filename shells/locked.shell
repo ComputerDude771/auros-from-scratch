@@ -6,7 +6,7 @@
 # it is also the right answer for a relative who only needs three things.
 shell_id="locked"
 shell_name="Just these apps"
-shell_tagline="Only what the owner chose. Nothing else exists."
+shell_tagline="Only what the owner chose. The first one opens straight away."
 
 shell_plain="The computer does the handful of jobs it was set up for and
 nothing else. There is no desktop, no settings, no way to install

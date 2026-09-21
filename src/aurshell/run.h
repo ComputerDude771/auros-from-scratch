@@ -41,17 +41,28 @@ int  run_detached(const char *const argv[]);
  * number that is briefly missing. */
 int  run_capture(const char *const argv[], char *out, size_t n, int timeout_ms);
 
-/* Start it, wait for it, and say how it ENDED. Returns the program's
- * exit status -- 0 for "it worked" -- or -1 if it could not be started
- * or did not finish inside `timeout_ms`.
+/* Start it, wait for it, and say how it ENDED.
  *
- * This exists because run_detached() returning 0 means "a process was
- * created", and three buttons in this shell were reading that as "the
- * machine is turning off". A `systemctl suspend` that policy refuses
- * forks perfectly, exits 1, and nobody looks -- which is word for word
- * the bug aurshell.service was written to fix, re-committed one layer
- * up. Use it only where the failure has to be SAID and the wait is not
- * in a frame loop. */
+ *   >= 0    the program's exit status; 0 means it worked
+ *   RUN_RUNNING   still going when the deadline passed, which for
+ *                 `systemctl poweroff` is the ordinary case
+ *   RUN_NOSTART   it never started: no fork, no exec, nothing
+ *
+ * THOSE LAST TWO ARE NOT THE SAME ANSWER. They were both -1, and
+ * run.h said so in one sentence -- "could not be started or did not
+ * finish" -- and main.c read the union as "it is doing it". So a
+ * machine that could not fork, which is exactly the state a machine is
+ * in when a person reaches for Turn off, got a button that did nothing
+ * and said nothing. That is the bug this function was added to fix,
+ * committed inside the fix for it.
+ *
+ * This exists because run_detached() returning 0 means only "a process
+ * was created", and three buttons were reading that as "the machine is
+ * turning off". A `systemctl suspend` that policy refuses forks
+ * perfectly, exits 1, and nobody looks. Use run_status() where the
+ * failure has to be SAID and the wait is not in a frame loop. */
+#define RUN_RUNNING  (-1)
+#define RUN_NOSTART  (-2)
 int  run_status(const char *const argv[], int timeout_ms);
 
 /* Collect the ones run_detached() started. Swept once per pass of the
