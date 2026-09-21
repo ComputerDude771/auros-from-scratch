@@ -41,12 +41,38 @@
   --gap:       12px;
   --pad:       14px;
 
-  /* ── Type ── */
-  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI",
-               Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif;
-  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo,
-               Consolas, "Liberation Mono", monospace;
-  --lh: 1.45;
+  /* ── Type ──
+     A DISPLAY face and a TEXT face, which is the whole hierarchy.
+     Georgia leads the display stack deliberately: Matthew Carter drew
+     it to stay readable on bad screens, which is both thematically
+     right for a product about rescuing an old laptop and practically
+     right for the panels our readers are on. It is also on effectively
+     every Windows and Mac, so nobody downloads anything — this site
+     ships no fonts, no CDN, no trackers.
+
+     Inter is gone from the text stack. We do not serve it, so a
+     visitor was always falling through to their platform UI face
+     anyway; naming it first only advertised the most over-used
+     typeface of the last five years. */
+  --font-display: Georgia, "Iowan Old Style", "PT Serif", "Source Serif 4",
+                  Cambria, "Times New Roman", serif;
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text",
+               "Segoe UI", Roboto, "Noto Sans", "Helvetica Neue", Arial,
+               sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas,
+               "Liberation Mono", monospace;
+  --lh: 1.55;
+
+  /* A scale, not four sizes that happen to differ. Each step is a
+     ratio of the last, and the weights are UNEVEN on purpose: the
+     display face carries its hierarchy by size and italic, the text
+     face by weight. */
+  --step--1: clamp(.82rem, .79rem + .12vw, .88rem);
+  --step-0:  clamp(1rem, .96rem + .18vw, 1.08rem);
+  --step-1:  clamp(1.2rem, 1.1rem + .45vw, 1.45rem);
+  --step-2:  clamp(1.5rem, 1.3rem + .95vw, 2.1rem);
+  --step-3:  clamp(2rem, 1.5rem + 2.2vw, 3.4rem);
+  --rule:    1px;
 
   --motion: 170ms;
   --ease: cubic-bezier(.22, 1, .36, 1);
@@ -87,9 +113,29 @@ h1, h2, h3, h4 {
   text-wrap: balance;
 }
 
-h1 { font-size: clamp(2.15rem, 1.4rem + 3.4vw, 3.9rem); font-weight: 650; }
-h2 { font-size: clamp(1.55rem, 1.2rem + 1.7vw, 2.3rem); font-weight: 620; }
-h3 { font-size: clamp(1.12rem, 1rem + .6vw, 1.35rem); font-weight: 600; }
+h1 {
+  font-family: var(--font-display);
+  font-size: var(--step-3);
+  font-weight: 400;          /* the size is the emphasis, not the weight */
+  letter-spacing: -.015em;
+  line-height: 1.08;
+}
+h2 {
+  font-family: var(--font-display);
+  font-size: var(--step-2);
+  font-weight: 400;
+  letter-spacing: -.01em;
+  line-height: 1.18;
+}
+/* h3 drops to the TEXT face and goes heavy — the jump between a large
+   quiet serif and a small loud sans is the contrast three barely
+   distinguishable weights of one face could never produce. */
+h3 {
+  font-family: var(--font-sans);
+  font-size: var(--step-0);
+  font-weight: 700;
+  letter-spacing: .005em;
+}
 h4 { font-size: 1rem; font-weight: 600; }
 
 p  { margin: 0 0 1.05em; max-width: 68ch; }
@@ -287,7 +333,7 @@ section > .shell > :last-child { margin-bottom: 0; }
   margin-bottom: 1.1rem;
 }
 
-/* ── Hero + aurora ─────────────────────────────────────────────── */
+/* ── Hero ──────────────────────────────────────────────────────── */
 .hero {
   position: relative;
   isolation: isolate;
@@ -296,81 +342,68 @@ section > .shell > :last-child { margin-bottom: 0; }
   border-bottom: 1px solid var(--overlay);
 }
 
-/* The wallpaper renderer paints a cold vertical gradient, a thinning
-   star field, then five saturated sinusoidal ribbons. This is the same
-   composition in gradients: no image, no canvas, one blurred layer. */
-.aurora {
+/* No aurora. The desktop's wallpaper does not belong on the website,
+   and a 46px-blurred teal-and-violet glow behind a headline is the
+   single most recognisable thing a machine-made page does. The ground
+   is flat; a hairline does the separating. */
+.hero-rule {
   position: absolute;
-  inset: 0;
-  z-index: -2;
-  background: linear-gradient(180deg, var(--wall-c1) 0%, var(--wall-c1) 34%, #0A131A 100%);
-  background:
-    radial-gradient(120% 65% at 50% 118%,
-      color-mix(in srgb, var(--wall-c2) 85%, transparent) 0%,
-      transparent 62%),
-    linear-gradient(180deg, var(--wall-c1) 0%, var(--wall-c1) 34%, #0A131A 100%);
-}
-.aurora::before,
-.aurora::after {
-  content: "";
-  position: absolute;
-  inset: -20% -30%;
+  left: 0; right: 0; bottom: 0;
+  height: var(--rule);
+  background: var(--overlay);
   z-index: -1;
-  filter: blur(46px);
-  opacity: .55;
-  pointer-events: none;
-}
-/* ribbon 1 + 3: teal curtains */
-.aurora::before {
-  background:
-    radial-gradient(60% 13% at 38% 44%,
-      color-mix(in srgb, var(--wall-c3) 62%, transparent) 0%, transparent 70%),
-    radial-gradient(44% 8% at 72% 33%,
-      color-mix(in srgb, var(--wall-c3) 48%, transparent) 0%, transparent 72%),
-    radial-gradient(70% 18% at 20% 58%,
-      color-mix(in srgb, var(--wall-c2) 90%, transparent) 0%, transparent 74%);
-}
-/* ribbon 2 + 4: violet, wider and dimmer */
-.aurora::after {
-  background:
-    radial-gradient(52% 11% at 62% 50%,
-      color-mix(in srgb, var(--wall-c4) 45%, transparent) 0%, transparent 72%),
-    radial-gradient(38% 9% at 15% 38%,
-      color-mix(in srgb, var(--wall-c4) 34%, transparent) 0%, transparent 74%);
-  opacity: .42;
-}
-/* vignette 0.45, as the theme asks */
-.aurora-veil {
-  position: absolute;
-  inset: 0;
-  z-index: -1;
-  pointer-events: none;
-  background:
-    radial-gradient(115% 85% at 50% 30%, transparent 30%,
-      color-mix(in srgb, var(--bg) 45%, transparent) 100%),
-    linear-gradient(180deg, transparent 55%, var(--bg) 100%);
-}
-@media (prefers-reduced-motion: no-preference) {
-  .aurora::before { animation: drift 54s ease-in-out infinite alternate; }
-  .aurora::after  { animation: drift 78s ease-in-out infinite alternate-reverse; }
-}
-@keyframes drift {
-  from { transform: translate3d(-2.5%, 1.5%, 0) scale(1.02); }
-  to   { transform: translate3d(3%, -1.5%, 0) scale(1.08); }
 }
 
-.hero h1 { max-width: 17ch; }
-.hero .lede { max-width: 56ch; }
+/* The hero is asymmetric on purpose, and the asymmetry has to be a
+   COMPOSITION rather than an accident. Everything stacked in a narrow
+   left-hand column with the right half of the page empty is not
+   asymmetric, it is unfinished -- which is what the first version of
+   this looked like.
+
+   So above 60rem the headline and the lede take a wide left column,
+   and the pre-release caveat becomes marginalia in a narrow right one,
+   set small and ruled. That is the shape of a page that was composed:
+   two measures, two type sizes, one strong diagonal from the headline
+   down to the note. */
+@media (min-width: 60rem) {
+  /* :has() so this only fires where there IS a second column. Applied
+     unconditionally it left every page without marginalia -- safety,
+     organizations -- with an empty right half, which is the same
+     unfinished look the grid exists to fix. */
+  .hero .shell:has(.hero-note) {
+    display: grid;
+    grid-template-columns: minmax(0, 1.55fr) minmax(15rem, .85fr);
+    column-gap: clamp(2rem, 5vw, 4.5rem);
+    align-items: start;
+  }
+  .hero .shell:has(.hero-note) > .eyebrow,
+  .hero .shell:has(.hero-note) > h1,
+  .hero .shell:has(.hero-note) > .lede,
+  .hero .shell:has(.hero-note) > .btn-row { grid-column: 1; }
+  .hero-note {
+    grid-column: 2;
+    grid-row: 2 / span 4;
+    align-self: start;
+    margin-top: .6rem;
+  }
+}
+
+/* 20ch, not 17: at 17 the headline broke inside the hyphen of
+   "ten-year-old", which is the one place it must not break. */
+.hero h1 { max-width: 20ch; text-wrap: balance; }
+.hero .lede { max-width: 48ch; }
 
 .hero-note {
   display: block;
-  max-width: 54ch;
-  font-size: .92rem;
+  max-width: 48ch;
+  font-size: var(--step--1);
+  line-height: 1.5;
   color: var(--subtle);
-  border-left: var(--border) solid var(--overlay);
-  padding-left: .9rem;
+  border-left: 4px solid var(--overlay);
+  padding-left: .95rem;
   margin: 0;
 }
+.hero-note strong { color: var(--fg); }
 
 /* ── Cards & grids ─────────────────────────────────────────────── */
 .card {
@@ -386,6 +419,91 @@ section > .shell > :last-child { margin-bottom: 0; }
 .card-accent { border-color: color-mix(in srgb, var(--accent) 38%, var(--overlay)); }
 .card-warn   { border-color: color-mix(in srgb, var(--warn) 38%, var(--overlay)); }
 .card-err    { border-color: color-mix(in srgb, var(--err) 38%, var(--overlay)); }
+
+/* ── Claims ─────────────────────────────────────────────────────
+   Three claims, each with its limit printed next to it. This used to
+   be three identical rounded cards in a row, which is the single most
+   recognisable shape a machine-made page has. The information is good;
+   only the rendering was generic.
+
+   It is now an editorial list, and the composition does the work that
+   three boxes could not:
+
+   - A hanging numeral in the display face, set large and quiet, so the
+     eye has somewhere to land and the left edge has a rhythm.
+   - THREE left edges, not one: the numeral, the claim, and the limit
+     each start at a different x. A single flush column is what makes a
+     page look stamped out rather than set.
+   - The limit is marked by a rule down its left side and nothing else
+     -- no box, no radius, no tint, no shadow. Borrowed straight from
+     GOV.UK's inset text, where it does the same job for the same
+     reason: the caveat has to be impossible to skip and impossible to
+     mistake for the claim.
+   - A hairline between entries instead of a gap between cards. The
+     claims are one argument, not three products. */
+.claims { margin: 0; padding: 0; list-style: none; }
+
+.claim {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  column-gap: clamp(1rem, 3vw, 2.4rem);
+  padding-block: clamp(1.8rem, 4vw, 2.9rem);
+  border-top: var(--rule) solid var(--overlay);
+}
+.claim:first-child { border-top: 0; padding-top: 0; }
+
+.claim-n {
+  font-family: var(--font-display);
+  font-size: var(--step-2);
+  font-weight: 400;
+  font-variant-numeric: lining-nums tabular-nums;
+  /* subtle, not muted: at muted these were so quiet on a dark ground
+     that the left edge had no rhythm at all, which was the entire
+     reason for setting them. */
+  color: var(--subtle);
+  line-height: 1;
+  padding-top: .1em;
+  font-feature-settings: "tnum";
+}
+
+.claim h3 { margin: 0 0 .5rem; }
+.claim p  { max-width: 58ch; }
+.claim > div > :last-child { margin-bottom: 0; }
+
+.limit {
+  margin-top: 1.15rem;
+  padding-left: clamp(.85rem, 2vw, 1.25rem);
+  border-left: 4px solid var(--warn);
+  font-size: var(--step--1);
+  color: var(--subtle);
+  max-width: 54ch;
+}
+.limit strong {
+  display: block;
+  color: var(--fg);
+  font-weight: 700;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  font-size: .82em;
+  margin-bottom: .22rem;
+}
+
+/* The condition a reader is scanning for, set above the remedy. Same
+   treatment as the limit's label, because it is the same kind of thing:
+   a small hard signpost over a paragraph of prose. */
+.when {
+  display: block;
+  color: var(--subtle);
+  font-weight: 700;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  font-size: .72rem;
+  margin-bottom: .3rem;
+}
+
+@media (max-width: 560px) {
+  .claim { grid-template-columns: 1fr; row-gap: .4rem; }
+}
 
 .numbered { list-style-position: inside; padding-left: 0; }
 .numbered li::marker { color: var(--accent); font-weight: 650; }
@@ -622,15 +740,12 @@ tbody th { font-weight: 600; color: var(--fg-hi); }
   background: var(--wall-c1);
   aspect-ratio: 16 / 10;
   min-height: 260px;
-  box-shadow: 0 28px 60px rgba(0, 0, 0, .5);
-  /* Own stacking context: without it the veil's negative z-index would
-     escape and paint behind the mock's own background. */
+  /* No drop shadow. It was the only element on the site that cast one
+     -- 60px of blur, 28px down, 50% black -- which is the definition of
+     an arbitrary shadow. A hairline border already separates it from
+     the page. */
   isolation: isolate;
 }
-.mock .aurora { z-index: 0; }
-.mock .aurora-veil { z-index: 1; }
-.mock .aurora::before,
-.mock .aurora::after { filter: blur(34px); }
 .mock-bar {
   position: relative;
   z-index: 2;
@@ -864,7 +979,7 @@ pre .c { color: var(--subtle); }
 
 /* ── Print ─────────────────────────────────────────────────────── */
 @media print {
-  .site-head, .site-foot, .aurora, .aurora-veil, .mock { display: none; }
+  .site-head, .site-foot, .mock { display: none; }
   body { background: #fff; color: #000; }
 }
 

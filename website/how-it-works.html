@@ -32,8 +32,7 @@
 <main id="main">
 
   <section class="hero hero-sm">
-    <div class="aurora" aria-hidden="true"></div>
-    <div class="aurora-veil" aria-hidden="true"></div>
+    <div class="hero-rule" aria-hidden="true"></div>
     <div class="shell">
       <p class="eyebrow">How it works</p>
       <h1>One evening, two restarts, nothing you cannot undo.</h1>
@@ -315,33 +314,45 @@
         </p>
       </div>
 
-      <div class="grid grid-3">
-        <article class="card">
-          <h3>Just pick Windows</h3>
-          <p>
-            AurOS installed and you tried it and it is not for you. Restart, pick
-            Windows in the menu, carry on. It has been sitting there the whole time.
-            Delete the AurOS partitions later at your leisure.
-          </p>
-        </article>
-        <article class="card">
-          <h3>Use the rescue area</h3>
-          <p>
-            AurOS will not start, or something went wrong during the install. Your
-            boot menu has a rescue entry. Its main button restores your original
-            disk layout and Windows boot files and restarts. No USB stick, no second
-            computer, and no contact with us required.
-          </p>
-        </article>
-        <article class="card">
-          <h3>Use the rescue USB</h3>
-          <p>
-            The disk&rsquo;s layout itself is damaged and even the rescue area cannot
-            be found. This is what the mandatory USB stick is for. It carries the
-            same restore path, plus your original layout, from outside the disk.
-          </p>
-        </article>
-      </div>
+      <ol class="claims">
+        <li class="claim">
+          <span class="claim-n" aria-hidden="true">01</span>
+          <div>
+            <span class="when">If you simply don&rsquo;t like it</span>
+            <h3>Just pick Windows</h3>
+            <p>
+              Restart, pick Windows in the menu, carry on. It has been sitting there
+              the whole time. Delete the AurOS partitions later at your leisure.
+            </p>
+          </div>
+        </li>
+
+        <li class="claim">
+          <span class="claim-n" aria-hidden="true">02</span>
+          <div>
+            <span class="when">If AurOS will not start</span>
+            <h3>Use the rescue area</h3>
+            <p>
+              Your boot menu has a rescue entry. Its main button restores your
+              original disk layout and Windows boot files and restarts. No USB stick,
+              no second computer, and no contact with us required.
+            </p>
+          </div>
+        </li>
+
+        <li class="claim">
+          <span class="claim-n" aria-hidden="true">03</span>
+          <div>
+            <span class="when">If the disk&rsquo;s layout itself is damaged</span>
+            <h3>Use the rescue USB</h3>
+            <p>
+              Even the rescue area cannot be found. This is what the mandatory USB
+              stick is for. It carries the same restore path, plus your original
+              layout, from outside the disk.
+            </p>
+          </div>
+        </li>
+      </ol>
 
       <div class="note note-err" style="margin-top:1.6rem">
         <span class="note-title">And the honest case: when going back does not work</span>

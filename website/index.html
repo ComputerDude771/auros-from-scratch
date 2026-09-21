@@ -33,11 +33,10 @@
 
   <!-- ─────────────────────────── hero ─────────────────────────── -->
   <section class="hero">
-    <div class="aurora" aria-hidden="true"></div>
-    <div class="aurora-veil" aria-hidden="true"></div>
+    <div class="hero-rule" aria-hidden="true"></div>
     <div class="shell">
       <p class="eyebrow">AurOS 0.1.0 &middot; Nocturne &middot; pre-release</p>
-      <h1>Your ten-year-old PC still has a decade left in it.</h1>
+      <h1>Your ten&#8209;year&#8209;old PC still has a decade left in it.</h1>
       <p class="lede">
         AurOS is a complete Linux desktop that installs from inside Windows.
         You download one file and answer plain-language questions. Your Windows
@@ -69,54 +68,64 @@
         </p>
       </div>
 
-      <div class="grid grid-3">
-        <article class="card card-accent">
-          <h3>Your files come with you</h3>
-          <p>
-            On first boot, AurOS reads your Windows partition and brings over your
-            documents, pictures, music, downloads, desktop, Wi-Fi passwords,
-            wallpaper, language and keyboard layout.
-          </p>
-          <p class="small">
-            <strong>The limit:</strong> Chrome and Edge passwords need your old
-            Windows password. OneDrive files that live only in the cloud are not
-            real files on the disk and cannot be copied. You get a written report
-            of everything we could not bring.
-            <a href="safety.html#cannot-migrate">What can&rsquo;t move</a>.
-          </p>
-        </article>
+      <ol class="claims">
+        <li class="claim">
+          <span class="claim-n" aria-hidden="true">01</span>
+          <div>
+            <h3>Your files come with you</h3>
+            <p>
+              On first boot, AurOS reads your Windows partition and brings over your
+              documents, pictures, music, downloads, desktop, Wi-Fi passwords,
+              wallpaper, language and keyboard layout.
+            </p>
+            <p class="limit">
+              <strong>The limit</strong>
+              Chrome and Edge passwords need your old Windows password. OneDrive
+              files that live only in the cloud are not real files on the disk and
+              cannot be copied. You get a written report of everything we could not
+              bring. <a href="safety.html#cannot-migrate">What can&rsquo;t move</a>.
+            </p>
+          </div>
+        </li>
 
-        <article class="card card-accent">
-          <h3>Windows stays on the disk</h3>
-          <p>
-            We shrink the Windows partition to make room; we never delete it.
-            After the install, your PC still shows a boot menu and Windows is
-            still the default until you change it yourself.
-          </p>
-          <p class="small">
-            <strong>The limit:</strong> shrinking a partition is the one genuinely
-            destructive step, and it is where a failing disk or a power cut does
-            real damage. That is why we check the drive first and refuse if it
-            looks sick. <a href="safety.html#what-can-go-wrong">What can go wrong</a>.
-          </p>
-        </article>
+        <li class="claim">
+          <span class="claim-n" aria-hidden="true">02</span>
+          <div>
+            <h3>Windows stays on the disk</h3>
+            <p>
+              We shrink the Windows partition to make room; we never delete it.
+              After the install, your PC still shows a boot menu and Windows is
+              still the default until you change it yourself.
+            </p>
+            <p class="limit">
+              <strong>The limit</strong>
+              Shrinking a partition is the one genuinely destructive step, and it is
+              where a failing disk or a power cut does real damage. That is why we
+              check the drive first and refuse if it looks sick.
+              <a href="safety.html#what-can-go-wrong">What can go wrong</a>.
+            </p>
+          </div>
+        </li>
 
-        <article class="card card-accent">
-          <h3>We refuse PCs we can&rsquo;t handle</h3>
-          <p>
-            Before anything is touched, AurBridge reads your firmware mode, disk
-            health, encryption state, partition layout and power source. If any
-            of it is unsafe, it stops and tells you why, in words, with what to do
-            about it.
-          </p>
-          <p class="small">
-            <strong>The limit:</strong> a refusal is a real outcome, not a bug.
-            Some PCs &mdash; legacy BIOS machines, dynamic disks, drives with bad
-            sectors &mdash; will simply never be accepted, with no override
-            checkbox anywhere.
-          </p>
-        </article>
-      </div>
+        <li class="claim">
+          <span class="claim-n" aria-hidden="true">03</span>
+          <div>
+            <h3>We refuse PCs we can&rsquo;t handle</h3>
+            <p>
+              Before anything is touched, AurBridge reads your firmware mode, disk
+              health, encryption state, partition layout and power source. If any
+              of it is unsafe, it stops and tells you why, in words, with what to do
+              about it.
+            </p>
+            <p class="limit">
+              <strong>The limit</strong>
+              A refusal is a real outcome, not a bug. Some PCs &mdash; legacy BIOS
+              machines, dynamic disks, drives with bad sectors &mdash; will simply
+              never be accepted, with no override checkbox anywhere.
+            </p>
+          </div>
+        </li>
+      </ol>
     </div>
   </section>
 
@@ -197,8 +206,6 @@
       </div>
 
       <div class="mock" role="img" aria-label="A mock-up of the AurOS desktop: a slim top bar with workspace numbers over a dark blue-black aurora wallpaper, and a terminal window showing theme values.">
-        <div class="aurora" aria-hidden="true"></div>
-        <div class="aurora-veil" aria-hidden="true"></div>
         <div class="mock-bar" aria-hidden="true">
           <span class="glyph">&#9670;</span>
           <span class="ws"><span class="on">1</span><span>2</span><span>3</span><span>4</span></span>
