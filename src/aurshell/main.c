@@ -27,6 +27,7 @@
 #include "../common/theme.h"
 #include "../common/wall.h"
 #include "../common/font.h"
+#include "../common/png.h"
 
 #define MAX_KBD 8
 
@@ -271,11 +272,18 @@ int main(int argc, char **argv)
 {
     const char *conf = "/etc/auros/shell.conf";
     const char *card = NULL;
-    int once = 0;
+    const char *png_out = NULL;
+    int once = 0, png_w = 1600, png_h = 900, png_palette = 1;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--conf") && i+1 < argc) conf = argv[++i];
         else if (!strcmp(argv[i], "--card") && i+1 < argc) card = argv[++i];
         else if (!strcmp(argv[i], "--once")) once = 1;   /* paint one frame and exit */
+        /* --png renders one frame through the identical paint path and
+         * writes it out, so the shell's real output can be reviewed
+         * (and regression-checked) without a display attached. */
+        else if (!strcmp(argv[i], "--png") && i+1 < argc) png_out = argv[++i];
+        else if (!strcmp(argv[i], "--size") && i+2 < argc) { png_w = atoi(argv[++i]); png_h = atoi(argv[++i]); }
+        else if (!strcmp(argv[i], "--no-palette")) png_palette = 0;
     }
 
     signal(SIGHUP,  on_hup);
@@ -284,6 +292,39 @@ int main(int argc, char **argv)
 
     shell_theme th;
     load_theme(&th, conf);
+
+    if (png_out) {
+        surface *fb = surface_new(png_w, png_h);
+        if (!fb) return 1;
+        font *pf  = open_font(th.font_sans, (float)th.font_size);
+        font *pfm = open_font(th.font_sans, (float)th.font_size_sm);
+        uint32_t *tmp = malloc((size_t)png_w * png_h * sizeof *tmp);
+        if (tmp) {
+            wall_render(tmp, png_w, png_h, &th.t);
+            for (int i = 0; i < png_w * png_h; i++) fb->px[i] = 0xFF000000u | tmp[i];
+            free(tmp);
+        }
+        static const palette_item pitems[] = {
+            { "Files",             "enter" },
+            { "Web Browser",       "" },
+            { "Terminal",          "ctrl+alt+t" },
+            { "Settings",          "" },
+            { "Change theme\u2026", "aurora" },
+        };
+        paint_bar(fb, &th, pf, pfm, 5, 1);
+        if (png_palette)
+            paint_palette(fb, &th, pf, pfm, "term", pitems,
+                          (int)(sizeof pitems / sizeof pitems[0]), 2);
+        uint32_t *out = malloc((size_t)png_w * png_h * sizeof *out);
+        for (int i = 0; i < png_w * png_h; i++) out[i] = fb->px[i] & 0xFFFFFFu;
+        int rc = png_write_rgb(png_out, out, png_w, png_h);
+        free(out); surface_free(fb);
+        if (pf) font_free(pf);
+        if (pfm) font_free(pfm);
+        fprintf(stderr, "aurshell: wrote %s (%dx%d, theme %s)\n", png_out, png_w, png_h,
+                theme_str(&th.t, "theme_name", "?"));
+        return rc;
+    }
 
     kms_display *disp = kms_open(card);
     if (!disp) return 1;

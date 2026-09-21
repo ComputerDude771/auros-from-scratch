@@ -386,7 +386,7 @@ static void kern_init(font *f, size_t off, size_t len)
                 return;
             }
         }
-        if (slen > p - off && p + slen <= off + len) p += slen; else return;
+        if (p + slen <= off + len) p += slen; else return;
     }
 }
 
@@ -641,8 +641,10 @@ static void acc_edge(float *acc, int stride, int w, int h,
     if (ay < 0.0f) x -= ay * dxdy;             /* walk down to y = 0 */
     else           y = (int)ay;
 
-    int ylast = (int)ceilf(by);
-    if (ylast > h) ylast = h;
+    /* Clamp before the cast: converting a float larger than INT_MAX is
+     * undefined, and a corrupt glyph can easily produce one. */
+    float bc = ceilf(by);
+    int ylast = bc >= (float)h ? h : (int)bc;
 
     for (; y < ylast; y++) {
         float ytop = (float)y     > ay ? (float)y     : ay;
@@ -654,10 +656,14 @@ static void acc_edge(float *acc, int stride, int w, int h,
 
         float x0 = x < xn ? x : xn;
         float x1 = x < xn ? xn : x;
-        if (x0 < 0.0f) x0 = 0.0f;
-        if (x1 < 0.0f) x1 = 0.0f;
-        if (x0 > (float)w) x0 = (float)w;
-        if (x1 > (float)w) x1 = (float)w;
+        /* Negated comparisons so a NaN -- which a degenerate slope can
+         * produce -- lands on the clamp instead of slipping through to
+         * an undefined float-to-int conversion below. */
+        if (!(x0 >= 0.0f))       x0 = 0.0f;
+        if (!(x1 >= 0.0f))       x1 = 0.0f;
+        if (!(x0 <= (float)w))   x0 = (float)w;
+        if (!(x1 <= (float)w))   x1 = (float)w;
+        if (x1 < x0) x1 = x0;
 
         float *row = acc + (size_t)y * stride;
         float fl = floorf(x0), ce = ceilf(x1);
@@ -746,8 +752,12 @@ static glyph *glyph_build(font *f, uint32_t cp, int phase)
         if (P.p[i].y > y1) y1 = P.p[i].y;
     }
     /* NaN or an absurd bbox means the outline is junk; a blank glyph is
-     * the correct rendering of junk. */
-    if (!(x1 >= x0) || !(y1 >= y0)) { path_free(&P); return g; }
+     * the correct rendering of junk. The magnitude test doubles as the
+     * guard that makes the float-to-int casts below well defined. */
+    if (!(x1 >= x0) || !(y1 >= y0) ||
+        !(x0 > -1e6f) || !(x1 < 1e6f) || !(y0 > -1e6f) || !(y1 < 1e6f)) {
+        path_free(&P); return g;
+    }
 
     int bx = (int)floorf(x0) - 1, by = (int)floorf(y0) - 1;
     int bw = (int)ceilf(x1) + 1 - bx, bh = (int)ceilf(y1) + 1 - by;
@@ -846,15 +856,15 @@ font *font_load(const char *path, float px)
     size_t off, len;
     if (!find_table(f->data, f->size, dir, tag4("head"), &off, &len) || len < 54) goto fail;
     {
-        rd h = rd_at(f->data, f->size, off);
-        rd_skip(&h, 12);
+        /* Seek to each field rather than counting skips: `head` has two
+         * 8-byte LONGDATETIMEs and a bbox in the middle, and an
+         * off-by-two here silently yields a nonsense indexToLocFormat. */
+        rd h = rd_at(f->data, f->size, off + 12);
         if (ru32(&h) != 0x5F0F3CF5u) goto fail;          /* magicNumber */
-        rd_skip(&h, 2);
+        rd_to(&h, off + 18);
         uint32_t upem = ru16(&h);
-        rd_skip(&h, 30);                                  /* dates, bbox, flags */
-        rd_skip(&h, 4);                                   /* macStyle, lowestRec */
-        int32_t fmt = rs16(&h);                           /* fontDirectionHint */
-        fmt = rs16(&h);                                   /* indexToLocFormat */
+        rd_to(&h, off + 50);
+        int32_t fmt = rs16(&h);                          /* indexToLocFormat */
         if (h.bad || upem < 16 || upem > 16384 || (fmt != 0 && fmt != 1)) goto fail;
         f->upem = (float)upem;
         f->loca_long = fmt;
@@ -956,8 +966,11 @@ void font_draw(font *f, uint32_t *px, int w, int h,
                float x, float y, const char *utf8, uint32_t color, float alpha)
 {
     if (!f || !px || !utf8 || w <= 0 || h <= 0) return;
-    if (alpha <= 0.0f) return;
+    if (!(alpha > 0.0f)) return;
     if (alpha > 1.0f) alpha = 1.0f;
+    /* A NaN or wildly out-of-range pen position would make the casts
+     * below undefined, and nothing it could draw would be on screen. */
+    if (!(x > -1e6f && x < 1e6f) || !(y > -1e6f && y < 1e6f)) return;
 
     uint32_t sr = (color >> 16) & 0xFF, sg = (color >> 8) & 0xFF, sb = color & 0xFF;
     /* The baseline snaps to a whole pixel. Horizontal stems are what

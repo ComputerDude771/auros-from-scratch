@@ -58,6 +58,7 @@ packages_base="systemd-sysv dbus udev sudo less nano
                    initramfs-tools
                ca-certificates curl wget
                e2fsprogs dosfstools ntfs-3g gdisk parted
+                   cloud-guest-utils util-linux
                zstd xz-utils bzip2
                iputils-ping openssh-client
                fonts-inter fonts-jetbrains-mono"
