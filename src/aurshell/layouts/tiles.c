@@ -299,16 +299,6 @@ static rect origin_rect(shell_ctx *c, int w, int h, int wi)
     return r;
 }
 
-/* Bounded copy that does not go through snprintf, whose restrict
- * contract forbids the source and destination sharing an object — and
- * here both live inside the same shell_ctx. */
-static void copy_str(char *dst, size_t n, const char *src)
-{
-    size_t i = 0;
-    for (; src[i] && i + 1 < n; i++) dst[i] = src[i];
-    dst[i] = '\0';
-}
-
 static int app_window(shell_ctx *c, int app)
 {
     for (int i = 0; i < c->n_wins; i++)
@@ -323,23 +313,14 @@ static void open_app(shell_ctx *c, int app, int w, int h)
     tiles_priv *p = P(c);
     if (app < 0 || app >= c->n_apps) return;
 
-    int wi = app_window(c, app);
-    if (wi < 0) {
-        /* Starting a program is the compositor's job and the shell
-         * contract has no hook for it, so a placeholder entry stands in.
-         * Without one, pressing a button for something not already
-         * running would do nothing at all — the single outcome this
-         * archetype is not allowed to have. */
-        if (c->n_wins >= SHELL_MAX_WINS) return;
-        wi = c->n_wins++;
-        memset(&c->wins[wi], 0, sizeof c->wins[wi]);
-        c->wins[wi].app = app;
-        /* copy_str, not snprintf: both strings live inside *c, which is
-         * exactly the aliasing snprintf's restrict contract lets the
-         * compiler assume away. */
-        copy_str(c->wins[wi].title,    sizeof c->wins[wi].title,    c->apps[app].name);
-        copy_str(c->wins[wi].subtitle, sizeof c->wins[wi].subtitle, c->apps[app].hint);
-    }
+    /* shell_launch() finds the running window or creates a slot AND
+     * starts the program. This used to create the slot and stop, with a
+     * comment saying the shell contract had no hook for starting
+     * anything -- which was true when it was written and stayed in the
+     * tree after the hook existed. Every button in this archetype
+     * opened a rectangle with a name in it and nothing behind it. */
+    int wi = shell_launch(c, app);
+    if (wi < 0) return;
     p->win  = wi;
     p->page = page_of_app(c, app, w, h);
     c->focus = wi;

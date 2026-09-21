@@ -391,35 +391,21 @@ static void l_paint(shell_ctx *c, surface *s, shell_fonts *f, const surface *wal
     }
 }
 
-/* Both sides of this copy live inside the same shell_ctx, so the
- * compiler cannot prove they do not overlap and warns about snprintf.
- * They never do -- they are different members -- but a bounded copy
- * says so plainly and costs nothing. */
-static void put_str(char *dst, size_t n, const char *src)
-{
-    size_t i = 0;
-    while (i + 1 < n && src[i]) { dst[i] = src[i]; i++; }
-    if (n) dst[i] = '\0';
-}
-
 /* Open a thing from the Home card.
  *
  * If it is already open, go to it rather than opening a second copy.
  * Rail's whole promise is that nothing can hide, and two cards showing
  * the same thing is a way to get lost in the one archetype that is
  * supposed to make that impossible. */
+/* Starting the program is shell_launch()'s job: it finds an existing
+ * window for the application or creates a slot AND asks the host to
+ * spawn it. Every archetype used to hand-roll the slot and never spawn
+ * anything, so every icon in this product opened a rectangle with a
+ * name in it and nothing behind the rectangle. */
 static void open_app(shell_ctx *c, int app)
 {
-    if (app < 0 || app >= c->n_apps) return;
-    for (int i = 0; i < c->n_wins; i++)
-        if (c->wins[i].app == app) { focus_card(c, i + 1, 0.36f); return; }
-    if (c->n_wins >= SHELL_MAX_WINS) return;
-    int i = c->n_wins++;
-    c->wins[i].app = app;
-    c->wins[i].minimised = 0;
-    put_str(c->wins[i].title,    sizeof c->wins[i].title,    c->apps[app].name);
-    put_str(c->wins[i].subtitle, sizeof c->wins[i].subtitle, c->apps[app].hint);
-    focus_card(c, i + 1, 0.36f);
+    int i = shell_launch(c, app);
+    if (i >= 0) focus_card(c, i + 1, 0.36f);
 }
 
 static int l_click(shell_ctx *c, int x, int y)

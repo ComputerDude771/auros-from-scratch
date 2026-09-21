@@ -38,6 +38,7 @@ typedef struct {
      * frame the user is actually looking at rather than a guess. */
 
     int   hover_ws;          /* workspace chip under the pointer, -1   */
+    int   hover_open;        /* row of the empty-workspace list, -1    */
     int   hover_hint;        /* pointer is over the hint strip         */
     tween hint;              /* 1 = hints shown, 0 = dismissed         */
 
@@ -599,6 +600,44 @@ static void paint_hints(shell_ctx *c, surface *s, shell_fonts *f)
     }
 }
 
+/* ── the empty workspace ─────────────────────────────────────────────
+ *
+ * This archetype has no dock and no home screen, deliberately: its
+ * header says so, and both would be furniture in a model whose whole
+ * point is that the panes ARE the interface.
+ *
+ * But an archetype in which an application can never be started is not
+ * an opinion, it is an omission. Before this, workbench could focus,
+ * swap, promote and close windows and had no way whatsoever to create
+ * one -- not by click, not by key. Its entire vocabulary assumed
+ * something else had already opened something.
+ *
+ * So the list lives in the empty pane and nowhere else. It is not
+ * furniture: it exists only when there is nothing else, which is
+ * exactly when the question "what could go here" is the only question
+ * on screen. The moment a window exists it is gone.
+ *
+ * ONE function owns the row geometry, called by painting and by
+ * hit-testing, per docs/SHELLS.md. */
+#define WB_OPEN_ROWS 8
+static int wb_open_rows(shell_ctx *c, int sw, int sh, rect *out, int *app_out)
+{
+    if (c->n_wins > 0) return 0;
+    rect a = wb_content(c, sw, sh);
+    int n = c->n_apps < WB_OPEN_ROWS ? c->n_apps : WB_OPEN_ROWS;
+    if (n <= 0) return 0;
+
+    int rowh = c->target_large ? 48 : 40;
+    int listw = a.w < 520 ? a.w : 520;
+    int top = a.y + (a.h - (n * rowh)) / 2;
+    if (top < a.y) top = a.y;
+    for (int i = 0; i < n; i++) {
+        out[i] = (rect){ a.x, top + i * rowh, listw, rowh };
+        app_out[i] = i;
+    }
+    return n;
+}
+
 static void l_paint(shell_ctx *c, surface *s, shell_fonts *f, const surface *wall)
 {
     c->screen_w = s->w; c->screen_h = s->h;
@@ -618,14 +657,38 @@ static void l_paint(shell_ctx *c, surface *s, shell_fonts *f, const surface *wal
                    idx[k] == c->focus, idx[k] == c->hover);
 
     if (n == 0) {
-        /* An empty workspace states what it is. It does not explain how
-         * to leave — the hint strip already says the number keys switch,
-         * and saying it twice would be nagging. */
         rect a = wb_content(c, s->w, s->h);
+        rect rw[WB_OPEN_ROWS]; int ap[WB_OPEN_ROWS];
+        int nr = wb_open_rows(c, s->w, s->h, rw, ap);
+
         char msg[64];
         snprintf(msg, sizeof msg, "Workspace %d is empty", c->workspace + 1);
-        shell_text_centred(s, f->small, (float)a.x + (float)a.w * 0.5f,
-                           (float)a.y + (float)a.h * 0.5f, msg, c->muted, 0.6f);
+        shell_text(s, f->label, (float)a.x,
+                   (float)(nr ? rw[0].y - 18 : a.y + a.h / 2), msg, c->muted, 0.7f);
+
+        for (int i = 0; i < nr; i++) {
+            int app = ap[i];
+            int hot = (P(c)->hover_open == i);
+            if (hot) {
+                draw_rect(s, rw[i], c->surface_hi, 0.9f);
+                rect e = { rw[i].x, rw[i].y, 2, rw[i].h };
+                draw_rect(s, e, c->accent, 1.f);
+            }
+            if (i)
+                draw_hrule(s, rw[i].x, rw[i].y, rw[i].w, 1, c->overlay, 0.9f);
+
+            float cy = (float)rw[i].y + (float)rw[i].h * 0.5f;
+            float by = shell_baseline(f->mid, (float)rw[i].y, (float)rw[i].h);
+            char num[8];
+            snprintf(num, sizeof num, "%02d", i + 1);
+            shell_text_tracked(s, f->label, (float)rw[i].x + 12.f, by, num,
+                               hot ? c->accent : c->muted, 0.95f, 1.3f);
+            shell_icon_draw(s, c->apps[app].icon, (float)rw[i].x + 58.f, cy,
+                            c->target_large ? 21.f : 18.f, c->fg, c->bg_alt, 0.95f);
+            shell_text_elided(s, f->mid, (float)rw[i].x + 80.f, by,
+                              (float)rw[i].w - 92.f,
+                              c->apps[app].name, c->fg_hi, 0.98f);
+        }
     }
 
     paint_status(c, s, f, n, idx);
@@ -636,6 +699,21 @@ static void l_paint(shell_ctx *c, surface *s, shell_fonts *f, const surface *wal
 static int l_click(shell_ctx *c, int x, int y)
 {
     wb_priv *p = P(c);
+
+    /* The empty-workspace list, when there is one. Tested first because
+     * when it exists there is nothing underneath it to compete with. */
+    {
+        rect rw[WB_OPEN_ROWS]; int ap[WB_OPEN_ROWS];
+        int nr = wb_open_rows(c, c->screen_w, c->screen_h, rw, ap);
+        for (int i = 0; i < nr; i++)
+            if (x >= rw[i].x && x < rw[i].x + rw[i].w &&
+                y >= rw[i].y && y < rw[i].y + rw[i].h) {
+                int wi = shell_launch(c, ap[i]);
+                if (wi >= 0) { p->ws_of[wi] = c->workspace; c->focus = wi; }
+                p->hover_open = -1;
+                return 1;
+            }
+    }
 
     /* The whole hint strip is the dismiss target. Asking someone to hit
      * a twelve pixel × to get rid of the thing that exists to help them
@@ -671,10 +749,27 @@ static int l_click(shell_ctx *c, int x, int y)
 static void l_motion(shell_ctx *c, int x, int y)
 {
     wb_priv *p = P(c);
+
     p->hover_ws = -1;
+    p->hover_open = -1;
     p->hover_hint = 0;
     c->hover = -1;
     c->mouse_x = x; c->mouse_y = y;
+
+    /* The empty-workspace list first, and it returns: when it exists
+     * there is nothing underneath it, and click() tests it in the same
+     * order. */
+    {
+        rect rw[WB_OPEN_ROWS]; int ap[WB_OPEN_ROWS];
+        int nr = wb_open_rows(c, c->screen_w, c->screen_h, rw, ap);
+        (void)ap;
+        for (int i = 0; i < nr; i++)
+            if (x >= rw[i].x && x < rw[i].x + rw[i].w &&
+                y >= rw[i].y && y < rw[i].y + rw[i].h) {
+                p->hover_open = i;
+                return;
+            }
+    }
 
     rect h = p->hint_r;
     if (p->hint.value > 0.5f && h.w > 0 &&

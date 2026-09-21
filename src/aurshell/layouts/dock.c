@@ -714,17 +714,6 @@ static int dock_hit(shell_ctx *c, int sw, int sh, int x, int y, int *band)
     return -1;
 }
 
-
-/* Both sides of this copy live inside the same shell_ctx, so the
- * compiler cannot prove they do not overlap and warns about snprintf.
- * They never do -- they are different members. */
-static void copy_str(char *dst, size_t n, const char *src)
-{
-    size_t i = 0;
-    while (i + 1 < n && src[i]) { dst[i] = src[i]; i++; }
-    if (n) dst[i] = '\0';
-}
-
 /* Activate a favourite.
  *
  * If it is running, raise it. If it is NOT running, START it -- which
@@ -735,18 +724,15 @@ static void copy_str(char *dst, size_t n, const char *src)
  * want is always in the same spot". Clicking a favourite that was not
  * already open did nothing at all, silently, while the icon obligingly
  * magnified under the pointer to say it could be clicked. */
+/* Starting the program is shell_launch()'s job: it finds an existing
+ * window for the application or creates a slot AND asks the host to
+ * spawn it. Every archetype used to hand-roll the slot and never spawn
+ * anything, so every icon in this product opened a rectangle with a
+ * name in it and nothing behind the rectangle. */
 static void raise_app(shell_ctx *c, int app)
 {
-    if (app < 0 || app >= c->n_apps) return;
-    int wi = app_window(c, app);
-    if (wi < 0) {
-        if (c->n_wins >= SHELL_MAX_WINS) return;
-        wi = c->n_wins++;
-        memset(&c->wins[wi], 0, sizeof c->wins[wi]);
-        c->wins[wi].app = app;
-        copy_str(c->wins[wi].title,    sizeof c->wins[wi].title,    c->apps[app].name);
-        copy_str(c->wins[wi].subtitle, sizeof c->wins[wi].subtitle, c->apps[app].hint);
-    }
+    int wi = shell_launch(c, app);
+    if (wi < 0) return;
     c->wins[wi].minimised = 0;
     c->focus = wi;
 }

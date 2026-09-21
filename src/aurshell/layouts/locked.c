@@ -92,20 +92,27 @@ static int policy_allows(const shell_ctx *c, const app_entry *a)
  * running and permitted. c->apps is the fallback for the moment before
  * autostart has opened anything, and for any caller that hands us a
  * profile-filtered app list with no windows yet. */
+/* Every application this machine is allowed to run, in the order the
+ * app table declares them. Always all of them, running or not.
+ *
+ * This used to prefer "the apps that currently have windows", falling
+ * back to the full list only when nothing was running -- which was
+ * harmless while nothing could ever start, because the fallback was the
+ * only branch that ever ran. The moment selecting an application
+ * actually started it, the first branch became non-empty and the
+ * switcher collapsed to the single app already open, with no way to
+ * reach any other.
+ *
+ * A fixed list is also what a locked machine wants: the same button in
+ * the same place every time, whether or not the thing behind it has
+ * been opened yet. c->apps has already been filtered to the profile's
+ * allowed_apps by shell_scan_apps(); policy_allows() applies the rules
+ * that depend on what KIND of application it is. */
 static int allowed_list(shell_ctx *c, int *out)
 {
     int n = 0;
-    for (int i = 0; i < c->n_wins && n < SHELL_MAX_APPS; i++) {
-        int a = c->wins[i].app;
-        if (a < 0 || a >= c->n_apps) continue;
-        if (!policy_allows(c, &c->apps[a])) continue;
-        int dup = 0;
-        for (int k = 0; k < n; k++) if (out[k] == a) dup = 1;
-        if (!dup) out[n++] = a;
-    }
-    if (n == 0)
-        for (int i = 0; i < c->n_apps && n < SHELL_MAX_APPS; i++)
-            if (policy_allows(c, &c->apps[i])) out[n++] = i;
+    for (int i = 0; i < c->n_apps && n < SHELL_MAX_APPS; i++)
+        if (policy_allows(c, &c->apps[i])) out[n++] = i;
     return n;
 }
 
@@ -235,7 +242,12 @@ static void select_app(shell_ctx *c, int k, int n, const int *app, int animate)
     if (k < 0) k = 0;
     if (k >= n) k = n - 1;
     p->cur   = k;
-    c->focus = win_of_app(c, app[k]);
+    /* shell_launch(), not win_of_app(): on a kiosk the chosen
+     * application is usually not running yet, and win_of_app() returned
+     * -1 for it -- so pressing the only button on a locked machine put
+     * the stage on nothing at all. This finds the window or starts the
+     * program. */
+    c->focus = shell_launch(c, app[k]);
     if (animate) { tween_set(&p->swap, 0.f); tween_to(&p->swap, 1.f, 0.24f, EASE_OUT_CUBIC); }
     else tween_set(&p->swap, 1.f);
 }

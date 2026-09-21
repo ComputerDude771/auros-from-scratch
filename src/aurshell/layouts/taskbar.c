@@ -60,16 +60,6 @@ static float clampf(float v, float a, float b) { return v < a ? a : (v > b ? b :
 static int   clampi(int v, int a, int b) { return v < a ? a : (v > b ? b : v); }
 static int   pt_in(rect r, int x, int y)
 { return r.w > 0 && r.h > 0 && x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h; }
-/* Both ends live inside the same shell_ctx, so this copies by hand
- * rather than through snprintf, which may not alias its arguments. */
-static void copy_str(char *dst, size_t n, const char *src)
-{
-    size_t i = 0;
-    if (!n) return;
-    for (; src[i] && i + 1 < n; i++) dst[i] = src[i];
-    dst[i] = 0;
-}
-
 static rect  lerp_rect(rect a, rect b, float t)
 {
     rect r;
@@ -432,19 +422,27 @@ static void toggle_max(shell_ctx *c, int i)
     c->focus = i;
 }
 
+/* Starting the program is shell_launch()'s job: it finds an existing
+ * window for the application or creates a slot AND asks the host to
+ * spawn it. Every archetype used to hand-roll the slot and never spawn
+ * anything, so every icon in this product opened a rectangle with a
+ * name in it and nothing behind the rectangle. */
 static void open_app(shell_ctx *c, int app)
 {
     tb_priv *p = P(c);
-    if (app < 0 || app >= c->n_apps || c->n_wins >= SHELL_MAX_WINS) return;
-    int i = c->n_wins++;
-    memset(&c->wins[i], 0, sizeof c->wins[i]);
-    c->wins[i].app = app;
-    copy_str(c->wins[i].title,    sizeof c->wins[i].title,    c->apps[app].name);
-    copy_str(c->wins[i].subtitle, sizeof c->wins[i].subtitle, c->apps[app].hint);
-    p->slot[i]  = i;            /* the next place in the cascade */
-    p->maxed[i] = 0;
-    tween_set(&p->shade[i], 0.f);
-    tween_to(&p->shade[i], 1.f, 0.24f, EASE_OUT_CUBIC);
+    int before = c->n_wins;
+    int i = shell_launch(c, app);
+    if (i < 0) return;
+    /* Only a NEW slot gets a cascade position and an opening animation.
+     * Pressing the button for something already running is a raise, and
+     * re-running the animation would make a window the user asked to see
+     * appear to close and reopen. */
+    if (c->n_wins > before) {
+        p->slot[i]  = i;
+        p->maxed[i] = 0;
+        tween_set(&p->shade[i], 0.f);
+        tween_to(&p->shade[i], 1.f, 0.24f, EASE_OUT_CUBIC);
+    }
     raise_win(c, i);
     c->focus = i;
 }

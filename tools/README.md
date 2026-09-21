@@ -25,6 +25,10 @@ cc -O2 -std=gnu11 -o /tmp/sheet tools/contactsheet.c src/aurshell/draw.c \
 cc -O2 -std=gnu11 -I src/common -o /tmp/kerning tools/kerning.c src/common/font.c -lm
 /tmp/kerning 36 /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf
 
+cc -O2 -std=gnu11 -o /tmp/launchtest tools/launchtest.c src/aurshell/draw.c \
+   src/aurshell/shellcommon.c src/aurshell/anim.c src/aurshell/layouts/*.c \
+   src/common/theme.c src/common/font.c -lm && /tmp/launchtest
+
 sh tools/plainwords.sh
 
 cc -O2 -std=gnu11 -o /tmp/kiosktest tools/kiosktest.c src/aurshell/apps.c \
@@ -255,3 +259,32 @@ partition", which "partition" already catches, and on its own it is an
 ordinary English verb. Flagging workbench's "swap pane" would have
 taught people to ignore the check, which is the only way a check like
 this really dies.
+
+`launchtest` answers the first question a desktop has to answer: can she
+start a program by clicking on it? This product answered "no" for its
+entire life and nothing noticed.
+
+`shell_launch()` -- the only function that asks the host to run
+anything -- had zero callers. All six archetypes hand-rolled a window
+slot instead: filled in a title and a subtitle and stopped, so every
+icon opened a rectangle with a name in it and nothing behind the
+rectangle. `tiles.c` carried a comment explaining that the shell
+contract had no hook for starting a program; the hook was added later
+and the comment, and the code under it, stayed.
+
+Two harnesses looked straight at it and passed. `hittest` proves a
+click is *consumed* and that the frame changes afterwards -- both were
+true, because a placeholder window is a visible change. And
+`aurshell --with-app CMD` was used as the end-to-end proof, but it
+calls `aurwl_spawn()` directly from `main.c`: it exercises the
+compositor and bypasses the entire click-to-launch path, which was
+exactly the missing piece. **A test that starts the program itself
+cannot discover that nothing else does.**
+
+So `launchtest` never spawns anything. It installs a recording hook in
+`shell_ctx.spawn`, sweeps clicks across the screen, and asks whether
+any of them reached the hook -- with nothing running, with three windows
+already open, and at 1024x600, because an archetype that only launches
+from an empty desktop, or only once something is already there, or
+loses the control when the panel gets small, is broken in a way one
+sweep would miss.
