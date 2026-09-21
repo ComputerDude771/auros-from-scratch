@@ -85,6 +85,14 @@ StandardOutput=journal
 StandardError=journal
 Restart=on-failure
 RestartSec=2
+# Stated rather than left to the defaults, because these two numbers
+# are what decides how long a broken machine spends retrying before it
+# says something to the person in front of it. Four attempts across a
+# minute, then systemd gives up and OnFailure= above puts a sentence on
+# the screen. Leaving them implicit meant the answer depended on
+# systemd's version.
+StartLimitIntervalSec=60
+StartLimitBurst=4
 
 [Install]
 WantedBy=graphical.target

@@ -42,6 +42,8 @@
 #include <time.h>
 #include <unistd.h>
 
+#include <signal.h>
+
 #include "kms.h"
 #include "draw.h"
 #include "../common/font.h"
@@ -89,6 +91,11 @@ static void paint(surface *s);
 
 int main(int argc, char **argv)
 {
+    /* Whatever else happens to the console, this message stays up for
+     * its full time. A hangup on the terminal we are not using is not
+     * a reason to stop telling her what is wrong. */
+    signal(SIGHUP, SIG_IGN);
+
     const char *card = NULL, *png = NULL;
     int pw = 1024, ph = 600;
     for (int i = 1; i < argc; i++) {

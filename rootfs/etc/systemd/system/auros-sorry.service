@@ -11,8 +11,24 @@ Description=AurOS: telling the user the desktop did not start
 # screen and a console she cannot use are the same screen to her --
 # and docs/EASY.md rule 1 says no path in this product may bottom out
 # at a command line.
-Conflicts=getty@tty1.service
-After=getty@tty1.service
+#
+# Conflicts with the shell, and that is the load-bearing line.
+#
+# The first version of this did not have it, and the journal of a
+# deliberately broken image showed what happened instead:
+#
+#   15:02:36  Starting auros-sorry.service
+#   15:02:38  aurshell.service: Scheduled restart job, counter at 1
+#   15:02:38  Started aurshell.service
+#   15:02:38  auros-sorry.service: Main process exited, killed, HUP
+#
+# The shell's own Restart= brought it back two seconds later, its
+# TTYVHangup=yes hung up tty1, and that killed the screen explaining
+# why the shell was not running. Then it failed again, and the whole
+# thing looped every two seconds, forever, showing her a flickering
+# black screen -- worse than the login prompt it replaced.
+Conflicts=aurshell.service getty@tty1.service
+After=aurshell.service getty@tty1.service
 
 [Service]
 Type=oneshot
@@ -22,15 +38,14 @@ ExecStart=/usr/bin/aursorry
 # true rather than consoling. reset-failed first, because systemd will
 # not start a unit it has already given up on.
 #
-# If the shell fails again this comes back, so the loop is: forty
-# seconds of a screen that speaks to her, one attempt, repeat. That is
-# not a fix, and it is not pretending to be one. It is the difference
-# between a machine that looks broken and a machine that says what is
-# wrong while it keeps trying.
+# reset-failed is also why the loop above was infinite rather than
+# self-limiting: it clears the restart counter, so the shell's start
+# limit was never reached and systemd never stopped retrying. It is
+# still needed -- but it belongs here, AFTER the message has been on
+# the screen for its full time, not two seconds into it.
 ExecStopPost=/bin/sh -c 'systemctl reset-failed aurshell.service; systemctl --no-block start aurshell.service'
-TTYPath=/dev/tty1
-TTYReset=yes
-TTYVHangup=yes
-StandardInput=tty
+# NO TTY. This program has no input and wants no controlling terminal:
+# taking tty1 is what put it in the path of the shell's vhangup.
+StandardInput=null
 StandardOutput=journal
 StandardError=journal
