@@ -1,15 +1,23 @@
 [Unit]
 Description=AurOS desktop shell
-# If the shell cannot start, say so in words, on the screen she is
-# looking at. See auros-sorry.service -- this used to be
-# getty@tty1.service, which is a login prompt on a machine whose owner
-# has never been told the account name or the password.
+# There is no OnFailure= here any more, and that is deliberate.
 #
-# This lives in [Unit]. It was in [Service], where systemd ignores it
-# with a warning nobody reads -- so the one thing standing between a
-# broken shell and a user with no way into their own computer silently
-# did not exist. Found by reading the journal of a booted image.
-OnFailure=auros-sorry.service
+# It was getty@tty1.service: a login prompt, on a machine whose owner
+# has never been told the account name, has never been told the
+# password, and whose password this image expires on purpose. To her
+# that is the same screen as a black one, and docs/EASY.md rule 1 says
+# no path in this product may bottom out at a command line.
+#
+# Replacing it with a second unit that drew a message did not work,
+# and the reason is worth keeping. Two units both wanting the screen
+# race, and the loser is always the message: first the shell's
+# TTYVHangup killed it with SIGHUP two seconds in, then adding
+# Conflicts= only changed the signal to SIGTERM. Both were watched
+# happening in the journal of a deliberately broken image.
+#
+# So the message is not a second unit. It is THIS unit's ExecStopPost,
+# below -- the shell's own failure, handled by the shell's own service,
+# with nothing to race against because there is nothing else running.
 After=auros-firstboot.service systemd-user-sessions.service
 Conflicts=getty@tty1.service
 After=getty@tty1.service
@@ -83,16 +91,28 @@ TTYVHangup=yes
 StandardInput=tty
 StandardOutput=journal
 StandardError=journal
+# WHEN THE SHELL FAILS, SAY SO, HERE.
+#
+# $SERVICE_RESULT is systemd's own word for how this unit ended, so a
+# clean stop -- a shutdown, a `systemctl stop`, the band's Turn off --
+# says nothing, and only an actual failure draws. aursorry paints one
+# screen, holds it long enough to read, and exits; systemd then applies
+# RestartSec and tries again. `-` so that a failure to apologise cannot
+# itself become the failure.
+ExecStopPost=-/bin/sh -c 'test "$SERVICE_RESULT" = success || /usr/bin/aursorry'
+
 Restart=on-failure
 RestartSec=2
-# Stated rather than left to the defaults, because these two numbers
-# are what decides how long a broken machine spends retrying before it
-# says something to the person in front of it. Four attempts across a
-# minute, then systemd gives up and OnFailure= above puts a sentence on
-# the screen. Leaving them implicit meant the answer depended on
-# systemd's version.
-StartLimitIntervalSec=60
-StartLimitBurst=4
+# No start limit. The usual reason for one is to stop a unit flapping,
+# and the message above already paces this: a machine that cannot start
+# its desktop spends most of its time showing a person a sentence about
+# that, rather than a few seconds flapping and then giving up on a
+# black screen. Giving up is the one outcome that helps nobody.
+#
+# Ctrl-Alt-F2 still reaches a console on a build with allow_tty="yes".
+# That is the technician's way in, and it is not the same thing as a
+# way in for the person who owns the machine.
+StartLimitIntervalSec=0
 
 [Install]
 WantedBy=graphical.target
