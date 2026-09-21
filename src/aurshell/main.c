@@ -571,10 +571,14 @@ int main(int argc, char **argv)
         snprintf(user_conf,  sizeof user_conf,  "%s/.config/auros/shell.conf", home);
         snprintf(user_shell, sizeof user_shell, "%s/.config/auros/active.shell", home);
     }
-    const char *conf   = (user_conf[0]  && access(user_conf,  R_OK) == 0)
-                         ? user_conf  : "/etc/auros/shell.conf";
-    const char *shellf = (user_shell[0] && access(user_shell, R_OK) == 0)
-                         ? user_shell : "/etc/auros/shell/active.shell";
+    /* Chosen again on every reload, not once. A fresh image has no
+     * user copy of either file, so choosing once meant that the moment
+     * Settings WROTE one -- which is the only thing Settings does --
+     * the shell went on reading the machine's copy and the change she
+     * had just made did nothing. */
+    int   conf_forced = 0, shell_forced = 0;
+    const char *conf   = "/etc/auros/shell.conf";
+    const char *shellf = "/etc/auros/shell/active.shell";
     const char *policy = "/etc/auros/policy.conf";
     const char *card = NULL, *png_out = NULL;
     int png_w = 1600, png_h = 900, nopen = 0, once = 0, frames = 1;
@@ -582,8 +586,8 @@ int main(int argc, char **argv)
     const char *with_app = NULL; int app_wait = 12;
 
     for (int i = 1; i < argc; i++) {
-        if      (!strcmp(argv[i], "--conf")   && i+1 < argc) conf   = argv[++i];
-        else if (!strcmp(argv[i], "--shell")  && i+1 < argc) shellf = argv[++i];
+        if      (!strcmp(argv[i], "--conf")   && i+1 < argc) { conf   = argv[++i]; conf_forced  = 1; }
+        else if (!strcmp(argv[i], "--shell")  && i+1 < argc) { shellf = argv[++i]; shell_forced = 1; }
         else if (!strcmp(argv[i], "--policy") && i+1 < argc) policy = argv[++i];
         else if (!strcmp(argv[i], "--card")   && i+1 < argc) card   = argv[++i];
         else if (!strcmp(argv[i], "--png")    && i+1 < argc) png_out = argv[++i];
@@ -627,6 +631,16 @@ int main(int argc, char **argv)
     theme_t t = {0};
     if (theme_load(&t, conf) < 0)
         fprintf(stderr, "aurshell: no %s — using built-in defaults\n", conf);
+
+    /* HER copy wins whenever it exists, asked fresh each time. A
+     * command line that named a file is never second-guessed. */
+    #define PICK_HERS(dst, user, forced, fallback) do {                       \
+        if (!(forced))                                                        \
+            (dst) = ((user)[0] && access((user), R_OK) == 0) ? (user)          \
+                                                            : (fallback);     \
+    } while (0)
+    PICK_HERS(conf,   user_conf,  conf_forced,  "/etc/auros/shell.conf");
+    PICK_HERS(shellf, user_shell, shell_forced, "/etc/auros/shell/active.shell");
 
     shell_ctx c;
     memset(&c, 0, sizeof c);
@@ -1016,6 +1030,14 @@ int main(int argc, char **argv)
         if (want_reload || c.want_reload) {
             want_reload = 0;
             c.want_reload = 0;
+
+            /* Which files to read is part of what a reload reloads. A
+             * fresh image has no user copy of either, so the first
+             * thing Settings does -- write one -- is invisible to a
+             * shell that resolved these once at start-up. */
+            PICK_HERS(conf,   user_conf,  conf_forced,  "/etc/auros/shell.conf");
+            PICK_HERS(shellf, user_shell, shell_forced, "/etc/auros/shell/active.shell");
+
             theme_t nt = {0};
             if (theme_load(&nt, conf) == 0) {
                 t = nt;
@@ -1027,6 +1049,45 @@ int main(int argc, char **argv)
                 cur_edge = theme_color(&t, "col_bg",    0x0B0E14);
                 fprintf(stderr, "aurshell: theme reloaded\n");
                 dirty = 1;
+            }
+
+            /* THE ARCHETYPE, which is the other half of a reload and
+             * was not in it.
+             *
+             * Settings says "Press one. The desktop changes straight
+             * away." It wrote the symlink, set want_reload, and this
+             * block reloaded the colours -- so the screen flickered
+             * and came back looking exactly the same, arranged exactly
+             * the same way, until the machine was restarted. The one
+             * sentence on that page was false. */
+            if (shell_archetype_load(&c, shellf) == 0) {
+                /* by_id() never returns NULL -- an id it does not know
+                 * falls back to `rail`, the one nothing can hide in --
+                 * so the name in the context is corrected from the
+                 * layout actually chosen rather than from the file. */
+                const shell_layout *NL = shell_layout_by_id(c.layout_id);
+                snprintf(c.layout_id, sizeof c.layout_id, "%s", NL->id);
+                if (NL != L) {
+                    /* The one it is leaving puts its own things away:
+                     * every archetype owns a c->priv it allocated, and
+                     * swapping without this leaks it AND hands the new
+                     * archetype a pointer to the old one's state. */
+                    if (L->fini) L->fini(&c);
+                    c.priv = NULL;
+                    L = NL;
+                    if (L->init) L->init(&c);
+                    fprintf(stderr, "aurshell: archetype now '%s' (%s)\n",
+                            L->id, c.shell_name);
+                }
+                /* The band's height follows the archetype's target
+                 * size, so the body it leaves has to be remeasured
+                 * whether or not the layout itself changed. */
+                c.screen_h = disp->height - foot_height(&c);
+                dirty = 1;
+            } else {
+                /* Unreadable. The running archetype is still the
+                 * running one, and the name must go on saying so. */
+                snprintf(c.layout_id, sizeof c.layout_id, "%s", L->id);
             }
         }
 

@@ -14,11 +14,13 @@
 #include "draw.h"
 #include "run.h"
 
-#define BT_MAX_DEV 24
 #define OUT_MAX    16384
 
 /* Which bluetoothctl run is in flight. */
-enum { J_NONE, J_RADIO, J_SCAN, J_LIST, J_PAIR };
+/* J_PAIRED and J_CONNECTED are the same `devices` command with a
+ * filter, which bluez 5.72 supports: `devices Paired`, `devices
+ * Connected`. Three cheap runs rather than one `info` per device. */
+enum { J_NONE, J_RADIO, J_SCAN, J_LIST, J_PAIRED, J_CONNECTED, J_PAIR };
 
 static struct {
     int page, trouble;
@@ -26,6 +28,13 @@ static struct {
     int n_devs;
     int have_radio;
     int scanning;
+    /* Looking once is looking. The first version asked for a list,
+     * then scanned because it was not scanning, then asked for a list
+     * because the scan had ended, then scanned again -- two
+     * bluetoothctl processes every fifteen seconds, for as long as the
+     * panel stayed open, on a laptop this product exists to rescue.
+     * "Look again" is a button; it does not need to be a loop. */
+    int scanned_once;
     int sel, first_row, hover_act;
     int last_x, last_y, moved_once;
     char pick[BT_NAME_MAX];
@@ -155,13 +164,42 @@ int bt_parse_devices(char *out, bt_dev *devs, int max)
     return n;
 }
 
-/* `bluetoothctl info AA:..` prints "\tPaired: yes" and so on. */
+/* `bluetoothctl info AA:..` prints "\tPaired: yes" and so on.
+ *
+ * Kept because it is the only way to ask about ONE device, which is
+ * what the pairing screen wants. It is not how the LIST learns its
+ * tags -- that would be one process per row. */
 int bt_parse_info(char *out, bt_dev *d)
 {
     if (strstr(out, "Paired: yes"))    d->paired = 1;
     if (strstr(out, "Connected: yes")) d->connected = 1;
     if (strstr(out, "not available"))  return -1;
     return 0;
+}
+
+/* THE TAGS. "Connected" and "Used before" are drawn from d->paired and
+ * d->connected, and nothing in this program ever set either one:
+ * bt_parse_info() was written, and called from nowhere. So the list
+ * said nothing about which headphones this computer already knows --
+ * which is the first thing a person looks for, and the difference
+ * between pressing a row and waiting, and pressing it and being asked
+ * for a number off the side of a speaker.
+ *
+ * `devices Paired` and `devices Connected` list a subset in the same
+ * format, so the same parser marks it. */
+int bt_mark(char *out, bt_dev *devs, int n, int which)
+{
+    bt_dev sub[BT_MAX_DEV];
+    int m = bt_parse_devices(out, sub, BT_MAX_DEV);
+    int hit = 0;
+    for (int i = 0; i < m; i++)
+        for (int j = 0; j < n; j++)
+            if (!strcmp(devs[j].addr, sub[i].addr)) {
+                if (which) devs[j].connected = 1;
+                else       devs[j].paired = 1;
+                hit++;
+            }
+    return hit;
 }
 
 static int read_trouble(const char *out)
@@ -238,6 +276,18 @@ static void start_job(int job)
         child_start(J_LIST, a);
         break;
     }
+    case J_PAIRED: {
+        const char *a[] = { "bluetoothctl", "--timeout", "5",
+                            "devices", "Paired", NULL };
+        child_start(J_PAIRED, a);
+        break;
+    }
+    case J_CONNECTED: {
+        const char *a[] = { "bluetoothctl", "--timeout", "5",
+                            "devices", "Connected", NULL };
+        child_start(J_CONNECTED, a);
+        break;
+    }
     }
 }
 
@@ -257,7 +307,7 @@ void bt_opened(shell_ctx *c)
     (void)c;
     B.page = BT_LIST;
     B.sel = -1; B.first_row = 0; B.hover_act = -1;
-    B.moved_once = 0; B.trouble = 0; B.scanning = 0;
+    B.moved_once = 0; B.trouble = 0; B.scanning = 0; B.scanned_once = 0;
     B.n_devs = 0;
     /* Asked of the kernel before anything is started. A machine with
      * no Bluetooth says so at once rather than after a helper that
@@ -322,7 +372,19 @@ int bt_pump(shell_ctx *c)
     case J_LIST:
         B.n_devs = bt_parse_devices(text, B.devs, BT_MAX_DEV);
         B.out_n = 0;
-        if (!B.scanning) start_job(J_SCAN);
+        start_job(J_PAIRED);      /* which of these it already knows */
+        return 1;
+    case J_PAIRED:
+        bt_mark(text, B.devs, B.n_devs, 0);
+        B.out_n = 0;
+        start_job(J_CONNECTED);
+        return 1;
+    case J_CONNECTED:
+        bt_mark(text, B.devs, B.n_devs, 1);
+        B.out_n = 0;
+        /* Looking happens ONCE per opening, and once more each time
+         * she presses "Look again". Not forever. */
+        if (!B.scanned_once) { B.scanned_once = 1; start_job(J_SCAN); }
         return 1;
     case J_SCAN:
         B.scanning = 0;
@@ -599,6 +661,7 @@ static void do_action(shell_ctx *c, int a)
     case A_BACK:  child_stop(); B.page = BT_LIST; break;
     case A_AGAIN:
         B.page = BT_LIST; B.first_row = 0; B.sel = -1; B.n_devs = 0;
+        B.scanned_once = 0;               /* she asked for another look */
         if (!have_adapter()) { B.page = BT_TROUBLE; B.trouble = BTT_NORADIO; }
         else start_job(J_RADIO);
         break;

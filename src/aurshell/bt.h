@@ -54,6 +54,10 @@ void bt_fini(void);
  * in a room with a pair of headphones.
  */
 #define BT_NAME_MAX 64
+/* How many rows the panel will hold. Here rather than in bt.c because
+ * bt_parse_devices() and bt_mark() take a caller-sized array, so
+ * anything that calls them -- including a harness -- has to know it. */
+#define BT_MAX_DEV 24
 
 typedef struct {
     char addr[20];               /* AA:BB:CC:DD:EE:FF                  */
@@ -64,6 +68,10 @@ typedef struct {
 
 int bt_parse_devices(char *out, bt_dev *devs, int max);
 int bt_parse_info(char *out, bt_dev *d);   /* one device's detail */
+/* Mark the rows a filtered `devices Paired` / `devices Connected`
+ * listing names. `which` is 0 for paired, 1 for connected. Returns how
+ * many rows were marked. */
+int bt_mark(char *out, bt_dev *devs, int n, int which);
 
 /* Which screen. */
 enum { BT_LIST, BT_JOINING, BT_JOINED, BT_TROUBLE, BT_PAGE_N };

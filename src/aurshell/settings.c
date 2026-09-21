@@ -69,7 +69,6 @@ static int row_at(const set_view *v, int i)
  * undone by pressing a different row.
  */
 #define MAX_ROWS 40
-#define CHOICE_MAX 40
 #define CHOICE_LEN 72
 
 typedef struct {
@@ -125,6 +124,18 @@ static const struct { const char *zone, *city, *where; } ZONES[] = {
     { "Pacific/Auckland",    "Auckland",      "New Zealand"     },
 };
 #define N_ZONES ((int)(sizeof ZONES / sizeof ZONES[0]))
+
+/* Room for every zone above, plus the one this machine is set to when
+ * that is not one of them -- which on a shipped image is ALWAYS, since
+ * they are built on UTC and nobody lives there.
+ *
+ * It was exactly N_ZONES. The prepended "what this computer uses now"
+ * row therefore pushed the LAST city off the end -- silently, because
+ * add_choice() simply returns when the table is full -- on every image
+ * that has ever been built. Pacific/Auckland was not on the list and
+ * nothing anywhere said so. Sized FROM the list now, so adding a city
+ * cannot bring it back. */
+#define CHOICE_MAX (N_ZONES + 8)
 
 
 static struct {
@@ -809,12 +820,24 @@ static void choose(shell_ctx *c, int idx)
     if (idx < 0 || idx >= S.n_ch) return;
     const char *id = S.ch[idx].id;
 
+    /* WAITING FOR THE ANSWER, NOT FOR THE FORK.
+     *
+     * Both of these used to say "done" if a process had been created.
+     * run_detached() returns 0 the instant fork() succeeds, so a
+     * timedatectl that policy refused and an aurora that could not
+     * write the file both reported success -- which means the only two
+     * pages in this panel that change anything were incapable of
+     * saying that they had not. */
     if (S.page == SET_PAGE_TIME) {
         const char *argv[] = { "timedatectl", "set-timezone", id, NULL };
-        if (run_detached(argv) == 0) {
+        int rc = run_status(argv, 2500);
+        if (rc == 0) {
             S.cur_ch = idx;
             snprintf(S.said, sizeof S.said, "The clock is now set for %s.",
                      S.ch[idx].label);
+        } else if (rc < 0) {
+            snprintf(S.said, sizeof S.said, "%s",
+                     "This is taking a while. Check the clock in a moment.");
         } else {
             snprintf(S.said, sizeof S.said, "%s",
                      "This computer would not let the clock be changed.");
@@ -860,27 +883,46 @@ static void choose(shell_ctx *c, int idx)
         fprintf(f, "%s\n", id);
         fclose(f);
 
-        /* aurora renders the theme into a shell.conf. It takes its
-         * directories from the environment, which is exactly how this
-         * renders into her own without touching the machine's. */
+        /* aurora renders a theme into a shell.conf, and every template
+         * names an absolute path under /etc/auros -- which is root's,
+         * and must stay root's, because policy.conf lives beside them
+         * and a user who could write it could lift their own
+         * lock-down.
+         *
+         * AURORA_STATE only moves aurora's note of which theme is
+         * current. It does NOT move the rendered files, so this used
+         * to set that one variable, render into a directory she cannot
+         * write, and report "Now using Sandstone." while nothing
+         * whatsoever had changed. AURORA_OUTDIR is what moves the
+         * output; AURORA_ONLY renders the one file of eleven that the
+         * desktop reads, because she is watching the screen while it
+         * happens. */
         char dir[512];
         user_path(dir, sizeof dir, "");
         size_t dl = strlen(dir);
         if (dl && dir[dl-1] == '/') dir[dl-1] = 0;
-        setenv("AURORA_STATE", dir, 1);
+        setenv("AURORA_STATE",  dir, 1);
+        setenv("AURORA_OUTDIR", dir, 1);
+        setenv("AURORA_ONLY",   "shell.conf", 1);
         setenv("AURORA_CACHE", cache, 1);
         const char *argv[] = { "aurora", "set", id, NULL };
-        if (run_detached(argv) != 0) {
+        int rc = run_status(argv, 2500);
+        if (rc > 0) {
             snprintf(S.said, sizeof S.said, "%s",
                      "The look could not be changed just now.");
             return;
         }
         S.cur_ch = idx;
-        /* aurora is still running and writing the file we are about to
-         * read, so the reload waits. Half a second is far longer than
-         * it needs and still under the threshold where a person
-         * wonders whether the press worked. */
-        S.reload_at = now_ms() + 500;
+        if (rc == 0) {
+            /* It has finished and the file is on disk, so the reload
+             * can happen on this pass rather than on a timer. */
+            c->want_reload = 1;
+        } else {
+            /* Still running after two and a half seconds. Give it a
+             * moment more and reload anyway: the file may well appear,
+             * and a reload of an unchanged file costs one repaint. */
+            S.reload_at = now_ms() + 700;
+        }
         snprintf(S.said, sizeof S.said, "Now using %s.", S.ch[idx].label);
         return;
     }

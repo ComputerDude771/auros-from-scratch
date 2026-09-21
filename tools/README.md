@@ -12,6 +12,7 @@ exit non-zero when they fail.
 | `contrast.c` | Can the person this is for actually read it? WCAG relative-luminance contrast for every meaningful colour pair, in every theme. A floor, not a target: clearing it does not make a design good, failing it makes one unusable. |
 | `contactsheet.c` | All six archetypes for one theme, in one image, at a real panel size. A design decision is not judged one screen at a time — what separates a system from a look is whether it survives six different interaction models. |
 | `modaltest.c` | A panel is modal, and stays modal. **Only one covers the desktop at a time** (every pair, both orders). **Nothing behind it answers** — main.c is read as text and every guard must ask `SHELL_PANEL_OPEN`, because four hand-written lists of "which panels are open" had drifted to three, four, three and two entries. **There is a way out without a mouse** — Escape, and the keyboard's choice of power action must be the same one a click on that rectangle makes. |
+| `bttest.c` | What `bluetoothctl` prints becomes what she reads. The "Connected" and "Used before" tags come from two flags **nothing in the program ever set** — the function that reads them was written and called from nowhere. Also: a device that has never announced a name prints its address twice, and a list of six rows reading `FC-58-FA-21-03-9C` is a list she cannot choose from. |
 | `hittest.c` | Two things. **Clicks land where the archetype paints** — sweeps `click()` across four resolutions and checks each consumed click against a mask of what was actually drawn. **Nothing highlights that cannot be clicked** — wherever hovering changes the frame, clicking must change it further. |
 
 ```sh
@@ -41,6 +42,11 @@ cc -O2 -std=gnu11 -o /tmp/modaltest tools/modaltest.c src/aurshell/foot.c \
 
 cc -O2 -std=gnu11 -o /tmp/powertest tools/powertest.c src/aurshell/power.c \
    src/aurshell/run.c -I src/aurshell -lm && /tmp/powertest
+
+cc -O2 -std=gnu11 -o /tmp/bttest tools/bttest.c src/aurshell/bt.c \
+   src/aurshell/draw.c src/aurshell/shellcommon.c src/aurshell/anim.c \
+   src/aurshell/foot.c src/aurshell/layouts/*.c src/common/theme.c \
+   src/common/font.c -I src/aurshell -I src/common -lm && /tmp/bttest
 
 sh tools/filetypes.sh      # needs packages_files installed on this machine
 sh tools/plainwords.sh

@@ -29,6 +29,25 @@ THEME_DIR="${AURORA_THEMES:-$AUROS_PREFIX/usr/share/auros/themes}"
 TPL_DIR="${AURORA_TEMPLATES:-$AUROS_PREFIX/usr/share/auros/templates}"
 STATE="${AURORA_STATE:-$AUROS_PREFIX/etc/auros}"
 CACHE="${AURORA_CACHE:-$AUROS_PREFIX/var/cache/auros}"
+# Where rendered files go, if not where the templates say.
+#
+# A template's @!out is an absolute path under /etc/auros, which is
+# root's. That is right for a build and wrong for the one case that
+# matters most: the person using the computer pressing a colour in
+# Settings. She cannot write /etc/auros and must not be able to --
+# policy.conf lives there, and a user who could write it could lift
+# their own lock-down.
+#
+# AURORA_PREFIX moves the whole tree, which would put her shell.conf
+# at ~/.config/auros/etc/auros/shell.conf -- not where anything looks.
+# This moves the /etc/auros part only, so the paths under it are
+# preserved and shell.conf lands exactly where the shell reads it.
+#
+# AURORA_ONLY, when set, is a space-separated list of the files to
+# render. Settings needs one of the eleven, and the desktop waits for
+# it while she watches.
+OUTDIR="${AURORA_OUTDIR:-}"
+ONLY="${AURORA_ONLY:-}"
 ACTIVE="$STATE/theme"
 
 die() { printf '\033[38;2;242;120;141maurora:\033[0m %s\n' "$*" >&2; exit 1; }
@@ -174,15 +193,35 @@ render_all() {
         _out=$(printf '%s\n' "$_hdr" | sed -n 's/.*@!out=\([^ ]*\).*/\1/p')
         _mode=$(printf '%s\n' "$_hdr" | sed -n 's/.*mode=\([0-7]*\).*/\1/p')
         [ -n "$_mode" ] || _mode=0644
-        _out="$AUROS_PREFIX$_out"
-        mkdir -p "$(dirname "$_out")"
-        tail -n +2 "$_t" | render_stream > "$_out.tmp"
+        if [ -n "$OUTDIR" ]; then
+            case "$_out" in
+                /etc/auros/*) _rel=${_out#/etc/auros/} ;;
+                *)            _rel=$(basename "$_out") ;;
+            esac
+            _out="$OUTDIR/$_rel"
+        else
+            _out="$AUROS_PREFIX$_out"
+        fi
+        if [ -n "$ONLY" ]; then
+            _want=0
+            for _o in $ONLY; do
+                [ "$_o" = "$(basename "$_out")" ] && _want=1
+            done
+            [ "$_want" = 1 ] || continue
+        fi
+        # A destination that cannot be written is the whole point of
+        # this block, so it is a failure and not a warning. The caller
+        # -- Settings, on a key press she is watching -- looks at the
+        # exit status and tells her the truth about it.
+        mkdir -p "$(dirname "$_out")" || die "cannot make $(dirname "$_out")"
+        tail -n +2 "$_t" | render_stream > "$_out.tmp" \
+            || die "cannot write $_out"
         if grep -q '@@MISSING:' "$_out.tmp"; then
             grep -o '@@MISSING:[a-z_]*@@' "$_out.tmp" | sort -u | while read -r m; do
                 info "WARNING $(basename "$_t"): unresolved $m"
             done
         fi
-        mv "$_out.tmp" "$_out"
+        mv "$_out.tmp" "$_out" || die "cannot replace $_out"
         chmod "$_mode" "$_out"
         _count=$((_count+1))
     done
