@@ -78,6 +78,11 @@ typedef struct {
 
     /* ── policy, from the profile ───────────────────────────────── */
     int   allow_install, allow_settings, allow_theme_change, kiosk;
+    /* allow_tty is not cosmetic. Masking getty units does not stop a
+     * VT switch -- the kernel's VT layer handles the chord and needs no
+     * cooperation from userspace -- so the shell has to refuse the
+     * switch itself. See console_release() in main.c. */
+    int   allow_tty;
 
     /* ── content ────────────────────────────────────────────────── */
     app_entry apps[SHELL_MAX_APPS]; int n_apps;
@@ -85,7 +90,19 @@ typedef struct {
     int   focus;               /* index into wins, -1 for none/home  */
     int   workspace;
 
+    /* ── the display ────────────────────────────────────────────── */
+    /* Set once by the host before init(), and it is what hit-testing
+     * must use. A layout that paints with the surface's size but
+     * hit-tests against a constant is off by however much the two
+     * differ -- which on the 1366x768 panels this product exists to
+     * rescue is most of the screen. docs/SHELLS.md states the rule:
+     * one function owns geometry, called by painting AND hit-testing. */
+    int   screen_w, screen_h;
+
     /* ── input, updated before paint ────────────────────────────── */
+    /* mouse_down is set BEFORE click() is dispatched, and click() is
+     * dispatched on PRESS. Layouts start drags there and end them in
+     * motion() when mouse_down goes false, so the order matters. */
     int   mouse_x, mouse_y, mouse_down;
     int   hover;               /* layout-defined hot item, -1 none   */
 

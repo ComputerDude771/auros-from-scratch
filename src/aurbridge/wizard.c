@@ -92,6 +92,104 @@ static const theme_info THEMES[] = {
 };
 #define N_THEMES ((int)(sizeof THEMES / sizeof THEMES[0]))
 
+/* ── The six desktop archetypes ───────────────────────────────────────
+ * Transcribed from shells/<id>.shell, the same way THEMES above is
+ * transcribed from themes/<id>.theme: the installer runs on Windows,
+ * before AurOS exists, so it cannot read the real files. Keep in step
+ * with shell_name / shell_best_for / shell_tradeoff.
+ *
+ * `id` is what a later phase writes as shell_archetype into the image's
+ * profile; nothing else in this file interprets it.
+ *
+ * Rules this table obeys, from docs/SHELLS.md:
+ *   - Every archetype states its tradeoff. "A menu that only lists
+ *     upsides is useless for choosing", so `tradeoff` is never empty and
+ *     is drawn at the same size and weight as `best_for`.
+ *   - No other operating system, desktop or device brand is named
+ *     anywhere. Describe the behaviour instead: "a bar along the bottom
+ *     listing everything you have open".
+ *   - Workbench is the only one allowed to require learning, and says so
+ *     in those words so nobody picks it by accident.
+ * Order is by how likely each is to be the right answer for the person
+ * this installer exists for; the one that demands study comes last. */
+enum { SD_RAIL = 0, SD_TASKBAR, SD_TILES, SD_DOCK, SD_LOCKED, SD_WORKBENCH };
+
+typedef struct {
+    const char    *id;          /* shell_archetype, for the profile      */
+    const wchar_t *name;        /* shell_name — the plain-language name  */
+    const wchar_t *what;        /* what it does, in one or two lines     */
+    const wchar_t *best_for;    /* shell_best_for                        */
+    const wchar_t *tradeoff;    /* shell_tradeoff — never omitted        */
+    const wchar_t *badge;       /* NULL, or a word at the top right      */
+    int            diagram;     /* SD_*: which shape to draw             */
+    int            warn_tint;   /* draw in C_WARM instead of C_ACCENT    */
+} shell_info;
+
+static const shell_info SHELLS[] = {
+  { "rail", L"Everything in a row",
+    L"Everything you have open sits side by side in a row. Nothing is ever "
+    L"hidden: what is beside you shows at the edge of the screen, and you "
+    L"click it to go there.",
+    L"Someone who loses windows, or has never been comfortable with a computer.",
+    L"You see fewer things at once than a normal desktop, and you cannot put "
+    L"two windows side by side.",
+    L"RECOMMENDED", SD_RAIL, 0 },
+
+  { "taskbar", L"The familiar one",
+    L"A bar along the bottom lists everything you have open, so you click a "
+    L"button to come back to something. Your windows can overlap, and can be "
+    L"moved and resized.",
+    L"Someone who has used a computer for years and would rather not learn "
+    L"anything new.",
+    L"Your windows end up on top of each other and get lost behind one "
+    L"another — the oldest complaint in computing.",
+    NULL, SD_TASKBAR, 0 },
+
+  { "tiles", L"One thing at a time",
+    L"You start on a page of large labelled buttons. Press one and it takes "
+    L"over the whole screen. A single Home button brings the page back.",
+    L"Anyone who already uses a phone or a tablet and wants this to behave the "
+    L"same way.",
+    L"You cannot see two things at once, and switching means going back via "
+    L"Home every time.",
+    NULL, SD_TILES, 0 },
+
+  { "dock", L"Favourites along the edge",
+    L"A strip of your most-used programs sits at the bottom, always in the "
+    L"same order, whether they are running or not. Anything else you find by "
+    L"typing its name.",
+    L"Someone who uses the same handful of programs constantly and wants them "
+    L"in one fixed place.",
+    L"Programs that are open but not in your favourites are harder to find "
+    L"again, and typing to search is a habit some people never form.",
+    NULL, SD_DOCK, 0 },
+
+  { "locked", L"Just these apps",
+    L"The computer does the handful of jobs it was set up for and nothing "
+    L"else. No desktop, no settings, and no way to install anything.",
+    L"Schools, libraries and reception desks — or a relative who must not be "
+    L"able to break it.",
+    L"The person using it cannot change anything at all. That is the entire "
+    L"point, and it will frustrate anyone who wants more.",
+    NULL, SD_LOCKED, 0 },
+
+  { "workbench", L"Panes and keyboard",
+    L"Your windows never overlap: they divide the screen between them "
+    L"automatically, so everything open is visible at once. You move around "
+    L"with the keyboard.",
+    L"Someone who will spend an afternoon learning it, and then all day in it.",
+    L"It expects you to learn keyboard shortcuts. It will feel hostile on day "
+    L"one, and it is a poor choice for anyone who wanted the computer to be "
+    L"simpler.",
+    L"REQUIRES LEARNING", SD_WORKBENCH, 1 },
+};
+#define N_SHELLS ((int)(sizeof SHELLS / sizeof SHELLS[0]))
+
+/* Rail is index 0 and the default, because it is the only archetype in
+ * which a thing cannot be hidden. Changing this changes the default the
+ * chooser opens on; it is not merely the first row. */
+#define SHELL_DEFAULT 0
+
 /* ── Pages ────────────────────────────────────────────────────────── */
 typedef enum {
     PAGE_WELCOME = 0,
@@ -100,6 +198,7 @@ typedef enum {
     PAGE_BACKUP,
     PAGE_CONSENT,
     PAGE_CHOOSE,
+    PAGE_DESKTOP,
     PAGE_PERSONALIZE,
     PAGE_READY,
     PAGE_PROGRESS,
@@ -112,6 +211,7 @@ static const struct { const wchar_t *label; page_id first; } RAIL[] = {
     { L"Before we start",   PAGE_BACKUP      },
     { L"What will happen",  PAGE_CONSENT     },
     { L"Your choice",       PAGE_CHOOSE      },
+    { L"How it works",      PAGE_DESKTOP     },
     { L"Make it yours",     PAGE_PERSONALIZE },
     { L"Ready",             PAGE_READY       },
     { L"Installing",        PAGE_PROGRESS    },
@@ -171,6 +271,10 @@ static int   g_choice = 0;             /* 0 = dual boot · 1 = replace      */
 static int   g_ack_replace;
 static int   g_ready_confirm;
 static int   g_sel_lang = 0, g_sel_kbd = 0, g_sel_tz = 0, g_sel_theme = 0;
+/* The desktop archetype, alongside the other personalize answers. Its
+ * SHELLS[].id is what a later phase writes as shell_archetype into the
+ * image's profile — see stub_phase_write(). */
+static int   g_sel_shell = SHELL_DEFAULT;
 
 /* detected-from-Windows defaults, filled in at startup */
 static wchar_t g_det_lang[96], g_det_kbd[96], g_det_tz[128];
@@ -545,7 +649,7 @@ enum {
     ID_CHK_BACKUP, ID_CHK_USB, ID_INPUT_AGREE,
     ID_CARD_DUAL, ID_CARD_REPLACE, ID_CHK_REPLACE,
     ID_CHK_READY,
-    ID_LANG = 100, ID_KBD = 200, ID_TZ = 300, ID_THEME = 400
+    ID_LANG = 100, ID_KBD = 200, ID_TZ = 300, ID_THEME = 400, ID_SHELL = 500
 };
 
 static int w_add(int id, wkind k, int x, int y, int w, int h, int enabled)
@@ -813,7 +917,10 @@ static int nav_allowed(page_id p)
     case PAGE_BACKUP:      return 1;
     case PAGE_CONSENT:     return g_ack_backup && g_ack_usb;
     case PAGE_CHOOSE:      return nav_allowed(PAGE_CONSENT) && consent_ok();
-    case PAGE_PERSONALIZE: return nav_allowed(PAGE_CHOOSE) && choice_ok();
+    case PAGE_DESKTOP:     return nav_allowed(PAGE_CHOOSE) && choice_ok();
+    /* The archetype chooser has no gate of its own: one is always
+     * selected (Rail by default), so there is nothing to withhold. */
+    case PAGE_PERSONALIZE: return nav_allowed(PAGE_DESKTOP);
     case PAGE_READY:       return nav_allowed(PAGE_PERSONALIZE);
     case PAGE_PROGRESS:    return nav_allowed(PAGE_READY) && g_ready_confirm;
     default:               return 0;
@@ -946,6 +1053,11 @@ static int stub_phase_write(void)
 {
     stub_log(L"WOULD write auros-desktop.img to the new partition");
     stub_log(L"WOULD read every block back and compare it to the hash (R5)");
+    /* The personalize answers travel this far as indices; the profile is
+     * where they become text. The archetype is the one with a stable
+     * identifier of its own (shells/<id>.shell), so it is named here. */
+    stub_log(L"WOULD write shell_archetype=%hs into the image's profile",
+             SHELLS[g_sel_shell].id);
     return 1;
 }
 /* STUB — phase 5 HANDOFF. Loader into the ESP, one-shot BootNext. */
@@ -1670,7 +1782,242 @@ static int page_choose(int x, int y, int w)
 }
 
 /* ═══════════════════════════════════════════════════════════════════
- *  7 · PERSONALIZE
+ *  7 · DESKTOP — which of the six archetypes this PC will run
+ *
+ *  docs/SHELLS.md: "AurOS asks one question during setup that no other
+ *  operating system asks: when you want to get to a different thing,
+ *  what do you do?" This is that page. It is the single most
+ *  consequential choice in the product, and the person making it has
+ *  never chosen a desktop before and does not know the words for any of
+ *  this — so the page is built out of pictures and tradeoffs, not names.
+ *
+ *  Three rules it is written to, all from that document:
+ *    - Every card states its downside as loudly as its upside. The two
+ *      strips are the same size, the same weight and the same colour of
+ *      text; only the label differs.
+ *    - Nothing here names another operating system, desktop or device.
+ *      The behaviour is described instead.
+ *    - Rail is preselected, because it is the only one in which a thing
+ *      cannot be hidden; Workbench is marked as requiring learning, in
+ *      those words, so nobody arrives at it by accident.
+ * ═══════════════════════════════════════════════════════════════════ */
+
+/* A tiny picture of the layout's shape, drawn with the same primitives
+ * as the rest of the wizard. Six paragraphs about window management are
+ * six paragraphs nobody reads; six shapes are read at a glance. The
+ * frame is one screen, and `tint` marks the thing you are looking at. */
+static void shell_diagram(int kind, float x, float y, float w, float h,
+                          uint32_t tint)
+{
+    /* C_MUTED for the things, C_OVERLAY for the surfaces they sit on:
+     * at 110x68 px an OVERLAY-on-BG shape is invisible. */
+    const uint32_t dim = C_MUTED, bar = C_OVERLAY;
+    const float r1 = (float)S(2), r2 = (float)S(3);
+
+    fill_rr(x, y, w, h, (float)S(6), C_BG, 0.92f);
+    stroke_rr(x, y, w, h, (float)S(6), 1.f, C_OVERLAY, 1.f);
+
+    switch (kind) {
+    case SD_RAIL:
+        /* a row of cards, with the neighbours showing at both edges —
+         * the absence of anywhere to hide is the whole archetype */
+        fill_rr(x + w * 0.02f, y + h * 0.21f, w * 0.16f, h * 0.52f, r2, dim, 0.9f);
+        fill_rr(x + w * 0.23f, y + h * 0.12f, w * 0.54f, h * 0.64f, r2, tint, 0.92f);
+        fill_rr(x + w * 0.82f, y + h * 0.21f, w * 0.16f, h * 0.52f, r2, dim, 0.9f);
+        for (int i = 0; i < 3; i++)
+            fill_circle(x + w * (0.42f + 0.08f * (float)i), y + h * 0.88f,
+                        h * 0.040f, i == 1 ? tint : dim, i == 1 ? 1.f : 0.7f);
+        break;
+
+    case SD_TASKBAR:
+        /* two windows, one on top of the other, and a bar along the
+         * bottom with a launcher at its left */
+        fill_rr(x + w * 0.08f, y + h * 0.11f, w * 0.46f, h * 0.40f, r2, dim, 0.75f);
+        fill_rr(x + w * 0.30f, y + h * 0.27f, w * 0.46f, h * 0.40f, r2, tint, 0.90f);
+        fill_rr(x + w * 0.04f, y + h * 0.75f, w * 0.92f, h * 0.18f, r2, bar, 1.f);
+        fill_rr(x + w * 0.065f, y + h * 0.785f, w * 0.075f, h * 0.11f, r1, tint, 1.f);
+        for (int i = 0; i < 3; i++)
+            fill_rr(x + w * (0.175f + 0.20f * (float)i), y + h * 0.785f,
+                    w * 0.165f, h * 0.11f, r1, dim, 0.85f);
+        break;
+
+    case SD_TILES: {
+        /* a page of big buttons */
+        float cw = w * 0.25f, ch = h * 0.33f;
+        for (int i = 0; i < 6; i++)
+            fill_rr(x + w * 0.08f + (float)(i % 3) * (cw + w * 0.055f),
+                    y + h * 0.13f + (float)(i / 3) * (ch + h * 0.12f),
+                    cw, ch, r2, i == 0 ? tint : dim, i == 0 ? 0.92f : 0.8f);
+        break;
+    }
+
+    case SD_DOCK:
+        /* one window, and a strip of favourites that is the same shape
+         * whatever is running: four equal squares, always centred */
+        fill_rr(x + w * 0.14f, y + h * 0.09f, w * 0.72f, h * 0.53f, r2, dim, 0.8f);
+        fill_rr(x + w * 0.17f, y + h * 0.71f, w * 0.66f, h * 0.21f, h * 0.105f,
+                bar, 1.f);
+        for (int i = 0; i < 4; i++)
+            fill_rr(x + w * (0.215f + 0.147f * (float)i), y + h * 0.755f,
+                    w * 0.105f, h * 0.12f, r1, tint, 0.88f);
+        break;
+
+    case SD_LOCKED:
+        /* two big things and a lot of nothing. No bar, no dock, no
+         * desktop and no sixth tile waiting off-screen: what is absent
+         * from this picture is the archetype. */
+        fill_rr(x + w * 0.08f, y + h * 0.14f, w * 0.40f, h * 0.72f, r2, tint, 0.85f);
+        fill_rr(x + w * 0.52f, y + h * 0.14f, w * 0.40f, h * 0.72f, r2, tint, 0.45f);
+        break;
+
+    case SD_WORKBENCH: {
+        /* panes that divide the screen instead of covering it, and the
+         * several separate screens, along the foot */
+        float g = w * 0.02f;
+        fill_rr(x + w * 0.05f, y + h * 0.08f, w * 0.44f, h * 0.70f, r2, dim, 0.85f);
+        fill_rr(x + w * 0.51f + g, y + h * 0.08f, w * 0.44f - g, h * 0.33f, r2,
+                tint, 0.90f);
+        fill_rr(x + w * 0.51f + g, y + h * 0.45f, w * 0.44f - g, h * 0.33f, r2,
+                dim, 0.85f);
+        for (int i = 0; i < 5; i++)
+            fill_rr(x + w * (0.05f + 0.075f * (float)i), y + h * 0.86f,
+                    w * 0.05f, h * 0.06f, r1, i == 0 ? tint : dim,
+                    i == 0 ? 1.f : 0.6f);
+        break;
+    }
+    default: break;
+    }
+}
+
+/* One of the two strips at the foot of a card. They are deliberately
+ * identical: same fill, same type, same C_FG body. Only the label and
+ * its colour differ, because a downside set in small grey print is a
+ * downside nobody reads, and a menu of upsides cannot be chosen from.
+ *
+ * `measure` returns the height without drawing, so the card's geometry
+ * and its pixels come from this one function and cannot drift apart. */
+static int trait_row(int good, const wchar_t *label, const wchar_t *body,
+                     int x, int y, int w, int measure)
+{
+    uint32_t tint = good ? C_ACCENT : C_WARM;
+    int pad = S(9);
+    int lw  = S(80);
+    int tx  = x + pad + S(24) + lw;
+    int tw  = x + w - S(12) - tx;
+    if (tw < S(120)) tw = S(120);
+    int h = text_h(body, g_f_small, tw, DT_WORDBREAK) + pad * 2;
+    if (h < S(34)) h = S(34);
+    if (measure) return h;
+
+    fill_rr((float)x, (float)y, (float)w, (float)h, (float)S(9), tint, 0.10f);
+    float gx = (float)(x + pad + S(9)), gy = (float)(y + pad + S(9));
+    if (good) glyph_check(gx, gy, (float)S(12), tint, 1.f);
+    else      glyph_bang (gx, gy, (float)S(12), tint, 1.f);
+    text_draw(label, g_f_tiny, tint, x + pad + S(24), y + pad + S(3), lw,
+              DT_SINGLELINE);
+    text_draw(body, g_f_small, C_FG, tx, y + pad, tw, DT_WORDBREAK);
+    return h;
+}
+
+static int shell_card(int id, const shell_info *s, int selected,
+                      int x, int y, int w)
+{
+    uint32_t tint = s->warn_tint ? C_WARM : C_ACCENT;
+    int pad = S(16);
+    int rx  = x + pad + S(11);                 /* the radio            */
+    int dx  = x + pad + S(34);                 /* the picture          */
+    int dw  = S(112), dh = S(68);
+    int tx  = dx + dw + S(18);                 /* the words beside it  */
+    int tw  = x + w - pad - tx;
+    if (tw < S(180)) tw = S(180);
+
+    /* The badge normally shares the name's line. A translation long
+     * enough to leave the name unreadably narrow gets its own line
+     * instead — it never squeezes or overlaps the name. */
+    int bh = S(21);
+    int bw = s->badge ? text_w(s->badge, g_f_tiny) + S(18) : 0;
+    int badge_below = bw && bw > tw - S(170);
+    int nw = (bw && !badge_below) ? tw - bw - S(12) : tw;
+
+    int nh   = text_h(s->name, g_f_h3,   nw, DT_WORDBREAK);
+    int wh   = text_h(s->what, g_f_body, tw, DT_WORDBREAK);
+    int head = nh + (badge_below ? bh + S(6) : 0) + S(6) + wh;
+    if (head < dh) head = dh;
+
+    int sx = dx, sw = x + w - pad - dx;
+    int b1 = trait_row(1, L"BEST FOR",  s->best_for, sx, 0, sw, 1);
+    int b2 = trait_row(0, L"THE CATCH", s->tradeoff, sx, 0, sw, 1);
+    int h  = pad + head + S(11) + b1 + S(5) + b2 + pad;
+
+    int idx = w_add(id, W_CARD, x, y, w, h, 1);
+    int hot = w_hot(idx);
+
+    fill_rr((float)x, (float)y, (float)w, (float)h, (float)S(14), C_SURFACE_HI,
+            selected ? 0.9f : (hot ? 0.6f : 0.35f));
+    stroke_rr((float)x, (float)y, (float)w, (float)h, (float)S(14),
+              selected ? 1.8f : 1.2f, selected ? tint : C_OVERLAY,
+              selected ? 0.9f : 1.f);
+
+    float cy = (float)(y + pad + S(12));
+    if (selected) {
+        stroke_circle((float)rx, cy, (float)S(10), 1.6f, tint, 1.f);
+        fill_circle((float)rx, cy, (float)S(5), tint, 1.f);
+    } else {
+        stroke_circle((float)rx, cy, (float)S(10), 1.4f,
+                      hot ? C_SUBTLE : C_OVERLAY, 1.f);
+    }
+
+    shell_diagram(s->diagram, (float)dx, (float)(y + pad), (float)dw, (float)dh,
+                  tint);
+
+    int wy = y + pad + nh + S(6);
+    if (s->badge) {
+        int px = badge_below ? tx : x + w - pad - bw;
+        int py = badge_below ? y + pad + nh + S(4) : y + pad + S(2);
+        fill_rr((float)px, (float)py, (float)bw, (float)bh,
+                (float)S(10), tint, 0.18f);
+        RECT b = { px, py, px + bw, py + bh };
+        text_in(s->badge, g_f_tiny, tint, b, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+        if (badge_below) wy += bh + S(6);
+    }
+    text_draw(s->name, g_f_h3, selected ? C_FG_HI : C_FG, tx, y + pad, nw,
+              DT_WORDBREAK);
+    text_draw(s->what, g_f_body, C_SUBTLE, tx, wy, tw, DT_WORDBREAK);
+
+    int sy = y + pad + head + S(11);
+    sy += trait_row(1, L"BEST FOR",  s->best_for, sx, sy, sw, 0) + S(5);
+    trait_row(0, L"THE CATCH", s->tradeoff, sx, sy, sw, 0);
+
+    if (w_focused(idx)) { RECT b = { x, y, x + w, y + h }; focus_ring(b, S(4), S(18)); }
+    return h;
+}
+
+static int page_desktop(int x, int y, int w)
+{
+    int y0 = y;
+    int narrow = w > S(800) ? S(800) : w;
+
+    y += text_draw(L"How should this computer work?", g_f_title, C_FG_HI,
+                   x, y, w, DT_WORDBREAK) + S(12);
+    y += text_draw(L"When you want to get to a different thing, what do you do? "
+                   L"That one answer decides how a computer feels, more than "
+                   L"anything else does — so we ask, rather than decide for you. "
+                   L"You can change it afterwards, at any time.",
+                   g_f_body, C_SUBTLE, x, y, narrow, DT_WORDBREAK) + S(12);
+    y += text_draw(L"Each one below says what it is good at and what it is not. "
+                   L"The second half is the one that tells them apart — and if "
+                   L"none of it means much to you, leave the first one chosen.",
+                   g_f_small, C_SUBTLE, x, y, narrow, DT_WORDBREAK) + S(20);
+
+    for (int i = 0; i < N_SHELLS; i++) {
+        y += shell_card(ID_SHELL + i, &SHELLS[i], g_sel_shell == i, x, y, narrow);
+        if (i < N_SHELLS - 1) y += S(14);
+    }
+    return y - y0;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+ *  8 · PERSONALIZE
  * ═══════════════════════════════════════════════════════════════════ */
 static int chip_row(int base, wchar_t (*items)[96], int n, int sel,
                     int x, int y, int w)
@@ -1775,7 +2122,7 @@ static int page_personalize(int x, int y, int w)
 }
 
 /* ═══════════════════════════════════════════════════════════════════
- *  8 · READY
+ *  9 · READY
  * ═══════════════════════════════════════════════════════════════════ */
 static const pf_disk *sys_disk(void)
 {
@@ -1855,6 +2202,8 @@ static int page_ready(int x, int y, int w)
                g_langs[g_sel_lang], g_kbds[g_sel_kbd], g_tzs[g_sel_tz]);
     buf[255] = 0;
     y += sum_row(L"Language and region", buf, C_FG, x, y, narrow);
+    y += sum_row(L"How the desktop works", SHELLS[g_sel_shell].name,
+                 C_FG, x, y, narrow);
     y += sum_row(L"Look", THEMES[g_sel_theme].name, C_FG, x, y, narrow);
     y += sum_row(L"How long",
                  L"About 40 minutes. This PC restarts once part way through, on its "
@@ -1895,7 +2244,7 @@ static int page_ready(int x, int y, int w)
 }
 
 /* ═══════════════════════════════════════════════════════════════════
- *  9 · PROGRESS   (every phase below is a stub; see PHASE_STUB[])
+ * 10 · PROGRESS   (every phase below is a stub; see PHASE_STUB[])
  * ═══════════════════════════════════════════════════════════════════ */
 static int page_progress(int x, int y, int w)
 {
@@ -1996,7 +2345,8 @@ static int primary_enabled(void)
     case PAGE_BLOCKED:     return 1;
     case PAGE_BACKUP:      return nav_allowed(PAGE_CONSENT);
     case PAGE_CONSENT:     return nav_allowed(PAGE_CHOOSE);
-    case PAGE_CHOOSE:      return nav_allowed(PAGE_PERSONALIZE);
+    case PAGE_CHOOSE:      return nav_allowed(PAGE_DESKTOP);
+    case PAGE_DESKTOP:     return nav_allowed(PAGE_PERSONALIZE);
     case PAGE_PERSONALIZE: return nav_allowed(PAGE_READY);
     case PAGE_READY:       return nav_allowed(PAGE_PROGRESS);
     case PAGE_PROGRESS:    return g_install_finished;
@@ -2013,6 +2363,7 @@ static const wchar_t *primary_label(void)
     case PAGE_BACKUP:      return L"Continue";
     case PAGE_CONSENT:     return L"I agree — continue";
     case PAGE_CHOOSE:      return L"Continue";
+    case PAGE_DESKTOP:     return L"Continue";
     case PAGE_PERSONALIZE: return L"Continue";
     case PAGE_READY:       return g_choice == 1 ? L"Erase and install"
                                                 : L"Start installing";
@@ -2037,6 +2388,8 @@ static const wchar_t *footer_hint(void)
     case PAGE_CHOOSE:
         return g_choice == 1 ? L"This choice erases everything on this PC."
                              : L"Windows is kept, and stays the default.";
+    case PAGE_DESKTOP:
+        return L"Any of these can be changed later.";
     case PAGE_PERSONALIZE:
         return L"All of this can be changed later.";
     case PAGE_READY:
@@ -2061,7 +2414,8 @@ static page_id back_target(void)
     case PAGE_BACKUP:      return PAGE_CHECKING;
     case PAGE_CONSENT:     return PAGE_BACKUP;
     case PAGE_CHOOSE:      return PAGE_CONSENT;
-    case PAGE_PERSONALIZE: return PAGE_CHOOSE;
+    case PAGE_DESKTOP:     return PAGE_CHOOSE;
+    case PAGE_PERSONALIZE: return PAGE_DESKTOP;
     case PAGE_READY:       return PAGE_PERSONALIZE;
     default:               return PAGE_WELCOME;
     }
@@ -2116,6 +2470,7 @@ static int page_dispatch(int x, int y, int w)
     case PAGE_BACKUP:      return page_backup(x, y, w);
     case PAGE_CONSENT:     return page_consent(x, y, w);
     case PAGE_CHOOSE:      return page_choose(x, y, w);
+    case PAGE_DESKTOP:     return page_desktop(x, y, w);
     case PAGE_PERSONALIZE: return page_personalize(x, y, w);
     case PAGE_READY:       return page_ready(x, y, w);
     case PAGE_PROGRESS:    return page_progress(x, y, w);
@@ -2229,7 +2584,8 @@ static void do_primary(void)
     case PAGE_BACKUP:      goto_page(PAGE_CONSENT);
                            g_want_focus_id = ID_INPUT_AGREE; break;
     case PAGE_CONSENT:     goto_page(PAGE_CHOOSE); break;
-    case PAGE_CHOOSE:      goto_page(PAGE_PERSONALIZE); break;
+    case PAGE_CHOOSE:      goto_page(PAGE_DESKTOP); break;
+    case PAGE_DESKTOP:     goto_page(PAGE_PERSONALIZE); break;
     case PAGE_PERSONALIZE: goto_page(PAGE_READY); break;
     /* Re-run every safety check before the phase list starts, per
      * AURBRIDGE.md: destructive work re-runs preflight and aborts on
@@ -2255,6 +2611,7 @@ static void widget_activate(int id)
     case ID_INPUT_AGREE: return;                 /* click just takes focus */
     default: break;
     }
+    if (id >= ID_SHELL) { g_sel_shell = id - ID_SHELL; return; }
     if (id >= ID_THEME) { g_sel_theme = id - ID_THEME; return; }
     if (id >= ID_TZ)    { g_sel_tz    = id - ID_TZ;    return; }
     if (id >= ID_KBD)   { g_sel_kbd   = id - ID_KBD;   return; }
@@ -2723,16 +3080,28 @@ static int shot_run(const char *dir)
     g_choice = 1; shot_save(dir, "6b-choose-replace");
     g_choice = 0; g_ack_replace = 0;
 
-    g_page = PAGE_PERSONALIZE; shot_save(dir, "7-personalize");
+    /* The archetype chooser opens on Rail; the foot of the list is where
+     * the one that requires learning lives, so it gets its own frame. */
+    g_page = PAGE_DESKTOP;  shot_save(dir, "7a-desktop");
+    g_scroll[PAGE_DESKTOP] = 10000;
+    shot_save(dir, "7b-desktop-end");
+    g_sel_shell = N_SHELLS - 1;
+    g_focus = N_SHELLS - 1; g_focus_ring = 1;   /* as if the user had tabbed */
+    shot_save(dir, "7c-desktop-workbench");
+    g_focus = -1; g_focus_ring = 0;
+    g_sel_shell = SHELL_DEFAULT;
+    g_scroll[PAGE_DESKTOP] = 0;
+
+    g_page = PAGE_PERSONALIZE; shot_save(dir, "8-personalize");
 
     g_ready_confirm = 1;
-    g_page = PAGE_READY;    shot_save(dir, "8-ready");
+    g_page = PAGE_READY;    shot_save(dir, "9-ready");
 
     install_begin();
     for (int i = 0; i < 30; i++) install_tick();
-    g_page = PAGE_PROGRESS; shot_save(dir, "9-progress");
+    g_page = PAGE_PROGRESS; shot_save(dir, "10-progress");
     for (int i = 0; i < 60; i++) install_tick();
-    shot_save(dir, "9b-progress-end");
+    shot_save(dir, "10b-progress-end");
     return 0;
 }
 

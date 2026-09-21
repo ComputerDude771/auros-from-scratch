@@ -23,7 +23,11 @@
 #include <signal.h>
 #include <poll.h>
 #include <sys/ioctl.h>
+#include <sys/stat.h>
 #include <linux/input.h>
+#include <linux/kd.h>
+#include <linux/vt.h>
+#include <sys/inotify.h>
 
 #include "shell.h"
 #include "kms.h"
@@ -32,10 +36,151 @@
 
 #define MAX_INPUT_DEV 16
 
-static volatile sig_atomic_t want_reload = 0;
-static volatile sig_atomic_t want_quit   = 0;
+static volatile sig_atomic_t want_reload  = 0;
+static volatile sig_atomic_t want_quit    = 0;
+static volatile sig_atomic_t want_release = 0;
+static volatile sig_atomic_t want_acquire = 0;
 static void on_hup(int s)  { (void)s; want_reload = 1; }
 static void on_term(int s) { (void)s; want_quit = 1; }
+static void on_rel(int s)  { (void)s; want_release = 1; }
+static void on_acq(int s)  { (void)s; want_acquire = 1; }
+
+/* ── the console ─────────────────────────────────────────────────────
+ *
+ * A shell that paints to KMS is still sitting on a text console that
+ * the kernel is driving, and that console keeps its own claims on the
+ * keyboard and the VT. Left alone:
+ *
+ *   - every keystroke is echoed into the tty underneath our pixels,
+ *     so a stray keypress scrolls a login prompt through the desktop;
+ *   - Ctrl-Alt-Del reboots the machine;
+ *   - Ctrl-Alt-F2 switches VT, which revokes DRM master. Every present
+ *     after that silently fails and the display never comes back. On a
+ *     school machine that is a three-key denial of service.
+ *
+ * So: put the VT in graphics mode, take the keyboard off the console's
+ * translation layer, and ask the kernel to ASK US before switching away
+ * (VT_PROCESS) rather than doing it behind our back. The signals are
+ * the kernel's half of that conversation.
+ *
+ * Every one of these is restored on exit. A shell that leaves a console
+ * in K_OFF is a machine with no keyboard. */
+typedef struct {
+    int fd;                    /* /dev/tty0, or -1 if we have no console */
+    int saved_kbmode;
+    int have_kbmode;
+    int saved_kdmode;
+    int have_kdmode;
+    struct vt_mode saved_vtmode;
+    int have_vtmode;
+    int active;                /* 0 while another VT has the display     */
+    int refuse_switch;         /* managed machine: no VT switching       */
+} console;
+
+static console g_con = { -1, 0, 0, 0, 0, {0,0,0,0,0}, 0, 1, 0 };
+
+#define VT_RELSIG  SIGUSR1
+#define VT_ACQSIG  SIGUSR2
+
+static void console_take(console *k, int refuse_switch)
+{
+    k->active = 1;
+    k->refuse_switch = refuse_switch;
+    k->fd = open("/dev/tty0", O_RDWR | O_CLOEXEC);
+    if (k->fd < 0) {
+        fprintf(stderr, "aurshell: no console (%s) — the tty keeps the "
+                        "keyboard and VT switching stays live\n", strerror(errno));
+        return;
+    }
+
+    if (ioctl(k->fd, KDGKBMODE, &k->saved_kbmode) == 0) k->have_kbmode = 1;
+    /* K_OFF, not K_RAW: K_OFF stops the console translating keys at all
+     * without us having to feed it. We read evdev directly, so the
+     * console has no business seeing the keyboard. It also disables
+     * Ctrl-Alt-Del and the VT-switch chords, which is the point. */
+    if (ioctl(k->fd, KDSKBMODE, K_OFF) < 0) {
+        k->have_kbmode = 0;
+        fprintf(stderr, "aurshell: could not silence the console keyboard (%s)\n",
+                strerror(errno));
+    }
+
+    if (ioctl(k->fd, KDGETMODE, &k->saved_kdmode) == 0) k->have_kdmode = 1;
+    if (ioctl(k->fd, KDSETMODE, KD_GRAPHICS) < 0) k->have_kdmode = 0;
+
+    struct vt_mode vm;
+    if (ioctl(k->fd, VT_GETMODE, &vm) == 0) {
+        k->saved_vtmode = vm; k->have_vtmode = 1;
+        vm.mode   = VT_PROCESS;
+        vm.waitv  = 0;
+        vm.relsig = VT_RELSIG;
+        vm.acqsig = VT_ACQSIG;
+        if (ioctl(k->fd, VT_SETMODE, &vm) < 0) {
+            k->have_vtmode = 0;
+            fprintf(stderr, "aurshell: VT_SETMODE failed (%s) — a VT switch "
+                            "will take the display away without warning\n",
+                    strerror(errno));
+        }
+    }
+}
+
+/* The kernel is asking whether it may hand the display to another VT.
+ * This is the conversation VT_PROCESS bought us, and it is the whole
+ * reason a VT switch no longer leaves a dead screen behind:
+ *
+ *   VT_RELDISP 1  -- yes, take it. We drop DRM master first, stop
+ *                    painting, and wait to be told we have it back.
+ *   VT_RELDISP 0  -- no. The kernel abandons the switch.
+ *
+ * A managed machine refuses. That is what `allow_tty = no` has to mean
+ * if it means anything: masking getty units is not enough, because the
+ * switch itself is handled by the kernel's VT layer and nothing in
+ * userspace has to cooperate for the display to be lost. Anywhere else
+ * we say yes -- reaching a console is a feature on a personal machine,
+ * and refusing would be us deciding what the owner may do with their
+ * own computer. */
+static void console_release(console *k, int drm_fd)
+{
+    if (k->fd < 0) return;
+    if (k->refuse_switch) {
+        ioctl(k->fd, VT_RELDISP, 0);
+        return;
+    }
+    kms_drop_master(drm_fd);
+    k->active = 0;
+    ioctl(k->fd, VT_RELDISP, 1);
+}
+
+static void console_acquire(console *k, int drm_fd)
+{
+    if (k->fd < 0) return;
+    ioctl(k->fd, VT_RELDISP, VT_ACKACQ);
+    kms_set_master(drm_fd);
+    k->active = 1;
+}
+
+static void console_give_back(console *k)
+{
+    if (k->fd < 0) return;
+    if (k->have_vtmode) ioctl(k->fd, VT_SETMODE, &k->saved_vtmode);
+    if (k->have_kdmode) ioctl(k->fd, KDSETMODE, k->saved_kdmode);
+    if (k->have_kbmode) ioctl(k->fd, KDSKBMODE, k->saved_kbmode);
+    close(k->fd);
+    k->fd = -1;
+}
+
+/* Keep the pointer on the screen at the moment it moves, not at the end
+ * of the batch. A relative device can accumulate well past the edge
+ * inside one drain, and a click dispatched at that coordinate misses
+ * every target while the cursor is drawn at the edge -- which is
+ * precisely the dock and taskbar case, where users shove the mouse into
+ * the edge on purpose. */
+static void clamp_pointer(shell_ctx *c, int w, int h)
+{
+    if (c->mouse_x < 0) c->mouse_x = 0;
+    if (c->mouse_y < 0) c->mouse_y = 0;
+    if (c->mouse_x >= w) c->mouse_x = w - 1;
+    if (c->mouse_y >= h) c->mouse_y = h - 1;
+}
 
 /* ── fonts ───────────────────────────────────────────────────────── */
 static font *open_font(const char *named, float px)
@@ -79,13 +224,41 @@ static void free_fonts(shell_fonts *f)
 }
 
 /* ── input ───────────────────────────────────────────────────────────
- * Keyboards and pointers are told apart by the events they advertise.
- * Mice and lid switches also report EV_KEY, so a keyboard must show a
- * spread of letter keys; a pointer must show relative or absolute axes.
- * Grabbing the wrong device is how a desktop ends up ignoring the mouse
- * -- which is exactly the state this shell was in until now. */
-typedef struct { int fd[MAX_INPUT_DEV]; int kind[MAX_INPUT_DEV]; int n; } input_set;
-enum { DEV_KBD = 1, DEV_REL = 2, DEV_ABS = 3 };
+ *
+ * Reading evdev directly means classifying devices ourselves, and the
+ * classification is where naive shells go wrong. Three rules, each
+ * learned from a device that breaks the obvious version:
+ *
+ * 1. A device is not ONE thing. A wireless keyboard with a built-in
+ *    trackpad is a single event node that is both a keyboard and a
+ *    pointer. `kind` is therefore a bitmask, not an enum -- as an enum,
+ *    such a device is classified as a pointer and every keystroke is
+ *    silently dropped.
+ *
+ * 2. A touchpad is NOT an absolute device, even though it reports
+ *    ABS_X/ABS_Y. Every Synaptics and Elan pad does. Treated as
+ *    absolute, the pointer teleports to wherever on the pad the finger
+ *    lands. INPUT_PROP_POINTER vs INPUT_PROP_DIRECT is the real
+ *    discriminator: DIRECT means the user touches the thing they are
+ *    pointing at (a touchscreen), POINTER means they do not (a pad).
+ *
+ * 3. BTN_TOUCH is only a click on a DIRECT device. On a touchpad it
+ *    fires on every finger-down and finger-up, so honouring it there
+ *    means the user cannot move the pointer without clicking.
+ */
+enum { DEV_KBD = 1, DEV_REL = 2, DEV_ABS = 4, DEV_DIRECT = 8 };
+
+typedef struct {
+    int fd[MAX_INPUT_DEV];
+    int kind[MAX_INPUT_DEV];
+    /* Axis ranges read once at open. EVIOCGABS per motion event is an
+     * ioctl per sample on a device that can report at 250 Hz. */
+    int ax_lo[MAX_INPUT_DEV], ax_hi[MAX_INPUT_DEV];
+    int ay_lo[MAX_INPUT_DEV], ay_hi[MAX_INPUT_DEV];
+    char name[MAX_INPUT_DEV][32];
+    int n;
+    int notify_fd;             /* inotify on /dev/input, for hotplug   */
+} input_set;
 
 static int has_bit(const unsigned long *b, int bit)
 { return (b[bit / (8 * sizeof(long))] >> (bit % (8 * sizeof(long)))) & 1; }
@@ -93,48 +266,43 @@ static int has_bit(const unsigned long *b, int bit)
 static int classify(int fd)
 {
     unsigned long ev = 0;
+    int kind = 0;
     if (ioctl(fd, EVIOCGBIT(0, sizeof ev), &ev) < 0) return 0;
+
+    unsigned long prop[(INPUT_PROP_MAX / (8 * sizeof(long))) + 1];
+    memset(prop, 0, sizeof prop);
+    ioctl(fd, EVIOCGPROP(sizeof prop), prop);   /* absent on old kernels */
+    int direct  = has_bit(prop, INPUT_PROP_DIRECT);
+    int pointer = has_bit(prop, INPUT_PROP_POINTER);
 
     if (ev & (1u << EV_REL)) {
         unsigned long rel[(REL_MAX / (8 * sizeof(long))) + 1];
         memset(rel, 0, sizeof rel);
         if (ioctl(fd, EVIOCGBIT(EV_REL, sizeof rel), rel) >= 0 &&
-            has_bit(rel, REL_X) && has_bit(rel, REL_Y)) return DEV_REL;
+            has_bit(rel, REL_X) && has_bit(rel, REL_Y)) kind |= DEV_REL;
     }
     if (ev & (1u << EV_ABS)) {
         unsigned long abs_[(ABS_MAX / (8 * sizeof(long))) + 1];
         memset(abs_, 0, sizeof abs_);
         if (ioctl(fd, EVIOCGBIT(EV_ABS, sizeof abs_), abs_) >= 0 &&
-            has_bit(abs_, ABS_X) && has_bit(abs_, ABS_Y)) return DEV_ABS;
+            (has_bit(abs_, ABS_X) || has_bit(abs_, ABS_MT_POSITION_X))) {
+            if (direct) kind |= DEV_ABS | DEV_DIRECT;
+            /* A pad, or anything that did not say it is direct: relative
+             * is the safe reading, because a wrong "absolute" teleports
+             * the pointer and a wrong "relative" merely ignores it. */
+            else if (pointer || !(kind & DEV_REL)) kind |= DEV_REL;
+        }
     }
     if (ev & (1u << EV_KEY)) {
         unsigned long key[(KEY_MAX / (8 * sizeof(long))) + 1];
         memset(key, 0, sizeof key);
-        if (ioctl(fd, EVIOCGBIT(EV_KEY, sizeof key), key) < 0) return 0;
-        int hits = 0;
-        for (int k = KEY_Q; k <= KEY_P; k++) if (has_bit(key, k)) hits++;
-        if (hits > 5) return DEV_KBD;
+        if (ioctl(fd, EVIOCGBIT(EV_KEY, sizeof key), key) >= 0) {
+            int hits = 0;
+            for (int k = KEY_Q; k <= KEY_P; k++) if (has_bit(key, k)) hits++;
+            if (hits > 5) kind |= DEV_KBD;
+        }
     }
-    return 0;
-}
-
-static void input_open_all(input_set *s)
-{
-    s->n = 0;
-    DIR *d = opendir("/dev/input");
-    if (!d) return;
-    struct dirent *e;
-    while ((e = readdir(d)) && s->n < MAX_INPUT_DEV) {
-        if (strncmp(e->d_name, "event", 5) != 0) continue;
-        char p[288];
-        snprintf(p, sizeof p, "/dev/input/%s", e->d_name);
-        int fd = open(p, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
-        if (fd < 0) continue;
-        int k = classify(fd);
-        if (k) { s->fd[s->n] = fd; s->kind[s->n] = k; s->n++; }
-        else close(fd);
-    }
-    closedir(d);
+    return kind;
 }
 
 /* Absolute devices report in their own units; scale to the screen. */
@@ -144,6 +312,77 @@ static void abs_range(int fd, int axis, int *lo, int *hi)
     *lo = 0; *hi = 0;
     if (ioctl(fd, EVIOCGABS(axis), &ai) == 0 && ai.maximum > ai.minimum)
         { *lo = ai.minimum; *hi = ai.maximum; }
+}
+
+static int input_have(const input_set *s, const char *node)
+{
+    for (int i = 0; i < s->n; i++) if (!strcmp(s->name[i], node)) return 1;
+    return 0;
+}
+
+/* Opens any /dev/input/eventN we do not already hold. Safe to call
+ * repeatedly; that is how hotplug works. Returns how many were added. */
+static int input_scan(input_set *s, int grab)
+{
+    int added = 0;
+    DIR *d = opendir("/dev/input");
+    if (!d) return 0;
+    struct dirent *e;
+    while ((e = readdir(d)) && s->n < MAX_INPUT_DEV) {
+        if (strncmp(e->d_name, "event", 5) != 0) continue;
+        if (input_have(s, e->d_name)) continue;
+        char p[288];
+        snprintf(p, sizeof p, "/dev/input/%s", e->d_name);
+        int fd = open(p, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+        if (fd < 0) continue;
+        int k = classify(fd);
+        if (!k) { close(fd); continue; }
+        int i = s->n;
+        s->fd[i] = fd; s->kind[i] = k;
+        s->ax_lo[i] = s->ax_hi[i] = s->ay_lo[i] = s->ay_hi[i] = 0;
+        if (k & DEV_ABS) {
+            abs_range(fd, ABS_X, &s->ax_lo[i], &s->ax_hi[i]);
+            abs_range(fd, ABS_Y, &s->ay_lo[i], &s->ay_hi[i]);
+        }
+        snprintf(s->name[i], sizeof s->name[i], "%.31s", e->d_name);
+        /* Kiosk: take the device away from everyone else, so a key
+         * combination cannot reach another reader. This is what makes
+         * the lockdown a property of the system rather than of us
+         * choosing not to act on a keystroke. */
+        if (grab) ioctl(fd, EVIOCGRAB, 1);
+        s->n++; added++;
+    }
+    closedir(d);
+    return added;
+}
+
+static void input_drop(input_set *s, int i)
+{
+    close(s->fd[i]);
+    s->n--;
+    if (i != s->n) {
+        s->fd[i]    = s->fd[s->n];    s->kind[i]  = s->kind[s->n];
+        s->ax_lo[i] = s->ax_lo[s->n]; s->ax_hi[i] = s->ax_hi[s->n];
+        s->ay_lo[i] = s->ay_lo[s->n]; s->ay_hi[i] = s->ay_hi[s->n];
+        memcpy(s->name[i], s->name[s->n], sizeof s->name[i]);
+    }
+}
+
+static void input_open_all(input_set *s, int grab)
+{
+    memset(s, 0, sizeof *s);
+    s->notify_fd = -1;
+#ifdef IN_NONBLOCK
+    /* Hotplug. Without this, a mouse plugged in after the desktop
+     * appears does nothing until a reboot -- and if we win the race
+     * against udev at boot, we can come up with no input at all. */
+    s->notify_fd = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
+    if (s->notify_fd >= 0 &&
+        inotify_add_watch(s->notify_fd, "/dev/input", IN_CREATE | IN_ATTRIB) < 0) {
+        close(s->notify_fd); s->notify_fd = -1;
+    }
+#endif
+    input_scan(s, grab);
 }
 
 /* ── software cursor ─────────────────────────────────────────────────
@@ -216,15 +455,53 @@ static void build_wallpaper(surface **wall, int w, int h, const theme_t *t)
     free(tmp);
 }
 
+/* Policy fails CLOSED, and says so.
+ *
+ * The obvious version returns silently on a missing or empty file and
+ * leaves the permissive defaults in place. That turns a truncated write
+ * on a failing disk, or one typo in a deployment script, into a school
+ * laptop that quietly boots as a fully open desktop -- with nothing in
+ * the log to say why. A restriction that evaporates when its config is
+ * unreadable is not a restriction.
+ *
+ * `present` is what distinguishes "no policy was ever installed" (a
+ * personal machine: open, as intended) from "a policy file exists but
+ * we could not read or parse it" (something is wrong: lock down). */
 static void load_policy(shell_ctx *c, const char *path)
 {
     theme_t p = {0};
     c->allow_install = c->allow_settings = c->allow_theme_change = 1;
+    c->allow_tty = 1;
     c->kiosk = 0;
-    if (theme_load(&p, path) < 0) return;
+
+    struct stat st;
+    int present = (stat(path, &st) == 0);
+
+    if (theme_load(&p, path) < 0) {
+        if (present) {
+            fprintf(stderr, "aurshell: %s exists but could not be read — "
+                            "locking down\n", path);
+            c->allow_install = c->allow_settings = c->allow_theme_change = 0;
+            c->allow_tty = 0;
+            c->kiosk = 1;
+        } else {
+            fprintf(stderr, "aurshell: no %s — unmanaged machine, "
+                            "no restrictions\n", path);
+        }
+        return;
+    }
+    if (p.n == 0) {
+        fprintf(stderr, "aurshell: %s is empty or unparseable — locking down\n",
+                path);
+        c->allow_install = c->allow_settings = c->allow_theme_change = 0;
+        c->allow_tty = 0;
+        c->kiosk = 1;
+        return;
+    }
     c->allow_install      = strcmp(theme_str(&p, "allow_user_install",    "yes"), "no") != 0;
     c->allow_settings     = strcmp(theme_str(&p, "allow_settings_change", "yes"), "no") != 0;
     c->allow_theme_change = strcmp(theme_str(&p, "allow_theme_change",    "yes"), "no") != 0;
+    c->allow_tty          = strcmp(theme_str(&p, "allow_tty",             "yes"), "no") != 0;
     c->kiosk              = strcmp(theme_str(&p, "kiosk_mode",            "no"),  "yes") == 0;
 }
 
@@ -255,6 +532,8 @@ int main(int argc, char **argv)
     signal(SIGHUP,  on_hup);
     signal(SIGTERM, on_term);
     signal(SIGINT,  on_term);
+    signal(VT_RELSIG, on_rel);
+    signal(VT_ACQSIG, on_acq);
 
     theme_t t = {0};
     if (theme_load(&t, conf) < 0)
@@ -263,15 +542,23 @@ int main(int argc, char **argv)
     shell_ctx c;
     memset(&c, 0, sizeof c);
     shell_theme_load(&c, &t);
+
+    /* Policy BEFORE the archetype, because it decides what a missing
+     * archetype should fall back to. */
+    load_policy(&c, policy);
+
     if (shell_archetype_load(&c, shellf) < 0) {
-        /* Rail is the safe default: it is the only archetype in which a
-         * thing cannot be hidden, so an unreadable config degrades to
-         * the shell that is hardest to get lost in. */
-        fprintf(stderr, "aurshell: no %s — defaulting to the rail archetype\n", shellf);
-        snprintf(c.layout_id, sizeof c.layout_id, "rail");
+        /* The safe default depends on what the machine is for. On a
+         * managed machine it is `locked`, because falling back to an
+         * open desktop is the failure a school cannot tolerate. On an
+         * unmanaged one it is `rail`, the only archetype in which a
+         * thing cannot be hidden. */
+        const char *fb = c.kiosk ? "locked" : "rail";
+        fprintf(stderr, "aurshell: no %s — defaulting to the %s archetype\n",
+                shellf, fb);
+        snprintf(c.layout_id, sizeof c.layout_id, "%s", fb);
         c.show_clock = 1;
     }
-    load_policy(&c, policy);
     seed_apps(&c);
     c.mouse_x = c.mouse_y = -1;
     c.hover = -1;
@@ -293,12 +580,23 @@ int main(int argc, char **argv)
 
     /* ── headless: one frame to a PNG, through the identical path ── */
     if (png_out) {
+        if (png_w <= 0 || png_h <= 0 ||
+            (long long)png_w * png_h > 64LL * 1024 * 1024) {
+            fprintf(stderr, "aurshell: --size %dx%d is not a usable image\n",
+                    png_w, png_h);
+            free_fonts(&f); return 1;
+        }
         surface *s = surface_new(png_w, png_h), *wall = NULL;
+        if (!s) { fprintf(stderr, "aurshell: out of memory\n");
+                  free_fonts(&f); return 1; }
         build_wallpaper(&wall, png_w, png_h, &t);
+        c.screen_w = png_w; c.screen_h = png_h;
         if (L->init) L->init(&c);
         L->paint(&c, s, &f, wall);
         uint32_t *o = malloc((size_t)png_w * png_h * sizeof *o);
-        for (int i = 0; i < png_w * png_h; i++) o[i] = s->px[i] & 0xFFFFFFu;
+        if (!o) { fprintf(stderr, "aurshell: out of memory\n");
+                  surface_free(s); surface_free(wall); free_fonts(&f); return 1; }
+        for (size_t i = 0; i < (size_t)png_w * png_h; i++) o[i] = s->px[i] & 0xFFFFFFu;
         int rc = png_write_rgb(png_out, o, png_w, png_h);
         free(o); surface_free(s); surface_free(wall);
         if (L->fini) L->fini(&c);
@@ -312,16 +610,34 @@ int main(int argc, char **argv)
     fprintf(stderr, "aurshell: %dx%d on connector %u\n",
             disp->width, disp->height, disp->connector_id);
 
+    /* The console owns the keyboard and the VT until we say otherwise.
+     * Without this the shell is painting over a text console that is
+     * still echoing every keystroke, Ctrl-Alt-Del still reboots, and
+     * Ctrl-Alt-F2 still switches away -- taking DRM master with it and
+     * leaving a dead display behind. On a managed machine that is a
+     * three-key denial of service; on any machine it is a bug. */
+    console_take(&g_con, !c.allow_tty);
+
+    c.screen_w = disp->width;
+    c.screen_h = disp->height;
+
     surface *wall = NULL;
     build_wallpaper(&wall, disp->width, disp->height, &t);
     if (L->init) L->init(&c);
 
     input_set in;
-    input_open_all(&in);
+    input_open_all(&in, c.kiosk);
     int n_kbd = 0, n_ptr = 0;
-    for (int i = 0; i < in.n; i++) (in.kind[i] == DEV_KBD) ? n_kbd++ : n_ptr++;
-    fprintf(stderr, "aurshell: %d keyboard%s, %d pointer%s\n",
-            n_kbd, n_kbd == 1 ? "" : "s", n_ptr, n_ptr == 1 ? "" : "s");
+    for (int i = 0; i < in.n; i++) {
+        if (in.kind[i] & DEV_KBD)            n_kbd++;
+        if (in.kind[i] & (DEV_REL | DEV_ABS)) n_ptr++;
+    }
+    fprintf(stderr, "aurshell: %d keyboard%s, %d pointer%s%s%s\n",
+            n_kbd, n_kbd == 1 ? "" : "s", n_ptr, n_ptr == 1 ? "" : "s",
+            c.kiosk ? ", grabbed (kiosk)" : "",
+            in.notify_fd >= 0 ? ", hotplug on" : ", NO HOTPLUG");
+    if (!n_ptr) fprintf(stderr, "aurshell: no pointer found — "
+                                "keyboard only until one is plugged in\n");
 
     /* Start the pointer centred so it is findable on the first frame. */
     c.mouse_x = disp->width / 2;
@@ -332,6 +648,13 @@ int main(int argc, char **argv)
 
     struct timespec last;
     clock_gettime(CLOCK_MONOTONIC, &last);
+
+    /* Damage tracking. A desktop that repaints four times a second
+     * forever keeps a fanless machine warm and its battery flat for no
+     * benefit whatsoever: the pixels are identical. Repaint when
+     * something actually changed -- input, an animation, a new minute
+     * on the clock, a theme reload, or losing and regaining the VT. */
+    int dirty = 1, last_min = -1;
 
     while (!want_quit) {
         if (want_reload) {
@@ -346,7 +669,26 @@ int main(int argc, char **argv)
                 cur_fill = theme_color(&t, "col_fg_hi", 0xF3F7FD);
                 cur_edge = theme_color(&t, "col_bg",    0x0B0E14);
                 fprintf(stderr, "aurshell: theme reloaded\n");
+                dirty = 1;
             }
+        }
+
+        /* A VT switch away means another process owns the display.
+         * Painting into a buffer nothing scans out is wasted work, and
+         * the ioctls fail anyway, so stop until we are back. */
+        if (want_release) {
+            want_release = 0;
+            console_release(&g_con, disp->fd);
+        }
+        if (want_acquire) {
+            want_acquire = 0;
+            console_acquire(&g_con, disp->fd);
+            dirty = 1;
+        }
+        if (!g_con.active) {
+            struct pollfd idle = { -1, 0, 0 };
+            poll(&idle, 0, 120);
+            continue;
         }
 
         struct timespec now;
@@ -357,58 +699,146 @@ int main(int argc, char **argv)
         if (dt > 0.25f) dt = 0.25f;          /* a stall must not teleport */
 
         int animating = L->step ? L->step(&c, dt) : 0;
+        if (animating) dirty = 1;
 
-        surface *fb = kms_back_surface(disp);
-        L->paint(&c, fb, &f, wall);
-        paint_cursor(fb, c.mouse_x, c.mouse_y, cur_fill, cur_edge);
-        kms_flip(disp);
-        if (once) break;
-
-        /* Animating: poll briefly so the next frame is soon. Idle: wait
-         * up to a quarter second, which is enough for a clock and
-         * leaves the CPU alone on a fanless machine. */
-        struct pollfd pfd[MAX_INPUT_DEV];
-        for (int i = 0; i < in.n; i++) { pfd[i].fd = in.fd[i]; pfd[i].events = POLLIN; }
-        if (poll(pfd, in.n, animating ? 8 : 250) <= 0) continue;
-
-        for (int i = 0; i < in.n; i++) {
-            if (!(pfd[i].revents & POLLIN)) continue;
-            struct input_event ev;
-            while (read(in.fd[i], &ev, sizeof ev) == (ssize_t)sizeof ev) {
-                if (ev.type == EV_REL) {
-                    if (ev.code == REL_X) c.mouse_x += ev.value;
-                    if (ev.code == REL_Y) c.mouse_y += ev.value;
-                } else if (ev.type == EV_ABS) {
-                    int lo, hi;
-                    if (ev.code == ABS_X) {
-                        abs_range(in.fd[i], ABS_X, &lo, &hi);
-                        if (hi > lo) c.mouse_x = (int)((int64_t)(ev.value - lo) * disp->width  / (hi - lo));
-                    } else if (ev.code == ABS_Y) {
-                        abs_range(in.fd[i], ABS_Y, &lo, &hi);
-                        if (hi > lo) c.mouse_y = (int)((int64_t)(ev.value - lo) * disp->height / (hi - lo));
-                    }
-                } else if (ev.type == EV_KEY) {
-                    if (ev.code == BTN_LEFT || ev.code == BTN_TOUCH) {
-                        c.mouse_down = (ev.value != 0);
-                        /* Act on release, not press: it is the gesture
-                         * people can abort by sliding off the target. */
-                        if (!ev.value && L->click) L->click(&c, c.mouse_x, c.mouse_y);
-                    } else if (ev.value && in.kind[i] == DEV_KBD) {
-                        if (ev.code == KEY_ESC && c.kiosk) continue;  /* no escape hatch */
-                        if (L->key) L->key(&c, ev.code);
-                    }
-                }
+        if (c.show_clock) {
+            time_t tt = time(NULL);
+            struct tm tm_;
+            if (localtime_r(&tt, &tm_) && tm_.tm_min != last_min) {
+                last_min = tm_.tm_min; dirty = 1;
             }
         }
 
-        if (c.mouse_x < 0) c.mouse_x = 0;
-        if (c.mouse_y < 0) c.mouse_y = 0;
-        if (c.mouse_x >= disp->width)  c.mouse_x = disp->width - 1;
-        if (c.mouse_y >= disp->height) c.mouse_y = disp->height - 1;
-        if (L->motion) L->motion(&c, c.mouse_x, c.mouse_y);
+        if (dirty) {
+            surface *fb = kms_back_surface(disp);
+            L->paint(&c, fb, &f, wall);
+            paint_cursor(fb, c.mouse_x, c.mouse_y, cur_fill, cur_edge);
+            /* A failed flip is not cosmetic: it means we no longer own
+             * the display. Say so once rather than painting into the
+             * void for the rest of the session. */
+            if (kms_flip(disp) < 0 && g_con.active) {
+                static int moaned = 0;
+                if (!moaned++) fprintf(stderr, "aurshell: display present failed "
+                                               "— lost DRM master?\n");
+            }
+            dirty = 0;
+        }
+        if (once) break;
+
+        /* Animating: poll briefly so the next frame is soon. Idle: wait
+         * a full second; with damage tracking there is nothing to do
+         * until an event arrives, and the clock is handled above. */
+        struct pollfd pfd[MAX_INPUT_DEV + 1];
+        int np = 0;
+        for (int i = 0; i < in.n; i++) { pfd[np].fd = in.fd[i]; pfd[np].events = POLLIN; np++; }
+        int noti = -1;
+        if (in.notify_fd >= 0) { noti = np; pfd[np].fd = in.notify_fd;
+                                 pfd[np].events = POLLIN; np++; }
+        if (poll(pfd, np, animating ? 8 : 1000) <= 0) continue;
+
+        if (noti >= 0 && (pfd[noti].revents & POLLIN)) {
+            char buf[4096];
+            while (read(in.notify_fd, buf, sizeof buf) > 0) { }
+            int added = input_scan(&in, c.kiosk);
+            if (added) {
+                fprintf(stderr, "aurshell: %d input device%s appeared\n",
+                        added, added == 1 ? "" : "s");
+                dirty = 1;
+            }
+        }
+
+        /* Walk backwards: dropping a device compacts the array, so a
+         * forward walk would skip the entry moved into the hole. */
+        for (int i = in.n - 1; i >= 0; i--) {
+            short re = pfd[i].revents;
+            /* POLLERR/POLLHUP arrive whether or not we asked for them,
+             * and the kernel keeps reporting them forever once a device
+             * is gone. Skipping the fd without closing it turns poll()
+             * into a busy loop -- a shipped desktop pinning a core at
+             * 100% because someone unplugged a mouse. */
+            if (re & (POLLERR | POLLHUP | POLLNVAL)) {
+                fprintf(stderr, "aurshell: input device %s went away\n", in.name[i]);
+                input_drop(&in, i);
+                continue;
+            }
+            if (!(re & POLLIN)) continue;
+
+            struct input_event ev;
+            ssize_t got;
+            while ((got = read(in.fd[i], &ev, sizeof ev)) == (ssize_t)sizeof ev) {
+                if (ev.type == EV_SYN) {
+                    /* The kernel dropped events because we were too slow
+                     * painting. Anything we think is held down may not
+                     * be; the safe assumption is nothing is. */
+                    if (ev.code == SYN_DROPPED) c.mouse_down = 0;
+                    continue;
+                }
+                if (ev.type == EV_REL) {
+                    if (ev.code == REL_X) c.mouse_x += ev.value;
+                    if (ev.code == REL_Y) c.mouse_y += ev.value;
+                    clamp_pointer(&c, disp->width, disp->height);
+                    dirty = 1;
+                } else if (ev.type == EV_ABS && (in.kind[i] & DEV_ABS)) {
+                    /* +1 because the range is inclusive: a tap on the
+                     * rightmost column reports `maximum`, and dividing
+                     * by (hi - lo) maps that to exactly `width` -- one
+                     * pixel off the screen, missing every target. */
+                    if (ev.code == ABS_X || ev.code == ABS_MT_POSITION_X) {
+                        int lo = in.ax_lo[i], hi = in.ax_hi[i];
+                        if (hi > lo)
+                            c.mouse_x = (int)((int64_t)(ev.value - lo) * disp->width
+                                              / (hi - lo + 1));
+                    } else if (ev.code == ABS_Y || ev.code == ABS_MT_POSITION_Y) {
+                        int lo = in.ay_lo[i], hi = in.ay_hi[i];
+                        if (hi > lo)
+                            c.mouse_y = (int)((int64_t)(ev.value - lo) * disp->height
+                                              / (hi - lo + 1));
+                    }
+                    clamp_pointer(&c, disp->width, disp->height);
+                    dirty = 1;
+                } else if (ev.type == EV_KEY) {
+                    /* BTN_TOUCH is a click only where the user is
+                     * touching the thing they are pointing at. On a
+                     * touchpad it fires on every finger-down and lift,
+                     * so honouring it there means the pointer cannot be
+                     * moved without clicking something. */
+                    int is_btn = (ev.code == BTN_LEFT) ||
+                                 (ev.code == BTN_TOUCH && (in.kind[i] & DEV_DIRECT));
+                    if (is_btn) {
+                        c.mouse_down = (ev.value != 0);
+                        /* Dispatch on PRESS. Release would let a user
+                         * abort a mis-click by sliding off the target,
+                         * which is nicer -- but every archetype that
+                         * supports dragging starts the drag in click()
+                         * and ends it in motion() when the button comes
+                         * up, so a release-dispatched click sets and
+                         * cancels the drag in the same instant. Press
+                         * is also what every other desktop does. */
+                        if (ev.value && L->click) L->click(&c, c.mouse_x, c.mouse_y);
+                        if (!ev.value && L->motion) L->motion(&c, c.mouse_x, c.mouse_y);
+                        dirty = 1;
+                    } else if (ev.value && (in.kind[i] & DEV_KBD)) {
+                        if (ev.code == KEY_ESC && c.kiosk) continue;
+                        if (L->key) L->key(&c, ev.code);
+                        dirty = 1;
+                    }
+                }
+            }
+            /* A device that vanished between poll() and read() reports
+             * ENODEV rather than a POLLHUP we have already consumed. */
+            if (got < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
+                fprintf(stderr, "aurshell: input device %s failed (%s)\n",
+                        in.name[i], strerror(errno));
+                input_drop(&in, i);
+                continue;
+            }
+            if (L->motion) L->motion(&c, c.mouse_x, c.mouse_y);
+        }
     }
 
-    for (int i = 0; i < in.n; i++) close(in.fd[i]);
+    for (int i = 0; i < in.n; i++) { ioctl(in.fd[i], EVIOCGRAB, 0); close(in.fd[i]); }
+    if (in.notify_fd >= 0) close(in.notify_fd);
+    console_give_back(&g_con);
     if (L->fini) L->fini(&c);
     free_fonts(&f);
     surface_free(wall);

@@ -36,7 +36,6 @@ enum { SLOT_NONE = -1, SLOT_BAR = -2, SLOT_LAUNCH = -3,
 enum { WP_FRAME = 0, WP_TITLE, WP_BODY, WP_MIN, WP_MAX, WP_CLOSE };
 
 typedef struct {
-    int   scr_w, scr_h;     /* last painted size; hit-tests use it      */
 
     int   menu_open;
     tween menu;             /* 0 shut … 1 fully open                    */
@@ -396,7 +395,7 @@ static void toggle_max(shell_ctx *c, int i)
     if (i < 0 || i >= c->n_wins) return;
     if (p->maxed[i]) { c->wins[i].geom = p->saved[i]; p->maxed[i] = 0; }
     else {
-        p->saved[i] = win_part(c, p->scr_w, p->scr_h, i, WP_FRAME);
+        p->saved[i] = win_part(c, c->screen_w, c->screen_h, i, WP_FRAME);
         p->maxed[i] = 1;
     }
     raise_win(c, i);
@@ -450,7 +449,6 @@ static void l_init(shell_ctx *c)
 {
     static tb_priv priv;
     memset(&priv, 0, sizeof priv);
-    priv.scr_w = 1600; priv.scr_h = 900;
     priv.hover_slot = SLOT_NONE;
     priv.hover_row = priv.hover_win = -1;
     priv.hover_btn = -1;
@@ -566,7 +564,7 @@ static void paint_window(shell_ctx *c, surface *s, shell_fonts *f, int i,
     shell_icon_draw(s, win_icon(c, i), tx + 10.f, (float)(a.y + th / 2), 20.f,
                     tint, alpha * (focused ? 1.f : 0.72f));
     tx += 30.f;
-    rect cb = win_part(c, p->scr_w, p->scr_h, i, WP_MIN);
+    rect cb = win_part(c, c->screen_w, c->screen_h, i, WP_MIN);
     float room = (float)cb.x - tx - 12.f;
     char buf[80];
     const char *name = fit_text(f->mid, c->wins[i].title, buf, sizeof buf, room);
@@ -585,12 +583,12 @@ static void paint_window(shell_ctx *c, surface *s, shell_fonts *f, int i,
     }
 
     for (int part = WP_MIN; part <= WP_CLOSE; part++) {
-        rect b = win_part(c, p->scr_w, p->scr_h, i, part);
+        rect b = win_part(c, c->screen_w, c->screen_h, i, part);
         paint_ctrl(c, s, b, part, p->hover_win == i && p->hover_btn == part,
                    alpha * (focused ? 1.f : 0.7f));
     }
 
-    rect body = win_part(c, p->scr_w, p->scr_h, i, WP_BODY);
+    rect body = win_part(c, c->screen_w, c->screen_h, i, WP_BODY);
     if (c->wins[i].content) {
         draw_scaled_rounded(s, c->wins[i].content, body, bc, alpha);
         return;
@@ -824,7 +822,7 @@ static void paint_menu(shell_ctx *c, surface *s, shell_fonts *f)
 static void l_paint(shell_ctx *c, surface *s, shell_fonts *f, const surface *wall)
 {
     tb_priv *p = P(c);
-    p->scr_w = s->w; p->scr_h = s->h;
+    c->screen_w = s->w; c->screen_h = s->h;
     stack_sync(c);
 
     if (wall) {
@@ -873,9 +871,9 @@ static void l_paint(shell_ctx *c, surface *s, shell_fonts *f, const surface *wal
 static int menu_hit(shell_ctx *c, int x, int y)
 {
     int cols, rows, shown;
-    menu_shape(c, P(c)->scr_w, P(c)->scr_h, &cols, &rows, &shown);
+    menu_shape(c, c->screen_w, c->screen_h, &cols, &rows, &shown);
     for (int i = 0; i < shown; i++)
-        if (pt_in(menu_part(c, P(c)->scr_w, P(c)->scr_h, i), x, y)) return i;
+        if (pt_in(menu_part(c, c->screen_w, c->screen_h, i), x, y)) return i;
     return -1;
 }
 
@@ -891,7 +889,7 @@ static void set_menu(shell_ctx *c, int open)
 static int l_click(shell_ctx *c, int x, int y)
 {
     tb_priv *p = P(c);
-    int W = p->scr_w, H = p->scr_h;
+    int W = c->screen_w, H = c->screen_h;
     stack_sync(c);
 
     if (p->menu_open) {
@@ -945,7 +943,7 @@ static int l_click(shell_ctx *c, int x, int y)
 static void l_motion(shell_ctx *c, int x, int y)
 {
     tb_priv *p = P(c);
-    int W = p->scr_w, H = p->scr_h;
+    int W = c->screen_w, H = c->screen_h;
     stack_sync(c);
 
     /* There is no release callback in the contract, so a drag ends the
@@ -1001,7 +999,7 @@ static void l_key(shell_ctx *c, int k)
 {
     tb_priv *p = P(c);
     int cols, rows, shown;
-    menu_shape(c, p->scr_w, p->scr_h, &cols, &rows, &shown);
+    menu_shape(c, c->screen_w, c->screen_h, &cols, &rows, &shown);
 
     switch (k) {
     case 125:                                    /* KEY_LEFTMETA: the menu key */

@@ -48,4 +48,10 @@ surface     *kms_back_surface(kms_display *d);
  * caller cannot paint into a buffer still being scanned out. */
 int          kms_flip(kms_display *d);
 
+/* Give the display up to another virtual terminal, and take it back.
+ * Only one process is DRM master; a VT switch that skips these leaves
+ * the shell painting into a buffer nothing scans out. */
+int          kms_drop_master(int fd);
+int          kms_set_master(int fd);
+
 #endif

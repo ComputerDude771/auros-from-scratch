@@ -198,6 +198,37 @@ kms_display *kms_open(const char *card)
     return NULL;
 }
 
+/* ── VT handoff ──────────────────────────────────────────────────────
+ *
+ * Only one process may be DRM master at a time. When the user switches
+ * to another virtual terminal, whatever runs there needs the display,
+ * and we have to give it up explicitly -- the kernel will not take it
+ * from us, it will simply fail our ioctls from then on. Handing it back
+ * on the way in is the other half; without it, switching away and back
+ * leaves a desktop painting into a buffer nothing scans out.
+ *
+ * Raw ioctl numbers rather than libdrm, consistent with the rest of
+ * this file: DRM_IOCTL_SET_MASTER and DRM_IOCTL_DROP_MASTER take no
+ * argument, so the wrappers buy nothing. */
+#ifndef DRM_IOCTL_SET_MASTER
+#define DRM_IOCTL_SET_MASTER  _IO('d', 0x1e)
+#endif
+#ifndef DRM_IOCTL_DROP_MASTER
+#define DRM_IOCTL_DROP_MASTER _IO('d', 0x1f)
+#endif
+
+int kms_drop_master(int fd)
+{
+    if (fd < 0) return -1;
+    return ioctl(fd, DRM_IOCTL_DROP_MASTER, 0) == 0 ? 0 : -1;
+}
+
+int kms_set_master(int fd)
+{
+    if (fd < 0) return -1;
+    return ioctl(fd, DRM_IOCTL_SET_MASTER, 0) == 0 ? 0 : -1;
+}
+
 void kms_close(kms_display *d)
 {
     if (!d) return;

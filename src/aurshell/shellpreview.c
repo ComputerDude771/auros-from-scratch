@@ -71,6 +71,7 @@ int main(int argc, char **argv)
     seed(&c, nopen);
 
     const shell_layout *L = shell_layout_by_id(c.layout_id);
+    c.screen_w = W; c.screen_h = H;   /* before init: hit-testing needs it */
     if (L->init) L->init(&c);
 
     const char *fs = theme_str(&t, "font_sans", "");

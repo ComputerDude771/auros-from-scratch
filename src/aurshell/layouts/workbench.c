@@ -36,7 +36,6 @@ typedef struct {
     /* The screen the last paint used. click() and motion() are handed
      * coordinates but not a size, so geometry is answered against the
      * frame the user is actually looking at rather than a guess. */
-    int   sw, sh;
 
     int   hover_ws;          /* workspace chip under the pointer, -1   */
     int   hover_hint;        /* pointer is over the hint strip         */
@@ -251,7 +250,6 @@ static void l_init(shell_ctx *c)
     static wb_priv priv;        /* one layout is live at a time, as in rail.c */
     memset(&priv, 0, sizeof priv);
     priv.hover_ws = -1;
-    priv.sw = 1600; priv.sh = 900;
     tween_set(&priv.hint, 1.f); /* hints start shown; they exist for day one */
     c->priv = &priv;
 
@@ -575,8 +573,7 @@ static void paint_hints(shell_ctx *c, surface *s, shell_fonts *f)
 
 static void l_paint(shell_ctx *c, surface *s, shell_fonts *f, const surface *wall)
 {
-    wb_priv *p = P(c);
-    p->sw = s->w; p->sh = s->h;
+    c->screen_w = s->w; c->screen_h = s->h;
 
     if (wall) {
         for (int y = 0; y < s->h && y < wall->h; y++)
@@ -634,7 +631,7 @@ static int l_click(shell_ctx *c, int x, int y)
     }
 
     rect r[SHELL_MAX_WINS]; int idx[SHELL_MAX_WINS];
-    int n = wb_panes(c, p->sw, p->sh, r, idx);
+    int n = wb_panes(c, c->screen_w, c->screen_h, r, idx);
     for (int k = 0; k < n; k++)
         if (x >= r[k].x && x < r[k].x + r[k].w && y >= r[k].y && y < r[k].y + r[k].h) {
             c->focus = idx[k];
@@ -666,7 +663,7 @@ static void l_motion(shell_ctx *c, int x, int y)
         }
     }
     rect r[SHELL_MAX_WINS]; int idx[SHELL_MAX_WINS];
-    int n = wb_panes(c, p->sw, p->sh, r, idx);
+    int n = wb_panes(c, c->screen_w, c->screen_h, r, idx);
     for (int k = 0; k < n; k++)
         if (x >= r[k].x && x < r[k].x + r[k].w && y >= r[k].y && y < r[k].y + r[k].h) {
             c->hover = idx[k];
@@ -680,9 +677,8 @@ static void l_motion(shell_ctx *c, int x, int y)
  * edge span with this one, then the nearest. */
 static int wb_neighbour(shell_ctx *c, int dx, int dy)
 {
-    wb_priv *p = P(c);
     rect r[SHELL_MAX_WINS]; int idx[SHELL_MAX_WINS];
-    int n = wb_panes(c, p->sw, p->sh, r, idx);
+    int n = wb_panes(c, c->screen_w, c->screen_h, r, idx);
     int me = wb_slot_of(n, idx, c->focus);
     if (me < 0) return -1;
 
@@ -785,7 +781,7 @@ static void l_key(shell_ctx *c, int k)
 
     case 15: {                                    /* KEY_TAB  cycle     */
         rect r[SHELL_MAX_WINS]; int idx[SHELL_MAX_WINS];
-        int n = wb_panes(c, p->sw, p->sh, r, idx);
+        int n = wb_panes(c, c->screen_w, c->screen_h, r, idx);
         if (n > 0) {
             int slot = wb_slot_of(n, idx, c->focus);
             c->focus = idx[(slot < 0 ? 0 : (slot + 1) % n)];
@@ -794,7 +790,7 @@ static void l_key(shell_ctx *c, int k)
 
     case 28: {                                    /* KEY_ENTER  promote */
         rect r[SHELL_MAX_WINS]; int idx[SHELL_MAX_WINS];
-        int n = wb_panes(c, p->sw, p->sh, r, idx);
+        int n = wb_panes(c, c->screen_w, c->screen_h, r, idx);
         if (n > 1 && c->focus != idx[0]) wb_swap(c, c->focus, idx[0]);
         return; }
 

@@ -264,7 +264,7 @@ static int l_click(shell_ctx *c, int x, int y)
         for (int i = 0; i < n; i++) {
             int cur = (i == (int)(P(c)->slide.value + 0.5f));
             if ((pass == 0) != cur) continue;
-            rect a = card_rect(c, 1600, 900, i);   /* size supplied by caller in real use */
+            rect a = card_rect(c, c->screen_w, c->screen_h, i);
             if (x < a.x || x >= a.x + a.w || y < a.y || y >= a.y + a.h) continue;
             if (!cur) { focus_card(c, i, 0.36f); return 1; }
             return 1;
@@ -278,7 +278,7 @@ static void l_motion(shell_ctx *c, int x, int y)
     rail_priv *p = P(c);
     p->hover_tile = -1;
     if (c->focus != -1) return;
-    rect a = card_rect(c, 1600, 900, 0);
+    rect a = card_rect(c, c->screen_w, c->screen_h, 0);
     for (int i = 0; i < HOME_TILES && i < c->n_apps; i++) {
         rect t = tile_rect(c, a, i);
         if (x >= t.x && x < t.x + t.w && y >= t.y && y < t.y + t.h) { p->hover_tile = i; return; }

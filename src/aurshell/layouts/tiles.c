@@ -34,7 +34,6 @@ typedef struct {
     int   page;      /* which page of buttons                               */
     int   hot;       /* app index under the pointer / key cursor, -1 none   */
     int   home_hot;  /* pointer is over the Home control                    */
-    int   sw, sh;    /* the size we last PAINTED — see l_click              */
 } tiles_priv;
 
 static tiles_priv *P(shell_ctx *c) { return (tiles_priv *)c->priv; }
@@ -599,7 +598,7 @@ static void l_paint(shell_ctx *c, surface *s, shell_fonts *f, const surface *wal
      * but no surface, and guessing a size there would put every hit
      * rect in the wrong place on any display that is not the one the
      * guess was written for. */
-    p->sw = w; p->sh = h;
+    c->screen_w = w; c->screen_h = h;
 
     if (wall) {
         for (int y = 0; y < s->h && y < wall->h; y++)
@@ -653,7 +652,7 @@ static int inside(rect r, int x, int y)
 static int l_click(shell_ctx *c, int x, int y)
 {
     tiles_priv *p = P(c);
-    int w = p->sw, h = p->sh;
+    int w = c->screen_w, h = c->screen_h;
     float t = clampf(p->open.value, 0.f, 1.f);
 
     /* Home is tested first and wins every ambiguity, by construction. */
@@ -687,7 +686,7 @@ static int l_click(shell_ctx *c, int x, int y)
 static void l_motion(shell_ctx *c, int x, int y)
 {
     tiles_priv *p = P(c);
-    int w = p->sw, h = p->sh;
+    int w = c->screen_w, h = c->screen_h;
     c->mouse_x = x; c->mouse_y = y;
 
     p->home_hot = inside(home_btn_rect(c, w, h), x, y);
@@ -707,7 +706,7 @@ static void l_motion(shell_ctx *c, int x, int y)
 static void move_sel(shell_ctx *c, int dcol, int drow)
 {
     tiles_priv *p = P(c);
-    grid_m g = grid_metrics(c, p->sw, p->sh);
+    grid_m g = grid_metrics(c, c->screen_w, c->screen_h);
     if (c->n_apps <= 0) return;
 
     if (p->hot < 0) { p->hot = p->page * g.per; if (p->hot >= c->n_apps) p->hot = c->n_apps - 1; return; }
@@ -736,7 +735,7 @@ static void l_key(shell_ctx *c, int k)
         case 1:                                    /* KEY_ESC   */
         case 102: go_home(c); break;               /* KEY_HOME  */
         case 28:                                   /* KEY_ENTER */
-            if (t <= 0.001f && p->hot >= 0) open_app(c, p->hot, p->sw, p->sh);
+            if (t <= 0.001f && p->hot >= 0) open_app(c, p->hot, c->screen_w, c->screen_h);
             break;
         /* Arrows never switch between open things: that would be a second
          * way to move around, and the tradeoff this archetype signed up
@@ -766,7 +765,6 @@ static void l_init(shell_ctx *c)
     memset(&priv, 0, sizeof priv);
     priv.hot = -1;
     priv.win = -1;
-    priv.sw = 1600; priv.sh = 900;   /* replaced by the first paint */
     tween_set(&priv.open, 0.f);
     c->priv = &priv;
 
@@ -777,7 +775,7 @@ static void l_init(shell_ctx *c)
     if (c->focus >= 0 && c->focus < c->n_wins) {
         priv.win = c->focus;
         if (c->wins[priv.win].app >= 0)
-            priv.page = page_of_app(c, c->wins[priv.win].app, priv.sw, priv.sh);
+            priv.page = page_of_app(c, c->wins[priv.win].app, c->screen_w, c->screen_h);
         tween_set(&priv.open, 1.f);
     } else {
         c->focus = -1;

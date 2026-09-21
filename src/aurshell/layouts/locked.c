@@ -53,7 +53,6 @@ enum { SW_BAND = -1, SW_FINISH = -2 };   /* non-app items of the strip */
 typedef struct {
     int   cur;          /* index into the ALLOWED list, not into c->apps */
     int   hover;        /* allowed index, SW_FINISH, or -1              */
-    int   sw, sh;       /* size of the last frame painted; see l_click  */
     int   px, py;       /* last pointer position, to tell moves from jitter */
     float idle;         /* seconds since a human last did anything      */
     tween swap;         /* 0->1 as a newly chosen app takes the stage   */
@@ -253,7 +252,6 @@ static void l_init(shell_ctx *c)
     static locked_priv priv;
     memset(&priv, 0, sizeof priv);
     priv.hover = -1;
-    priv.sw = 1600; priv.sh = 900;         /* replaced by the first paint */
     priv.px = priv.py = -9999;             /* no pointer has been seen yet */
     tween_set(&priv.swap, 1.f);
     tween_set(&priv.attract, 0.f);
@@ -629,7 +627,7 @@ static void l_paint(shell_ctx *c, surface *s, shell_fonts *f, const surface *wal
     locked_priv *p = P(c);
     int app[SHELL_MAX_APPS];
     int n = allowed_list(c, app);
-    p->sw = s->w; p->sh = s->h;
+    c->screen_w = s->w; c->screen_h = s->h;
     if (p->cur >= n) p->cur = n ? n - 1 : 0;
 
     if (n <= 0) {                     /* an empty allowed set is a broken policy */
@@ -734,7 +732,7 @@ static int l_click(shell_ctx *c, int x, int y)
     /* Hit-test against the frame the user actually looked at. The size
      * is whatever was last painted, so a resolution change between
      * paint and click can never leave live buttons behind. */
-    int w = p->sw, h = p->sh;
+    int w = c->screen_w, h = c->screen_h;
     for (int i = 0; i < n; i++) {
         rect b = switcher_rect(c, w, h, n, i);
         if (b.w && x >= b.x && x < b.x + b.w && y >= b.y && y < b.y + b.h) {
@@ -780,11 +778,11 @@ static void l_motion(shell_ctx *c, int x, int y)
     if (p->attract.to > 0.5f) { begin_session(c); return; }
 
     for (int i = 0; i < n; i++) {
-        rect b = switcher_rect(c, p->sw, p->sh, n, i);
+        rect b = switcher_rect(c, c->screen_w, c->screen_h, n, i);
         if (b.w && x >= b.x && x < b.x + b.w && y >= b.y && y < b.y + b.h) { p->hover = i; break; }
     }
     if (p->hover < 0) {
-        rect fb = switcher_rect(c, p->sw, p->sh, n, SW_FINISH);
+        rect fb = switcher_rect(c, c->screen_w, c->screen_h, n, SW_FINISH);
         if (fb.w && x >= fb.x && x < fb.x + fb.w && y >= fb.y && y < fb.y + fb.h)
             p->hover = SW_FINISH;
     }

@@ -50,7 +50,6 @@ typedef struct {
     int   find_open, find_sel;
     char  q[48];
     int   qn;
-    int   last_w, last_h;   /* the size actually painted; see below   */
 } dock_priv;
 
 static dock_priv *P(shell_ctx *c) { return (dock_priv *)c->priv; }
@@ -303,7 +302,6 @@ static void l_init(shell_ctx *c)
     static dock_priv priv;
     memset(&priv, 0, sizeof priv);
     priv.hover = -1; priv.drag = -1;
-    priv.last_w = 1600; priv.last_h = 900;
     tween_set(&priv.mag, 0.f);
     tween_set(&priv.veil, 0.f);
     c->priv = &priv;
@@ -586,7 +584,7 @@ static void paint_find(shell_ctx *c, surface *s, shell_fonts *f)
 static void l_paint(shell_ctx *c, surface *s, shell_fonts *f, const surface *wall)
 {
     dock_priv *p = P(c);
-    p->last_w = s->w; p->last_h = s->h;
+    c->screen_w = s->w; c->screen_h = s->h;
 
     if (wall) {
         for (int y = 0; y < s->h && y < wall->h; y++)
@@ -660,7 +658,7 @@ static void raise_app(shell_ctx *c, int app)
 static int l_click(shell_ctx *c, int x, int y)
 {
     dock_priv *p = P(c);
-    int sw = p->last_w, sh = p->last_h;
+    int sw = c->screen_w, sh = c->screen_h;
 
     /* The finder sits on top, so it is asked first. */
     if (p->find_open) {
@@ -723,7 +721,7 @@ static int l_click(shell_ctx *c, int x, int y)
 static void l_motion(shell_ctx *c, int x, int y)
 {
     dock_priv *p = P(c);
-    int sw = p->last_w, sh = p->last_h;
+    int sw = c->screen_w, sh = c->screen_h;
     c->mouse_x = x; c->mouse_y = y;
 
     if (p->drag >= 0) {
