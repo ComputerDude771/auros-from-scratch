@@ -1,0 +1,34 @@
+# AurOS Shell Archetype — Taskbar
+#
+# The familiar one. Deliberately conservative: its whole value is that a
+# migrant recognises it on sight and has to learn nothing. Where it and
+# the novel archetypes disagree, this one copies what people already do.
+shell_id="taskbar"
+shell_name="The familiar one"
+shell_tagline="A bar along the bottom with everything you have open."
+
+shell_plain="A bar runs along the bottom of the screen. Every window you
+open gets a button on it, so you click a button to come back to
+something. A button at the left opens a list of all your programs.
+Windows can overlap, be moved and be resized."
+
+shell_best_for="Someone who has used a computer for years and does not want to learn anything new."
+shell_tradeoff="Windows can end up on top of each other and get lost behind one another — the oldest complaint in computing."
+shell_familiar="Every office PC of the last thirty years."
+
+layout="taskbar"
+window_mode="overlapping"
+switcher="taskbar"
+home="none"
+launcher="menu"
+minimise="yes"
+overlap="yes"
+workspaces="0"
+
+target_size="normal"
+pointer_first="yes"
+keyboard_optional="yes"
+
+status_strip="full"        # full = it launches and switches; it IS the bar
+show_clock="yes"
+show_positions="no"

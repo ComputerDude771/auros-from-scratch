@@ -1,0 +1,46 @@
+# ═══════════════════════════════════════════════════════════════════
+#  AurOS Shell Archetype — Rail
+#
+#  A shell archetype is the ANSWER TO ONE QUESTION: when you want to
+#  reach a different thing, what do you do?
+#
+#  Everything else about a build -- colours, wallpaper, fonts, corner
+#  radius -- is the theme. Everything about what the user is ALLOWED to
+#  do is the policy. This file is only the interaction model.
+#
+#  Picking an archetype + a theme + a policy should be enough to build a
+#  whole distribution without writing code.
+# ═══════════════════════════════════════════════════════════════════
+
+shell_id="rail"
+shell_name="Everything in a row"
+shell_tagline="Nothing is ever hidden. Slide left and right."
+
+# One sentence for a non-technical person choosing at install time.
+shell_plain="Everything you have open sits side by side in a row. What is
+next to you is always visible at the edges of the screen — click it to go
+there. The first card is always Home, so you can never get lost."
+
+shell_best_for="Someone who loses windows, or has never been comfortable with a computer."
+shell_tradeoff="You see fewer things at once than a normal desktop, and you cannot put two windows side by side."
+shell_familiar="Flipping through photos on a phone."
+
+# ── Interaction model ──────────────────────────────────────────────
+layout="rail"              # the renderer this archetype selects
+window_mode="single"       # single | overlapping | tiled | fullscreen
+switcher="peek"            # peek | taskbar | dock | grid | keyboard | none
+home="card"                # card | grid | none
+launcher="home_tiles"      # home_tiles | menu | search | dock | none
+minimise="no"              # can a thing be hidden from view at all?
+overlap="no"
+workspaces="0"             # 0 = none
+
+# ── Density and aim ────────────────────────────────────────────────
+target_size="large"        # large | normal | dense
+pointer_first="yes"        # must be fully usable with only a mouse
+keyboard_optional="yes"    # shortcuts exist but are never required
+
+# ── Chrome ─────────────────────────────────────────────────────────
+status_strip="minimal"     # minimal | full | none — minimal cannot launch or switch
+show_clock="yes"
+show_positions="yes"       # the dots

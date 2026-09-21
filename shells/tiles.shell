@@ -1,0 +1,30 @@
+# AurOS Shell Archetype — Tiles
+shell_id="tiles"
+shell_name="One thing at a time"
+shell_tagline="A page of big buttons. Press one, it fills the screen."
+
+shell_plain="You start on a page of large labelled buttons. Press one and
+it takes over the whole screen. A single Home button brings the page
+back. Only one thing is ever on screen, so there is nothing to arrange
+and nothing to lose."
+
+shell_best_for="Anyone who already uses a phone or tablet and wants the computer to behave the same way."
+shell_tradeoff="You cannot see two things at once, and switching means going via Home."
+shell_familiar="A phone or tablet home screen."
+
+layout="tiles"
+window_mode="fullscreen"
+switcher="grid"
+home="grid"
+launcher="home_grid"
+minimise="no"
+overlap="no"
+workspaces="0"
+
+target_size="large"
+pointer_first="yes"
+keyboard_optional="yes"
+
+status_strip="minimal"
+show_clock="yes"
+show_positions="no"

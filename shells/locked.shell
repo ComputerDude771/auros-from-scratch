@@ -1,0 +1,40 @@
+# AurOS Shell Archetype — Locked
+#
+# Not a stripped-down desktop: there is no desktop. The machine does the
+# jobs an administrator chose and nothing else. This is the archetype
+# schools, libraries, clinics and front-desk machines actually want, and
+# it is also the right answer for a relative who only needs three things.
+shell_id="locked"
+shell_name="Just these apps"
+shell_tagline="Only what the owner chose. Nothing else exists."
+
+shell_plain="The computer does the handful of jobs it was set up for and
+nothing else. There is no desktop, no settings, no way to install
+anything and no way to reach a file system. If only one app is allowed,
+it simply starts and stays."
+
+shell_best_for="Schools, libraries, reception desks, or a relative who only needs a couple of things and must not be able to break them."
+shell_tradeoff="The person using it cannot change anything at all. That is the entire point, and it will frustrate anyone who wants more."
+shell_familiar="A supermarket self-checkout or a library catalogue terminal."
+
+layout="locked"
+window_mode="fullscreen"
+switcher="none"            # with one app there is nothing to switch to
+home="none"
+launcher="none"
+minimise="no"
+overlap="no"
+workspaces="0"
+
+target_size="large"
+pointer_first="yes"
+keyboard_optional="yes"
+
+status_strip="none"
+show_clock="yes"
+show_positions="no"
+
+# Locked-specific. The app list comes from the profile's allowed_apps.
+locked_autostart="first"   # first | none — start the first allowed app at boot
+locked_show_switcher="auto" # auto = a strip of buttons only if >1 app allowed
+locked_exit_combo="none"    # none | admin — whether any key escape exists
