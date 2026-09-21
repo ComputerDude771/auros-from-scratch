@@ -603,6 +603,34 @@ case "${1:-}" in
         load_profile "${2:?usage: forge build PROFILE}"
         say "forging '$profile_name' ($profile_id)"
         for s in 1 2 3 4 5 6 7; do run_stage $s; done
+
+        # The one check that runs at the end, because it is the one
+        # thing a person would notice within a minute and we would not.
+        #
+        # stage_browser() has printed "Do not ship this image" since the
+        # day it was written, set MISSING_BROWSER=1, and then exited 0 --
+        # so the build said "is built" in green underneath the warning
+        # and nothing stopped. A warning that does not fail the build is
+        # a warning nobody reads twice.
+        #
+        # A desktop with no browser is not a lesser AurOS. It is the one
+        # application this product exists to provide, missing, on a
+        # machine someone just gave us their whole computer for.
+        # Both signals: the variable, and the line written into the
+        # image. The variable is what stage_browser sets; the file is
+        # what survives if a stage is ever wrapped in a subshell, which
+        # is exactly the sort of refactor that would silently switch
+        # this check off.
+        if [ "${browser_source:-none}" != "none" ] && \
+           { [ "${MISSING_BROWSER:-0}" = 1 ] ||
+             grep -q '^browser=MISSING$' "$RFS/etc/auros/build-warnings" 2>/dev/null; }; then
+            printf '\n'
+            die "this image has NO BROWSER and will not be built.
+     $profile_id asked for '$browser' from '$browser_source'; neither it
+     nor the fallback could be installed. Set browser_source=\"archive\"
+     to take one from Ubuntu's own archive, or browser_source=\"none\"
+     if you genuinely want a machine that cannot open a web page."
+        fi
         printf '\n%s::%s %s is built.\n' "$C_OK" "$C_RST" "$brand_name $os_version" ;;
     stage)
         load_profile "${2:?usage: forge stage PROFILE N}"
