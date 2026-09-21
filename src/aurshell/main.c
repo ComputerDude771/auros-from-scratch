@@ -1025,6 +1025,9 @@ int main(int argc, char **argv)
      * resolves simply gives focus to nobody. */
     uint32_t panel_prev_focus = 0;
     int      panel_open_last  = 0;
+    /* One bit per evdev keycode: the keys the shell itself swallowed on
+     * the way down, so their release is swallowed too. KEY_MAX is 767. */
+    uint32_t media_held[(KEY_MAX + 32) / 32] = {0};
 
     while (!want_quit) {
         if (want_reload || c.want_reload) {
@@ -1422,6 +1425,14 @@ int main(int argc, char **argv)
          * until an event arrives, and the clock is handled above. */
         struct pollfd pfd[MAX_INPUT_DEV + 4];
         int np = 0;
+        /* How many device slots pfd[] describes. The walk below indexes
+         * pfd[] BY DEVICE INDEX, so it must not run past this even if
+         * in.n changes -- which it did: a hotplug was handled before
+         * the walk, so in.n grew and the new device's slot was read
+         * from whatever came next in pfd[], the inotify or Wayland or
+         * nmcli fd. A device that had just been plugged in could be
+         * dropped on the spot because a different fd had POLLHUP. */
+        int n_polled = in.n;
         for (int i = 0; i < in.n; i++) { pfd[np].fd = in.fd[i]; pfd[np].events = POLLIN; np++; }
         int noti = -1;
         if (in.notify_fd >= 0) { noti = np; pfd[np].fd = in.notify_fd;
@@ -1454,20 +1465,12 @@ int main(int argc, char **argv)
         if (btslot >= 0 && (pfd[btslot].revents & (POLLIN | POLLHUP | POLLERR)))
             if (bt_pump(&c)) dirty = 1;
 
-        if (noti >= 0 && (pfd[noti].revents & POLLIN)) {
-            char buf[4096];
-            while (read(in.notify_fd, buf, sizeof buf) > 0) { }
-            int added = input_scan(&in, c.kiosk);
-            if (added) {
-                fprintf(stderr, "aurshell: %d input device%s appeared\n",
-                        added, added == 1 ? "" : "s");
-                dirty = 1;
-            }
-        }
-
         /* Walk backwards: dropping a device compacts the array, so a
-         * forward walk would skip the entry moved into the hole. */
-        for (int i = in.n - 1; i >= 0; i--) {
+         * forward walk would skip the entry moved into the hole. Bounded
+         * by n_polled, not by in.n, for the reason given where it is
+         * set -- and the hotplug scan that GROWS in.n happens after
+         * this loop, not before it. */
+        for (int i = n_polled - 1; i >= 0; i--) {
             short re = pfd[i].revents;
             /* POLLERR/POLLHUP arrive whether or not we asked for them,
              * and the kernel keeps reporting them forever once a device
@@ -1683,9 +1686,23 @@ int main(int argc, char **argv)
                          * A person turning the sound down while a
                          * video is playing is not talking to the
                          * video. */
-                        if (ev.value && media_key(&c, ev.code)) {
+                        /* A key taken on the way DOWN is taken on the
+                         * way UP as well. Without the second half, the
+                         * release of Volume Down was delivered to the
+                         * focused application -- which for a toolkit
+                         * that tracks key state is a key it never saw
+                         * pressed, and for one that acts on release is
+                         * a keystroke it was never meant to get. */
+                        if (ev.value) {
+                            if (media_key(&c, ev.code)) {
+                                media_held[ev.code >> 5] |= 1u << (ev.code & 31);
+                                c.key_text[0] = 0;
+                                dirty = 1;
+                                continue;
+                            }
+                        } else if (media_held[ev.code >> 5] & (1u << (ev.code & 31))) {
+                            media_held[ev.code >> 5] &= ~(1u << (ev.code & 31));
                             c.key_text[0] = 0;
-                            dirty = 1;
                             continue;
                         }
 
@@ -1757,6 +1774,19 @@ int main(int argc, char **argv)
             bt_motion(&c, c.mouse_x, c.mouse_y);
             session_motion(&c, c.mouse_x, c.mouse_y);
             if (L->motion) L->motion(&c, c.mouse_x, c.mouse_y);
+        }
+
+        /* A device appeared. LAST, so that in.n grows only after every
+         * pfd[] slot the walk above needs has been read. */
+        if (noti >= 0 && (pfd[noti].revents & POLLIN)) {
+            char buf[4096];
+            while (read(in.notify_fd, buf, sizeof buf) > 0) { }
+            int added = input_scan(&in, c.kiosk);
+            if (added) {
+                fprintf(stderr, "aurshell: %d input device%s appeared\n",
+                        added, added == 1 ? "" : "s");
+                dirty = 1;
+            }
         }
     }
 

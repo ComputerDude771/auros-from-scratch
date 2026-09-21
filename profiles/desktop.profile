@@ -86,9 +86,9 @@ packages_hardware="linux-image-generic linux-firmware
                    network-manager wireless-tools wpasupplicant
                    polkitd
                    bluez
-                   cups cups-filters avahi-daemon avahi-utils
+                   cups cups-filters cups-browsed avahi-daemon avahi-utils
                    printer-driver-gutenprint printer-driver-hpcups
-                   system-config-printer-common
+                   cups-pk-helper system-config-printer
                    pciutils usbutils"
 
 # Boot chain. Signed, so Secure Boot does not have to be disabled.
@@ -135,7 +135,28 @@ packages_desktop="xwayland libinput10 libdrm2 libgbm1
                   dbus-user-session dbus-daemon ca-certificates
                   libgl1-mesa-dri libegl-mesa0 libglx-mesa0
                   adwaita-icon-theme hicolor-icon-theme
-                  gsettings-desktop-schemas shared-mime-info xdg-utils"
+                  gsettings-desktop-schemas shared-mime-info xdg-utils
+                  fonts-noto-color-emoji"
+
+# ── Letters this computer can draw ─────────────────────────────────
+#
+# A font is not decoration. A page in a language the machine has no
+# font for is a page of empty boxes, and this product's own README
+# promises that a school can ship it in its own language.
+#
+# fonts-noto-color-emoji is in packages_desktop above and not optional:
+# every web page, every message and half the application menus on the
+# internet now contain emoji, and without it they are boxes.
+#
+# The CJK set is 91 MB, which is a real decision rather than an
+# oversight, so it is a knob. Chinese, Japanese and Korean are a
+# quarter of the people alive; an image built for a school that does
+# not need them can say so, and an image built without thinking about
+# it gets them.
+#   yes    fonts-noto-cjk        91 MB, covers CJK at one weight set
+#   extra  + fonts-noto-cjk-extra  a further 214 MB, all weights
+#   no     boxes, in those languages
+fonts_cjk="yes"
 
 # What the user actually opens.
 #
@@ -175,13 +196,21 @@ browser_fallback="epiphany-browser"
 #              and it is how Google Chrome is actually installed.
 #   ristretto  pictures      atril     PDFs
 #   mousepad   text          xarchiver zip files
+#   mpv        music and video. One binary, every format anyone sends
+#              her, and it plays a CD-quality file on a 2013 laptop
+#              without dropping frames. A computer that cannot play the
+#              song her granddaughter emailed her is not "usable for
+#              anything"; it was not usable for that.
+#   mate-calc  a calculator. 488 KB, and its absence is the kind of
+#              thing nobody lists as a requirement and everybody
+#              notices on the first afternoon.
 #
 # The viewers are the light ones (XFCE and MATE) rather than the GNOME
 # ones: ristretto is 8 packages where eog is 14, and this is a machine
 # from 2013.
 packages_files="thunar thunar-volman gvfs gvfs-backends udisks2
                 gdebi
-                ristretto atril mousepad xarchiver
+                ristretto atril mousepad xarchiver mpv mate-calc
                 shared-mime-info desktop-file-utils xdg-user-dirs"
 
 # The browse-and-install store. Heavier than everything above put
