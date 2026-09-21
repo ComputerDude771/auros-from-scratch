@@ -508,17 +508,25 @@ section > .shell > :last-child { margin-bottom: 0; }
 .numbered { list-style-position: inside; padding-left: 0; }
 .numbered li::marker { color: var(--accent); font-weight: 650; }
 
+/* minmax(0, 1fr), not 1fr.
+   `1fr` is shorthand for `minmax(auto, 1fr)`, and `auto` there means
+   MIN-CONTENT -- so a track containing a code block grows to that
+   block's longest line no matter what, even though the block itself
+   scrolls. On a phone that made organizations.html 451px wide inside a
+   390px window and every paragraph on the page was clipped.
+   minmax(0, 1fr) lets the track shrink and the `pre` scroll as it was
+   always meant to. */
 .grid {
   display: grid;
   gap: var(--gap);
-  grid-template-columns: 1fr;
+  grid-template-columns: minmax(0, 1fr);
 }
 @media (min-width: 640px) {
-  .grid-2 { grid-template-columns: repeat(2, 1fr); }
-  .grid-3 { grid-template-columns: repeat(2, 1fr); }
+  .grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .grid-3 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (min-width: 880px) {
-  .grid-3 { grid-template-columns: repeat(3, 1fr); }
+  .grid-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
 
 /* ── Lists ─────────────────────────────────────────────────────── */
@@ -738,8 +746,15 @@ tbody th { font-weight: 600; color: var(--fg-hi); }
   border: 1px solid var(--overlay);
   overflow: hidden;
   background: var(--wall-c1);
+  /* NO min-height. With `aspect-ratio`, a minimum height dictates a
+     minimum WIDTH -- 260px of height at 16:10 is 416px across, wider
+     than a phone screen. The mock then made the whole document 432px
+     wide and every paragraph on the page was clipped rather than
+     wrapped, which looked like a text bug and was a picture bug.
+     Pre-existing, found by rendering at 390px and then asking the
+     browser which element was overflowing instead of guessing: my
+     first guess was the nav, and the nav was a symptom. */
   aspect-ratio: 16 / 10;
-  min-height: 260px;
   /* No drop shadow. It was the only element on the site that cast one
      -- 60px of blur, 28px down, 50% black -- which is the definition of
      an arbitrary shadow. A hairline border already separates it from
