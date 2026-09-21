@@ -384,10 +384,6 @@ stage_overlay() {
     # without a rebuild is not the product we promised.
     # The Wayland protocol marshalling code is generated, not vendored:
     # it is a mechanical transform of XML the distribution already
-    # ships, and a checked-in copy is a copy that silently goes stale
-    # against the headers it is compiled with.
-    # The Wayland protocol marshalling code is generated, not vendored:
-    # it is a mechanical transform of XML the distribution already
     # ships, and a checked-in copy is a copy that goes stale against the
     # headers it is compiled against without anyone noticing.
     #
@@ -407,16 +403,25 @@ stage_overlay() {
             done" \
         || die "wayland-scanner failed: no compositor could be built"
 
+    # The source list is READ FROM THE DIRECTORY, not typed out here. A
+    # hand-written list is a second place to remember, and it was
+    # already forgotten once: aurshell/foot.c -- the band carrying Help,
+    # the text size and Turn off -- was added to the shell and not to
+    # this line, so the very next image build would have stopped dead at
+    # eight undefined references. Nobody has to be careless for that;
+    # the file and the list are in different directories.
+    #
+    # shellpreview.c is excluded by name because it is a second program
+    # with its own main() that happens to live in the same folder.
+    SHELL_SRC=$(cd "$ROOT/src" && \
+        ls aurshell/*.c aurshell/layouts/*.c | grep -v '/shellpreview\.c$' | tr '\n' ' ')
+    [ -n "${SHELL_SRC:-}" ] || die "no aurshell sources found to build"
+
     if inchroot "cd /usr/src/auros && gcc -O2 -std=gnu11 -o /usr/bin/aurshell \
-            aurshell/main.c aurshell/draw.c aurshell/kms.c \
-            aurshell/shellcommon.c aurshell/anim.c aurshell/pad.c \
-            aurshell/layouts/rail.c aurshell/layouts/tiles.c \
-            aurshell/layouts/locked.c aurshell/layouts/taskbar.c \
-            aurshell/layouts/dock.c aurshell/layouts/workbench.c \
+            $SHELL_SRC \
             aurwl/aurwl.c aurwl/gen/xdg-shell-protocol.c \
             aurwl/gen/xdg-decoration-protocol.c aurwl/gen/viewporter-protocol.c \
             aurwl/gen/xdg-output-protocol.c \
-            aurshell/session.c aurshell/apps.c \
             common/theme.c common/wall.c common/font.c common/png.c \
             -I aurwl/gen -lwayland-server -lxkbcommon -lm"; then
         note "aurshell built ($(du -h "$RFS/usr/bin/aurshell" | cut -f1)), with the compositor"
