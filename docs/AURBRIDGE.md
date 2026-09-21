@@ -158,6 +158,75 @@ performs partition-table rewrites, volume lock/dismount and raw sector
 writes from an elevated user-mode process. That keeps attestation
 signing off the critical path.
 
+## The wizard (`src/aurbridge/wizard.c`)
+
+The GUI is one owner-drawn Win32 window: no common controls, no dialog
+manager, no theme API. A grey system button in the middle of the Nocturne
+palette reads as unfinished software, and a user who does not trust the
+installer is a user who clicks through the disclosure without reading it.
+Shapes are rasterised into a 32-bit DIB with a signed-distance field so
+corners are anti-aliased; text is GDI with `CLEARTYPE_QUALITY` on the same
+surface. DPI awareness is requested through `GetProcAddress`
+(`SetProcessDpiAwarenessContext`, falling back to `SetProcessDPIAware`) so
+the binary still loads on Windows 7.
+
+Pages, in order:
+
+```
+ 1 WELCOME      what AurOS is, what this will do
+ 2 CHECKING     pf_run() on a worker thread; live checklist of its results
+ 3 BLOCKED      one card per PF_BLOCK: title, detail, REMEDY, R-number
+ 4 BACKUP       backup + recovery-USB confirmation, both required
+ 5 CONSENT      the disclosure; typed acknowledgement, not a checkbox
+ 6 CHOOSE       dual-boot (default) or replace Windows (extra gate)
+ 7 PERSONALIZE  language, keyboard, time zone, theme
+ 8 READY        summary, and confirmation of the target drive by name
+ 9 PROGRESS     the phase list above, with per-phase state
+```
+
+**The refusal is a page, not a dialog.** BLOCKED has no continue button, no
+"advanced", no override, and `nav_allowed()` refuses every page from the
+backup gate onward whenever the stored report has a block — so adding one
+by accident would not create a way through. `--navtest` exercises that
+gate directly, including the case where the user has already ticked every
+box and a block appears afterwards.
+
+**Pressing "Start installing" re-runs preflight** and lands on BLOCKED
+instead of the phase list if anything changed while the user was reading.
+
+### What the wizard needs from preflight, and does not have
+
+- **`pf_run()` has no progress callback.** It is one blocking call, so the
+  checklist cannot show a check going from pending to passed as it happens;
+  the wizard runs it on a worker thread and reveals the real results in
+  order once it returns. A `pf_progress_cb` on `pf_run()` would make that
+  honest rather than staged.
+- **`pf_run()` returns early when not elevated**, leaving a report with one
+  block and no machine facts. Consumers must not assume `n_disks > 0` on a
+  blocked report. The wizard handles this; it is worth stating in the API.
+- The wizard **links preflight directly** and reads `pf_is_go()`. The `0`/`1`
+  exit-code contract below is for the CLI and CI, not for the GUI.
+
+### Corrections to this document, found while building it
+
+- **Phase 1 is not where consent is asked.** The user has consented on page
+  5 long before phase 1 runs. Phase 1 *records* that consent and does the
+  BitLocker proof-of-possession. Renaming it in a reader's head as "ask the
+  user" produces a wizard that asks twice.
+- **The recovery-USB gate is a promise, not a check.** Page 4 only gets the
+  user to confirm they have a stick; nothing verifies one exists until
+  phase 2 writes it. R4 requires refusing without one, so phase 2 must
+  refuse — page 4 cannot.
+- **R11's typed confirmation of the target drive is not implemented yet.**
+  Page 8 names the drive (model and size) behind a checkbox. A typed
+  confirmation belongs on a target-selection page, which does not exist
+  because multi-disk selection is not built.
+- **An owner-drawn window has no accessibility tree.** There is no UI
+  Automation, so a screen reader sees nothing. For a consumer installer
+  aimed at people who need help, that is a gap with legal weight in some
+  markets, and it is the price of not using system controls. It needs an
+  IAccessible/UIA provider before any public download.
+
 ## Exit codes
 
 `aurbridge preflight` returns `0` for go, `1` for blocked. The wizard and
@@ -177,7 +246,13 @@ unrunnable.
 ## Still to build
 
 Phases 1-8. Preflight (phase 0) is implemented and builds as a native
-`.exe`; everything downstream of it is specified here and not yet
-written. Nothing destructive ships until the recovery partition and the
-"Put Windows back" path are implemented and tested by deliberately
-failing an install at each phase.
+`.exe`. The wizard is implemented as far as its last screen: every phase
+on the progress page calls a `stub_phase_*` function that logs what the
+real phase would do and returns success. Nothing in `wizard.c` opens a
+handle to a disk, a volume or a boot entry, and nothing should be added
+there — the phase engine belongs in its own translation unit with its own
+tests.
+
+Nothing destructive ships until the recovery partition and the "Put
+Windows back" path are implemented and tested by deliberately failing an
+install at each phase.

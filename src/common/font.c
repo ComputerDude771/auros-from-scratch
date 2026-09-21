@@ -1940,6 +1940,9 @@ font *font_load(const char *path, float px)
     return f;
 
 fail:
+    /* cff_load() can allocate the per-font-dict subroutine table before
+     * hitting a later check, so the failure path has to release it too. */
+    free(f->fdsubrs);
     free(f->data);
     free(f);
     return NULL;

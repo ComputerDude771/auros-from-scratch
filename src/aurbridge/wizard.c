@@ -147,6 +147,7 @@ static RECT  g_clip;                   /* clip for hand-rasterised pixels */
 /* input */
 static POINT g_mouse = { -1, -1 };
 static int   g_mouse_down = 0;
+static int   g_press_idx = -1;
 static int   g_focus = -1;             /* index into g_w[]                */
 static int   g_focus_ring = 0;         /* draw rings only after Tab/arrow */
 static int   g_caret_on = 1;
@@ -540,7 +541,7 @@ static int    g_nw;
 
 enum {
     ID_NONE = 0,
-    ID_PRIMARY, ID_BACK, ID_QUIT, ID_RECHECK,
+    ID_PRIMARY, ID_BACK, ID_QUIT,
     ID_CHK_BACKUP, ID_CHK_USB, ID_INPUT_AGREE,
     ID_CARD_DUAL, ID_CARD_REPLACE, ID_CHK_REPLACE,
     ID_CHK_READY,
@@ -592,6 +593,8 @@ static int draw_button(int id, const wchar_t *label, int x, int y, int w, int h,
 {
     int idx = w_add(id, W_BUTTON, x, y, w, h, enabled);
     int hot = w_hot(idx);
+    int down = hot && g_mouse_down && g_press_idx == idx;
+    if (down) { y += S(1); h -= S(1); }
     float r = (float)S(10);
     RECT box = { x, y, x + w, y + h };
 
@@ -604,11 +607,12 @@ static int draw_button(int id, const wchar_t *label, int x, int y, int w, int h,
          * the eye should land on */
         fill_rr((float)x - 1.f, (float)y + 2.f, (float)w + 2.f, (float)h,
                 r + 2.f, tone, hot ? 0.20f : 0.12f);
-        fill_rr((float)x, (float)y, (float)w, (float)h, r, tone, hot ? 1.0f : 0.92f);
+        fill_rr((float)x, (float)y, (float)w, (float)h, r, tone,
+                down ? 0.80f : (hot ? 1.0f : 0.92f));
         text_in(label, g_f_bodyb, C_BG, box, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
     } else {
         fill_rr((float)x, (float)y, (float)w, (float)h, r, C_SURFACE_HI,
-                hot ? 0.95f : 0.55f);
+                down ? 1.0f : (hot ? 0.95f : 0.55f));
         stroke_rr((float)x, (float)y, (float)w, (float)h, r, 1.2f, C_OVERLAY, 1.f);
         text_in(label, g_f_bodyb, hot ? C_FG_HI : C_FG, box,
                 DT_SINGLELINE | DT_CENTER | DT_VCENTER);
@@ -1082,6 +1086,11 @@ static void layout(void)
     g_card.right  = g_cw - m;
     g_card.bottom = g_ch - m;
 
+    /* WM_GETMINMAXINFO keeps the window above this, but a DPI change can
+     * land in between: never hand DrawText an inverted rectangle. */
+    if (g_card.right  < g_card.left + S(360)) g_card.right  = g_card.left + S(360);
+    if (g_card.bottom < g_card.top  + S(280)) g_card.bottom = g_card.top  + S(280);
+
     int pad = S(44);
     g_foot.left   = g_card.left;
     g_foot.right  = g_card.right;
@@ -1090,6 +1099,7 @@ static void layout(void)
 
     g_body.left   = g_card.left + pad;
     g_body.right  = g_card.right - pad;
+    if (g_body.right < g_body.left + S(200)) g_body.right = g_body.left + S(200);
     g_body.top    = g_card.top + S(40);
     g_body.bottom = g_foot.top;
 }
@@ -2094,7 +2104,7 @@ static void draw_footer(void)
  *  Render
  * ═══════════════════════════════════════════════════════════════════ */
 static int g_want_focus_id;
-static int g_hot_idx = -1, g_press_idx = -1;
+static int g_hot_idx = -1;
 static int g_settle;
 
 static int page_dispatch(int x, int y, int w)
@@ -2441,37 +2451,12 @@ static void tick(void)
         need = 1;                      /* caret blink */
     }
 
-    /* Scripted run: press Enter on the welcome page, let preflight run,
-     * then keep pressing Enter and see how far the wizard will go. On a
-     * machine preflight refuses, the answer must stay at BLOCKED. */
     if (g_selftest) {
-        static DWORD t0;
-        if (!t0) t0 = GetTickCount();
-        if (g_ticks % 10 == 0) {
-            char pp[MAX_PATH + 40];
-            _snprintf(pp, sizeof pp - 1, "%s/progress.txt", g_selftest_dir);
-            pp[sizeof pp - 1] = 0;
-            FILE *pf = fopen(pp, "w");
-            if (pf) {
-                fprintf(pf, "tick=%d ms=%lu page=%d paints=%d pf_state=%ld\n",
-                        g_ticks, (unsigned long)(GetTickCount() - t0),
-                        (int)g_page, g_paints, (long)g_pf_state);
-                fclose(pf);
-            }
-        }
-        if (g_ticks == 10 || (g_ticks >= 70 && g_ticks <= 110 && g_ticks % 6 == 0))
-            PostMessageW(g_hwnd, WM_KEYDOWN, VK_RETURN, 0);
-        if (g_ticks == 60) {
-            char p2[MAX_PATH + 40];
-            _snprintf(p2, sizeof p2 - 1, "%s/selftest-after-enter.bmp", g_selftest_dir);
-            p2[sizeof p2 - 1] = 0;
-            InvalidateRect(g_hwnd, NULL, FALSE);
-            UpdateWindow(g_hwnd);
-            save_bmp(p2);
-        }
+        if (g_ticks == 6)  PostMessageW(g_hwnd, WM_KEYDOWN, VK_RETURN, 0);  /* Get started */
+        if (g_ticks == 30) PostMessageW(g_hwnd, WM_KEYDOWN, VK_TAB, 0);     /* keyboard nav */
     }
 
-    if (g_selftest && g_ticks > 120) {
+    if (g_selftest && g_ticks > 34) {
         char path[MAX_PATH + 32];
         _snprintf(path, sizeof path - 1, "%s/selftest-window.bmp", g_selftest_dir);
         path[sizeof path - 1] = 0;
@@ -2488,6 +2473,8 @@ static void tick(void)
             fprintf(f, "preflight done   : %d (blocks=%d warns=%d results=%d)\n",
                     g_pf_valid, g_report.n_block, g_report.n_warn, g_report.n);
             fprintf(f, "widgets on page  : %d\n", g_nw);
+            fprintf(f, "focus after Tab  : %d (ring=%d, id=%d)\n", g_focus, g_focus_ring,
+                    (g_focus >= 0 && g_focus < g_nw) ? g_w[g_focus].id : -1);
             fprintf(f, "furthest page    : %d (%s)\n", g_max_page,
                     g_max_page >= (int)PAGE_BACKUP ? "PAST THE GATE"
                                                    : "gate held");
@@ -2688,6 +2675,7 @@ static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM wp, LPARAM lp)
  * ═══════════════════════════════════════════════════════════════════ */
 static void shot_save(const char *dir, const char *name)
 {
+    if (!g_shot_mode) return;          /* harness only, never the UI path */
     char p[MAX_PATH + 64];
     _snprintf(p, sizeof p - 1, "%s/%s.bmp", dir, name);
     p[sizeof p - 1] = 0;
@@ -2721,6 +2709,10 @@ static int shot_run(const char *dir)
     g_ack_backup = g_ack_usb = 1;
     shot_save(dir, "4b-backup-done");
 
+    g_focus = 0; g_focus_ring = 1;          /* as if the user had pressed Tab */
+    shot_save(dir, "4c-backup-keyboard-focus");
+    g_focus = -1; g_focus_ring = 0;
+
     g_page = PAGE_CONSENT;  g_want_focus_id = ID_INPUT_AGREE;
     shot_save(dir, "5a-consent");
     g_scroll[PAGE_CONSENT] = 10000;
@@ -2744,14 +2736,141 @@ static int shot_run(const char *dir)
     return 0;
 }
 
+/* ═══════════════════════════════════════════════════════════════════
+ *  Dev harness — the navigation gate, tested.
+ *
+ *  "The user can never reach the backup gate once preflight has blocked"
+ *  is a claim, so it gets a test. This calls the same nav_allowed(),
+ *  goto_page() and check_advance() the mouse and keyboard handlers call.
+ *  The synthetic pf_reports below are test fixtures and exist only in
+ *  this function.
+ * ═══════════════════════════════════════════════════════════════════ */
+static FILE *g_nt;
+static int   g_nt_fail;
+
+static void nt_check(int ok, const char *what)
+{
+    if (!ok) g_nt_fail++;
+    if (g_nt) fprintf(g_nt, "  [%s] %s\n", ok ? "PASS" : "FAIL", what);
+}
+
+static void nt_fake_report(int blocked)     /* test fixture, not a real scan */
+{
+    memset(&g_report, 0, sizeof g_report);
+    g_report.system_disk = -1;
+    if (blocked) {
+        snprintf(g_report.results[0].id, sizeof g_report.results[0].id, "test-block");
+        snprintf(g_report.results[0].title, sizeof g_report.results[0].title,
+                 "synthetic blocking issue");
+        g_report.results[0].sev = PF_BLOCK;
+        g_report.n = 1;
+        g_report.n_block = 1;
+    } else {
+        snprintf(g_report.results[0].id, sizeof g_report.results[0].id, "ready");
+        g_report.results[0].sev = PF_PASS;
+        g_report.n = 1;
+    }
+    g_pf_valid = 1;
+    g_reveal   = N_CHK;
+}
+
+static int nav_test(const char *dir)
+{
+    char path[MAX_PATH + 32];
+    _snprintf(path, sizeof path - 1, "%s/navtest.log", dir);
+    path[sizeof path - 1] = 0;
+    g_nt = fopen(path, "w");
+
+    g_dpi = 96; g_cw = 1120; g_ch = 760;
+    backbuffer(g_cw, g_ch);
+    fonts_make();
+    detect_defaults();
+
+    if (g_nt) fprintf(g_nt, "AurBridge wizard - navigation gate test\n\n"
+                            "1. preflight has not run yet\n");
+    g_pf_valid = 0;
+    memset(&g_report, 0, sizeof g_report);
+    for (int p = (int)PAGE_BACKUP; p < (int)PAGE_COUNT; p++) {
+        g_page = PAGE_WELCOME;
+        goto_page((page_id)p);
+        nt_check(!nav_allowed((page_id)p) && g_page == PAGE_WELCOME,
+                 "page refused before preflight has run");
+    }
+
+    if (g_nt) fprintf(g_nt, "\n2. preflight blocked, user has answered everything\n");
+    nt_fake_report(1);
+    g_ack_backup = g_ack_usb = 1;
+    wcscpy(g_agree, AGREE_WORD);
+    g_choice = 0;
+    g_ready_confirm = 1;
+    for (int p = (int)PAGE_BACKUP; p < (int)PAGE_COUNT; p++) {
+        g_page = PAGE_BLOCKED;
+        goto_page((page_id)p);
+        nt_check(!nav_allowed((page_id)p) && g_page == PAGE_BLOCKED,
+                 "page refused while a block stands");
+    }
+    g_page = PAGE_CHECKING;
+    check_advance();
+    nt_check(g_page == PAGE_BLOCKED, "a blocked check lands on the refusal page");
+    g_page = PAGE_CHECKING;
+    g_check_next = PAGE_PROGRESS;          /* as if launched from Ready */
+    check_advance();
+    nt_check(g_page == PAGE_BLOCKED && !g_install_running,
+             "a re-check before install refuses instead of starting phases");
+    g_check_next = PAGE_BACKUP;
+
+    if (g_nt) fprintf(g_nt, "\n3. preflight clean, gates open one at a time\n");
+    nt_fake_report(0);
+    g_ack_backup = g_ack_usb = 0;
+    g_agree[0] = 0;
+    g_choice = 0; g_ack_replace = 0; g_ready_confirm = 0;
+    nt_check(nav_allowed(PAGE_BACKUP), "backup gate reachable on a clean report");
+    nt_check(!nav_allowed(PAGE_CONSENT), "consent refused until both boxes are ticked");
+    g_ack_backup = 1;
+    nt_check(!nav_allowed(PAGE_CONSENT), "one box is not enough");
+    g_ack_usb = 1;
+    nt_check(nav_allowed(PAGE_CONSENT), "consent reachable with both boxes");
+    nt_check(!nav_allowed(PAGE_CHOOSE), "choice refused until AGREE is typed");
+    wcscpy(g_agree, L"agre");
+    nt_check(!nav_allowed(PAGE_CHOOSE), "a near miss is still refused");
+    wcscpy(g_agree, L"agree");
+    nt_check(nav_allowed(PAGE_CHOOSE), "typed acknowledgement accepted (any case)");
+    g_choice = 1;
+    nt_check(!nav_allowed(PAGE_PERSONALIZE),
+             "replace-Windows refused until its own box is ticked");
+    g_ack_replace = 1;
+    nt_check(nav_allowed(PAGE_PERSONALIZE), "replace-Windows accepted once acknowledged");
+    g_choice = 0; g_ack_replace = 0;
+    nt_check(!nav_allowed(PAGE_PROGRESS), "install refused until the drive is confirmed");
+    g_ready_confirm = 1;
+    nt_check(nav_allowed(PAGE_PROGRESS), "install reachable at the end of a clean run");
+
+    if (g_nt) fprintf(g_nt, "\n4. a block appears after the user answered everything\n");
+    nt_fake_report(1);
+    for (int p = (int)PAGE_BACKUP; p < (int)PAGE_COUNT; p++)
+        nt_check(!nav_allowed((page_id)p),
+                 "every page past the checklist closes again");
+
+    if (g_nt) {
+        fprintf(g_nt, "\n%s (%d failures)\n", g_nt_fail ? "FAILED" : "ALL PASS", g_nt_fail);
+        fclose(g_nt);
+    }
+    return g_nt_fail ? 1 : 0;
+}
+
 /* ═══════════════════════════════════════════════════════════════════ */
 int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
 {
     (void)prev; (void)cmd;
 
-    const char *shot = NULL;
+    /* Dev harness switches. They only render and report; none of them can
+     * change anything on the machine, because nothing in this file can.
+     * Gate them behind a build flag before the first signed release
+     * anyway — a shipped installer should have no undocumented modes. */
+    const char *shot = NULL, *navtest = NULL;
     for (int i = 1; i < __argc; i++) {
         if (!strcmp(__argv[i], "--shot") && i + 1 < __argc) shot = __argv[++i];
+        else if (!strcmp(__argv[i], "--navtest") && i + 1 < __argc) navtest = __argv[++i];
         else if (!strcmp(__argv[i], "--selftest") && i + 1 < __argc) {
             g_selftest = 1;
             _snprintf(g_selftest_dir, sizeof g_selftest_dir - 1, "%s", __argv[++i]);
@@ -2761,6 +2880,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
 
     dpi_opt_in();
     if (shot) return shot_run(shot);
+    if (navtest) return nav_test(navtest);
 
     detect_defaults();
 
@@ -2797,7 +2917,8 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
     if (g_selftest) {
         int quit = 0;
         while (!quit) {
-            while (PeekMessageW(&msg, NULL, 0, 0, PM_REMOVE)) {
+            for (int drained = 0; drained < 8; drained++) {
+                if (!PeekMessageW(&msg, NULL, 0, 0, PM_REMOVE)) break;
                 if (msg.message == WM_QUIT) { quit = 1; break; }
                 TranslateMessage(&msg);
                 DispatchMessageW(&msg);
