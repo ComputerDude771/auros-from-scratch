@@ -394,6 +394,44 @@ void draw_round_rect_shadow(surface *s, rect r, corners c,
     round_rect_cov_ex(s, sr, c, spread, 1, emit_shadow, &ud);
 }
 
+/* ── print primitives ────────────────────────────────────────────── */
+void draw_hrule(surface *s, int x, int y, int w, int weight, uint32_t rgb, float a)
+{
+    if (weight < 1) weight = 1;
+    if (a <= 0.f) return;
+    int x0 = x < 0 ? 0 : x, x1 = x + w;
+    int y0 = y < 0 ? 0 : y, y1 = y + weight;
+    if (x1 > s->w) x1 = s->w;
+    if (y1 > s->h) y1 = s->h;
+    for (int yy = y0; yy < y1; yy++)
+        for (int xx = x0; xx < x1; xx++)
+            draw_blend_px(s, xx, yy, rgb, a);
+}
+
+void draw_vrule(surface *s, int x, int y, int h, int weight, uint32_t rgb, float a)
+{
+    if (weight < 1) weight = 1;
+    if (a <= 0.f) return;
+    int x0 = x < 0 ? 0 : x, x1 = x + weight;
+    int y0 = y < 0 ? 0 : y, y1 = y + h;
+    if (x1 > s->w) x1 = s->w;
+    if (y1 > s->h) y1 = s->h;
+    for (int yy = y0; yy < y1; yy++)
+        for (int xx = x0; xx < x1; xx++)
+            draw_blend_px(s, xx, yy, rgb, a);
+}
+
+void draw_frame(surface *s, rect r, int weight, uint32_t rgb, float a)
+{
+    if (weight < 1) weight = 1;
+    if (r.w <= 0 || r.h <= 0) return;
+    if (weight * 2 >= r.h || weight * 2 >= r.w) { draw_rect(s, r, rgb, a); return; }
+    draw_hrule(s, r.x, r.y, r.w, weight, rgb, a);
+    draw_hrule(s, r.x, r.y + r.h - weight, r.w, weight, rgb, a);
+    draw_vrule(s, r.x, r.y + weight, r.h - weight * 2, weight, rgb, a);
+    draw_vrule(s, r.x + r.w - weight, r.y + weight, r.h - weight * 2, weight, rgb, a);
+}
+
 void draw_circle(surface *s, float cx, float cy, float radius, uint32_t rgb, float a)
 {
     int x0 = (int)floorf(cx - radius) - 1, y0 = (int)floorf(cy - radius) - 1;

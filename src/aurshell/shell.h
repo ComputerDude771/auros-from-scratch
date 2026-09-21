@@ -69,7 +69,25 @@ typedef struct {
     uint32_t  start_ms;        /* when the wait began; 0 = not yet set */
 } win_entry;
 
-typedef struct { font *big, *mid, *small, *huge; } shell_fonts;
+/* Two faces, not one, at two real weights.
+ *
+ * The old version of this struct was four SIZES of one file, which is
+ * why the desktop had no typographic hierarchy: size alone is a weak
+ * signal, and a 26px and a 19px cut of the same regular sans read as
+ * the same voice slightly louder. Here `huge`/`big`/`dmid` come from a
+ * bold DISPLAY serif and `mid`/`small`/`tiny`/`label` from a
+ * caption-optimised sans, `mid` and `label` being its BOLD cut. The
+ * contrast between a 42px bold serif and an 11px regular sans is the
+ * hierarchy; nothing needs a colour or a glow to be important.
+ *
+ * `lh` is the theme's line_height, carried here so that block spacing
+ * is a theme decision rather than a constant in six layouts. */
+typedef struct {
+    font *huge, *big, *dmid;      /* display face: headlines only     */
+    font *mid, *label;            /* text face, BOLD: names, rubrics  */
+    font *small, *tiny;           /* text face, regular: body, hints  */
+    float lh;
+} shell_fonts;
 
 typedef struct shell_ctx_s {
     /* ── theme, resolved once ───────────────────────────────────── */
@@ -185,18 +203,51 @@ typedef struct {
 
 /* Shared helpers every layout may use, so six renderers do not each
  * grow their own slightly different icon set or clock. */
+/* A mark, not an icon in the app-store sense: a solid silhouette in
+ * one ink with its interior detail KNOCKED OUT in the paper colour
+ * underneath, the way a woodcut or a signage pictogram works.
+ *
+ * `paper` is therefore not decoration — it is the colour the caller
+ * has just filled behind the mark, and the mark cuts holes in itself
+ * with it. Passing the wrong one shows, which is the point: a mark
+ * that does not know what it is sitting on cannot be solid.
+ *
+ * The version this replaces drew every one of the twelve as the same
+ * rounded box at the same 1.6px stroke with the same 20% tint fill,
+ * so ICON_MAIL, ICON_PHOTOS, ICON_WINDOW and ICON_TERMINAL were
+ * literally the same box with different lines in it. These have
+ * deliberately different visual weights — the globe is the heaviest
+ * thing in the set, settings the lightest — because a row of marks
+ * that all weigh the same is a row with no rhythm. */
 void shell_icon_draw(surface *s, shell_icon ic, float cx, float cy,
-                     float size, uint32_t col, float a);
+                     float size, uint32_t ink, uint32_t paper, float a);
 void shell_text(surface *s, font *f, float x, float y_baseline,
                 const char *t, uint32_t col, float a);
 void shell_text_centred(surface *s, font *f, float cx, float y_baseline,
                         const char *t, uint32_t col, float a);
 float shell_text_w(font *f, const char *t);
+/* Text that stops at a width, ending in an ellipsis if it had to.
+ * Application names come from packages and are as long as they like. */
+void shell_text_elided(surface *s, font *f, float x, float y, float max_w,
+                       const char *t, uint32_t col, float a);
+/* Letter-spaced text, for the small rubrics that label a region the
+ * way a folio labels a page. Drawn a codepoint at a time, so kerning
+ * is deliberately dropped: tracked capitals do not want it. */
+void shell_text_tracked(surface *s, font *f, float x, float y_baseline,
+                        const char *t, uint32_t col, float a, float track);
+float shell_text_tracked_w(font *f, const char *t, float track);
 /* Baseline that vertically centres text in a band of height h at y. */
 float shell_baseline(font *f, float y, float h);
 void shell_clock(char *hm, size_t hm_n, char *date, size_t date_n);
 
 void shell_theme_load(shell_ctx *c, const theme_t *t);
+
+/* Open every face the archetypes expect, at the sizes the theme asks
+ * for, with fallbacks. ONE implementation: a harness that fills this
+ * struct by hand fills it wrongly the moment a face is added, and then
+ * renders a desktop that does not exist while reporting success. */
+void shell_fonts_load(shell_fonts *f, const shell_ctx *c);
+void shell_fonts_free(shell_fonts *f);
 /* The starter app set. Call AFTER shell_theme_load(): tints come from
  * the theme's accents, because nothing may hardcode a colour. */
 void shell_seed_apps(shell_ctx *c);

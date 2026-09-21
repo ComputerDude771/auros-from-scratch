@@ -93,6 +93,11 @@ static int check(const shell_layout *L, const char *id, int w, int h, int verbos
     surface *wall = surface_new(w, h), *s = surface_new(w, h);
     for (int i = 0; i < w * h; i++) wall->px[i] = 0xFF000000u | WALL_RGB;
     shell_fonts f = {0};
+    /* Real faces. With none, every region whose only painted content is
+     * text reads as bare wallpaper -- so an element that lights up, can
+     * be clicked, and draws nothing but a word would pass unnoticed.
+     * shell_fonts_load() falls back through the system fonts. */
+    shell_fonts_load(&f, &c);
     c.mouse_x = -10000; c.mouse_y = -10000;     /* no hover highlight */
     L->paint(&c, s, &f, wall);
 
@@ -101,6 +106,7 @@ static int check(const shell_layout *L, const char *id, int w, int h, int verbos
         mask[i] = ((s->px[i] & 0xFFFFFFu) != WALL_RGB);
 
     int consumed = 0, on_nothing = 0;
+    int bx0 = 1 << 30, by0 = 1 << 30, bx1 = -1, by1 = -1;
     for (int y = 0; y < h; y += STEP)
         for (int x = 0; x < w; x += STEP) {
             if (!L->click) continue;
@@ -119,9 +125,22 @@ static int check(const shell_layout *L, const char *id, int w, int h, int verbos
             if (L->init) L->init(&probe);
             if (!L->click(&probe, x, y)) continue;
             consumed++;
-            if (!near_painted(mask, w, h, x, y)) on_nothing++;
+            if (!near_painted(mask, w, h, x, y)) {
+                on_nothing++;
+                /* "0.4% of clicks land on nothing" is a number nobody
+                 * can act on. The rectangle they land in is. */
+                if (bx0 > x) bx0 = x;
+                if (by0 > y) by0 = y;
+                if (bx1 < x) bx1 = x;
+                if (by1 < y) by1 = y;
+            }
         }
 
+    if (on_nothing)
+        printf("             they land in x %d..%d, y %d..%d "
+               "(screen is %dx%d)\n", bx0, bx1, by0, by1, w, h);
+
+    shell_fonts_free(&f);
     free(mask); surface_free(s); surface_free(wall);
     if (L->fini) L->fini(&c);
 
@@ -134,14 +153,29 @@ static int check(const shell_layout *L, const char *id, int w, int h, int verbos
     return pct > 0.25;
 }
 
+/* How far from the pointer a change still counts as "this element
+ * responded". Generous enough to include a card's border, a lift, a
+ * focus ring and a label beside the icon; small enough to exclude a
+ * status readout in the top bar.
+ *
+ * Without this the check reads the whole frame, and an archetype that
+ * names the hovered item somewhere else on screen -- workbench and
+ * locked both do -- reports that EVERY point reacts to the pointer.
+ * Half of them then "fail" for ignoring a click they were never
+ * offering, and the real lying affordances are lost in the noise. The
+ * rule is "what lights up can be clicked", and what lights up is the
+ * thing under the cursor. */
+#define NEAR_R 96
+
 /* Render one settled frame and hash it.
  *
- * `doclick` also dispatches a press/release at (mx,my) first. Both
- * paths run step() to completion afterwards, so a change that is only
- * animated still shows up, and so the two hashes are comparable. */
+ * Only the neighbourhood of the pointer is hashed, for the reason
+ * above. `doclick` also dispatches a press/release at (mx,my) first.
+ * Both paths run step() to completion afterwards, so a change that is
+ * only animated still shows up, and so the two hashes are comparable. */
 static unsigned long render_state(const shell_layout *L, const char *id,
                                   int w, int h, int mx, int my,
-                                  int doclick, int nwin)
+                                  int doclick, int nwin, int wx, int wy)
 {
     shell_ctx c;
     seed(&c, id, nwin);
@@ -162,10 +196,28 @@ static unsigned long render_state(const shell_layout *L, const char *id,
     surface *wall = surface_new(w, h), *s = surface_new(w, h);
     for (int i = 0; i < w * h; i++) wall->px[i] = 0xFF000000u | WALL_RGB;
     shell_fonts f = {0};
+    /* Real faces. With none, every region whose only painted content is
+     * text reads as bare wallpaper -- so an element that lights up, can
+     * be clicked, and draws nothing but a word would pass unnoticed.
+     * shell_fonts_load() falls back through the system fonts. */
+    shell_fonts_load(&f, &c);
     L->paint(&c, s, &f, wall);
 
     unsigned long hsh = 1469598103934665603UL;          /* FNV-1a */
-    for (int i = 0; i < w * h; i++) { hsh ^= s->px[i]; hsh *= 1099511628211UL; }
+    /* The window is (wx,wy), NOT the pointer: the resting frame is
+     * rendered with the pointer off screen, and a window that followed
+     * it there would hash nothing at all and differ from every hover
+     * frame -- every probe would "react". */
+    int x0 = wx - NEAR_R < 0 ? 0 : wx - NEAR_R;
+    int y0 = wy - NEAR_R < 0 ? 0 : wy - NEAR_R;
+    int x1 = wx + NEAR_R > w ? w : wx + NEAR_R;
+    int y1 = wy + NEAR_R > h ? h : wy + NEAR_R;
+    for (int y = y0; y < y1; y++)
+        for (int x = x0; x < x1; x++) {
+            hsh ^= s->px[(size_t)y * s->stride + x];
+            hsh *= 1099511628211UL;
+        }
+    shell_fonts_free(&f);
     surface_free(s); surface_free(wall);
     if (L->fini) L->fini(&c);
     return hsh;
@@ -200,24 +252,34 @@ static unsigned long render_state(const shell_layout *L, const char *id,
 static int affordances(const shell_layout *L, const char *id, int verbose)
 {
     const int w = AFF_W, h = AFF_H, nwin = 3;
-    unsigned long rest = render_state(L, id, w, h, -10000, -10000, 0, nwin);
     int hot = 0, dead = 0;
     int dx[12], dy[12], nd = 0;
 
     for (int y = 0; y < h; y += AFF_STEP)
         for (int x = 0; x < w; x += AFF_STEP) {
-            unsigned long hover = render_state(L, id, w, h, x, y, 0, nwin);
+            /* Rest is re-measured per probe, over the same window as
+             * the hover frame, so the two are comparable. */
+            unsigned long rest  = render_state(L, id, w, h, -10000, -10000, 0, nwin, x, y);
+            unsigned long hover = render_state(L, id, w, h, x, y, 0, nwin, x, y);
             if (hover == rest) continue;             /* nothing lit up */
             hot++;
-            if (render_state(L, id, w, h, x, y, 1, nwin) != hover) continue;
+            if (render_state(L, id, w, h, x, y, 1, nwin, x, y) != hover) continue;
             dead++;                                  /* lit up, then ignored the click */
             if (nd < 12) { dx[nd] = x; dy[nd] = y; nd++; }
         }
 
     double share = hot ? (double)dead / hot : 0.0;
-    if (verbose)
+    if (verbose) {
         printf("   %d points react to the pointer, %d of those ignore a click (%.0f%%)\n",
                hot, dead, share * 100.0);
+        /* The opposite failure, and worth saying out loud rather than
+         * passing in silence: an archetype that consumes clicks and
+         * never changes under the pointer gives the user no way to tell
+         * what is pressable before pressing it. Not a failure -- an
+         * archetype may legitimately have one large target -- but it is
+         * never an accident worth leaving unremarked. */
+        if (!hot) printf("   NOTE: nothing in this archetype responds to hover at all\n");
+    }
     if (share > AFF_TOLERANCE) {
         printf("   FAIL %s: %d of %d hover-reactive points highlight and then ignore "
                "a click, on a %dx%d screen. Dead points:\n", id, dead, hot, w, h);

@@ -60,8 +60,25 @@ int main(int argc, char **argv)
     c.screen_w = W; c.screen_h = H;   /* before init: hit-testing needs it */
     if (L->init) L->init(&c);
 
+    /* The same two-face split the shell itself loads, so a preview is
+     * a preview and not a differently-typeset picture. */
     const char *fs = theme_str(&t, "font_sans", "");
-    shell_fonts f = { openf(fs, 26.f), openf(fs, 17.f), openf(fs, 13.f), openf(fs, 40.f) };
+    const char *fd = theme_str(&t, "font_display", fs);
+    const char *ft = theme_str(&t, "font_text", fs);
+    const char *fbo = theme_str(&t, "font_text_bold", ft);
+    float base = (float)theme_int(&t, "font_size", 14);
+    float sm   = (float)theme_int(&t, "font_size_sm", 12);
+    float lg   = (float)theme_int(&t, "font_size_lg", 19);
+    shell_fonts f = {
+        .huge  = openf(fd, lg * 2.25f),
+        .big   = openf(fd, lg * 1.45f),
+        .dmid  = openf(fd, lg * 0.95f),
+        .mid   = openf(fbo, base * 1.10f),
+        .label = openf(fbo, sm),
+        .small = openf(ft, base),
+        .tiny  = openf(ft, sm),
+        .lh    = (float)theme_num(&t, "line_height", 1.45),
+    };
 
     surface *s = surface_new(W, H), *wall = surface_new(W, H);
     uint32_t *tmp = malloc((size_t)W*H*sizeof *tmp);

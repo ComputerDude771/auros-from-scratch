@@ -62,7 +62,11 @@ entry {
   padding: 7px 12px;
   caret-color: @accent@;
 }
-entry:focus { border-color: @accent@; box-shadow: 0 0 0 2px @accent|rgba:0.22@; }
+/* A thicker border, not a halo. box-shadow: 0 0 0 2px <accent 22%>
+ * is a glow ring, and it was the only one of those the system pushed
+ * into third-party apps. A 2px solid edge says the same thing, works
+ * on a light theme, and does not blur. */
+entry:focus { border-color: @accent@; border-width: 2px; padding: 6px 11px; }
 
 list, treeview { background: @bg@; color: @fg@; }
 row:selected, treeview:selected { background: @accent@; color: @accent|on@; }

@@ -470,7 +470,7 @@ static const char *fit_text(font *f, const char *src, char *dst, size_t n, float
 }
 
 static uint32_t win_tint(shell_ctx *c, int i)
-{ return c->wins[i].app >= 0 ? c->apps[c->wins[i].app].tint : c->accent; }
+{ return c->wins[i].app >= 0 ? c->apps[c->wins[i].app].tint : c->fg; }
 static shell_icon win_icon(shell_ctx *c, int i)
 { return c->wins[i].app >= 0 ? c->apps[c->wins[i].app].icon : ICON_WINDOW; }
 
@@ -523,17 +523,21 @@ static void paint_ctrl(shell_ctx *c, surface *s, rect b, int part, int hot, floa
     float r  = (float)b.w * 0.5f;
     uint32_t glyph = c->subtle;
 
+    /* A square well, not a disc. Close is the only control on a window
+     * that can lose work, so it is the only one that gets the signal
+     * colour, and only while the pointer is on it. */
     if (hot) {
-        draw_circle(s, cx, cy, r, part == WP_CLOSE ? c->err : c->overlay,
-                    a * (part == WP_CLOSE ? 0.85f : 0.9f));
-        glyph = c->fg_hi;
+        rect q = { (int)(cx - r), (int)(cy - r), (int)(r * 2.f), (int)(r * 2.f) };
+        draw_rect(s, q, part == WP_CLOSE ? c->err : c->overlay,
+                  a * (part == WP_CLOSE ? 0.92f : 0.85f));
+        glyph = part == WP_CLOSE ? c->bg : c->fg_hi;
     }
     float k = r * 0.42f;
     if (part == WP_MIN) {
         draw_line(s, cx - k, cy + k * 0.55f, cx + k, cy + k * 0.55f, 1.7f, glyph, a);
     } else if (part == WP_MAX) {
         rect q = { (int)(cx - k), (int)(cy - k), (int)(k * 2.f), (int)(k * 2.f) };
-        draw_round_rect_border(s, q, corners_all(2.f), 1.6f, glyph, a);
+        draw_frame(s, q, 2, glyph, a);
     } else {
         draw_line(s, cx - k, cy - k, cx + k, cy + k, 1.7f, glyph, a);
         draw_line(s, cx + k, cy - k, cx - k, cy + k, 1.7f, glyph, a);
@@ -554,45 +558,29 @@ static void paint_window(shell_ctx *c, surface *s, shell_fonts *f, int i,
     /* Depth is what makes a stack readable: the focused window throws a
      * deeper shadow and sits on a brighter surface, so "which one am I
      * typing into" is answered before the titlebar is read. */
-    draw_round_rect_shadow(s, a, fc, (float)c->shadow_r * (focused ? 1.35f : 0.72f),
-                           0x000000, c->shadow_a * alpha * (focused ? 1.f : 0.75f),
-                           focused ? 16 : 7);
-    draw_blur_region(s, a, c->blur_r);
-
-    float body_a = alpha * c->panel_a * (focused ? 1.f : 0.96f);
-    draw_round_rect(s, a, fc, c->surface_c, body_a);
-    /* An unfocused window is washed toward the bar colour rather than
-     * just faded: on a light theme a plain fade leaves it the brightest
-     * thing on the screen, competing with the window actually in use. */
-    if (!focused) draw_round_rect(s, a, fc, c->bg_alt, alpha * 0.3f);
+    /* Depth without a shadow. Stacked sheets of paper are told apart
+     * by their edges and by how bright they are, not by a 38px black
+     * halo offset 16px down — which is what this drew, twice, once at
+     * a second radius, plus a fainter accent ring one pixel outside
+     * the first for good measure. Three cues for one bit of state.
+     *
+     * Here: the focused window sits on the brightest stock, everything
+     * behind it on the bar's deeper stock, and the one in use carries
+     * a rule along its top edge in the signal colour. */
+    draw_round_rect(s, a, fc, focused ? c->surface_c : c->bg_alt, alpha);
 
     rect tb = { a.x, a.y, a.w, th };
-    if (focused)
-        draw_round_rect_gradient(s, tb, tc, c->surface_hi, c->bg_alt, alpha * 0.97f, 1);
-    else
-        draw_round_rect(s, tb, tc, c->bg_alt, alpha * 0.9f);
-    draw_line(s, (float)a.x + 1.f, (float)(a.y + th) - 0.5f,
-              (float)(a.x + a.w - 1), (float)(a.y + th) - 0.5f, 1.f, c->overlay,
-              alpha * (focused ? 0.9f : 0.6f));
+    draw_round_rect(s, tb, tc, focused ? c->bg_alt : c->bg, alpha);
+    draw_hrule(s, a.x, a.y + th - 1, a.w, 1, c->overlay, alpha);
 
-    /* Focus is drawn in the THEME accent, not in the app's own colour: a
-     * ring around a window answers "which one am I typing into", and an
-     * answer that changes colour with the program is a worse answer.
-     * The app's colour stays in its icon, where it identifies rather
-     * than signals. It also keeps focus legible in a light theme, where
-     * a pastel app tint on a white surface is nearly invisible. */
-    if (focused) {
-        rect g = { a.x - 1, a.y - 1, a.w + 2, a.h + 2 };
-        draw_round_rect_border(s, g, corners_all(r + 1.f), 1.f, c->accent, alpha * 0.25f);
-    }
-    draw_round_rect_border(s, a, fc, focused ? (float)c->border : 1.f,
-                           focused ? c->accent : c->overlay, alpha * (focused ? 0.9f : 0.95f));
+    draw_frame(s, a, focused ? 2 : 1, focused ? c->fg : c->overlay, alpha);
+    if (focused) draw_hrule(s, a.x, a.y, a.w, 3, c->accent, alpha);
 
     /* Title row: icon, name, and the subtitle trailing it when there is
      * room — the same line a browser would put a page title on. */
     float tx = (float)(a.x + 12);
     shell_icon_draw(s, win_icon(c, i), tx + 10.f, (float)(a.y + th / 2), 20.f,
-                    tint, alpha * (focused ? 1.f : 0.72f));
+                    tint, c->surface_c, alpha * (focused ? 1.f : 0.72f));
     tx += 30.f;
     rect cb = win_part(c, c->screen_w, c->screen_h, i, WP_MIN);
     float room = (float)cb.x - tx - 12.f;
@@ -624,16 +612,21 @@ static void paint_window(shell_ctx *c, surface *s, shell_fonts *f, int i,
         return;
     }
     if (body.h < 80) return;
-    float cx = (float)body.x + (float)body.w * 0.5f;
-    float cy = (float)body.y + (float)body.h * 0.5f;
-    float isz = clampf((float)body.h * 0.20f, 28.f, 52.f);
-    draw_circle(s, cx, cy - isz * 0.62f, isz * 0.92f, tint, alpha * 0.10f);
-    shell_icon_draw(s, win_icon(c, i), cx, cy - isz * 0.62f, isz, tint, alpha * 0.55f);
-    shell_text_centred(s, f->mid, cx, cy + isz * 0.72f, c->wins[i].title,
-                       c->fg, alpha * 0.82f);
-    shell_text_centred(s, f->small, cx, cy + isz * 0.72f + 24.f,
-                       c->wins[i].subtitle[0] ? c->wins[i].subtitle : "Opening…",
-                       c->muted, alpha * 0.7f);
+    uint32_t paper = focused ? c->surface_c : c->bg_alt;
+    float x   = (float)body.x + (float)c->padding * 1.6f;
+    float isz = clampf((float)body.h * 0.18f, 26.f, 56.f);
+    float top = (float)body.y + (float)body.h * 0.30f;
+    shell_icon_draw(s, win_icon(c, i), x + isz * 0.5f, top, isz, tint, paper,
+                    alpha * 0.9f);
+    float ty = top + isz * 0.5f + 26.f + (f->big ? font_ascent(f->big) : 26.f);
+    shell_text(s, f->big, x, ty, c->wins[i].title, c->fg_hi, alpha * 0.9f);
+    draw_hrule(s, (int)x, (int)(ty + (f->big ? font_descent(f->big) : 8.f) + 14.f),
+               (int)((float)body.w * 0.16f), 1, c->overlay, alpha);
+    shell_text(s, f->small, x,
+               ty + (f->big ? font_descent(f->big) : 8.f) + 30.f
+                  + (f->small ? font_ascent(f->small) : 11.f),
+               c->wins[i].subtitle[0] ? c->wins[i].subtitle : "Opening…",
+               c->subtle, alpha * 0.85f);
 }
 
 /* ── painting: the bar ──────────────────────────────────────────────── */
@@ -653,41 +646,35 @@ static void paint_task_button(shell_ctx *c, surface *s, shell_fonts *f, int i, r
      * be the BRIGHTEST thing on the bar whether or not it was the
      * active one. Overlay sits between bar and text in every theme, so
      * the order stays right in both directions. */
-    if (on) {
-        draw_round_rect(s, b, corners_all(r), c->surface_hi, 0.98f);
-        draw_round_rect(s, b, corners_all(r), c->accent, 0.16f);
-        draw_round_rect_border(s, b, corners_all(r), 1.5f, c->accent, 0.85f);
-    } else if (mini) {
-        /* Minimised: still open, still here, just not on the screen.
-         * Barely filled, so the bar shows at a glance what is in front
-         * of you and what is only "somewhere". */
-        draw_round_rect(s, b, corners_all(r), c->overlay, hot ? 0.34f : 0.12f);
-        draw_round_rect_border(s, b, corners_all(r), 1.f, c->overlay, 0.55f);
-    } else {
-        draw_round_rect(s, b, corners_all(r), c->overlay, hot ? 0.52f : 0.3f);
-        draw_round_rect_border(s, b, corners_all(r), 1.f, c->overlay, hot ? 0.85f : 0.6f);
-    }
+    uint32_t paper;
+    if (on)        paper = c->surface_c;
+    else if (mini) paper = hot ? c->bg : c->bg_alt;
+    else           paper = hot ? c->surface_hi : c->bg;
+    draw_round_rect(s, b, corners_all(r), paper, 1.f);
 
-    /* Running indicator. A wide bar under the focused window, a short
-     * one under the others, a dot for the minimised — three states, one
-     * shape, readable without reading a word. */
-    float iw = on ? (float)b.w * 0.44f : (mini ? 5.f : (float)b.w * 0.18f);
-    rect ind = { b.x + b.w / 2 - (int)(iw * 0.5f), b.y + b.h - 4, (int)iw, 3 };
-    draw_round_rect(s, ind, corners_all(1.5f), c->accent, on ? 0.95f : (mini ? 0.55f : 0.6f));
+    /* Which one you are in, said once: a bar down the LEFT edge in the
+     * signal colour. The version this replaces tinted the fill, drew
+     * an accent border AND put a wide accent underline along the
+     * bottom — and the same underline, shorter, under every other
+     * button, so the mark that meant "this one" also appeared on all
+     * the ones it did not mean. */
+    if (on) draw_rect(s, (rect){ b.x, b.y, 4, b.h }, c->accent, 1.f);
+    draw_frame(s, b, on ? 2 : 1, on ? c->fg : c->overlay, mini ? 0.6f : 1.f);
 
     int narrow = b.w < 64;
-    float cx = narrow ? (float)b.x + (float)b.w * 0.5f : (float)b.x + 18.f;
-    shell_icon_draw(s, win_icon(c, i), cx, (float)b.y + (float)b.h * 0.46f, 19.f,
-                    tint, mini ? 0.55f : (on ? 1.f : 0.85f));
+    float cx = narrow ? (float)b.x + (float)b.w * 0.5f : (float)b.x + (on ? 20.f : 16.f);
+    shell_icon_draw(s, win_icon(c, i), cx, (float)b.y + (float)b.h * 0.5f, 17.f,
+                    mini ? c->muted : tint, paper, 1.f);
     if (narrow) return;             /* icon only: the label would not fit */
 
     float tx = cx + 16.f;
     float room = (float)(b.x + b.w) - tx - 10.f;
     if (room < 24.f) return;
     char buf[80];
-    const char *t = fit_text(f->small, c->wins[i].title, buf, sizeof buf, room);
-    shell_text(s, f->small, tx, shell_baseline(f->small, (float)b.y, (float)b.h - 3.f),
-               t, on ? c->fg_hi : (mini ? c->subtle : c->fg), on ? 1.f : 0.9f);
+    font *bf = on ? f->mid : f->small;
+    const char *t = fit_text(bf, c->wins[i].title, buf, sizeof buf, room);
+    shell_text(s, bf, tx, shell_baseline(bf, (float)b.y, (float)b.h),
+               t, on ? c->fg_hi : (mini ? c->muted : c->fg), 1.f);
 }
 
 static void paint_bar(shell_ctx *c, surface *s, shell_fonts *f)
@@ -696,29 +683,31 @@ static void paint_bar(shell_ctx *c, surface *s, shell_fonts *f)
     int W = s->w, H = s->h;
     rect bar = bar_slot(c, W, H, SLOT_BAR);
 
-    draw_blur_region(s, bar, c->blur_r);
-    draw_rect(s, bar, c->bg_alt, c->panel_a);
-    draw_line(s, 0.f, (float)bar.y + 0.5f, (float)W, (float)bar.y + 0.5f,
-              1.f, c->overlay, 0.9f);
+    /* The bar is already the most asymmetric thing in the product —
+     * launcher hard left, buttons filling the middle, indicators and
+     * the clock hard right — so it needs no invented asymmetry. What
+     * it needed was to stop being frosted glass: a flat band of the
+     * deeper stock, closed by a 2px rule, the way the foot of a
+     * printed page is closed. */
+    draw_rect(s, bar, c->bg_alt, 1.f);
+    draw_hrule(s, 0, bar.y, W, 2, c->overlay, 1.f);
 
     /* Launcher. The label is the affordance: a migrant should not have
      * to learn what a glyph means to find their programs. */
     rect l = bar_slot(c, W, H, SLOT_LAUNCH);
     int lhot = (p->hover_slot == SLOT_LAUNCH) || p->menu_open;
-    draw_round_rect(s, l, corners_all((float)c->radius_sm),
-                    p->menu_open ? c->surface_hi : c->overlay, lhot ? 0.95f : 0.32f);
-    if (p->menu_open) draw_round_rect(s, l, corners_all((float)c->radius_sm), c->accent, 0.16f);
-    draw_round_rect_border(s, l, corners_all((float)c->radius_sm),
-                           p->menu_open ? 1.5f : 1.f,
-                           p->menu_open ? c->accent : c->overlay, lhot ? 0.85f : 0.6f);
-    float lcx = (float)l.x + 20.f, lcy = (float)l.y + (float)l.h * 0.5f;
-    draw_circle(s, lcx, lcy, 8.f, c->accent, 0.22f);
-    draw_circle(s, lcx, lcy, 4.5f, c->accent, 0.95f);
+    uint32_t lp = p->menu_open ? c->surface_c : (lhot ? c->surface_hi : c->bg);
+    draw_round_rect(s, l, corners_all((float)c->radius_sm), lp, 1.f);
+    if (p->menu_open) draw_rect(s, (rect){ l.x, l.y, 4, l.h }, c->accent, 1.f);
+    draw_frame(s, l, p->menu_open ? 2 : 1, p->menu_open ? c->fg : c->overlay, 1.f);
+    /* A block of ink, not a dot in a halo. This is the one control on
+     * the bar that is not a window, so it wears the brand's own mark. */
+    draw_rect(s, (rect){ l.x + 14, l.y + l.h/2 - 4, 8, 8 }, c->accent, 1.f);
     char lb[48];
     const char *lt = fit_text(f->mid, "All Programs", lb, sizeof lb,
-                              (float)l.w - 42.f);
-    shell_text(s, f->mid, (float)l.x + 34.f, shell_baseline(f->mid, (float)l.y, (float)l.h),
-               lt, c->fg_hi, 0.96f);
+                              (float)l.w - 44.f);
+    shell_text(s, f->mid, (float)l.x + 30.f, shell_baseline(f->mid, (float)l.y, (float)l.h),
+               lt, c->fg_hi, 1.f);
 
     /* Window buttons. */
     if (c->n_wins == 0) {
@@ -765,7 +754,7 @@ static void paint_bar(shell_ctx *c, surface *s, shell_fonts *f)
     for (int i = 0; i < TRAY_N; i++) {
         float cx = (float)tr.x + ((float)i + 0.5f) * (float)tr.h;
         shell_icon_draw(s, ind[i], cx, (float)tr.y + (float)tr.h * 0.5f, 17.f,
-                        i == 0 ? c->ok : c->subtle, i == 0 ? 0.9f : 0.75f);
+                        i == 0 ? c->ok : c->subtle, c->bg_alt, i == 0 ? 0.9f : 0.75f);
     }
 
     if (c->show_clock && c->status_full) {
@@ -773,10 +762,11 @@ static void paint_bar(shell_ctx *c, surface *s, shell_fonts *f)
         char hm[32], dt[48];
         shell_clock(hm, sizeof hm, dt, sizeof dt);
         float rx = (float)(cr.x + cr.w);
+        draw_vrule(s, cr.x - 10, cr.y + 4, cr.h - 8, 1, c->overlay, 1.f);
         float y1 = (float)cr.y + (f->mid ? font_ascent(f->mid) : 16.f) + 1.f;
-        float y2 = y1 + (f->small ? font_line_height(f->small) : 16.f) + 1.f;
-        shell_text(s, f->mid, rx - shell_text_w(f->mid, hm), y1, hm, c->fg_hi, 0.97f);
-        shell_text(s, f->small, rx - shell_text_w(f->small, dt), y2, dt, c->subtle, 0.8f);
+        float y2 = y1 + (f->tiny ? font_line_height(f->tiny) : 16.f) + 1.f;
+        shell_text(s, f->mid, rx - shell_text_w(f->mid, hm), y1, hm, c->fg_hi, 1.f);
+        shell_text(s, f->tiny, rx - shell_text_w(f->tiny, dt), y2, dt, c->subtle, 0.9f);
     }
 }
 
@@ -794,47 +784,48 @@ static void paint_menu(shell_ctx *c, surface *s, shell_fonts *f)
     float r = (float)c->radius;
     corners mc = corners_all(r);
 
-    draw_round_rect_shadow(s, a, mc, (float)c->shadow_r * 1.3f, 0x000000,
-                           c->shadow_a * t, 14);
-    draw_blur_region(s, a, c->blur_r);
-    draw_round_rect(s, a, mc, c->surface_c, t * c->panel_a);
-    draw_round_rect_border(s, a, mc, 1.f, c->overlay, t * 0.8f);
+    draw_round_rect(s, a, mc, c->surface_c, t);
+    draw_frame(s, a, 1, c->fg, t);
+    draw_hrule(s, a.x, a.y, a.w, 3, c->accent, t);
 
     int head = c->target_large ? 56 : 46;
     float hx = (float)(a.x + c->padding + 4);
-    shell_text(s, f->mid, hx,
-               (float)(a.y + c->padding) + (f->mid ? font_ascent(f->mid) : 16.f) + 2.f,
+    shell_text(s, f->dmid, hx,
+               (float)(a.y + c->padding) + (f->dmid ? font_ascent(f->dmid) : 16.f) + 2.f,
                "All Programs", c->fg_hi, t * 0.98f);
     shell_text(s, f->small, hx,
-               (float)(a.y + c->padding) + (f->mid ? font_line_height(f->mid) : 22.f)
-               + (f->small ? font_ascent(f->small) : 13.f) + 2.f,
-               "Everything on this computer", c->subtle, t * 0.8f);
-    draw_line(s, (float)(a.x + c->padding), (float)(a.y + c->padding + head) - 6.5f,
-              (float)(a.x + a.w - c->padding), (float)(a.y + c->padding + head) - 6.5f,
-              1.f, c->overlay, t * 0.7f);
+               (float)(a.y + c->padding) + (f->dmid ? font_line_height(f->dmid) : 22.f)
+               + (f->small ? font_ascent(f->small) : 11.f) + 2.f,
+               "Everything on this computer", c->subtle, t * 0.88f);
+    draw_hrule(s, a.x + c->padding, a.y + c->padding + head - 7,
+               a.w - c->padding * 2, 2, c->fg_hi, t * 0.85f);
 
     for (int i = 0; i < shown; i++) {
         rect row = menu_part(c, W, H, i);
         int hot = (p->hover_row == i);
         rect hit = { row.x + 2, row.y + 1, row.w - 4, row.h - 2 };
+        uint32_t paper = c->surface_c;
         if (hot) {
-            draw_round_rect(s, hit, corners_all((float)c->radius_sm), c->surface_hi, t);
-            draw_round_rect_border(s, hit, corners_all((float)c->radius_sm), 1.f,
-                                   c->accent, t * 0.55f);
+            draw_rect(s, hit, c->surface_hi, t);
+            draw_rect(s, (rect){ hit.x, hit.y, 4, hit.h }, c->accent, t);
+            paper = c->surface_hi;
         }
-        float icx = (float)row.x + 24.f, icy = (float)row.y + (float)row.h * 0.5f;
-        draw_circle(s, icx, icy, 15.f, c->apps[i].tint, t * (hot ? 0.24f : 0.14f));
-        shell_icon_draw(s, c->apps[i].icon, icx, icy, 21.f, c->apps[i].tint, t * 0.95f);
+        /* One hairline between rows instead of a box around each: the
+         * list is one object with divisions, not eight objects. */
+        if (i) draw_hrule(s, row.x + 8, row.y, row.w - 16, 1, c->overlay, t * 0.8f);
 
-        float tx = (float)row.x + 44.f;
+        float icx = (float)row.x + 26.f, icy = (float)row.y + (float)row.h * 0.5f;
+        shell_icon_draw(s, c->apps[i].icon, icx, icy, 20.f, c->apps[i].tint, paper, t);
+
+        float tx = (float)row.x + 48.f;
         float room = (float)(row.x + row.w) - tx - 10.f;
         char nb[64], hb[80];
-        const char *nm = fit_text(f->mid, c->apps[i].name, nb, sizeof nb, room);
+        const char *nm = fit_text(f->dmid, c->apps[i].name, nb, sizeof nb, room);
         float ny = (float)row.y + (float)row.h * 0.5f - 3.f;
-        shell_text(s, f->mid, tx, ny, nm, c->fg_hi, t * 0.97f);
+        shell_text(s, f->dmid, tx, ny, nm, c->fg_hi, t * 0.98f);
         const char *ht = fit_text(f->small, c->apps[i].hint, hb, sizeof hb, room);
-        shell_text(s, f->small, tx, ny + (f->small ? font_ascent(f->small) : 13.f) + 4.f,
-                   ht, c->subtle, t * 0.8f);
+        shell_text(s, f->small, tx, ny + (f->small ? font_ascent(f->small) : 11.f) + 5.f,
+                   ht, c->subtle, t * 0.88f);
     }
 
     /* Never silently swallow the tail of "all programs". */
@@ -865,19 +856,23 @@ static void l_paint(shell_ctx *c, surface *s, shell_fonts *f, const surface *wal
     if (!c->status_full) {
         int sh = strip_h(c);
         rect st = { 0, 0, s->w, sh };
-        draw_rect(s, st, c->bg, 0.55f);
-        draw_line(s, 0.f, (float)sh, (float)s->w, (float)sh, 1.f, c->overlay, 0.5f);
-        draw_circle(s, (float)(c->margin + 8), (float)(sh / 2), 5.f, c->accent, 1.f);
-        shell_text(s, f->small, (float)(c->margin + 22),
-                   shell_baseline(f->small, 0.f, (float)sh), c->brand, c->subtle, 0.9f);
+        draw_rect(s, st, c->bg_alt, 1.f);
+        draw_hrule(s, 0, sh, s->w, 1, c->overlay, 1.f);
+        draw_rect(s, (rect){ c->margin, sh/2 - 4, 8, 8 }, c->accent, 1.f);
+        shell_text_tracked(s, f->label, (float)(c->margin + 20),
+                           shell_baseline(f->label, 0.f, (float)sh),
+                           c->brand, c->subtle, 0.95f, 1.6f);
         if (c->show_clock) {
             char hm[32], dt[48];
             shell_clock(hm, sizeof hm, dt, sizeof dt);
-            float by = shell_baseline(f->small, 0.f, (float)sh);
             float rx = (float)(s->w - c->margin);
-            shell_text(s, f->small, rx - shell_text_w(f->small, hm), by, hm, c->fg_hi, 0.95f);
-            rx -= shell_text_w(f->small, hm) + 14.f;
-            shell_text(s, f->small, rx - shell_text_w(f->small, dt), by, dt, c->subtle, 0.75f);
+            shell_text(s, f->mid, rx - shell_text_w(f->mid, hm),
+                       shell_baseline(f->mid, 0.f, (float)sh), hm, c->fg_hi, 1.f);
+            rx -= shell_text_w(f->mid, hm) + 13.f;
+            draw_vrule(s, (int)rx, 7, sh - 14, 1, c->overlay, 1.f);
+            rx -= 13.f;
+            shell_text(s, f->small, rx - shell_text_w(f->small, dt),
+                       shell_baseline(f->small, 0.f, (float)sh), dt, c->subtle, 0.9f);
         }
     }
 

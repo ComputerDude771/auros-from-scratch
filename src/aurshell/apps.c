@@ -475,7 +475,6 @@ int shell_scan_apps(shell_ctx *c)
     if (!any_dir) { free(list); return -1; }
     qsort(list, (size_t)n, sizeof *list, cmp_found);
 
-    uint32_t tints[3] = { c->accent, c->accent_alt, c->accent_warm };
     int keep = n < SHELL_MAX_APPS ? n : SHELL_MAX_APPS;
     for (int i = 0; i < keep; i++) {
         app_entry *a = &c->apps[i];
@@ -492,7 +491,10 @@ int shell_scan_apps(shell_ctx *c)
         snprintf(a->wm_class, sizeof a->wm_class, "%s",
                  list[i].e.wmclass[0] ? list[i].e.wmclass : list[i].file);
         a->icon   = icon_for(&list[i].e);
-        a->tint   = tints[i % 3];
+        /* One ink, like the seeded table -- see shell_seed_apps(). A
+         * row of differently tinted marks is decoration standing in for
+         * hierarchy, and colour here means state. */
+        a->tint   = c->fg;
         a->pinned = (i < 4);
     }
     c->n_apps = keep;
@@ -506,7 +508,7 @@ int shell_scan_apps(shell_ctx *c)
         snprintf(a->name, sizeof a->name, "Settings");
         snprintf(a->hint, sizeof a->hint, "Change how this computer looks and works");
         a->icon = ICON_SETTINGS;
-        a->tint = c->subtle;
+        a->tint = c->fg;
         c->n_apps = ++keep;
     }
     free(list);

@@ -74,9 +74,15 @@ radius="14"  radius_sm="8"  gap="12"  margin="14"
 border="2"   bar_height="38"  padding="14"
 
 # ── Typography ─────────────────────────────────────────────────────
-font_sans="Inter"          # family name; forge resolves it to a file
-font_mono="JetBrainsMono"
-font_size="14"  font_size_sm="12"  font_size_lg="19"  line_height="1.45"
+# Three proportional slots, not one. `font_display` is set LARGE and
+# `font_text` small, and the contrast between them is the hierarchy —
+# which is why a system with only `font_sans` had none.
+font_display="PTF75F"      # headings. A display face, usually bold
+font_text="PTC55F"         # body, hints, captions
+font_text_bold="PTC75F"    # names, labels, tracked rubrics
+font_sans="PTS55F"         # GTK and other surfaces
+font_mono="PTM55F"
+font_size="13"  font_size_sm="11"  font_size_lg="19"  line_height="1.5"
 
 # ── Effects ────────────────────────────────────────────────────────
 blur="1"  blur_radius="20"
@@ -85,12 +91,12 @@ opacity_panel="0.88"  opacity_inactive="0.94"
 animation_ms="170"  animation_curve="spring"
 
 # ── Wallpaper (generated, never a file) ────────────────────────────
-wall_style="aurora"    # aurora | mesh | waves | gradient | noise | solid
-wall_c1="#080B11"      # deep base
-wall_c2="#10303A"      # mid wash
-wall_c3="#7DD3C0"      # ribbon / accent 1
-wall_c4="#A78BFA"      # ribbon / accent 2
-wall_intensity="0.55"  # 0.0–1.0
+wall_style="letterpress"  # letterpress | aurora | mesh | waves | gradient | noise | solid
+wall_c1="#0C0E11"      # the stock -- a NEUTRAL from bg's family
+wall_c2="#15181C"      # the deeper stock, for the tint block
+wall_c3="#C89B4A"      # the register mark: the accent, once, small
+wall_c4="#1B1F24"      # the second block -- neutral again
+wall_intensity="0.40"  # 0.0–1.0; how far the stock varies
 wall_grain="0.05"      # film grain; hides banding on large displays
 wall_vignette="0.45"
 
@@ -126,6 +132,7 @@ Generated from `wall_c1..c4`, so they follow the palette automatically.
 | `gradient` | Diagonal two-stop with two radial glows | minimal |
 | `noise` | fbm mapped through the palette | textured |
 | `solid` | Flat `wall_c1` + vignette | kiosk, maximum legibility |
+| `letterpress` | Laid-paper tooth, one off-centre tint block, hairline rules that stop short of the edges, and one solid register mark in `wall_c3` | editorial, light, print |
 
 Preview without applying:
 
@@ -194,10 +201,20 @@ so a typo is loud rather than silent.
   16 ANSI entries. `aurora set` runs it first and **refuses to apply an
   incomplete theme** — a missing `fg` would otherwise mean black text on
   a black desktop with no way back.
-- `forge` verifies the named font actually contains TrueType `glyf`
-  outlines before adopting it. Many modern fonts (Ubuntu's Inter among
-  them) ship as OTF with CFF outlines; selecting one of those would give
-  a desktop with no text at all. It falls back with a warning.
+- `forge` verifies the named font actually contains TrueType `glyf` or
+  OpenType `CFF ` outlines before adopting it. A font with neither —
+  bitmap-only, or CFF2 — would give a desktop with no text at all. It
+  falls back with a warning.
+- `forge` also **refuses a variable font**. `InterVariable.ttf` and
+  `Karla[wght].ttf` carry `glyf` + `fvar` + `gvar` and no static
+  instances; our rasteriser ignores `fvar`, so such a file loads,
+  reports success, and renders weight 400 for ever. It fails by
+  looking fine, which is worse than failing loudly, so it is rejected
+  by name. Ship the static weights instead.
+- `font_display` and `font_text_bold` may name a weight variant
+  (`PTF75F`, `IBMPlexSerif-SemiBold`). `font_sans` and `font_mono`
+  still prefer `-Regular`, because a UI that comes up entirely bold
+  because `B` sorts before `R` is the bug that rule exists to stop.
 - Rendering warns on every unresolved token.
 
 ---
@@ -216,10 +233,37 @@ so a typo is loud rather than silent.
   text at `muted` on `bg` will fail accessibility.
 - **Light themes need different effects, not just inverted colours.**
   Drop `shadow_opacity` to ~0.15 and `blur_radius` to ~14; a dark theme's
-  heavy shadow looks like dirt on paper. See `sandstone.theme`.
-- **Tie the wallpaper to the palette.** `wall_c3`/`wall_c4` echoing
-  `accent`/`accent_alt` is what makes the desktop feel designed rather
-  than assembled.
+  heavy shadow looks like dirt on paper. See `sandstone.theme` — or
+  drop both to zero and let hairline rules do the separating, which is
+  what Nocturne does.
+- **Give the geometry keys different values.** `radius`, `margin`,
+  `padding` and `font_size` were all `14` in the first default theme,
+  which meant the corner radius, the screen inset, the internal pad
+  and the base type size were one number — and nothing in a system
+  like that can be deliberately uneven, because there is nothing for
+  it to be uneven against. Pick a scale and separate them.
+- **Do NOT restate the accent pair as the wallpaper.** The old advice
+  here was to set `wall_c3`/`wall_c4` to `accent`/`accent_alt`, and
+  following it is how the default desktop ended up being a full-screen
+  gradient between its own two accent colours — the single most
+  recognisable machine-generated-design signature there is. A
+  wallpaper should be one or two NEUTRALS from the same family as
+  `bg`, with the accent appearing once, small, if at all. Nocturne is
+  the worked example: `wall_c1`, `wall_c2` and `wall_c4` are three
+  near-black neutrals, and `wall_c3` is the signal colour used for a
+  single hairline register mark.
+- **Spend the accent on state, not on variety.** One saturated colour
+  in the whole system, reserved for "this is the live thing" or "this
+  is what will change". `accent_alt` is for a different KIND of thing
+  (an informational badge), never for making a row of identical items
+  look less samey — a row of identical items wants a different
+  composition, not three hues.
+- **A theme can switch the effects off entirely.** `blur="0"` deletes
+  every frosted panel in the shell at once, because all nineteen
+  call sites read `blur_radius` from here; `shadow_opacity="0.00"` and
+  `opacity_panel="1.00"` give flat opaque surfaces. On the hardware
+  this product exists to rescue that is also the largest single
+  per-frame saving available.
 - **Preview before applying**: `aurora show NAME`, then
   `aurwall --theme ... --out /tmp/w.png`.
 

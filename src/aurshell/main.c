@@ -186,45 +186,14 @@ static void clamp_pointer(shell_ctx *c, int w, int h)
 }
 
 /* ── fonts ───────────────────────────────────────────────────────── */
-static font *open_font(const char *named, float px)
-{
-    if (named && named[0] == '/') {
-        font *f = font_load(named, px);
-        if (f) return f;
-    }
-    /* A desktop with the wrong font is recoverable; one with no text is
-     * not, so fall through every plausible location before giving up. */
-    static const char *fb[] = {
-        "/usr/share/auros/fonts/Inter.ttf",
-        "/usr/share/fonts/opentype/inter/Inter-Regular.otf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
-        NULL
-    };
-    for (int i = 0; fb[i]; i++) {
-        font *f = font_load(fb[i], px);
-        if (f) return f;
-    }
-    return NULL;
-}
-
-static void load_fonts(shell_fonts *f, const shell_ctx *c)
-{
-    const char *p = theme_str(&c->theme, "font_sans", "");
-    int base = theme_int(&c->theme, "font_size", 14);
-    f->huge  = open_font(p, (float)base * 2.6f);
-    f->big   = open_font(p, (float)base * 1.7f);
-    f->mid   = open_font(p, (float)base * 1.2f);
-    f->small = open_font(p, (float)base);
-}
-static void free_fonts(shell_fonts *f)
-{
-    if (f->huge) font_free(f->huge);
-    if (f->big) font_free(f->big);
-    if (f->mid) font_free(f->mid);
-    if (f->small) font_free(f->small);
-    memset(f, 0, sizeof *f);
-}
+/* The type system lives in shellcommon.c, with the struct that
+ * describes it. It used to live here, and every preview and test
+ * harness carried its own partial copy -- so when the four faces became
+ * seven, the harnesses silently left three of them NULL and rendered
+ * pictures of a desktop that does not exist. Two of them "passed"
+ * while doing it. */
+static void load_fonts(shell_fonts *f, const shell_ctx *c) { shell_fonts_load(f, c); }
+static void free_fonts(shell_fonts *f) { shell_fonts_free(f); }
 
 /* ── input ───────────────────────────────────────────────────────────
  *

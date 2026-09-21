@@ -6,8 +6,16 @@ theme_variant="dark"
 theme_description="A quiet forest floor — desaturated greens and warm stone."
 
 bg="#0E1310"      bg_alt="#141A16"   surface="#1A221C"
-surface_hi="#232D25"  overlay="#2F3B31"
-muted="#5A6A5C"   subtle="#8FA292"   fg="#D3DED4"  fg_hi="#F0F6F0"
+surface_hi="#232D25"  overlay="#627D69"  # borders and dividers.
+# Raised to meet the 3:1 floor docs/DESIGN.md sets. This design
+# replaced shadows with hairlines, so the rules ARE the structure;
+# a divider at 1.4:1 is structure nobody can see. Checked by
+# tools/contrast.c --strict against every surface in the theme,
+# including the hovered row, which is the worst case.
+
+muted="#677969"  # deliberately quiet, but still 3:1 -- "quiet" is not
+                 # a licence to be unreadable, and this is the colour
+                 # a disabled control is drawn in   subtle="#8FA292"   fg="#D3DED4"  fg_hi="#F0F6F0"
 
 accent="#8FBF7F"  accent_alt="#C9A86C"  accent_warm="#E0B88A"
 ok="#8FBF7F"      warn="#E0B88A"  err="#D2807C"  info="#87AFC0"

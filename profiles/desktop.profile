@@ -78,7 +78,8 @@ packages_base="systemd-sysv dbus udev sudo less nano
                    cloud-guest-utils util-linux
                zstd xz-utils bzip2
                iputils-ping openssh-client
-               fonts-inter fonts-jetbrains-mono"
+               fonts-inter fonts-jetbrains-mono
+               fonts-paratype"
 
 # The desktop. Kept deliberately small; aurshell provides the shell.
 # What an application needs before it can put a window on the screen.

@@ -7,8 +7,14 @@ theme_variant="light"
 theme_description="Warm paper and ink with a terracotta accent."
 
 bg="#F4F0E8"      bg_alt="#EDE7DC"   surface="#FFFFFF"
-surface_hi="#F0E9DC"  overlay="#D9CFBE"
-muted="#A89C88"   subtle="#6F6555"   fg="#38332B"  fg_hi="#1C1916"
+surface_hi="#F0E9DC"  overlay="#877D6D"  # borders and dividers.
+# Raised to meet the 3:1 floor docs/DESIGN.md sets. This design
+# replaced shadows with hairlines, so the rules ARE the structure;
+# a divider at 1.4:1 is structure nobody can see. Checked by
+# tools/contrast.c --strict against every surface in the theme,
+# including the hovered row, which is the worst case.
+
+muted="#8F8068"   subtle="#6F6555"   fg="#38332B"  fg_hi="#1C1916"
 
 accent="#C2683D"  accent_alt="#4E7A6B"  accent_warm="#D9A441"
 ok="#4E7A6B"      warn="#C4892B"  err="#B4453C"  info="#3F6E9E"
@@ -23,7 +29,7 @@ ansi6="#3E8A87"  ansi14="#4FA5A1"
 ansi7="#F4F0E8"  ansi15="#FFFFFF"
 
 radius="12"  border="2"
-shadow_opacity="0.16"  opacity_panel="0.93"  blur_radius="14"
+shadow_opacity="0.00"  opacity_panel="0.93"  blur_radius="0"
 wall_style="mesh"
 wall_c1="#F4F0E8"  wall_c2="#E3D8C6"  wall_c3="#C2683D"  wall_c4="#4E7A6B"
 wall_intensity="0.32"  wall_grain="0.045"  wall_vignette="0.22"

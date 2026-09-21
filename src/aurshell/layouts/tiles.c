@@ -108,7 +108,20 @@ static rect home_btn_rect(shell_ctx *c, int w, int h)
     int wid = c->target_large ? 240 : 180;
     int max = w - c->margin * 4;
     if (wid > max) wid = max > 60 ? max : 60;
-    rect r = { (w - wid) / 2, h - bh + (bh - hgt) / 2, wid, hgt };
+    /* OFF the horizontal centre, and constant.
+     *
+     * The archetype's promise is that Home is one target, one size, in
+     * one place, in every state — and that promise says nothing about
+     * the middle. It used to sit at (w - wid)/2, which was the fourth
+     * separate decision on this one screen to be perfectly symmetric
+     * about the vertical axis. Here it sits on the grid's own left
+     * measure instead, so the one permanent control lines up with the
+     * column of buttons above it. Aligned to something is composed;
+     * centred on nothing is default. */
+    int x = c->margin * 2;
+    if (x + wid > w - c->margin) x = w - c->margin - wid;
+    if (x < c->margin) x = c->margin;
+    rect r = { x, h - bh + (bh - hgt) / 2, wid, hgt };
     return r;
 }
 
@@ -136,7 +149,30 @@ static rect full_rect(shell_ctx *c, int w, int h)
  * shadow; here it would be worse than cosmetic, because the entire
  * promise of this archetype is that pressing a picture of a thing opens
  * that thing. */
-typedef struct { int cols, rows, per, pages, tw, th, gap, x0, y0; } grid_m;
+/* th0 is row 0's height and th1 every other row's. They are different
+ * numbers on purpose; see grid_metrics. */
+typedef struct { int cols, rows, per, pages, tw, th0, th1, gap, x0, y0; } grid_m;
+
+/* A broken grid, and the break is the point.
+ *
+ * What was here produced cols x rows identical near-squares — the
+ * aspect was even capped at 5:4 so that no two could differ — with a
+ * centred question above them. That is the forbidden composition
+ * rendered to KMS, and it is also a weak answer to its own brief: a
+ * page of buttons with no first button gives the eye nowhere to land.
+ *
+ * Now: slot 0 spans TWO columns, and row 0 is taller than the rows
+ * under it (LEAD_H). So a page has one lead item and a run of smaller
+ * ones, the way a contents page or a poster is set. Both facts flow
+ * out of tile_rect, which paint AND hit-test both call, so the two
+ * passes cannot disagree about where anything is.
+ *
+ * The cost of this is real and is paid in move_sel(): keyboard
+ * navigation can no longer be (row, col) arithmetic over a uniform
+ * grid, so it is a nearest-rect search instead. That is the honest
+ * price of an uneven layout and it is contained to one function. */
+#define LEAD_SPAN 2      /* columns the first item of a page occupies */
+#define LEAD_H    1.34f  /* row 0's height, as a multiple of the rest */
 
 static grid_m grid_metrics(shell_ctx *c, int w, int h)
 {
@@ -147,7 +183,10 @@ static grid_m grid_metrics(shell_ctx *c, int w, int h)
     if (w < 1150) g.cols = c->target_large ? 3 : 4;
     if (w <  800) g.cols = 2;
     g.rows = c->target_large ? 2 : 3;
-    g.per  = g.cols * g.rows;
+    /* Row 0 gives up LEAD_SPAN cells to the lead item and gets one
+     * back, so a page holds that many fewer than cols*rows. */
+    g.per  = g.cols * g.rows - (LEAD_SPAN - 1);
+    if (g.per < 1) g.per = 1;
 
     int n = c->n_apps > 0 ? c->n_apps : 1;
     g.pages = (n + g.per - 1) / g.per;
@@ -166,20 +205,43 @@ static grid_m grid_metrics(shell_ctx *c, int w, int h)
     if (availw < g.cols) availw = g.cols;
     if (availh < g.rows) availh = g.rows;
 
-    int tw = availw / g.cols, th = availh / g.rows;
-    /* Fill the space, but cap the aspect: a button stretched to 2:1 by a
-     * wide screen stops reading as one target and starts reading as a
-     * row. Whatever is left over becomes even margin, not dead space at
-     * one edge. */
-    if (tw > th * 5 / 4) tw = th * 5 / 4;
-    if (th > tw * 5 / 4) th = tw * 5 / 4;
-    g.tw = tw; g.th = th;
+    g.tw = availw / g.cols;
+    /* No aspect cap. A wide button is not a bug here — the lead item
+     * is SUPPOSED to be a different shape from the rest, and clamping
+     * every cell toward a square was precisely the rule that made an
+     * uneven page impossible to express. */
+    float unit = (float)availh / (LEAD_H + (float)(g.rows - 1));
+    g.th0 = (int)(unit * LEAD_H);
+    g.th1 = (int)unit;
+    if (g.th0 < 40) g.th0 = 40;
+    if (g.th1 < 34) g.th1 = 34;
 
-    int bw = tw * g.cols + g.gap * (g.cols - 1);
-    int bh = th * g.rows + g.gap * (g.rows - 1);
-    g.x0 = left + ((right - left) - bw) / 2;
-    g.y0 = top  + ((bot - top)    - bh) / 2;
+    /* Left measure, top measure. The block used to be centred in BOTH
+     * axes inside whatever was left over, which is how a page ends up
+     * floating in the middle of nothing; the leftover space now falls
+     * where a printed page leaves it, at the foot. */
+    g.x0 = left;
+    g.y0 = top;
     return g;
+}
+
+/* Slot -> cell, the one place the broken rhythm is expressed.
+ * Returns the cell's column, row, column span, and the row heights are
+ * read from g. Row 0 holds the lead (LEAD_SPAN wide) then cols -
+ * LEAD_SPAN ordinary cells; every row after it is ordinary. */
+static void grid_cell(const grid_m *g, int slot, int *col, int *row, int *span)
+{
+    int first_row = g->cols - (LEAD_SPAN - 1);   /* cells in row 0 */
+    if (slot < first_row) {
+        *row = 0;
+        *span = (slot == 0) ? LEAD_SPAN : 1;
+        *col = (slot == 0) ? 0 : slot + (LEAD_SPAN - 1);
+    } else {
+        int k = slot - first_row;
+        *row = 1 + k / g->cols;
+        *col = k % g->cols;
+        *span = 1;
+    }
 }
 
 static int page_of_app(shell_ctx *c, int app, int w, int h)
@@ -198,34 +260,29 @@ static rect tile_rect(shell_ctx *c, int w, int h, int app)
     grid_m g = grid_metrics(c, w, h);
     int page = app / g.per;
     int slot = app - page * g.per;
-    int row  = slot / g.cols, col = slot % g.cols;
+    int col, row, span;
+    grid_cell(&g, slot, &col, &row, &span);
 
-    /* A last page holding two buttons must not read as a page with six
-     * missing ones, so a short final row (and a short page) is centred
-     * inside the full block instead of being left-and-top aligned. */
-    int on_page = c->n_apps - page * g.per;
-    if (on_page > g.per) on_page = g.per;
-    if (on_page < 1)     on_page = 1;
-    int rows_used = (on_page + g.cols - 1) / g.cols;
-    int in_row = (row == rows_used - 1) ? on_page - row * g.cols : g.cols;
-    if (in_row > g.cols) in_row = g.cols;
-    if (in_row < 1)      in_row = 1;
-
-    int bw = g.tw * in_row    + g.gap * (in_row - 1);
-    int bh = g.th * rows_used + g.gap * (rows_used - 1);
-    int fw = g.tw * g.cols    + g.gap * (g.cols - 1);
-    int fh = g.th * g.rows    + g.gap * (g.rows - 1);
-
+    /* Left-aligned, top-aligned. A short final page now runs off the
+     * top-left like a column of type that has come to an end, instead
+     * of being re-centred inside the full block — which was the third
+     * centring decision in this one file and made two buttons on a
+     * last page look like a dialog box. */
     rect r;
-    r.x = g.x0 + (fw - bw) / 2 + col * (g.tw + g.gap);
-    r.y = g.y0 + (fh - bh) / 2 + row * (g.th + g.gap);
-    r.w = g.tw; r.h = g.th;
+    r.x = g.x0 + col * (g.tw + g.gap);
+    r.y = g.y0 + (row == 0 ? 0 : g.th0 + g.gap + (row - 1) * (g.th1 + g.gap));
+    r.w = g.tw * span + g.gap * (span - 1);
+    r.h = (row == 0) ? g.th0 : g.th1;
     return r;
 }
 
+/* Left-aligned to the grid's own measure, not centred on the screen.
+ * (void)pages: the count no longer moves the first one, which is the
+ * whole difference between a measure and a centred ornament. */
 static rect page_dot_rect(shell_ctx *c, int w, int h, int i, int pages)
 {
-    int x0 = w / 2 - (pages * DOT_PITCH) / 2;
+    (void)w; (void)pages;
+    int x0 = c->margin * 2;
     rect r = { x0 + i * DOT_PITCH, dots_band_y(c, h), DOT_PITCH, DOTS_BAND };
     return r;
 }
@@ -238,7 +295,7 @@ static rect origin_rect(shell_ctx *c, int w, int h, int wi)
     if (wi >= 0 && wi < c->n_wins && c->wins[wi].app >= 0 && c->wins[wi].app < c->n_apps)
         return tile_rect(c, w, h, c->wins[wi].app);
     grid_m g = grid_metrics(c, w, h);
-    rect r = { w / 2 - g.tw / 2, g.y0 + (g.th * g.rows) / 2 - g.th / 2, g.tw, g.th };
+    rect r = { g.x0, g.y0, g.tw, g.th0 };
     return r;
 }
 
@@ -305,75 +362,109 @@ static void go_home(shell_ctx *c)
 
 /* ── painting ────────────────────────────────────────────────────── */
 
+/* A poster, not a badge.
+ *
+ * The composition this replaces was: halo disc, centred mark, centred
+ * name, centred hint, stacked on the tile's own axis — the sixth
+ * independent copy of one block in this product, and the reason six
+ * genuinely different interaction models all read as the same generic
+ * thing. Here the mark sits in the top-left corner and the words hang
+ * off the bottom-left measure, so a tile is a piece of a page rather
+ * than an app-store icon with a caption. The empty middle is the
+ * composition, not a gap waiting to be filled.
+ *
+ * The lead item gets the display face at its largest size; the rest
+ * get it one step down. That size jump IS the hierarchy — no colour,
+ * no border weight, no shadow. */
 static void paint_tile(shell_ctx *c, surface *s, shell_fonts *f, int app,
-                       rect t, float alpha)
+                       rect t, float alpha, int lead)
 {
     tiles_priv *p = P(c);
     int hot = (p->hot == app);
     int run = app_window(c, app) >= 0;
-    uint32_t tint = c->apps[app].tint;
+    uint32_t ink = c->apps[app].tint;
+    uint32_t paper = hot ? c->surface_hi : c->surface_c;
     corners cr = corners_all((float)c->radius);
+    int pad = c->padding;
 
-    if (hot)
-        draw_round_rect_shadow(s, t, cr, (float)c->shadow_r * 0.7f, 0x000000,
-                               c->shadow_a * 0.6f * alpha, 6);
-    draw_round_rect(s, t, cr, hot ? c->surface_hi : c->surface_c,
-                    alpha * (hot ? 1.f : c->panel_a));
-    draw_round_rect_border(s, t, cr,
-                           hot ? (float)c->border : (run ? 2.f : 1.f),
-                           (hot || run) ? tint : c->overlay,
-                           alpha * (hot ? 0.95f : (run ? 0.6f : 0.7f)));
+    draw_round_rect(s, t, cr, paper, alpha);
+    /* Hover is an inset bar down the left edge, the cheapest possible
+     * anti-glassmorphism primitive and the one GOV.UK uses for exactly
+     * this job. No shadow, no glow, no second ring. */
+    if (hot) draw_rect(s, (rect){ t.x, t.y, 4, t.h }, c->accent, alpha);
+    draw_frame(s, t, 1, hot ? c->muted : c->overlay, alpha);
 
-    /* Centre icon + name (+ hint) as one block. Pinning the icon to a
-     * fraction of the tile height leaves dead air under the text on a
-     * tall tile, and dead air inside a button reads as "something is
-     * missing here". */
-    float icx  = (float)(t.x + t.w / 2);
-    /* The icon is the target; the words confirm it. Capped so a 4K tile
-     * does not get a 200px glyph, but high enough that a large tile is
-     * not a big empty box with a small picture floating in it. */
-    float isz  = clampf((float)t.h * 0.32f, 30.f, 128.f);
-    font *nf   = c->target_large ? f->big : f->mid;
+    /* The lead item's mark is nearly twice the others'. Together with
+     * the display face two steps up, that is the whole of the
+     * hierarchy on this page: no colour, no border weight, no glow. */
+    /* Running. A solid square of the signal colour in the corner —
+     * this is one of only two things on the whole page allowed to be
+     * red, and it means "this is already going". The dot-in-a-halo it
+     * replaces said the same thing twice at two alphas. */
+    if (run)
+        draw_rect(s, (rect){ t.x + t.w - pad - 11, t.y + pad, 11, 11 },
+                  c->accent, alpha * 0.95f);
 
-    /* Measure the block with ascent+descent, the ink the glyphs actually
-     * occupy, and NOT with line height. Line height carries the font's
-     * leading, so a block sized by it is shorter than what gets drawn —
-     * which centres fine on a roomy tile and drops the hint's descenders
-     * through the bottom border on a 600px-tall screen. Same numbers
-     * here as in the baselines below, by construction. */
-    float la = fa(nf, 22.f), ld = fdc(nf, 6.f);
-    float ha = fa(f->small, 13.f), hd = fdc(f->small, 3.f);
-    float head  = isz * 1.56f + 18.f;
-    float block = head + la + ld + 10.f + ha + hd;
-    /* The hint is the first thing to go when the tile is short. Deciding
-     * that from the measured block rather than from a magic tile height
-     * means it degrades at exactly the size where it would stop fitting,
-     * whatever font the theme named. */
-    int hint = (block <= (float)t.h - 12.f);
-    if (!hint) block = head + la + ld;
-    float top   = (float)t.y + ((float)t.h - block) * 0.5f;
-    float icy   = top + isz * 0.78f;
+    float ha = fa(f->small, 11.f), hd = fdc(f->small, 4.f);
 
-    draw_circle(s, icx, icy, isz * 0.78f, tint, alpha * (hot ? 0.22f : 0.14f));
-    shell_icon_draw(s, c->apps[app].icon, icx, icy, isz, tint, alpha * (hot ? 1.f : 0.92f));
+    if (lead) {
+        /* TWO compositions on one page, and that is the point. The lead
+         * item is wide and short, so it is set ACROSS: a large mark on
+         * the left measure and the words beside it, closed by a rule.
+         * The ordinary tiles are set DOWN: mark in the corner, words at
+         * the foot. Two shapes of thing on one page is what a contents
+         * spread looks like; eight of one shape is what a grid looks
+         * like, and a grid is what the law forbids. */
+        float isz = clampf((float)t.h * 0.42f, 30.f, 148.f);
+        float x   = (float)(t.x + pad) + isz + 34.f;
+        float room = (float)(t.x + t.w - pad) - x;
 
-    float ly = top + head + la;
-    shell_text_centred(s, nf, icx, ly, c->apps[app].name, c->fg_hi, alpha * 0.97f);
-    if (hint)
-        shell_text_centred(s, f->small, icx, ly + ld + 10.f + ha,
-                           c->apps[app].hint, c->subtle, alpha * 0.78f);
+        font *nf = f->huge;
+        if (shell_text_w(nf, c->apps[app].name) > room) nf = f->big;
+        if (shell_text_w(nf, c->apps[app].name) > room) nf = f->dmid;
+        float la = fa(nf, 32.f), ld = fdc(nf, 12.f);
 
-    /* Running marker. "Go back to the thing I was doing" is the one
-     * question this archetype makes the user work for — switching goes
-     * via Home — so the grid has to answer it without being asked. A dot
-     * in the tint, ringed so it survives both a light and a dark
-     * surface underneath. */
-    if (run) {
-        float dx = (float)(t.x + t.w) - (float)c->padding - 12.f;
-        float dy = (float)t.y + (float)c->padding + 12.f;
-        draw_circle(s, dx, dy, 9.f, tint, alpha * 0.22f);
-        draw_circle(s, dx, dy, 5.f, tint, alpha * 0.95f);
+        float block  = la + ld + 15.f + 2.f + 16.f + ha + hd;
+        float top    = (float)t.y + ((float)t.h - block) * 0.5f;
+        float name_b = top + la;
+        int   ruley  = (int)(name_b + ld + 15.f);
+
+        shell_icon_draw(s, c->apps[app].icon,
+                        (float)(t.x + pad) + isz * 0.5f,
+                        (float)t.y + (float)t.h * 0.5f,
+                        isz, ink, paper, alpha * 0.98f);
+        shell_text(s, nf, x, name_b, c->apps[app].name, c->fg_hi, alpha * 0.98f);
+        draw_hrule(s, (int)x, ruley, (int)(room * 0.62f), 2, c->fg_hi, alpha * 0.85f);
+        shell_text(s, f->small, x, (float)ruley + 16.f + ha,
+                   c->apps[app].hint, c->subtle, alpha * 0.92f);
+        return;
     }
+
+    float isz = clampf((float)t.h * 0.25f, 26.f, 64.f);
+    shell_icon_draw(s, c->apps[app].icon,
+                    (float)(t.x + pad) + isz * 0.5f,
+                    (float)(t.y + pad) + isz * 0.5f,
+                    isz, ink, paper, alpha * 0.98f);
+
+    font *nf = f->big;
+    float room = (float)t.w - (float)pad * 2.f;
+    if (shell_text_w(nf, c->apps[app].name) > room) nf = f->dmid;
+    if (shell_text_w(nf, c->apps[app].name) > room) nf = f->mid;
+
+    float la = fa(nf, 22.f), ld = fdc(nf, 8.f);
+    /* Anchored to the FOOT of the tile and measured in ink, so the
+     * baseline the hint is drawn at and the space reserved for it are
+     * the same number by construction. */
+    float hint_b = (float)(t.y + t.h - pad) - hd;
+    float name_b = hint_b - ha - 9.f - ld;
+    int   hint   = (name_b - la > (float)(t.y + pad) + isz + 10.f);
+    if (!hint) name_b = (float)(t.y + t.h - pad) - ld;
+
+    shell_text(s, nf, (float)(t.x + pad), name_b, c->apps[app].name,
+               c->fg_hi, alpha * 0.98f);
+    if (hint)
+        shell_text(s, f->small, (float)(t.x + pad), hint_b, c->apps[app].hint,
+                   c->subtle, alpha * 0.92f);
 }
 
 /* The growing thing. One composition, two sets of words: the button's
@@ -387,108 +478,91 @@ static void paint_open(shell_ctx *c, surface *s, shell_fonts *f,
 {
     const win_entry *win = &c->wins[wi];
     int app = (win->app >= 0 && win->app < c->n_apps) ? win->app : -1;
-    uint32_t tint = (app >= 0) ? c->apps[app].tint : c->accent;
+    uint32_t ink = (app >= 0) ? c->apps[app].tint : c->fg;
     shell_icon ic = (app >= 0) ? c->apps[app].icon : ICON_WINDOW;
     corners cr = corners_all(rad);
+    int pad = c->padding;
 
+    draw_round_rect(s, a, cr, c->surface_c, 1.f);
     if (t < 0.995f) {
-        draw_round_rect_shadow(s, a, cr, (float)c->shadow_r * 0.9f, 0x000000,
-                               c->shadow_a * (1.f - t), 8);
-        draw_blur_region(s, a, c->blur_r);
+        draw_frame(s, a, 1, c->overlay, 1.f - t * 0.4f);
+        draw_hrule(s, a.x, a.y, a.w, 3, c->accent, 1.f - t);
     }
-    /* Opaque by the time it is full screen: a translucent "full screen"
-     * shows the wallpaper through the thing you are working in, which
-     * puts two things on screen again through the back door. */
-    draw_round_rect(s, a, cr, c->surface_c, lerpf(c->panel_a, 1.f, t));
-    if (rad > 0.5f)
-        draw_round_rect_border(s, a, cr, (float)c->border, tint, 0.85f * (1.f - t));
 
     if (win->content)
         draw_content_fit(s, win->content, a, cr, t);
 
-    /* Text does not scale, so it cannot ride the move the way the icon
+    /* Text does not scale, so it cannot ride the move the way the mark
      * does: it leaves early and arrives late, and for the fifth of a
-     * second in between only the icon is on the card. Overlapping the
-     * two sets instead just prints one on top of the other. */
+     * second in between only the mark is on the card. */
     float ta = clampf(1.f - t * 2.5f, 0.f, 1.f);        /* the button's words  */
     float tb = clampf(t * 2.5f - 1.5f, 0.f, 1.f);       /* the app's own words */
 
-    float icx = (float)(a.x + a.w / 2);
-    float isz = clampf((float)a.h * 0.26f, 30.f, 132.f);
-    font *nf  = c->target_large ? f->big : f->mid;
+    float x   = (float)(a.x + pad);
+    float isz = lerpf(clampf((float)a.h * 0.24f, 26.f, 78.f),
+                      clampf((float)a.h * 0.11f, 30.f, 96.f), t);
 
-    /* Two block heights — the button's and the app's — and the icon
-     * rides between them, so each end of the move is exactly centred and
-     * the middle, where no text is drawn at all, simply glides. Measured
-     * in ink, as in paint_tile, and for the same reason. */
-    float la = fa(nf, 22.f),        ld = fdc(nf, 6.f);
-    float Ta = fa(f->huge, 32.f),   Td = fdc(f->huge, 10.f);
-    float Sa = fa(f->mid, 16.f),    Sd = fdc(f->mid, 5.f);
-    float ha = fa(f->small, 13.f),  hd = fdc(f->small, 3.f);
-    float head = isz * 1.56f + 18.f;
-    float blkA = head + la + ld + 10.f + ha + hd;
-    /* Wider leading between the full-screen lines than between a tile's
-     * two: the same 10px that separates 26px and 13px type reads as a
-     * collision under a 40px title. */
-    float blkB = head + Ta + Td + 18.f + Sa + Sd + 14.f + ha + hd;
-    float top  = lerpf((float)a.y + ((float)a.h - blkA) * 0.5f,
-                       (float)a.y + ((float)a.h - blkB) * 0.5f, t);
-    float icy  = top + isz * 0.78f;
+    /* Both compositions are anchored to the SAME left measure, so the
+     * mark travels straight down the page instead of sliding sideways
+     * into a centre it never had. */
+    float Ta = fa(f->huge, 32.f),  Td = fdc(f->huge, 12.f);
+    float Sa = fa(f->mid, 14.f),   Sd = fdc(f->mid, 5.f);
+    float ha = fa(f->small, 11.f), hd = fdc(f->small, 4.f);
+    float la = fa(f->huge, 32.f),  ld = fdc(f->huge, 12.f);
 
-    /* With live content the icon is scaffolding for the move and nothing
-     * more, so it gets out of the way once the move is over. */
-    float ia = win->content ? (1.f - t) : 1.f;
-    draw_circle(s, icx, icy, isz * 0.78f, tint, ia * 0.16f);
-    shell_icon_draw(s, ic, icx, icy, isz, tint, ia * 0.95f);
+    float icyA = (float)(a.y + pad) + isz * 0.5f;
+    float icyB = (float)a.y + (float)a.h * 0.34f;
+    float icy  = lerpf(icyA, icyB, t);
+    float ia   = win->content ? (1.f - t) : 1.f;
+    shell_icon_draw(s, ic, x + isz * 0.5f, icy, isz, ink, c->surface_c, ia * 0.98f);
 
     if (ta > 0.f && app >= 0) {
-        float ly = top + head + la;
-        shell_text_centred(s, nf, icx, ly, c->apps[app].name, c->fg_hi, ta * 0.97f);
-        shell_text_centred(s, f->small, icx, ly + ld + 10.f + ha,
-                           c->apps[app].hint, c->subtle, ta * 0.78f);
+        float hint_b = (float)(a.y + a.h - pad) - hd;
+        float name_b = hint_b - ha - 9.f - ld;
+        shell_text(s, f->huge, x, name_b, c->apps[app].name, c->fg_hi, ta * 0.98f);
+        shell_text(s, f->small, x, hint_b, c->apps[app].hint, c->subtle, ta * 0.9f);
+        (void)la;
     }
     if (tb > 0.f && !win->content) {
-        float ly = top + head + Ta;
-        shell_text_centred(s, f->huge, icx, ly, win->title, c->fg_hi, tb * 0.97f);
-        float sy = ly + Td + 18.f + Sa;
-        shell_text_centred(s, f->mid, icx, sy,
-                           win->subtitle[0] ? win->subtitle : "Opening…",
-                           c->subtle, tb * 0.85f);
+        float ly = icy + isz * 0.5f + 34.f + Ta;
+        shell_text(s, f->huge, x, ly, win->title, c->fg_hi, tb * 0.98f);
+        draw_hrule(s, (int)x, (int)(ly + Td + 18.f),
+                   (int)((float)(a.w - pad * 2) * 0.24f), 2, c->fg_hi, tb * 0.9f);
+        float sy = ly + Td + 18.f + 22.f + Sa;
+        shell_text(s, f->mid, x, sy,
+                   win->subtitle[0] ? win->subtitle : "Opening…", c->subtle, tb * 0.9f);
         /* Only ever shown on the placeholder, i.e. exactly when there is
          * nothing here yet and the user is most likely to wonder whether
          * they have broken something. */
-        float hy = sy + Sd + 14.f + ha;
-        shell_text_centred(s, f->small, icx, hy,
-                           "Press Home below to come back.", c->muted, tb * 0.95f);
+        shell_text(s, f->small, x, sy + Sd + 13.f + ha,
+                   "Press Home below to come back.", c->muted, tb * 0.95f);
     }
 }
 
+/* A measure, not a row of dots. Each page is a segment of rule; the
+ * one you are on is heavier and carries the signal colour. The words
+ * sit after it rather than under it, so the whole thing is one line of
+ * a page rather than a centred ornament with a caption. */
 static void paint_dots(shell_ctx *c, surface *s, shell_fonts *f,
                        int w, int h, int pages, float alpha)
 {
     if (pages < 2 || alpha <= 0.01f) return;
     tiles_priv *p = P(c);
-    grid_m g = grid_metrics(c, w, h);
-
-    /* Dots alone are a small affordance for someone who is new to this,
-     * so they are spelled out in words as well. The words sit at the
-     * grid's left edge and the dots stay centred, which also keeps the
-     * dot geometry independent of a font — l_click has no fonts. */
-    char lab[40];
-    snprintf(lab, sizeof lab, "Page %d of %d", p->page + 1, pages);
-    rect b0 = page_dot_rect(c, w, h, 0, pages);
-    shell_text(s, f->small, (float)g.x0,
-               shell_baseline(f->small, (float)b0.y, (float)DOTS_BAND),
-               lab, c->subtle, alpha * 0.8f);
 
     for (int i = 0; i < pages; i++) {
         rect d = page_dot_rect(c, w, h, i, pages);
         int cur = (i == p->page);
-        draw_circle(s, (float)d.x + (float)d.w * 0.5f,
-                    (float)d.y + (float)DOTS_BAND * 0.5f,
-                    cur ? 6.5f : 4.5f, cur ? c->accent : c->fg,
-                    alpha * (cur ? 1.f : 0.32f));
+        int y = d.y + DOTS_BAND / 2;
+        draw_hrule(s, d.x, cur ? y - 2 : y, DOT_PITCH - 8, cur ? 4 : 2,
+                   cur ? c->accent : c->muted, alpha * (cur ? 1.f : 0.7f));
     }
+
+    char lab[40];
+    snprintf(lab, sizeof lab, "Page %d of %d", p->page + 1, pages);
+    rect last = page_dot_rect(c, w, h, pages - 1, pages);
+    shell_text(s, f->small, (float)(last.x + DOT_PITCH + 10),
+               shell_baseline(f->small, (float)last.y, (float)DOTS_BAND),
+               lab, c->subtle, alpha * 0.85f);
 }
 
 static void paint_strip(shell_ctx *c, surface *s, shell_fonts *f, int w, float t)
@@ -497,45 +571,53 @@ static void paint_strip(shell_ctx *c, surface *s, shell_fonts *f, int w, float t
     int bh = strip_h(c);
     rect r = { 0, 0, w, bh };
 
-    draw_blur_region(s, r, c->blur_r);
-    draw_rect(s, r, c->bg, 0.58f);
-    draw_line(s, 0, (float)bh, (float)w, (float)bh, 1.f, c->overlay, 0.5f);
-
-    draw_circle(s, (float)(c->margin + 8), (float)(bh / 2), 6.f, c->accent, 1.f);
-    shell_text(s, f->small, (float)(c->margin + 24),
-               shell_baseline(f->small, 0.f, (float)bh), c->brand, c->subtle, 0.9f);
+    draw_rect(s, r, c->bg_alt, 1.f);
+    draw_hrule(s, 0, bh, w, 1, c->overlay, 1.f);
+    draw_rect(s, (rect){ c->margin, bh/2 - 4, 8, 8 }, c->accent, 1.f);
+    shell_text_tracked(s, f->label, (float)(c->margin + 20),
+                       shell_baseline(f->label, 0.f, (float)bh),
+                       c->brand, c->subtle, 0.95f, 1.6f);
 
     if (c->show_clock) {
         char hm[32], dt[48];
         shell_clock(hm, sizeof hm, dt, sizeof dt);
-        float by = shell_baseline(f->small, 0.f, (float)bh);
         float rx = (float)(w - c->margin);
-        shell_text(s, f->small, rx - shell_text_w(f->small, hm), by, hm, c->fg_hi, 0.95f);
-        rx -= shell_text_w(f->small, hm) + 14.f;
-        shell_text(s, f->small, rx - shell_text_w(f->small, dt), by, dt, c->subtle, 0.75f);
+        shell_text(s, f->mid, rx - shell_text_w(f->mid, hm),
+                   shell_baseline(f->mid, 0.f, (float)bh), hm, c->fg_hi, 1.f);
+        rx -= shell_text_w(f->mid, hm) + 13.f;
+        draw_vrule(s, (int)rx, 9, bh - 18, 1, c->overlay, 1.f);
+        rx -= 13.f;
+        shell_text(s, f->small, rx - shell_text_w(f->small, dt),
+                   shell_baseline(f->small, 0.f, (float)bh), dt, c->subtle, 0.9f);
     }
 
-    /* The centre of the strip is a single slot that says where you are,
-     * and it crossfades in place. The question and the answer occupying
-     * the same pixels is the point: there is one "where am I", not a
-     * title bar that appears and a greeting that disappears. Nothing
-     * here is clickable — this is NOT a taskbar, and a strip you can
-     * launch or switch from would re-create the second place to look
-     * that this whole archetype exists to delete. */
-    float cx = (float)w * 0.5f;
+    /* One slot that says where you are, and it crossfades in place.
+     * The question and the answer occupying the same pixels is the
+     * point: there is one "where am I", not a title bar that appears
+     * and a greeting that disappears. Nothing here is clickable — this
+     * is NOT a taskbar.
+     *
+     * It sits on the grid's left measure, not on w*0.5. Centring it
+     * put a question mark on the screen's axis directly above a grid
+     * that was itself centred in both directions; two centred things
+     * stacked is not a composition, it is a default. */
+    /* After the brand, separated by a rule: a masthead reads left to
+     * right as two facts, not as one string that happens to wrap. */
+    float gx = (float)(c->margin + 20)
+             + shell_text_tracked_w(f->label, c->brand, 1.6f) + 18.f;
+    draw_vrule(s, (int)gx, 9, bh - 18, 1, c->overlay, 1.f);
+    gx += 18.f;
     float qa = clampf(1.f - t * 2.5f, 0.f, 1.f);
     float na = clampf(t * 2.5f - 1.5f, 0.f, 1.f);
     if (qa > 0.f)
-        shell_text_centred(s, f->small, cx, shell_baseline(f->small, 0.f, (float)bh),
-                           "What would you like to do?", c->subtle, qa * 0.85f);
+        shell_text(s, f->small, gx, shell_baseline(f->small, 0.f, (float)bh),
+                   "What would you like to do?", c->subtle, qa * 0.9f);
     if (na > 0.f && p->win >= 0) {
         const win_entry *win = &c->wins[p->win];
-        uint32_t tint = (win->app >= 0) ? c->apps[win->app].tint : c->accent;
+        uint32_t ink = (win->app >= 0) ? c->apps[win->app].tint : c->fg;
         shell_icon ic = (win->app >= 0) ? c->apps[win->app].icon : ICON_WINDOW;
-        float tw = shell_text_w(f->mid, win->title);
-        float gx = cx - (tw + 28.f) * 0.5f;
-        shell_icon_draw(s, ic, gx + 9.f, (float)bh * 0.5f, 18.f, tint, na * 0.95f);
-        shell_text(s, f->mid, gx + 28.f, shell_baseline(f->mid, 0.f, (float)bh),
+        shell_icon_draw(s, ic, gx + 8.f, (float)bh * 0.5f, 16.f, ink, c->bg_alt, na * 0.95f);
+        shell_text(s, f->mid, gx + 24.f, shell_baseline(f->mid, 0.f, (float)bh),
                    win->title, c->fg_hi, na * 0.97f);
     }
 }
@@ -545,48 +627,43 @@ static void paint_homebar(shell_ctx *c, surface *s, shell_fonts *f, int w, int h
     tiles_priv *p = P(c);
     rect bar = homebar_rect(c, w, h);
 
-    draw_blur_region(s, bar, c->blur_r);
-    draw_rect(s, bar, c->bg_alt, 0.75f);
-    draw_line(s, 0, (float)bar.y, (float)w, (float)bar.y, 1.f, c->overlay, 0.7f);
+    draw_rect(s, bar, c->bg_alt, 1.f);
+    /* A 2px rule closes the foot of the page, the way a rule closes a
+     * printed footer. Heavier than the hairlines inside the page, so
+     * the permanent chrome reads as a different order of thing. */
+    draw_hrule(s, 0, bar.y, w, 2, c->overlay, 1.f);
 
     rect b = home_btn_rect(c, w, h);
-    corners cr = corners_all((float)b.h * 0.5f);
+    corners cr = corners_all((float)c->radius);
     int hot = p->home_hot;
 
-    /* Quiet when you are already here, filled and loud when you are not
-     * — but never absent, never moved and never a different size. The
-     * user learns one target once.
+    /* Quiet when you are already here, filled and loud when you are
+     * not — but never absent, never moved and never a different size.
+     * The user learns one target once.
      *
      * The state change runs at twice the speed of the move, on purpose:
-     * halfway through, this control is the one thing on screen that must
-     * not be a half-blended nothing-colour. It commits early on the way
-     * out and gives up late on the way back. */
+     * halfway through, this control is the one thing on screen that
+     * must not be a half-blended nothing-colour. */
     float k = clampf(t * 2.f, 0.f, 1.f);
-    if (k > 0.005f)
-        draw_round_rect_shadow(s, b, cr, (float)c->shadow_r * 0.6f, 0x000000,
-                               c->shadow_a * k * 0.8f, 5);
-    draw_round_rect(s, b, cr, hot ? c->surface_hi : c->surface_c,
-                    (1.f - k) * (hot ? 1.f : c->panel_a));
-    draw_round_rect_border(s, b, cr, 1.5f, c->overlay, (1.f - k) * 0.75f);
-    if (k > 0.005f)
-        draw_round_rect(s, b, cr, c->accent, k * (hot ? 1.f : 0.94f));
+    draw_round_rect(s, b, cr, hot ? c->surface_hi : c->surface_c, 1.f - k);
+    draw_frame(s, b, 2, hot ? c->accent : c->fg, 1.f - k);
+    if (k > 0.005f) draw_round_rect(s, b, cr, c->accent, k);
 
-    /* The word, not a glyph. The shared icon set has no house and no
-     * grid, and inventing one here would fork the set six ways — which
-     * is exactly what shellcommon.c exists to prevent. It is also the
-     * better call on its own merits: an icon that needs interpreting is
-     * a label that failed, and this is the one control that cannot
-     * afford to be interpreted.
+    /* The word, not a glyph. The shared mark set has no house and no
+     * grid for "home", and inventing one here would fork the set six
+     * ways — which is exactly what shellcommon.c exists to prevent. It
+     * is also the better call on its own merits: a mark that needs
+     * interpreting is a label that failed, and this is the one control
+     * that cannot afford to be interpreted.
      *
      * On the accent fill the label is drawn in the background colour.
      * That is the one colour a theme guarantees contrasts with its
-     * accent — the accent was chosen to be legible against it — so this
-     * stays readable in Nocturne's pale mint and in Sandstone's
-     * terracotta without a single hardcoded value. */
-    font *hf = c->target_large ? f->big : f->mid;
+     * accent, so this stays readable in a warm-paper theme and in a
+     * dark one without a single hardcoded value. */
+    font *hf = c->target_large ? f->big : f->dmid;
     float by = shell_baseline(hf, (float)b.y, (float)b.h);
-    float bx = (float)(b.x + b.w / 2);
-    shell_text_centred(s, hf, bx, by, "Home", mix_rgb(c->fg, c->bg, k), 0.85f + 0.15f * k);
+    shell_text(s, hf, (float)(b.x + c->padding), by, "Home",
+               mix_rgb(c->fg_hi, c->bg, k), 1.f);
 }
 
 static void l_paint(shell_ctx *c, surface *s, shell_fonts *f, const surface *wall)
@@ -624,9 +701,8 @@ static void l_paint(shell_ctx *c, surface *s, shell_fonts *f, const surface *wal
             if (t > 0.f && p->win >= 0 && c->wins[p->win].app == i)
                 continue;                       /* this one IS the growing card */
             rect r = tile_rect(c, w, h, i);
-            if (t <= 0.001f) draw_blur_region(s, r, c->blur_r);
-            else             r = rect_scale(r, 1.f - 0.07f * t);
-            paint_tile(c, s, f, i, r, 1.f - t);
+            if (t > 0.001f) r = rect_scale(r, 1.f - 0.07f * t);
+            paint_tile(c, s, f, i, r, 1.f - t, (i - first) == 0);
         }
         paint_dots(c, s, f, w, h, g.pages, 1.f - t);
     }
@@ -703,28 +779,70 @@ static void l_motion(shell_ctx *c, int x, int y)
 /* The keyboard is a bonus here, not the model (keyboard_optional=yes),
  * so it drives the same single highlight the pointer does rather than
  * growing a second notion of "selected". */
+/* Keyboard navigation over a grid that is no longer a grid.
+ *
+ * This used to be (row, col) arithmetic over g.cols, which is exactly
+ * the thing that stops working the moment one cell spans two columns
+ * and one row is taller than the others. So it is a nearest-rect
+ * search instead: from the current cell's centre, take the closest
+ * cell that actually lies in the direction asked for, weighting
+ * off-axis distance double so that "right" prefers the thing beside
+ * you over the thing diagonally below.
+ *
+ * It reads the SAME tile_rect the painter and the hit-test read, so
+ * whatever composition that function returns, the arrows follow it.
+ * That is the price of an uneven layout, paid once, here. */
 static void move_sel(shell_ctx *c, int dcol, int drow)
 {
     tiles_priv *p = P(c);
     grid_m g = grid_metrics(c, c->screen_w, c->screen_h);
     if (c->n_apps <= 0) return;
 
-    if (p->hot < 0) { p->hot = p->page * g.per; if (p->hot >= c->n_apps) p->hot = c->n_apps - 1; return; }
+    if (p->hot < 0) {
+        p->hot = p->page * g.per;
+        if (p->hot >= c->n_apps) p->hot = c->n_apps - 1;
+        return;
+    }
 
-    int page = p->hot / g.per, slot = p->hot - page * g.per;
-    int col = slot % g.cols + dcol, row = slot / g.cols + drow;
-    if (col < 0)       { page--; col = g.cols - 1; }
-    if (col >= g.cols) { page++; col = 0; }
-    if (page < 0)        { page = 0; col = 0; }
-    if (page >= g.pages) { page = g.pages - 1; col = g.cols - 1; }
-    if (row < 0) row = 0;
-    if (row >= g.rows) row = g.rows - 1;
+    int first = p->page * g.per, last = first + g.per;
+    if (last > c->n_apps) last = c->n_apps;
 
-    int n = page * g.per + row * g.cols + col;
-    if (n >= c->n_apps) n = c->n_apps - 1;
-    if (n < 0) n = 0;
-    p->hot  = n;
-    p->page = n / g.per;
+    rect cur = tile_rect(c, c->screen_w, c->screen_h, p->hot);
+    float cx = (float)cur.x + (float)cur.w * 0.5f;
+    float cy = (float)cur.y + (float)cur.h * 0.5f;
+
+    int best = -1;
+    float bestd = 0.f;
+    for (int i = first; i < last; i++) {
+        if (i == p->hot) continue;
+        rect r = tile_rect(c, c->screen_w, c->screen_h, i);
+        float dx = (float)r.x + (float)r.w * 0.5f - cx;
+        float dy = (float)r.y + (float)r.h * 0.5f - cy;
+        if (dcol > 0 && dx <=  1.f) continue;
+        if (dcol < 0 && dx >= -1.f) continue;
+        if (drow > 0 && dy <=  1.f) continue;
+        if (drow < 0 && dy >= -1.f) continue;
+        float along = dcol ? fabsf(dx) : fabsf(dy);
+        float off   = dcol ? fabsf(dy) : fabsf(dx);
+        float d = along + off * 2.f;
+        if (best < 0 || d < bestd) { best = i; bestd = d; }
+    }
+    if (best >= 0) { p->hot = best; return; }
+
+    /* Nothing that way on this page. Left and right step the page, as
+     * they always did; up and down stop, because a page break is a
+     * horizontal idea here and pretending otherwise teleports you. */
+    if (dcol > 0 && p->page + 1 < g.pages) {
+        p->page++;
+        p->hot = p->page * g.per;
+    } else if (dcol < 0 && p->page > 0) {
+        p->page--;
+        int l = p->page * g.per + g.per;
+        if (l > c->n_apps) l = c->n_apps;
+        p->hot = l - 1;
+    }
+    if (p->hot >= c->n_apps) p->hot = c->n_apps - 1;
+    if (p->hot < 0) p->hot = 0;
 }
 
 static void l_key(shell_ctx *c, int k)

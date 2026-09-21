@@ -185,13 +185,23 @@ static rect switcher_rect(shell_ctx *c, int w, int h, int n, int item)
 
     int row = item / cols, col = item % cols;
     int in_row = n - row*cols; if (in_row > cols) in_row = cols;
-    int row_w  = in_row*bw + (in_row - 1)*gap;      /* a short last row centres */
-    rect b = { band.x + pad + (area - row_w)/2 + col*(bw + gap),
+    /* A short last row LINES UP with the row above it. Centring it was
+     * the fifth axis of symmetry in this product and it is also the
+     * wrong answer: a row of buttons that shifts sideways depending on
+     * how many there are is a row whose positions you cannot learn,
+     * which on a reception desk is the only thing that matters. */
+    (void)in_row;
+    rect b = { band.x + pad + col*(bw + gap),
                band.y + pad + row*(bh + gap), bw, bh };
     return b;
 }
 
-static int header_h(const shell_ctx *c) { return c->margin + c->bar_h + 48; }
+/* Room for a display-face brand, a rule under it and one line of
+ * plain language. The old 48 was sized for one line of 14px sans; a
+ * 27px serif with a rule under it needs the extra, and getting it
+ * wrong clips the descenders of the one sentence on this screen that
+ * explains what the machine is. */
+static int header_h(const shell_ctx *c) { return c->margin + c->bar_h + 62; }
 
 /* The area the chosen app occupies. With one app it is the whole
  * screen — window_mode="fullscreen" means exactly that, not "maximised
@@ -285,11 +295,17 @@ static void paint_clock(shell_ctx *c, surface *s, shell_fonts *f, float rx, floa
 {
     char hm[32], dt[48];
     shell_clock(hm, sizeof hm, dt, sizeof dt);
+    /* The time in the display face — on a wall-mounted terminal this is
+     * the most-read thing on the screen, so it gets the one size that
+     * can be read from across a room. */
     float ty = top + (f->big ? font_ascent(f->big) : 20.f);
     shell_text(s, f->big, rx - shell_text_w(f->big, hm), ty, hm, c->fg_hi, a);
-    float dy = ty + (f->big ? font_descent(f->big) : 6.f)
-                  + (f->small ? font_ascent(f->small) : 12.f) + 4.f;
-    shell_text(s, f->small, rx - shell_text_w(f->small, dt), dy, dt, c->subtle, a * 0.8f);
+    float dy = ty + (f->big ? font_descent(f->big) : 6.f) + 10.f
+                  + (f->small ? font_ascent(f->small) : 11.f);
+    draw_hrule(s, (int)(rx - shell_text_w(f->big, hm)),
+               (int)(ty + (f->big ? font_descent(f->big) : 6.f) + 4.f),
+               (int)shell_text_w(f->big, hm), 1, c->overlay, a);
+    shell_text(s, f->small, rx - shell_text_w(f->small, dt), dy, dt, c->subtle, a * 0.85f);
 }
 
 /* What the app itself looks like before its surface exists. Not an
@@ -300,42 +316,56 @@ static void paint_placeholder(shell_ctx *c, surface *s, shell_fonts *f, rect a,
                               int app, const char *line2, float alpha, float scale,
                               int on_wall)
 {
-    uint32_t tint = c->apps[app].tint;
-    float cx = (float)(a.x + a.w/2), cy = (float)(a.y + a.h/2);
-    float isz = clampf((float)a.h * 0.26f, 48.f, 148.f) * scale;
-    font *nf = (isz > 80.f && f->huge) ? f->huge : f->big;
+    uint32_t ink   = c->apps[app].tint;
+    uint32_t paper = on_wall ? c->bg : c->surface_c;
+    float x   = (float)a.x + (float)c->padding * 2.2f;
+    float isz = clampf((float)a.h * 0.16f, 18.f, 104.f) * scale;
 
-    /* Measured from ascent and descent rather than line heights, and
-     * from the same numbers the baselines below are drawn at. A block
-     * height guessed with line_height is a dozen pixels out, which is
-     * invisible on a 1080p card and pushes the hint through the bottom
-     * edge on a 1024x768 classroom machine — where this ships. */
+    /* Set as a title page: the mark on the left measure, the name
+     * under it in the display face, a rule, then the line of plain
+     * language. Not a centred mark with two centred captions — that
+     * block was reimplemented six times across the six archetypes and
+     * is the single reason they all read as one generic product.
+     *
+     * No disc behind the mark either. The marks are solid silhouettes
+     * now, so they have their own contrast; the three stacked tinted
+     * circles that used to sit under one were a workaround for an
+     * outline glyph that could not hold a surface on its own. */
+    font *nf = (isz > 76.f && f->huge) ? f->huge : (isz > 34.f ? f->big : f->dmid);
     float a_n = nf ? font_ascent(nf) : 22.f, d_n = nf ? font_descent(nf) : 6.f;
-    float a_h = f->mid ? font_ascent(f->mid) : 14.f, d_h = f->mid ? font_descent(f->mid) : 4.f;
-    float lead  = clampf(isz * 0.28f, 16.f, 34.f);
-    float block = isz * 2.f + lead + a_n + d_n + 8.f + a_h + d_h;
-    float top   = cy - block * 0.5f;
-    float icy   = top + isz;
+    float a_h = f->mid ? font_ascent(f->mid) : 14.f;
+    float d_h = f->mid ? font_descent(f->mid) : 5.f;
 
-    /* Straight onto the wallpaper the app tints have nothing to sit on:
-     * a pastel mark over a light theme's warm paper is legible in a
-     * screenshot and invisible across a room. A disc of the theme's own
-     * surface colour underneath gives every tint the same contrast on
-     * every theme, without this file knowing which theme it is. */
-    if (on_wall) {
-        draw_circle(s, cx, icy, isz * 0.86f, c->bg,        alpha * 0.28f);
-        draw_circle(s, cx, icy, isz * 0.78f, c->surface_c, alpha * 0.80f);
-        draw_circle(s, cx, icy, isz * 0.78f, tint,         alpha * 0.14f);
-        draw_circle(s, cx, icy, isz * 0.56f, tint,         alpha * 0.12f);
-    } else {
-        draw_circle(s, cx, icy, isz * 1.00f, tint, alpha * 0.10f);
-        draw_circle(s, cx, icy, isz * 0.72f, tint, alpha * 0.11f);
+    /* Degrade in the order a printed page would: the rule and the
+     * standfirst go first, then the mark, and the name is the last
+     * thing standing. A locked machine can be a 1024x600 panel with
+     * nine allowed apps, which leaves the stage about ninety pixels
+     * tall — measured, not guessed, so it degrades at exactly the
+     * height where it stops fitting rather than spilling out of the
+     * frame and over the buttons below. */
+    float mark  = isz + 34.f;
+    float words = a_n + d_n;
+    float tail  = 20.f + 18.f + a_h + d_h;
+    int show_tail = 1, show_mark = 1;
+    if (mark + words + tail > (float)a.h - 12.f) show_tail = 0;
+    if (mark + words > (float)a.h - 12.f)        show_mark = 0;
+
+    float block = (show_mark ? mark : 0.f) + words + (show_tail ? tail : 0.f);
+    float top   = (float)a.y + ((float)a.h - block) * 0.42f;
+    if (top < (float)a.y + 6.f) top = (float)a.y + 6.f;
+
+    if (show_mark)
+        shell_icon_draw(s, c->apps[app].icon, x + isz * 0.5f, top + isz * 0.5f,
+                        isz, ink, paper, alpha);
+
+    float ny = top + (show_mark ? mark : 0.f) + a_n;
+    shell_text(s, nf, x, ny, c->apps[app].name, c->fg_hi, alpha * 0.98f);
+    if (show_tail) {
+        draw_hrule(s, (int)x, (int)(ny + d_n + 20.f),
+                   (int)((float)a.w * 0.18f), 2, c->fg_hi, alpha * 0.85f);
+        shell_text(s, f->mid, x, ny + d_n + 20.f + 18.f + a_h, line2,
+                   c->subtle, alpha * 0.88f);
     }
-    shell_icon_draw(s, c->apps[app].icon, cx, icy, isz, tint, alpha);
-
-    float ny = top + isz * 2.f + lead + a_n;
-    shell_text_centred(s, nf, cx, ny, c->apps[app].name, c->fg_hi, alpha * 0.97f);
-    shell_text_centred(s, f->mid, cx, ny + d_n + 8.f + a_h, line2, c->subtle, alpha * 0.82f);
 }
 
 /* The stage: one app, framed. The frame exists only when there is a
@@ -352,7 +382,7 @@ static void paint_stage(shell_ctx *c, surface *s, shell_fonts *f, rect a, int ap
      * is the single most confusing thing this screen could do. */
     int wi = win_of_app(c, app);
     const win_entry *w = (wi >= 0) ? &c->wins[wi] : NULL;
-    uint32_t tint = c->apps[app].tint;
+    uint32_t ink = c->apps[app].tint;
     float k = clampf(p->swap.value, 0.f, 1.f);
     float alpha = 0.55f + 0.45f * k;
 
@@ -362,26 +392,30 @@ static void paint_stage(shell_ctx *c, surface *s, shell_fonts *f, rect a, int ap
     a.y += (int)((1.f - k) * 14.f);
 
     corners cr = corners_all((float)c->radius);
-    draw_round_rect_shadow(s, a, cr, (float)c->shadow_r * 0.9f, 0x000000, c->shadow_a * alpha, 10);
-    draw_blur_region(s, a, c->blur_r);
-    /* A whisper of a gradient rather than a flat fill: a screen this
-     * empty of controls needs its one big surface to look like paper
-     * rather than like a rectangle nothing has loaded into yet. Both
-     * stops are theme colours, so it warms on Sandstone and deepens on
-     * Nocturne without either being written down here. */
-    draw_round_rect_gradient(s, a, cr, c->surface_c, c->surface_hi, alpha * c->panel_a, 1);
-    draw_round_rect_border(s, a, cr, (float)c->border, tint, alpha * 0.55f);
+    draw_round_rect(s, a, cr, c->surface_c, 1.f);
+    draw_frame(s, a, 1, c->overlay, 1.f);
 
+    /* The title band gives way when the stage is short: on a small
+     * panel with several allowed apps the strip legitimately takes
+     * most of the screen, and a fixed 60px header would leave the app
+     * itself a sliver. */
     int th = c->bar_h + 26;
+    if (th > (int)((float)a.h * 0.34f)) th = (int)((float)a.h * 0.34f);
+    if (th < 26) th = 26;
     rect tb = { a.x, a.y, a.w, th };
-    corners tc = { (float)c->radius, (float)c->radius, 0, 0 };
-    draw_round_rect(s, tb, tc, c->bg_alt, alpha * 0.45f);
-    draw_line(s, (float)a.x + 1, (float)(a.y + th), (float)(a.x + a.w - 1), (float)(a.y + th),
-              1.f, c->overlay, alpha * 0.8f);
+    draw_rect(s, tb, c->bg_alt, alpha);
+    draw_hrule(s, a.x, a.y + th, a.w, 1, c->overlay, alpha);
+    /* The rule along the top edge is what ties the button you pressed
+     * to the thing that appeared: the same signal colour, in the same
+     * two places, and nowhere else on the screen. Drawn AFTER the
+     * title band, which starts at the same y and would cover it. */
+    draw_hrule(s, a.x, a.y, a.w, 3, c->accent, alpha);
 
-    float ix = (float)(a.x + c->padding * 2 + 14);
-    shell_icon_draw(s, c->apps[app].icon, ix, (float)(a.y + th/2), 26.f, tint, alpha * 0.95f);
-    shell_text(s, f->big, ix + 30.f, shell_baseline(f->big, (float)a.y, (float)th),
+    float ix  = (float)(a.x + c->padding * 2);
+    float tsz = clampf((float)th * 0.40f, 13.f, 22.f);
+    shell_icon_draw(s, c->apps[app].icon, ix + tsz * 0.5f, (float)(a.y + th/2), tsz,
+                    ink, c->bg_alt, alpha * 0.95f);
+    shell_text(s, f->dmid, ix + tsz + 12.f, shell_baseline(f->dmid, (float)a.y, (float)th),
                c->apps[app].name, c->fg_hi, alpha * 0.97f);
 
     /* Right of the title: what this window is actually showing. It is
@@ -389,93 +423,78 @@ static void paint_stage(shell_ctx *c, surface *s, shell_fonts *f, rect a, int ap
      * session they left, and it is read-only — there is no address bar
      * here, because an address bar is a launcher. */
     const char *sub = (w && w->subtitle[0]) ? w->subtitle : c->apps[app].hint;
-    float sw = shell_text_w(f->mid, sub);
-    float sx = (float)(a.x + a.w - c->padding*2 - 14) - sw;
-    if (sx > ix + 30.f + shell_text_w(f->big, c->apps[app].name) + 40.f)
-        shell_text(s, f->mid, sx, shell_baseline(f->mid, (float)a.y, (float)th),
-                   sub, c->subtle, alpha * 0.8f);
+    float sw = shell_text_w(f->small, sub);
+    float sx = (float)(a.x + a.w - c->padding*2) - sw;
+    if (sx > ix + tsz + 12.f + shell_text_w(f->dmid, c->apps[app].name) + 40.f)
+        shell_text(s, f->small, sx, shell_baseline(f->small, (float)a.y, (float)th),
+                   sub, c->subtle, alpha * 0.85f);
 
     rect body = { a.x, a.y + th, a.w, a.h - th };
     if (w && w->content) {
         corners bc = { 0, 0, (float)c->radius, (float)c->radius };
         draw_content_fit(s, w->content, body, bc, alpha);
     } else {
-        paint_placeholder(c, s, f, body, app, c->apps[app].hint, alpha * 0.9f, 0.8f, 0);
+        paint_placeholder(c, s, f, body, app, c->apps[app].hint, alpha * 0.95f, 0.8f, 0);
     }
 }
 
 static void paint_button(shell_ctx *c, surface *s, shell_fonts *f, rect b,
                          int app, int selected, int hot)
 {
-    uint32_t tint = c->apps[app].tint;
+    uint32_t ink   = c->apps[app].tint;
+    uint32_t paper = selected ? c->surface_c : (hot ? c->surface_hi : c->bg_alt);
     corners cr = corners_all((float)c->radius);
 
-    /* Selection is carried by the tint wash, the border and the tab
-     * mark — never by swapping surface for surface_hi. On a light theme
-     * surface_hi is DARKER than surface, so a highlight built that way
-     * inverts: the chosen button becomes the dim one. */
-    if (selected) {
-        draw_round_rect_shadow(s, b, cr, (float)c->shadow_r * 0.5f, 0x000000, c->shadow_a * 0.5f, 4);
-        draw_round_rect(s, b, cr, c->surface_c, 1.f);
-        draw_round_rect(s, b, cr, tint, 0.16f);
-        draw_round_rect_border(s, b, cr, (float)c->border, tint, 0.95f);
-        rect tab = { b.x + b.w/2 - b.w/6, b.y + 7, b.w/3, 4 };
-        draw_round_rect(s, tab, corners_all(2.f), tint, 0.95f);
-    } else {
-        draw_round_rect(s, b, cr, c->surface_c, hot ? 0.88f : 0.55f);
-        draw_round_rect_border(s, b, cr, hot ? 1.8f : 1.f, hot ? tint : c->overlay,
-                               hot ? 0.85f : 0.7f);
-    }
+    /* Selection is a fill plus a bar down the left edge, and that bar
+     * is the only red on the strip. It used to be a tint wash, a
+     * coloured border AND a tab mark — three cues for one bit — which
+     * on a light theme came out as three pastel suggestions and no
+     * answer. */
+    draw_round_rect(s, b, cr, paper, 1.f);
+    if (selected) draw_rect(s, (rect){ b.x, b.y, 5, b.h }, c->accent, 1.f);
+    draw_frame(s, b, selected ? 2 : 1, selected ? c->fg : c->overlay,
+               hot && !selected ? 1.f : 0.9f);
 
     const char *name = c->apps[app].name;
     const char *hint = c->apps[app].hint;
-    float pad = (float)c->padding;
+    float pad = (float)c->padding + 6.f;
     float avail = (float)b.w - pad * 2.f;
-    float isz = clampf((float)b.h * 0.42f, 26.f, 46.f);
+    float isz = clampf((float)b.h * 0.38f, 22.f, 42.f);
 
     /* Pick the largest type that fits rather than shrinking every label
      * to the width of the longest one: a three-app machine should have
      * labels readable from across a classroom. */
-    font *lf = (b.w >= 250 && b.h >= 84) ? f->big : f->mid;
-    if (shell_text_w(lf, name) > avail - isz * 1.2f - 14.f) lf = f->mid;
-    if (shell_text_w(lf, name) > avail - isz * 1.2f - 14.f) lf = f->small;
+    font *lf = (b.w >= 250 && b.h >= 84) ? f->big : f->dmid;
+    if (shell_text_w(lf, name) > avail - isz - 18.f) lf = f->dmid;
+    if (shell_text_w(lf, name) > avail - isz - 18.f) lf = f->mid;
 
-    float nw = shell_text_w(lf, name);
-    int   show_hint = (b.h >= 88 && lf == f->big &&
-                       shell_text_w(f->small, hint) <= avail - isz * 1.2f - 14.f);
-    float tw = nw;
-    if (show_hint) { float hw = shell_text_w(f->small, hint); if (hw > tw) tw = hw; }
+    /* Hints only on the tall single-row strip. Deciding it per button
+     * from whether that button's own hint happened to fit gave a row
+     * where two labels had a second line and three did not, which
+     * reads as three of them having failed to load. */
+    int show_hint = (b.h >= 100 &&
+                     shell_text_w(f->small, hint) <= avail - isz - 18.f);
 
+    /* Mark left, words left. These buttons are wide and short, so a
+     * stacked mark over a centred label leaves a hole under each one —
+     * and left-aligning them gives the row a common left measure the
+     * eye can run down, which a row of centred labels never has. */
+    float icx = (float)b.x + pad + isz * 0.5f;
+    float icy = (float)(b.y + b.h/2);
+    shell_icon_draw(s, c->apps[app].icon, icx, icy, isz, ink, paper,
+                    selected ? 1.f : 0.9f);
+
+    float tx = (float)b.x + pad + isz + 18.f;
     uint32_t nc = selected ? c->fg_hi : c->fg;
-    float na = selected ? 1.f : 0.9f;
-
-    if (tw + isz * 1.2f + 14.f <= avail) {
-        /* Icon beside the words: these buttons are wide and short, and
-         * a stacked icon over a label leaves a hole under each one. */
-        float gx = (float)b.x + ((float)b.w - (tw + isz * 1.2f + 14.f)) * 0.5f;
-        float icx = gx + isz * 0.6f, icy = (float)(b.y + b.h/2);
-        draw_circle(s, icx, icy, isz * 0.74f, tint, selected ? 0.22f : 0.14f);
-        shell_icon_draw(s, c->apps[app].icon, icx, icy, isz, tint, selected ? 1.f : 0.9f);
-        float tx = gx + isz * 1.2f + 14.f;
-        if (show_hint) {
-            float lh = lf ? font_line_height(lf) : 30.f;
-            float sh = f->small ? font_line_height(f->small) : 18.f;
-            float top = icy - (lh + 2.f + sh) * 0.5f;
-            shell_text(s, lf, tx, top + (lf ? font_ascent(lf) : 22.f), name, nc, na);
-            shell_text(s, f->small, tx, top + lh + 2.f + (f->small ? font_ascent(f->small) : 13.f),
-                       hint, c->subtle, 0.85f);
-        } else {
-            shell_text(s, lf, tx, shell_baseline(lf, (float)b.y, (float)b.h), name, nc, na);
-        }
+    if (show_hint) {
+        float la = lf ? font_ascent(lf) : 20.f, ld = lf ? font_descent(lf) : 6.f;
+        float ha = f->small ? font_ascent(f->small) : 11.f;
+        float hd = f->small ? font_descent(f->small) : 4.f;
+        float top = icy - (la + ld + 6.f + ha + hd) * 0.5f;
+        shell_text(s, lf, tx, top + la, name, nc, 1.f);
+        shell_text(s, f->small, tx, top + la + ld + 6.f + ha, hint, c->subtle, 0.9f);
     } else {
-        float icx = (float)(b.x + b.w/2);
-        float lh  = lf ? font_line_height(lf) : 22.f;
-        float top = (float)b.y + ((float)b.h - (isz * 1.4f + 10.f + lh)) * 0.5f;
-        float icy = top + isz * 0.7f;
-        draw_circle(s, icx, icy, isz * 0.74f, tint, selected ? 0.22f : 0.14f);
-        shell_icon_draw(s, c->apps[app].icon, icx, icy, isz, tint, selected ? 1.f : 0.9f);
-        shell_text_centred(s, lf, icx, top + isz * 1.4f + 10.f + (lf ? font_ascent(lf) : 16.f),
-                           name, nc, na);
+        shell_text(s, lf, tx, shell_baseline(lf, (float)b.y, (float)b.h), name, nc, 1.f);
     }
 }
 
@@ -487,23 +506,21 @@ static void paint_button(shell_ctx *c, surface *s, shell_fonts *f, rect b,
 static void paint_finish(shell_ctx *c, surface *s, shell_fonts *f, rect b, int hot)
 {
     if (!b.w) return;
-    draw_line(s, (float)b.x - (float)c->padding * 0.8f, (float)b.y + 8.f,
-              (float)b.x - (float)c->padding * 0.8f, (float)(b.y + b.h) - 8.f,
-              1.f, c->overlay, 0.75f);
+    draw_vrule(s, b.x - (int)((float)c->padding * 0.8f), b.y + 8, b.h - 16, 1,
+               c->overlay, 0.9f);
 
     corners cr = corners_all((float)c->radius);
-    if (hot) draw_round_rect(s, b, cr, c->surface_c, 0.7f);
-    draw_round_rect_border(s, b, cr, hot ? 1.8f : 1.f, hot ? c->accent : c->overlay,
-                           hot ? 0.9f : 0.8f);
+    if (hot) draw_round_rect(s, b, cr, c->surface_hi, 1.f);
+    draw_frame(s, b, hot ? 2 : 1, hot ? c->fg : c->overlay, 1.f);
 
-    float cx = (float)(b.x + b.w/2);
-    float lh = f->mid ? font_line_height(f->mid) : 24.f;
-    float sh = f->small ? font_line_height(f->small) : 18.f;
-    float top = (float)b.y + ((float)b.h - (lh + 2.f + sh)) * 0.5f;
-    shell_text_centred(s, f->mid, cx, top + (f->mid ? font_ascent(f->mid) : 14.f),
-                       "Finish", hot ? c->fg_hi : c->fg, 0.95f);
-    shell_text_centred(s, f->small, cx, top + lh + 2.f + (f->small ? font_ascent(f->small) : 13.f),
-                       "Start over", c->subtle, 0.8f);
+    float x = (float)b.x + (float)c->padding;
+    float la = f->dmid ? font_ascent(f->dmid) : 16.f;
+    float ld = f->dmid ? font_descent(f->dmid) : 5.f;
+    float ha = f->small ? font_ascent(f->small) : 11.f;
+    float hd = f->small ? font_descent(f->small) : 4.f;
+    float top = (float)b.y + ((float)b.h - (la + ld + 6.f + ha + hd)) * 0.5f;
+    shell_text(s, f->dmid, x, top + la, "Finish", hot ? c->fg_hi : c->fg, 0.95f);
+    shell_text(s, f->small, x, top + la + ld + 6.f + ha, "Start over", c->subtle, 0.85f);
 }
 
 /* The strip. show_positions is "no" in the .shell and would be noise
@@ -515,11 +532,9 @@ static void paint_switcher(shell_ctx *c, surface *s, shell_fonts *f, const int *
     rect band = switcher_rect(c, s->w, s->h, n, SW_BAND);
     if (!band.w) return;
 
-    corners cr = corners_all((float)c->radius + 4.f);
-    draw_round_rect_shadow(s, band, cr, (float)c->shadow_r, 0x000000, c->shadow_a * 0.9f, 10);
-    draw_blur_region(s, band, c->blur_r);
-    draw_round_rect(s, band, cr, c->bg_alt, c->panel_a);
-    draw_round_rect_border(s, band, cr, 1.f, c->overlay, 0.8f);
+    draw_rect(s, band, c->bg_alt, 1.f);
+    draw_hrule(s, band.x, band.y, band.w, 2, c->overlay, 1.f);
+    draw_frame(s, band, 1, c->overlay, 0.85f);
 
     for (int i = 0; i < n; i++)
         paint_button(c, s, f, switcher_rect(c, s->w, s->h, n, i), app[i],
@@ -541,85 +556,102 @@ static void paint_attract(shell_ctx *c, surface *s, shell_fonts *f,
     const char *SUB   = "Touch the screen or move the mouse to start.";
     const char *FOOT  = "Nothing from the last session was kept.";
 
+    /* A flat veil. The version this replaces blurred the whole
+     * 1366x768 framebuffer at radius 28 and then laid 86% of the
+     * background colour over it — the most expensive single operation
+     * in the product, performed to produce something a flat fill
+     * produces exactly as well. */
     rect full = { 0, 0, s->w, s->h };
-    draw_blur_region(s, full, c->blur_r + 8);
-    draw_rect(s, full, c->bg, k * 0.86f);
+    draw_rect(s, full, c->bg, k);
 
     font *tf = f->huge ? f->huge : f->big;
-    float pad   = (float)c->padding * 2.2f;
-    float bh    = f->small ? font_line_height(f->small) : 18.f;
-    float th    = tf ? font_line_height(tf) : 46.f;
-    float sh    = f->mid ? font_line_height(f->mid) : 24.f;
+    float pad = (float)c->padding * 2.f;
+    float bh  = f->label ? font_line_height(f->label) : 15.f;
+    float th  = tf ? font_line_height(tf) : 46.f;
+    float sh  = f->mid ? font_line_height(f->mid) : 24.f;
 
-    /* Cells sized from the type, not from the panel: the row of what
-     * this machine can do has to stay legible whether there are two
-     * apps or eight. */
-    int cell = 132;
+    /* Off the axis and off the centre. A panel centred in both
+     * directions on an otherwise empty screen is the shape of a modal
+     * dialog, which is the one thing a welcome screen must not look
+     * like. This sits on the left measure with the page falling away
+     * to the right, the way a title page is set. */
+    int pw = (int)((float)s->w * 0.62f);
+    int want = (int)(shell_text_w(tf, TITLE) + pad * 2.f);
+    if (pw < want) pw = want;
+    if (pw > s->w - c->margin * 3) pw = s->w - c->margin * 3;
+
+    /* The roster WRAPS rather than squeezing. Dividing the panel width
+     * by the number of apps is what put nine 40px marks into 90px
+     * cells and printed them through each other's names — and a kiosk
+     * is exactly the machine most likely to be allowed nine apps on a
+     * small panel. Measure the widest entry, fit as many as go on a
+     * line, and take a second line. */
+    float isz = 38.f;
+    int cell = 120;
     for (int i = 0; i < n; i++) {
-        float nw = shell_text_w(f->small, c->apps[app[i]].name) + 18.f;
+        float nw = shell_text_w(f->small, c->apps[app[i]].name) + isz + 30.f;
         if (nw > (float)cell) cell = (int)nw;
     }
-    float isz  = 44.f;
-    float rowh = isz * 1.75f + 14.f + bh;
-    int   need = cell * n + (int)pad * 2;
+    int inner = pw - (int)pad * 2;
+    int cols  = inner / (cell > 1 ? cell : 1);
+    if (cols < 1) cols = 1;
+    if (cols > n) cols = n;
+    int rows  = (n + cols - 1) / cols;
+    float rowh = isz + 18.f;
 
-    /* Wide enough for the headline to breathe, then wide enough for the
-     * apps, then no wider: a panel stretched to the screen turns the
-     * welcome into a warning notice. */
-    int want = (int)(shell_text_w(tf, TITLE) + pad * 3.f);
-    if (want < 560)  want = 560;
-    if (need > want) want = need;
-    int pw = s->w - (c->margin + 40) * 2;
-    if (pw > 880)  pw = 880;
-    if (pw > want) pw = want;
-    if (cell * n > pw - (int)pad) cell = (pw - (int)pad) / (n < 1 ? 1 : n);
+    int ph = (int)(pad * 2.f + bh + 30.f + th + 10.f + sh + pad + 22.f
+                   + (float)rows * rowh + pad + bh);
+    if (ph > s->h - c->margin * 2) ph = s->h - c->margin * 2;
 
-    int ph = (int)(pad * 2.f + bh + 26.f + th + 6.f + sh + pad + rowh + pad + bh);
-    if (ph > s->h - 80) ph = s->h - 80;
-    rect pnl = { (s->w - pw)/2, (s->h - ph)/2 + (int)((1.f - k) * 16.f), pw, ph };
-    corners cr = corners_all((float)c->radius + 6.f);
-    draw_round_rect_shadow(s, pnl, cr, (float)c->shadow_r * 1.3f, 0x000000, c->shadow_a * k, 14);
-    draw_round_rect_gradient(s, pnl, cr, c->surface_c, c->surface_hi, k * c->panel_a, 1);
-    draw_round_rect_border(s, pnl, cr, (float)c->border, c->accent, k * 0.45f);
+    rect pnl = { c->margin * 2, (int)((float)s->h * 0.24f) + (int)((1.f - k) * 16.f),
+                 pw, ph };
+    if (pnl.y + pnl.h > s->h - c->margin) pnl.y = s->h - c->margin - pnl.h;
+    draw_round_rect(s, pnl, corners_all((float)c->radius), c->surface_c, k);
+    draw_frame(s, pnl, 1, c->overlay, k);
+    draw_hrule(s, pnl.x, pnl.y, pnl.w, 3, c->accent, k);
 
-    float cx = (float)(pnl.x + pnl.w/2);
-    float y  = (float)pnl.y + pad;
+    float x = (float)pnl.x + pad;
+    float y = (float)pnl.y + pad;
 
-    /* Whose machine this is, in the same dot-and-word mark the other
-     * archetypes wear. On a public terminal this line is the only
-     * answer to "who do I complain to?". */
-    float brw = shell_text_w(f->small, c->brand);
-    draw_circle(s, cx - brw/2.f - 12.f, y + bh * 0.42f, 4.5f, c->accent, k * 0.95f);
-    shell_text(s, f->small, cx - brw/2.f, y + (f->small ? font_ascent(f->small) : 13.f),
-               c->brand, c->subtle, k * 0.9f);
-    y += bh + 26.f;
+    /* Whose machine this is. On a public terminal this line is the
+     * only answer to "who do I complain to?", so it is set as a
+     * running head: a block of ink, the name tracked out, a rule. */
+    draw_rect(s, (rect){ (int)x, (int)(y + bh * 0.28f), 8, 8 }, c->accent, k);
+    shell_text_tracked(s, f->label, x + 20.f,
+                       y + (f->label ? font_ascent(f->label) : 11.f),
+                       c->brand, c->subtle, k * 0.95f, 1.6f);
+    y += bh + 30.f;
 
-    shell_text_centred(s, tf, cx, y + (tf ? font_ascent(tf) : 26.f), TITLE, c->fg_hi, k * 0.98f);
-    y += th + 6.f;
-    shell_text_centred(s, f->mid, cx, y + (f->mid ? font_ascent(f->mid) : 14.f),
-                       SUB, c->subtle, k * 0.85f);
+    shell_text(s, tf, x, y + (tf ? font_ascent(tf) : 30.f), TITLE, c->fg_hi, k * 0.98f);
+    y += th + 10.f;
+    shell_text(s, f->mid, x, y + (f->mid ? font_ascent(f->mid) : 14.f),
+               SUB, c->subtle, k * 0.9f);
     y += sh + pad;
 
-    /* What is on this machine, stated rather than offered: none of
-     * these icons is a target, because the first touch anywhere starts
-     * the session and nobody walking up should have to aim. */
-    float x0 = cx - (float)(cell * n) * 0.5f + (float)cell * 0.5f;
-    for (int i = 0; i < n; i++) {
-        float ix = x0 + (float)(i * cell), iy = y + isz * 0.8f;
-        draw_circle(s, ix, iy, isz * 0.80f, c->apps[app[i]].tint, k * 0.15f);
-        shell_icon_draw(s, c->apps[app[i]].icon, ix, iy, isz, c->apps[app[i]].tint, k);
-        shell_text_centred(s, f->small, ix, y + isz * 1.75f + 14.f,
-                           c->apps[app[i]].name, c->fg, k * 0.9f);
-    }
-    y += rowh + pad;
+    draw_hrule(s, (int)x, (int)y, (int)((float)pnl.w * 0.24f), 2, c->fg_hi, k * 0.85f);
+    y += 22.f;
 
-    shell_text_centred(s, f->small, cx, y + (f->small ? font_ascent(f->small) : 13.f),
-                       FOOT, c->muted, k * 0.8f);
+    /* What is on this machine, stated rather than offered: none of
+     * these marks is a target, because the first touch anywhere starts
+     * the session and nobody walking up should have to aim. */
+    for (int i = 0; i < n; i++) {
+        float ix = x + (float)((i % cols) * cell);
+        float iy = y + (float)(i / cols) * rowh + isz * 0.5f;
+        shell_icon_draw(s, c->apps[app[i]].icon, ix + isz * 0.5f, iy,
+                        isz, c->apps[app[i]].tint, c->surface_c, k);
+        shell_text(s, f->small, ix + isz + 12.f,
+                   iy + (f->small ? font_ascent(f->small) : 11.f) * 0.5f,
+                   c->apps[app[i]].name, c->fg, k * 0.95f);
+    }
+    y += (float)rows * rowh + 10.f;
+
+    shell_text(s, f->small, x, y + (f->small ? font_ascent(f->small) : 11.f),
+               FOOT, c->muted, k * 0.85f);
 
     /* The clock survives the dim. A wall clock that goes blank when
      * nobody is at the desk is a clock nobody trusts. */
     if (c->show_clock)
-        paint_clock(c, s, f, (float)(s->w - c->margin - 10), (float)c->margin + 10.f, k * 0.9f);
+        paint_clock(c, s, f, (float)(s->w - c->margin), (float)c->margin, k * 0.9f);
 }
 
 static void l_paint(shell_ctx *c, surface *s, shell_fonts *f, const surface *wall)
@@ -673,8 +705,8 @@ static void l_paint(shell_ctx *c, surface *s, shell_fonts *f, const surface *wal
                           (int)bw + 6, c->bar_h + 30 };
             /* A clock over a fullscreen app needs its own ground, or it
              * lands on whatever the app happens to be showing. */
-            draw_round_rect(s, pill, corners_all((float)c->radius), c->bg_alt, 0.55f);
-            draw_round_rect_border(s, pill, corners_all((float)c->radius), 1.f, c->overlay, 0.45f);
+            draw_round_rect(s, pill, corners_all((float)c->radius), c->bg_alt, 0.92f);
+            draw_frame(s, pill, 1, c->overlay, 0.8f);
             paint_clock(c, s, f, (float)(pill.x + pill.w) - (float)c->padding,
                         (float)pill.y + 10.f, 0.95f);
         }
@@ -697,16 +729,18 @@ static void l_paint(shell_ctx *c, surface *s, shell_fonts *f, const surface *wal
          * A school name that runs under the clock is the first thing
          * the person who signed off on this deployment would notice. */
         font *bf = f->big;
-        float bavail = (float)(s->w - 2*(c->margin + 10)) - (c->show_clock ? 170.f : 0.f);
-        if (shell_text_w(bf, c->brand) > bavail) bf = f->mid;
-        shell_text(s, bf, (float)(c->margin + 10),
-                   by + (bf ? font_ascent(bf) : 22.f),
-                   c->brand, c->fg_hi, 0.95f);
-        shell_text(s, f->small, (float)(c->margin + 10),
-                   by + (bf ? font_line_height(bf) : 34.f)
-                      + (f->small ? font_ascent(f->small) : 13.f) + 2.f,
+        float bavail = (float)(s->w - 2*(c->margin + 10)) - (c->show_clock ? 190.f : 0.f);
+        if (shell_text_w(bf, c->brand) > bavail) bf = f->dmid;
+        float bx = (float)(c->margin + 10);
+        shell_text(s, bf, bx, by + (bf ? font_ascent(bf) : 22.f),
+                   c->brand, c->fg_hi, 0.98f);
+        float ry = by + (bf ? font_ascent(bf) + font_descent(bf) : 30.f) + 8.f;
+        draw_hrule(s, (int)bx, (int)ry,
+                   (int)(shell_text_w(bf, c->brand) * 0.55f), 2, c->fg_hi, 0.85f);
+        shell_text(s, f->small, bx,
+                   ry + 12.f + (f->small ? font_ascent(f->small) : 11.f),
                    "The apps below are everything this computer does.",
-                   c->subtle, 0.8f);
+                   c->subtle, 0.88f);
         if (c->show_clock)
             paint_clock(c, s, f, (float)(s->w - c->margin - 10), by, 0.95f);
     }

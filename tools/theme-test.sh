@@ -20,7 +20,35 @@ STATE=$(mktemp -d)
 trap 'rm -rf "$STATE"' EXIT
 export AURORA_THEMES=themes AURORA_TEMPLATES=themes/templates
 export AURORA_STATE="$STATE" AURORA_CACHE="$STATE/cache"
-printf 'nocturne\n' > "$STATE/theme"
+
+# The colour algebra is tested against a fixture with fixed values, not
+# against a shipped theme. It used to use Nocturne's, so redesigning
+# Nocturne's palette failed twelve assertions about arithmetic that had
+# not changed -- a test that breaks when the thing it is not testing
+# changes is a test people learn to ignore.
+mkdir -p "$STATE/themes"
+cp themes/*.theme "$STATE/themes/" 2>/dev/null || :
+cat > "$STATE/themes/_algebra.theme" <<'FIXTURE'
+theme_name="Algebra Fixture"
+theme_variant="dark"
+bg="#0B0E14"
+bg_alt="#10151F"
+surface="#161C28"
+surface_hi="#1F2735"
+overlay="#2B3542"
+muted="#55606E"
+subtle="#8793A4"
+fg="#D4DCEA"
+fg_hi="#F3F7FD"
+accent="#7DD3C0"
+accent_alt="#A78BFA"
+accent_warm="#F2B880"
+ok="#7DD3C0"
+warn="#F2B880"
+err="#F2788D"
+info="#82AAFF"
+FIXTURE
+printf '_algebra\n' > "$STATE/theme"
 
 fail=0
 checked=0
@@ -37,7 +65,9 @@ probe() {
     fi
 }
 
-echo "colour algebra"
+echo "colour algebra (against a fixture, not a shipped theme)"
+AURORA_THEMES_REAL=themes
+export AURORA_THEMES="$STATE/themes"
 probe '@accent|0x@'                    '0x7DD3C0'
 probe '@accent|hex@'                   '7DD3C0'
 probe '@accent|rgb@'                   '125,211,192'
@@ -50,6 +80,8 @@ probe '@nosuchkey|0x@'                 '@@MISSING:nosuchkey@@'
 probe '@accent|nosuchop@'              '@@BADOP:nosuchop@@'
 probe 'plain text, no tokens'          'plain text, no tokens'
 probe '@accent|0x@ and @bg|0x@'        '0x7DD3C0 and 0x0B0E14'
+
+export AURORA_THEMES="$AURORA_THEMES_REAL"
 
 # 2. Every template against every theme, which is the real contract.
 #    `aurora render` uses the ACTIVE theme, so the active theme is

@@ -29,8 +29,8 @@
 #define DOCK_PAD_T    10
 #define DOCK_DOT_BAND 20      /* room under the icons for running dots   */
 #define DOCK_ICON     40.f
-#define DOCK_MAG      0.30f   /* peak icon growth under the pointer      */
-#define DOCK_LIFT     7.f
+#define DOCK_MAG      0.14f   /* peak icon growth under the pointer      */
+#define DOCK_LIFT     4.f
 #define DOCK_SPREAD   1.35f   /* cells the lift falls off over           */
 #define WIN_TITLE_H   46
 #define CASCADE_STEP  110
@@ -145,8 +145,16 @@ static rect dock_rect(shell_ctx *c, int sw, int sh, int slot)
     }
 
     int strip_h = DOCK_PAD_T + cell + DOCK_DOT_BAND;
-    rect strip = { (sw - (inner + 2 * pad)) / 2, sh - c->margin - strip_h,
-                   inner + 2 * pad, strip_h };
+    /* Anchored to the left measure, not derived from the screen's
+     * centre. "Always in the same spot" means ABSOLUTELY fixed, and a
+     * centred strip is not: add one unpinned running app and every
+     * favourite in it slides sideways by half a cell. Pinning it to
+     * the margin makes the promise literally true, and puts the strip
+     * on the same measure as everything else on the page. */
+    int sx = c->margin * 2;
+    if (sx + inner + 2 * pad > sw - c->margin) sx = sw - c->margin - (inner + 2 * pad);
+    if (sx < c->margin) sx = c->margin;
+    rect strip = { sx, sh - c->margin - strip_h, inner + 2 * pad, strip_h };
     if (slot < 0) return strip;
     if (slot >= n) return (rect){ 0, 0, 0, 0 };
 
@@ -236,14 +244,15 @@ static const struct { const char *name, *where; shell_icon ic; int tint; } find_
 
 typedef struct { const char *name, *where; shell_icon ic; uint32_t tint; int app; } find_hit;
 
+/* Everything in the finder is drawn in the same ink. This used to
+ * cycle accent / accent_alt / accent_warm / info down the rows purely
+ * for variety — which is what docs/THEMING.md forbids in as many
+ * words: accent_alt is for a different KIND of thing, not for making
+ * a list look less samey. A list of files is one kind of thing. */
 static uint32_t tint_of(shell_ctx *c, int i)
 {
-    switch (i & 3) {
-        case 0:  return c->accent;
-        case 1:  return c->accent_alt;
-        case 2:  return c->accent_warm;
-        default: return c->info;
-    }
+    (void)i;
+    return c->fg;
 }
 static int lc(int ch) { return (ch >= 'A' && ch <= 'Z') ? ch + 32 : ch; }
 static int name_has(const char *hay, const char *needle)
@@ -282,9 +291,15 @@ static int find_search(shell_ctx *c, const char *q, find_hit *out)
 
 static rect find_panel_rect(shell_ctx *c, int sw, int sh, int nres)
 {
-    int pw = sw - 2 * (c->margin + 56); if (pw > 620) pw = 620; if (pw < 320) pw = 320;
-    int ph = 68 + (nres ? 8 + nres * 48 : 0) + 34 + 10;
-    return (rect){ (sw - pw) / 2, (int)((float)sh * 0.19f), pw, ph };
+    int pw = sw - 2 * (c->margin + 56); if (pw > 660) pw = 660; if (pw < 320) pw = 320;
+    int ph = 72 + (nres ? nres * 50 : 0) + 36;
+    /* On the same left measure as the dock below it, so the two things
+     * the archetype has line up down one edge instead of both floating
+     * on the screen's axis. */
+    int px = c->margin * 2;
+    if (px + pw > sw - c->margin) px = sw - c->margin - pw;
+    if (px < c->margin) px = c->margin;
+    return (rect){ px, (int)((float)sh * 0.17f), pw, ph };
 }
 
 /* ── helpers over the window list ───────────────────────────────── */
@@ -340,39 +355,36 @@ static void paint_win(shell_ctx *c, surface *s, shell_fonts *f, int i, int focus
     corners rc = corners_all((float)c->radius);
     float al = focused ? 1.f : 0.93f;
 
-    draw_round_rect_shadow(s, a, rc, (float)c->shadow_r * (focused ? 1.3f : 0.9f),
-                           0x000000, c->shadow_a * (focused ? 1.f : 0.85f), focused ? 14 : 9);
-    draw_blur_region(s, a, c->blur_r);
-    draw_round_rect(s, a, rc, c->surface_c, al * c->panel_a);
+    uint32_t paper = focused ? c->surface_c : c->bg_alt;
+    draw_round_rect(s, a, rc, paper, 1.f);
 
     rect tb = { a.x, a.y, a.w, WIN_TITLE_H };
     corners tc = { (float)c->radius, (float)c->radius, 0, 0 };
-    draw_round_rect(s, tb, tc, c->bg_alt, al * 0.55f);
-    draw_line(s, (float)a.x + 1, (float)(a.y + WIN_TITLE_H), (float)(a.x + a.w - 1),
-              (float)(a.y + WIN_TITLE_H), 1.f, c->overlay, al * 0.8f);
+    draw_round_rect(s, tb, tc, focused ? c->bg_alt : c->bg, 1.f);
+    draw_hrule(s, a.x, a.y + WIN_TITLE_H - 1, a.w, 1, c->overlay, 1.f);
 
-    shell_icon_draw(s, ic, (float)(a.x + c->padding + 12), (float)(a.y + WIN_TITLE_H / 2),
-                    20.f, tint, al * (focused ? 1.f : 0.75f));
-    float tx = (float)(a.x + c->padding + 34);
+    shell_icon_draw(s, ic, (float)(a.x + c->padding + 8), (float)(a.y + WIN_TITLE_H / 2),
+                    18.f, tint, focused ? c->bg_alt : c->bg, al * (focused ? 1.f : 0.7f));
+    float tx = (float)(a.x + c->padding + 28);
     float by = shell_baseline(f->mid, (float)a.y, (float)WIN_TITLE_H);
-    shell_text(s, f->mid, tx, by, w->title, c->fg_hi, al * (focused ? 0.97f : 0.7f));
+    shell_text(s, f->mid, tx, by, w->title, focused ? c->fg_hi : c->subtle, al);
     if (w->subtitle[0]) {
         float dx = tx + shell_text_w(f->mid, w->title) + 14.f;
-        draw_circle(s, dx, (float)(a.y + WIN_TITLE_H / 2), 1.8f, c->muted, al * 0.8f);
-        shell_text(s, f->small, dx + 10.f, shell_baseline(f->small, (float)a.y, (float)WIN_TITLE_H),
-                   w->subtitle, c->subtle, al * (focused ? 0.8f : 0.55f));
+        draw_vrule(s, (int)dx, a.y + 13, WIN_TITLE_H - 26, 1, c->overlay, al);
+        shell_text(s, f->small, dx + 12.f, shell_baseline(f->small, (float)a.y, (float)WIN_TITLE_H),
+                   w->subtitle, c->subtle, al * (focused ? 0.9f : 0.6f));
     }
 
     /* Minimise then close. Minimising is safe here precisely because the
-     * dock is a fixed place to get the window back from. */
+     * dock is a fixed place to get the window back from. Two square
+     * wells, not two discs: a circle behind a glyph is the one shape
+     * this whole theme is trying not to repeat. */
     float cy = (float)(a.y + WIN_TITLE_H / 2);
-    float bx = (float)(a.x + a.w - c->padding - 12);
-    draw_circle(s, bx, cy, 12.f, c->overlay, al * 0.5f);
-    draw_line(s, bx - 4.f, cy - 4.f, bx + 4.f, cy + 4.f, 1.7f, c->subtle, al * 0.95f);
-    draw_line(s, bx + 4.f, cy - 4.f, bx - 4.f, cy + 4.f, 1.7f, c->subtle, al * 0.95f);
+    float bx = (float)(a.x + a.w - c->padding - 11);
+    draw_line(s, bx - 4.f, cy - 4.f, bx + 4.f, cy + 4.f, 1.7f, c->fg, al * 0.95f);
+    draw_line(s, bx + 4.f, cy - 4.f, bx - 4.f, cy + 4.f, 1.7f, c->fg, al * 0.95f);
     bx -= 30.f;
-    draw_circle(s, bx, cy, 12.f, c->overlay, al * 0.5f);
-    draw_line(s, bx - 4.5f, cy + 3.f, bx + 4.5f, cy + 3.f, 1.7f, c->subtle, al * 0.95f);
+    draw_hrule(s, (int)(bx - 5.f), (int)(cy + 3.f), 11, 2, c->fg, al * 0.95f);
 
     rect body = { a.x, a.y + WIN_TITLE_H, a.w, a.h - WIN_TITLE_H };
     if (w->content) {
@@ -383,33 +395,30 @@ static void paint_win(shell_ctx *c, surface *s, shell_fonts *f, int i, int focus
          * drop the second line when there is no room for it. A cascade
          * on a small panel makes windows genuinely short, and a
          * placeholder anchored to fixed offsets spills out of them. */
-        float ccx  = (float)(body.x + body.w / 2);
-        float isz  = clampf((float)body.h * 0.26f, 20.f, 52.f);
-        float l1   = f->mid   ? font_line_height(f->mid)   : 22.f;
-        float l2   = f->small ? font_line_height(f->small) : 18.f;
+        float x    = (float)body.x + (float)c->padding * 1.6f;
+        float isz  = clampf((float)body.h * 0.18f, 20.f, 54.f);
         const char *hint = (w->app >= 0) ? c->apps[w->app].hint : "";
         int two = (body.h > 170 && hint[0]);
-        float block = isz * 1.5f + 16.f + l1 + (two ? 4.f + l2 : 0.f);
-        float top = (float)body.y + ((float)body.h - block) * 0.5f;
-        float icy = top + isz * 0.75f;
+        float top = (float)body.y + (float)body.h * 0.30f;
 
-        draw_circle(s, ccx, icy, isz * 0.88f, tint, al * 0.11f);
-        shell_icon_draw(s, ic, ccx, icy, isz, tint, al * 0.55f);
-        float y1 = top + isz * 1.5f + 16.f + (f->mid ? font_ascent(f->mid) : 16.f);
-        shell_text_centred(s, f->mid, ccx, y1,
-                           w->subtitle[0] ? w->subtitle : w->title, c->fg, al * 0.85f);
-        if (two)
-            shell_text_centred(s, f->small, ccx,
-                               y1 + l1 - (f->mid ? font_descent(f->mid) : 4.f) + 4.f
-                               + (f->small ? font_ascent(f->small) : 13.f),
-                               hint, c->muted, al * 0.7f);
+        shell_icon_draw(s, ic, x + isz * 0.5f, top, isz, tint, paper, al * 0.9f);
+        float y1 = top + isz * 0.5f + 24.f + (f->big ? font_ascent(f->big) : 26.f);
+        shell_text(s, f->big, x, y1, w->title, c->fg_hi, al * 0.9f);
+        if (two) {
+            draw_hrule(s, (int)x, (int)(y1 + (f->big ? font_descent(f->big) : 8.f) + 13.f),
+                       (int)((float)body.w * 0.16f), 1, c->overlay, al);
+            shell_text(s, f->small, x,
+                       y1 + (f->big ? font_descent(f->big) : 8.f) + 28.f
+                          + (f->small ? font_ascent(f->small) : 11.f),
+                       w->subtitle[0] ? w->subtitle : hint, c->subtle, al * 0.85f);
+        }
     }
 
     /* An unfocused window still needs an edge: on a light theme its
      * surface and the wallpaper are close enough in value that without
      * one the window stops having a shape. */
-    draw_round_rect_border(s, a, rc, focused ? (float)c->border : 1.f,
-                           focused ? tint : c->overlay, al * (focused ? 0.9f : 0.88f));
+    draw_frame(s, a, focused ? 2 : 1, focused ? c->fg : c->overlay, 1.f);
+    if (focused) draw_hrule(s, a.x, a.y, a.w, 3, c->accent, 1.f);
 }
 
 /* ── painting: the dock ─────────────────────────────────────────── */
@@ -419,12 +428,11 @@ static void paint_dock(shell_ctx *c, surface *s, shell_fonts *f, float alpha)
     dock_slot sl[MAX_SLOTS];
     int n = dock_slots(c, sl);
     rect strip = dock_rect(c, s->w, s->h, -1);
-    corners rc = corners_all((float)c->radius + 6.f);
+    corners rc = corners_all((float)c->radius);
 
-    draw_round_rect_shadow(s, strip, rc, (float)c->shadow_r, 0x000000, c->shadow_a * alpha, 10);
-    draw_blur_region(s, strip, c->blur_r);
-    draw_round_rect(s, strip, rc, c->surface_c, alpha * c->panel_a);
-    draw_round_rect_border(s, strip, rc, 1.f, c->overlay, alpha * 0.85f);
+    draw_round_rect(s, strip, rc, c->bg_alt, alpha);
+    draw_frame(s, strip, 1, c->overlay, alpha);
+    draw_hrule(s, strip.x, strip.y, strip.w, 2, c->fg, alpha * 0.85f);
 
     int cell_h = strip.h - DOCK_PAD_T - DOCK_DOT_BAND;
     float doty = (float)(strip.y + DOCK_PAD_T + cell_h) + 8.f;
@@ -439,11 +447,9 @@ static void paint_dock(shell_ctx *c, surface *s, shell_fonts *f, float alpha)
 
         /* Divider wherever the kind changes: the favourites are one
          * thing, what merely happens to be open is another. */
-        if (i + 1 < n && sl[i + 1].kind != sl[i].kind) {
-            float lx = (float)(r.x + r.w) + (float)DOCK_SEP * 0.5f;
-            draw_line(s, lx, (float)(strip.y + 16), lx, (float)(strip.y + strip.h - 16),
-                      1.f, c->overlay, alpha * 0.9f);
-        }
+        if (i + 1 < n && sl[i + 1].kind != sl[i].kind)
+            draw_vrule(s, r.x + r.w + DOCK_SEP / 2, strip.y + 14,
+                       strip.h - 28, 1, c->overlay, alpha);
 
         if (sl[i].kind == SLOT_FIND) {
             /* The one item that is not a program. It is pinned to the
@@ -453,14 +459,15 @@ static void paint_dock(shell_ctx *c, surface *s, shell_fonts *f, float alpha)
              * typing to search is a habit some people never form. A
              * button they can see is the cheapest way to start it. */
             rect fp = { r.x, r.y + (r.h - 40) / 2, r.w, 40 };
-            corners fc = corners_all((float)c->radius_sm + 4.f);
-            draw_round_rect(s, fp, fc, c->accent, alpha * (0.13f + 0.12f * k));
-            draw_round_rect_border(s, fp, fc, 1.f, c->accent, alpha * (0.38f + 0.32f * k));
-            shell_icon_draw(s, ICON_PLUS, (float)fp.x + 22.f, (float)fp.y + 20.f,
-                            16.f, c->accent, alpha * 0.95f);
-            shell_text(s, f->small, (float)fp.x + 36.f,
-                       shell_baseline(f->small, (float)fp.y, 40.f), "Find",
-                       c->accent, alpha * 0.95f);
+            int fhot = (i == p->hover);
+            uint32_t fpaper = fhot ? c->surface_hi : c->bg_alt;
+            if (fhot) draw_round_rect(s, fp, corners_all((float)c->radius_sm), fpaper, alpha);
+            draw_frame(s, fp, fhot ? 2 : 1, fhot ? c->fg : c->overlay, alpha);
+            shell_icon_draw(s, ICON_PLUS, (float)fp.x + 18.f, (float)fp.y + 20.f,
+                            13.f, c->fg, fpaper, alpha * 0.95f);
+            shell_text(s, f->mid, (float)fp.x + 30.f,
+                       shell_baseline(f->mid, (float)fp.y, 40.f), "Find",
+                       c->fg_hi, alpha);
             continue;
         }
 
@@ -469,24 +476,33 @@ static void paint_dock(shell_ctx *c, surface *s, shell_fonts *f, float alpha)
         int running = (wi >= 0);
         int is_focus = (wi >= 0 && wi == c->focus);
 
-        if (i == p->hover)
-            draw_round_rect(s, r, corners_all((float)c->radius_sm + 2.f),
-                            c->surface_hi, alpha * 0.55f * p->mag.value);
+        uint32_t paper = c->bg_alt;
+        if (i == p->hover && p->mag.value > 0.02f) {
+            draw_round_rect(s, r, corners_all((float)c->radius_sm),
+                            c->surface_hi, alpha * p->mag.value);
+            if (p->mag.value > 0.5f) paper = c->surface_hi;
+        }
 
         float isz = DOCK_ICON * (1.f + DOCK_MAG * k);
-        draw_circle(s, cx, cy, isz * 0.72f, ap->tint, alpha * (0.13f + 0.09f * k));
-        shell_icon_draw(s, ap->icon, cx, cy, isz, ap->tint, alpha * (running ? 1.f : 0.92f));
+        /* A favourite that is not running is still a favourite, so it
+         * is drawn in the same ink as the rest. Greying it out would
+         * say "unavailable", which is the opposite of what a dock is
+         * for; whether it is open is said by the rule beneath it. */
+        shell_icon_draw(s, ap->icon, cx, cy, isz, ap->tint, paper,
+                        alpha * (running ? 1.f : 0.88f));
 
         /* Running indicator. One mark per APP, never one per window:
          * "how many windows do I have" is the question a taskbar
          * answers, and answering it here would quietly turn this strip
          * into one. The app you are in gets a wider mark. */
+        /* A rule, not a dot. The app you are in gets a wide one in the
+         * signal colour; the others get a short one in ink. Two
+         * lengths and two values, no second shape. */
         if (running) {
             if (is_focus)
-                draw_round_rect(s, (rect){ (int)(cx - 8.f), (int)(doty - 2.5f), 16, 5 },
-                                corners_all(2.5f), c->accent, alpha * 0.95f);
+                draw_hrule(s, (int)(cx - 14.f), (int)doty - 2, 28, 4, c->accent, alpha);
             else
-                draw_circle(s, cx, doty, 3.0f, ap->tint, alpha * 0.85f);
+                draw_hrule(s, (int)(cx - 6.f), (int)doty, 12, 2, c->fg, alpha * 0.8f);
         }
 
         if (i == p->hover) { tip = sl[i].app; tip_x = cx; }
@@ -499,16 +515,16 @@ static void paint_dock(shell_ctx *c, surface *s, shell_fonts *f, float alpha)
     if (tip >= 0 && p->mag.value > 0.05f) {
         const char *nm = c->apps[tip].name;
         float tw = shell_text_w(f->small, nm);
-        rect tp = { (int)(tip_x - tw * 0.5f) - 12, strip.y - 36, (int)tw + 24, 26 };
+        rect tp = { (int)(tip_x - tw * 0.5f) - 12, strip.y - 34, (int)tw + 24, 26 };
         if (tp.x < c->margin) tp.x = c->margin;
         if (tp.x + tp.w > s->w - c->margin) tp.x = s->w - c->margin - tp.w;
-        corners tc = corners_all((float)c->radius_sm);
         float ta = alpha * p->mag.value;
-        draw_round_rect_shadow(s, tp, tc, (float)c->shadow_r * 0.5f, 0x000000, c->shadow_a * ta, 4);
-        draw_round_rect(s, tp, tc, c->bg_alt, ta * 0.96f);
-        draw_round_rect_border(s, tp, tc, 1.f, c->overlay, ta * 0.9f);
-        shell_text_centred(s, f->small, (float)tp.x + (float)tp.w * 0.5f,
-                           shell_baseline(f->small, (float)tp.y, (float)tp.h), nm, c->fg_hi, ta);
+        draw_round_rect(s, tp, corners_all((float)c->radius_sm), c->fg_hi, ta);
+        /* Ink block, paper letters. A label that has to survive
+         * landing on any part of the wallpaper is more legible as a
+         * reversed slug than as a translucent chip with a border. */
+        shell_text_centred(s, f->mid, (float)tp.x + (float)tp.w * 0.5f,
+                           shell_baseline(f->mid, (float)tp.y, (float)tp.h), nm, c->bg, ta);
     }
 }
 
@@ -520,64 +536,64 @@ static void paint_find(shell_ctx *c, surface *s, shell_fonts *f)
     int nres = find_search(c, p->q, hit);
     rect a = find_panel_rect(c, s->w, s->h, nres);
     float al = clampf(p->veil.value, 0.f, 1.f);
-    corners rc = corners_all((float)c->radius + 2.f);
 
-    draw_round_rect_shadow(s, a, rc, (float)c->shadow_r * 1.4f, 0x000000, c->shadow_a * al, 16);
-    draw_blur_region(s, a, c->blur_r);
-    draw_round_rect(s, a, rc, c->surface_c, al * clampf(c->panel_a + 0.07f, 0.f, 1.f));
-    draw_round_rect_border(s, a, rc, 1.f, c->overlay, al * 0.9f);
+    draw_round_rect(s, a, corners_all((float)c->radius), c->surface_c, al);
+    draw_frame(s, a, 1, c->fg, al);
+    draw_hrule(s, a.x, a.y, a.w, 3, c->accent, al);
 
-    /* A standing "Find" chip inside the field, so the box says what it
-     * is even once the placeholder has been typed over. */
-    float chw = shell_text_w(f->small, "Find") + 24.f;
-    rect chip = { a.x + 18, a.y + (68 - 28) / 2, (int)chw, 28 };
-    draw_round_rect(s, chip, corners_all((float)c->radius_sm), c->accent, al * 0.16f);
-    shell_text_centred(s, f->small, (float)chip.x + chw * 0.5f,
-                       shell_baseline(f->small, (float)chip.y, 28.f), "Find", c->accent, al * 0.95f);
+    int pad = c->padding;
+    /* A tracked rubric above the field rather than a tinted chip
+     * inside it: the box says what it is the way a printed form says
+     * what a box is for, in small capitals over the rule. */
+    shell_text_tracked(s, f->label, (float)(a.x + pad), (float)(a.y + pad + 12),
+                       "FIND", c->subtle, al * 0.95f, 1.8f);
 
-    float qx = (float)(chip.x + chip.w) + 16.f;
-    float qb = shell_baseline(f->big, (float)a.y, 68.f);
+    float qx = (float)(a.x + pad);
+    float qb = (float)(a.y + 62);
     if (p->qn) {
         shell_text(s, f->big, qx, qb, p->q, c->fg_hi, al * 0.98f);
-        qx += shell_text_w(f->big, p->q) + 3.f;
+        qx += shell_text_w(f->big, p->q) + 4.f;
     }
     /* A caret that does not blink. Blinking would keep the shell
      * redrawing for ever on hardware that would rather be asleep, and
      * it tells the user nothing the shape has not already told them. */
-    draw_round_rect(s, (rect){ (int)qx, a.y + 22, 2, 26 }, corners_all(1.f), c->accent, al * 0.9f);
+    draw_rect(s, (rect){ (int)qx, (int)qb - 22, 2, 26 }, c->accent, al * 0.95f);
     if (!p->qn)
-        shell_text(s, f->mid, qx + 12.f, shell_baseline(f->mid, (float)a.y, 68.f),
+        shell_text(s, f->mid, qx + 12.f, qb,
                    "the name of a program or a file", c->muted, al * 0.9f);
 
-    draw_line(s, (float)(a.x + 16), (float)(a.y + 68), (float)(a.x + a.w - 16),
-              (float)(a.y + 68), 1.f, c->overlay, al * 0.85f);
+    draw_hrule(s, a.x + pad, a.y + 72, a.w - pad * 2, 2, c->fg_hi, al * 0.85f);
 
     for (int i = 0; i < nres; i++) {
-        rect r = { a.x + 10, a.y + 76 + i * 48, a.w - 20, 48 };
+        rect r = { a.x, a.y + 76 + i * 50, a.w, 50 };
+        uint32_t paper = c->surface_c;
         if (i == p->find_sel) {
-            corners sc = corners_all((float)c->radius_sm);
-            draw_round_rect(s, r, sc, c->surface_hi, al * 0.95f);
-            draw_round_rect_border(s, r, sc, 1.f, c->accent, al * 0.5f);
+            draw_rect(s, r, c->surface_hi, al);
+            draw_rect(s, (rect){ r.x, r.y, 4, r.h }, c->accent, al);
+            paper = c->surface_hi;
         }
-        float icx = (float)r.x + 30.f, icy = (float)r.y + (float)r.h * 0.5f;
-        draw_circle(s, icx, icy, 16.f, hit[i].tint, al * 0.14f);
-        shell_icon_draw(s, hit[i].ic, icx, icy, 21.f, hit[i].tint, al * 0.95f);
-        shell_text(s, f->mid, (float)r.x + 56.f, shell_baseline(f->mid, (float)r.y, (float)r.h),
-                   hit[i].name, (i == p->find_sel) ? c->fg_hi : c->fg, al * 0.97f);
+        if (i) draw_hrule(s, r.x + pad, r.y, r.w - pad * 2, 1, c->overlay, al * 0.9f);
+        shell_icon_draw(s, hit[i].ic, (float)r.x + (float)pad + 10.f,
+                        (float)r.y + (float)r.h * 0.5f, 19.f, hit[i].tint, paper, al);
+        shell_text(s, f->dmid, (float)(r.x + pad) + 34.f,
+                   shell_baseline(f->dmid, (float)r.y, (float)r.h),
+                   hit[i].name, c->fg_hi, al * 0.98f);
         float ww = shell_text_w(f->small, hit[i].where);
-        shell_text(s, f->small, (float)(r.x + r.w) - 18.f - ww,
+        shell_text(s, f->small, (float)(r.x + r.w - pad) - ww,
                    shell_baseline(f->small, (float)r.y, (float)r.h), hit[i].where,
-                   c->subtle, al * 0.8f);
+                   c->subtle, al * 0.88f);
     }
     if (!nres)
-        shell_text(s, f->mid, (float)a.x + 30.f, (float)a.y + 104.f,
+        shell_text(s, f->dmid, (float)(a.x + pad), (float)a.y + 110.f,
                    "Nothing by that name.", c->muted, al * 0.9f);
 
-    float fb = shell_baseline(f->small, (float)(a.y + a.h - 34), 34.f);
-    shell_text(s, f->small, (float)a.x + 24.f, fb, "Enter opens it", c->muted, al * 0.85f);
+    rect foot = { a.x, a.y + a.h - 36, a.w, 36 };
+    draw_hrule(s, foot.x + pad, foot.y, foot.w - pad * 2, 1, c->overlay, al * 0.9f);
+    float fb = shell_baseline(f->small, (float)foot.y, (float)foot.h);
+    shell_text(s, f->small, (float)(a.x + pad), fb, "Enter opens it", c->muted, al * 0.9f);
     const char *esc = "Esc goes back";
-    shell_text(s, f->small, (float)(a.x + a.w) - 24.f - shell_text_w(f->small, esc), fb,
-               esc, c->muted, al * 0.85f);
+    shell_text(s, f->small, (float)(a.x + a.w - pad) - shell_text_w(f->small, esc), fb,
+               esc, c->muted, al * 0.9f);
 }
 
 /* ── paint ──────────────────────────────────────────────────────── */
@@ -605,10 +621,12 @@ static void l_paint(shell_ctx *c, surface *s, shell_fonts *f, const surface *wal
     float veil = clampf(p->veil.value, 0.f, 1.f);
     if (veil > 0.01f) {
         rect full = { 0, 0, s->w, s->h };
-        /* Enough softening to push the desktop behind the field, not
-         * so much that the wallpaper stops being anything at all. */
-        draw_blur_region(s, full, (int)((float)c->blur_r * 0.5f * veil));
-        draw_rect(s, full, c->bg, 0.36f * veil);
+        /* A flat veil of the desk colour. Blurring the whole
+         * framebuffer to push the desktop back was the single most
+         * expensive thing this archetype did per frame, and a wash
+         * does the same job: what is behind is still there, still
+         * recognisable, and visibly not the thing you are using. */
+        draw_rect(s, full, c->bg, 0.62f * veil);
     }
 
     paint_dock(c, s, f, 1.f);
@@ -620,20 +638,24 @@ static void l_paint(shell_ctx *c, surface *s, shell_fonts *f, const surface *wal
      * raise a window, "always in the same spot" stops being true —
      * there would be two spots. */
     int bh = c->bar_h;
-    draw_rect(s, (rect){ 0, 0, s->w, bh }, c->bg, 0.5f);
-    draw_line(s, 0, (float)bh, (float)s->w, (float)bh, 1.f, c->overlay, 0.45f);
-    draw_circle(s, (float)(c->margin + 8), (float)(bh / 2), 6.f, c->accent, 0.95f);
-    shell_text(s, f->small, (float)(c->margin + 24), shell_baseline(f->small, 0.f, (float)bh),
-               c->brand, c->subtle, 0.9f);
+    draw_rect(s, (rect){ 0, 0, s->w, bh }, c->bg_alt, 1.f);
+    draw_hrule(s, 0, bh, s->w, 1, c->overlay, 1.f);
+    draw_rect(s, (rect){ c->margin, bh/2 - 4, 8, 8 }, c->accent, 1.f);
+    shell_text_tracked(s, f->label, (float)(c->margin + 20),
+                       shell_baseline(f->label, 0.f, (float)bh),
+                       c->brand, c->subtle, 0.95f, 1.6f);
 
     if (c->show_clock) {
         char hm[32], dt[48];
         shell_clock(hm, sizeof hm, dt, sizeof dt);
-        float by = shell_baseline(f->small, 0.f, (float)bh);
         float rx = (float)(s->w - c->margin);
-        shell_text(s, f->small, rx - shell_text_w(f->small, hm), by, hm, c->fg_hi, 0.95f);
-        rx -= shell_text_w(f->small, hm) + 14.f;
-        shell_text(s, f->small, rx - shell_text_w(f->small, dt), by, dt, c->subtle, 0.75f);
+        shell_text(s, f->mid, rx - shell_text_w(f->mid, hm),
+                   shell_baseline(f->mid, 0.f, (float)bh), hm, c->fg_hi, 1.f);
+        rx -= shell_text_w(f->mid, hm) + 13.f;
+        draw_vrule(s, (int)rx, 8, bh - 16, 1, c->overlay, 1.f);
+        rx -= 13.f;
+        shell_text(s, f->small, rx - shell_text_w(f->small, dt),
+                   shell_baseline(f->small, 0.f, (float)bh), dt, c->subtle, 0.9f);
     }
 }
 
@@ -661,11 +683,24 @@ static void find_open(shell_ctx *c, int open)
  *
  * `band` says whether (x,y) is on the strip at all, so the strip can
  * still swallow clicks that land between icons. */
-#define DOCK_LEADIN 4
+/* The hit region IS the painted strip. Exactly, on both paths.
+ *
+ * There used to be a four-pixel lead-in above it, so the icons would
+ * light up as the pointer arrived rather than once it was exactly
+ * inside. That band was not painted, and a band that is not painted can
+ * only be wrong in one of two ways: honour the click there and clicking
+ * bare wallpaper activates whatever is under that column (tools/hittest
+ * found 109 such clicks, on one scanline); refuse the click and the
+ * dock lights up and then ignores you, which docs/DESIGN.md forbids by
+ * name. Splitting it -- hover yes, click no -- is just choosing the
+ * second failure.
+ *
+ * So there is no band. The pointer engages when it is on the dock, and
+ * the dock is where it is drawn. */
 static int dock_hit(shell_ctx *c, int sw, int sh, int x, int y, int *band)
 {
     rect strip = dock_rect(c, sw, sh, -1);
-    int on = (y >= strip.y - DOCK_LEADIN && y < strip.y + strip.h &&
+    int on = (y >= strip.y && y < strip.y + strip.h &&
               x >= strip.x && x < strip.x + strip.w);
     if (band) *band = on;
     if (!on) return -1;
@@ -678,6 +713,7 @@ static int dock_hit(shell_ctx *c, int sw, int sh, int x, int y, int *band)
     }
     return -1;
 }
+
 
 /* Both sides of this copy live inside the same shell_ctx, so the
  * compiler cannot prove they do not overlap and warns about snprintf.
@@ -726,7 +762,7 @@ static int l_click(shell_ctx *c, int x, int y)
         int nres = find_search(c, p->q, hit);
         rect a = find_panel_rect(c, sw, sh, nres);
         for (int i = 0; i < nres; i++) {
-            rect r = { a.x + 10, a.y + 76 + i * 48, a.w - 20, 48 };
+            rect r = { a.x, a.y + 76 + i * 50, a.w, 50 };
             if (x < r.x || x >= r.x + r.w || y < r.y || y >= r.y + r.h) continue;
             if (hit[i].app >= 0) raise_app(c, hit[i].app);
             find_open(c, 0);

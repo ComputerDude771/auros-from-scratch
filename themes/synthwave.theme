@@ -7,8 +7,14 @@ theme_variant="dark"
 theme_description="Neon grid, hot magenta and cyan over a violet horizon."
 
 bg="#160A26"      bg_alt="#1D0E32"   surface="#26123F"
-surface_hi="#33194F"  overlay="#452266"
-muted="#6E4E91"   subtle="#A98CC9"   fg="#EBDCFA"  fg_hi="#FFFFFF"
+surface_hi="#33194F"  overlay="#8B5AC8"  # borders and dividers.
+# Raised to meet the 3:1 floor docs/DESIGN.md sets. This design
+# replaced shadows with hairlines, so the rules ARE the structure;
+# a divider at 1.4:1 is structure nobody can see. Checked by
+# tools/contrast.c --strict against every surface in the theme,
+# including the hovered row, which is the worst case.
+
+muted="#8462AA"   subtle="#A98CC9"   fg="#EBDCFA"  fg_hi="#FFFFFF"
 
 accent="#FF4FD8"  accent_alt="#4FE9FF"  accent_warm="#FFC95C"
 ok="#4FFFB0"      warn="#FFC95C"  err="#FF5C7A"  info="#4FE9FF"
@@ -23,7 +29,7 @@ ansi6="#4FE9FF"  ansi14="#96F3FF"
 ansi7="#EBDCFA"  ansi15="#FFFFFF"
 
 radius="6"  radius_sm="3"  border="2"
-shadow_opacity="0.65"  blur_radius="26"
+shadow_opacity="0.00"  blur_radius="0"
 wall_style="waves"
 wall_c1="#0D0518"  wall_c2="#3D1160"  wall_c3="#FF4FD8"  wall_c4="#4FE9FF"
 wall_intensity="0.78"  wall_grain="0.07"  wall_vignette="0.55"

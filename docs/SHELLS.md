@@ -183,7 +183,16 @@ shellpreview shells/dock.shell themes/sandstone.theme /tmp/x.png 1600 900 3
   hit-testing. Deriving them separately is how a UI ends up off by the
   width of a shadow and feeling haunted.
 - **Icons and the clock are shared helpers.** Six independently written
-  renderers must not drift into six icon sets.
+  renderers must not drift into six icon sets. A mark is a solid
+  silhouette with its detail knocked out in the PAPER colour the
+  caller just filled, so `shell_icon_draw()` takes both inks; passing
+  the wrong paper shows, which is the point.
+- **The six archetypes must not share a composition.** They shared one
+  for a while — halo disc, centred mark, centred name, centred hint,
+  reimplemented six times — and the result was that six deliberately
+  different interaction models all read as the same product. Differing
+  behaviour deserves differing layout: an index, a broken grid, a
+  strip, a bar, a shelf, a tiler.
 - **Every archetype states its tradeoff** in its `.shell` file, and the
   chooser shows it. A menu that only lists upsides is useless for
   choosing.

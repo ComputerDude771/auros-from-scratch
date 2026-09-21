@@ -334,37 +334,76 @@ stage_overlay() {
     # those silently yields a desktop with no text, so the font is
     # verified here rather than discovered at boot.
     install -d "$RFS/usr/share/auros/fonts"
+    #
+    # Two things this resolver has to do that the first version could
+    # not, and both are the reason the desktop had exactly one face in
+    # exactly one weight:
+    #
+    # 1. A WEIGHT IS A FILE. The reject list below used to drop every
+    #    candidate whose name contained Bold/SemiBold/Medium, which
+    #    made a display face structurally unreachable no matter what a
+    #    theme asked for. It now rejects weight variants only when the
+    #    caller did not ask for one, and accepts a literal filename
+    #    (PTF75F, IBMPlexSerif-SemiBold) when it did.
+    #
+    # 2. A VARIABLE FONT IS A TRAP. InterVariable.ttf and Karla[wght]
+    #    carry `glyf` + `fvar` + `gvar` and no static instances. Our
+    #    rasterizer ignores `fvar` entirely, so such a file LOADS,
+    #    returns success, and renders the default instance at weight
+    #    400 for ever. It fails by looking fine, which is worse than
+    #    failing loudly, so it is refused here by name.
     resolve_font() {
-        _want=$1 _link=$2
+        _want=$1 _link=$2 _anyweight=${3:-0}
         # Priority order matters: a plain find would happily return
         # "-Bold" before "-Regular" because B sorts before R, and the
         # whole UI would come up bold.
-        for _pat in "${_want}-Regular.ttf" "${_want}-Regular.otf" \
-                    "${_want}Regular.ttf" "${_want}Regular.otf" \
-                    "${_want}.ttf" "${_want}.otf" \
-                    "${_want}-Book.ttf" "${_want}*.ttf" "${_want}*.otf"; do
+        if [ "$_anyweight" = 1 ]; then
+            _pats="${_want}.ttf ${_want}.otf ${_want}*.ttf ${_want}*.otf"
+        else
+            _pats="${_want}-Regular.ttf ${_want}-Regular.otf
+                   ${_want}Regular.ttf ${_want}Regular.otf
+                   ${_want}.ttf ${_want}.otf
+                   ${_want}-Book.ttf ${_want}*.ttf ${_want}*.otf"
+        fi
+        for _pat in $_pats; do
             for _cand in $(find "$RFS/usr/share/fonts" -iname "$_pat" 2>/dev/null | sort); do
-                case "$(basename "$_cand")" in
-                    *Bold*|*Italic*|*Oblique*|*Light*|*Thin*|*Black*|*Medium*|*SemiBold*|*Extra*)
-                        continue ;;
-                esac
+                _base=$(basename "$_cand")
+                # A weight variant is only wrong when nobody asked for
+                # one. `font_display` asking for PT Serif Bold must not
+                # be answered with PT Serif Regular.
+                if [ "$_anyweight" != 1 ]; then
+                    case "$_base" in
+                        *Bold*|*Italic*|*Oblique*|*Light*|*Thin*|*Black*|*Medium*|*SemiBold*|*Extra*)
+                            continue ;;
+                    esac
+                fi
+                case "$_base" in *"["*|*Variable*|*VF.ttf|*VF.otf) continue ;; esac
                 # The font must carry outlines our rasterizer can read.
                 # It handles BOTH TrueType 'glyf' (quadratic) and
                 # OpenType 'CFF ' (Type 2 charstrings, cubic), so accept
                 # either. Checking matters: a font with neither -- a
                 # bitmap-only or CFF2 font -- renders no text at all, and
                 # a desktop with no text is not a recoverable state.
-                if head -c 4096 "$_cand" | grep -aqE 'glyf|CFF '; then
-                    ln -sf "${_cand#"$RFS"}" "$RFS/usr/share/auros/fonts/$_link.ttf"
-                    note "font $_link -> $(basename "$_cand")"
-                    return 0
+                if ! head -c 4096 "$_cand" | grep -aqE 'glyf|CFF '; then continue; fi
+                # ...and it must not be a variable font wearing a glyf
+                # table, for the reason above.
+                if head -c 4096 "$_cand" | grep -aq 'fvar'; then
+                    note "font $_base is variable (fvar); refusing -- it would render weight 400 for ever"
+                    continue
                 fi
+                ln -sf "${_cand#"$RFS"}" "$RFS/usr/share/auros/fonts/$_link.ttf"
+                note "font $_link -> $_base"
+                return 0
             done
         done
         return 1
     }
-    _sans=$(sed -n 's/^font_sans="\(.*\)"/\1/p' "$ROOT/themes/$theme.theme" 2>/dev/null | head -1)
-    _mono=$(sed -n 's/^font_mono="\(.*\)"/\1/p' "$ROOT/themes/$theme.theme" 2>/dev/null | head -1)
+    _key() { sed -n "s/^$1=\"\(.*\)\"/\1/p" "$ROOT/themes/$theme.theme" 2>/dev/null | head -1; }
+    _sans=$(_key font_sans)
+    _mono=$(_key font_mono)
+    _disp=$(_key font_display)
+    _text=$(_key font_text)
+    _tbold=$(_key font_text_bold)
     resolve_font "${_sans:-Inter}" "${_sans:-Inter}" || {
         note "WARNING: '${_sans:-Inter}' has no TrueType outlines here; using DejaVu Sans"
         resolve_font DejaVuSans "${_sans:-Inter}" || true
@@ -373,6 +412,18 @@ stage_overlay() {
         note "WARNING: '${_mono:-JetBrainsMono}' unavailable; using DejaVu Sans Mono"
         resolve_font DejaVuSansMono "${_mono:-JetBrainsMono}" || true
     }
+    # The three shell faces. Each falls back to the text face, then to
+    # Clear Sans, then to DejaVu -- never to nothing, because a desktop
+    # with no text is not a recoverable state. Weight-qualified names
+    # are allowed here (third argument), which is the whole point.
+    for _slot in "${_disp:-}" "${_text:-}" "${_tbold:-}"; do
+        [ -n "$_slot" ] || continue
+        resolve_font "$_slot" "$_slot" 1 || {
+            note "WARNING: font '$_slot' not found; falling back"
+            resolve_font ClearSans-Regular "$_slot" 1 ||
+            resolve_font DejaVuSans "$_slot" || true
+        }
+    done
 
     install -d "$RFS/etc/auros/services"
     cp "$ROOT/rootfs/etc/auros/services"/*.service "$RFS/etc/auros/services/" 2>/dev/null || true

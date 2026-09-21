@@ -1,8 +1,8 @@
 #@!out=/etc/auros/motd mode=0644
 [38;2;@wall_c2|lighten:10|rgbsp@m      ▁▂▃▄▅▆▇█▇▆▅▄▃▂▁[0m
 [38;2;@accent|rgbsp@m   ╭─╮ ╷ ╷ ╭─╮ ╭─╮ ╭─╮[0m
-[38;2;@accent|mix:accent_alt:45|rgbsp@m   ├─┤ │ │ ├┬╯ │ │ ╰─╮[0m
-[38;2;@accent_alt|rgbsp@m   ╵ ╵ ╰─╯ ╵╰╴ ╰─╯ ╰─╯[0m
+[38;2;@accent|rgbsp@m   ├─┤ │ │ ├┬╯ │ │ ╰─╮[0m
+[38;2;@accent|mix:bg:35|rgbsp@m   ╵ ╵ ╰─╯ ╵╰╴ ╰─╯ ╰─╯[0m
 
    [38;2;@subtle|rgbsp@mbuilt from source · theme [0m[38;2;@accent|rgbsp@m@theme_name@[0m
    [38;2;@muted|rgbsp@m@theme_description@[0m

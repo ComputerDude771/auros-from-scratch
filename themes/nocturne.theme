@@ -18,38 +18,68 @@ theme_variant="dark"
 theme_description="Deep atmospheric blue-black with an aurora-teal glow."
 
 # ── Core palette ───────────────────────────────────────────────────
-# Layered from deepest to brightest. Every surface in the system
-# picks one of these; nothing hardcodes a colour.
-bg="#0B0E14"           # desktop void / deepest background
-bg_alt="#10151F"       # panels, bar background
-surface="#161C28"      # cards, windows, menus
-surface_hi="#1F2735"   # hover / selected row
-overlay="#2B3542"      # borders, dividers, separators
-muted="#55606E"        # disabled text, inactive glyphs
-subtle="#8793A4"       # secondary text, captions
-fg="#D4DCEA"           # primary text
-fg_hi="#F3F7FD"        # emphasis, active title
+# A near-neutral ladder, cool but barely. Eight steps from the desktop
+# void to emphasis text, with nothing between them that reads as a
+# colour -- the variation between surfaces is meant to be felt and not
+# noticed, which is what "subtle background variation" means and what a
+# saturated gradient is the opposite of.
+#
+# `overlay` is far brighter than it used to be, and it will look wrong
+# to anyone who reaches for a divider by eye. This design replaced
+# shadows with hairlines, so the rules ARE the structure, and a rule at
+# 1.4:1 against its surface is structure nobody can see. At #6E7680 it
+# is 3.69:1 against a card and 3.26:1 against a hovered row -- the worst
+# case in the theme, which is the one that has to pass.
+# docs/DESIGN.md sets 3:1 as the floor; tools/contrast.c --strict is
+# the check, and two independent redesigns failed it before this.
+bg="#0E1013"           # desktop void / deepest background
+bg_alt="#14171B"       # panels, bar background
+surface="#191D21"      # cards, windows, menus
+surface_hi="#23272D"   # hover / selected row
+overlay="#6E7680"      # borders, dividers, separators -- load-bearing
+muted="#6A7178"        # disabled text, inactive glyphs
+subtle="#9BA3AB"       # secondary text, captions
+fg="#D9DDE1"           # primary text
+fg_hi="#F4F6F8"        # emphasis, active title
 
 # ── Accents ────────────────────────────────────────────────────────
-accent="#7DD3C0"       # primary: focus rings, active workspace, cursor
-accent_alt="#A78BFA"   # secondary: highlights, selection glow
-accent_warm="#F2B880"  # tertiary: badges, warm emphasis
+# One colour, and it means one thing: THIS IS WHERE YOU ARE. The focus
+# ring, the selected row's edge, the active workspace, the cursor.
+# Nothing decorative is allowed to use it, which is what keeps it
+# meaning anything.
+#
+# It used to be #7DD3C0 with #A78BFA beside it -- mint teal and
+# lavender violet, the single most recognisable machine-generated
+# colour pair there is, restated as the two wallpaper ribbons so that
+# the desktop itself WAS the gradient, and cycled down the app list for
+# variety. Brass on near-black is the opposite decision: warm, single,
+# and old enough to have been printed.
+accent="#C89B4A"       # the one signal: focus, selection, cursor
+# A different KIND of thing, not a second flavour of the same thing --
+# see docs/THEMING.md. Cool and quiet: informational, not actionable.
+accent_alt="#7C8B9B"
+accent_warm="#A97B3E"  # the signal, one step down, for a resting state
 
 # ── Semantic ───────────────────────────────────────────────────────
-ok="#7DD3C0"
-warn="#F2B880"
-err="#F2788D"
-info="#82AAFF"
+# These are allowed to be colours, because each one carries a meaning
+# the user already knows.
+ok="#8FB573"
+warn="#C89B4A"
+err="#C96A5E"
+info="#7C8B9B"
 
 # ── ANSI 16 (terminal + TTY console) ───────────────────────────────
-ansi0="#161C28"   ansi8="#55606E"
-ansi1="#F2788D"   ansi9="#FF9AAB"
-ansi2="#7DD3C0"   ansi10="#9BE8D8"
-ansi3="#F2B880"   ansi11="#FFD2A3"
-ansi4="#82AAFF"   ansi12="#A5C4FF"
-ansi5="#A78BFA"   ansi13="#C4ADFF"
-ansi6="#6FD8DC"   ansi14="#93EEF2"
-ansi7="#D4DCEA"   ansi15="#F3F7FD"
+# A terminal has sixteen colours because programs address them by
+# number and expect red to be red. These stay recognisable and are
+# muted to sit in the same room as the rest of the palette.
+ansi0="#191D21"   ansi8="#6A7178"
+ansi1="#C96A5E"   ansi9="#DE8578"
+ansi2="#8FB573"   ansi10="#A8CB8C"
+ansi3="#C89B4A"   ansi11="#DDB365"
+ansi4="#7C8B9B"   ansi12="#95A4B4"
+ansi5="#A08099"   ansi13="#B99AB2"
+ansi6="#6F9A96"   ansi14="#8BB4B0"
+ansi7="#D9DDE1"   ansi15="#F4F6F8"
 
 # ── Geometry (pixels) ──────────────────────────────────────────────
 radius="14"            # window + panel corner radius
@@ -61,6 +91,13 @@ bar_height="38"        # top bar height
 padding="14"           # internal padding of panels
 
 # ── Typography ─────────────────────────────────────────────────────
+# Three shell faces. The image ships one family, so display and text
+# resolve to the same file until a second is installed -- but the keys
+# are separate so that installing one is a theme edit and not a code
+# change. The size scale below is what carries the hierarchy meanwhile.
+font_display="Inter"
+font_text="Inter"
+font_text_bold="Inter"
 font_sans="Inter"
 font_mono="JetBrainsMono"
 font_size="14"         # base UI size (px)
@@ -69,23 +106,33 @@ font_size_lg="19"
 line_height="1.45"
 
 # ── Effects ────────────────────────────────────────────────────────
-blur="1"               # 1 = blur behind panels
-blur_radius="20"
-shadow="1"
-shadow_opacity="0.50"
-shadow_radius="28"
+# Off, and the primitives are still in draw.c because a future theme
+# may want them. This design separates surfaces with rules and with a
+# value step between them, not with a blur and a black shadow -- which
+# were the two most expensive things the shell did, on the hardware it
+# exists to rescue, in service of the look it was trying to stop having.
+blur="0"               # 1 = blur behind panels
+blur_radius="0"
+shadow="0"
+shadow_opacity="0.00"
+shadow_radius="0"
 opacity_panel="0.88"   # bar / palette translucency
 opacity_inactive="0.94"
 animation_ms="170"
 animation_curve="spring"   # spring | ease | linear
 
 # ── Wallpaper (procedurally generated, no image files) ─────────────
-wall_style="aurora"    # aurora | mesh | waves | gradient | noise | solid
-wall_c1="#080B11"      # deep base
-wall_c2="#10303A"      # mid wash
-wall_c3="#7DD3C0"      # ribbon 1
-wall_c4="#A78BFA"      # ribbon 2
-wall_intensity="0.55"  # 0.0-1.0 ribbon brightness
+# letterpress: laid paper, one off-centre tint block, a hairline rule.
+# The desktop used to be two saturated ribbons interpolated between the
+# accent pair -- which made the background the forbidden gradient, at
+# full screen, behind everything. docs/THEMING.md used to tell theme
+# authors to do this on purpose; it no longer does.
+wall_style="letterpress"  # letterpress | aurora | mesh | waves | gradient | noise | solid
+wall_c1="#0C0E11"      # the stock
+wall_c2="#15181C"      # the deeper stock, for the tint block
+wall_c3="#C89B4A"      # the rule -- the one accent, once
+wall_c4="#1B1F24"      # the second block
+wall_intensity="0.40"  # how far the stock varies; not a brightness
 wall_grain="0.05"      # film grain, hides banding
 wall_vignette="0.45"
 

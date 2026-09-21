@@ -1,10 +1,25 @@
 /* draw.h — the AurOS 2D rasterizer.
  *
  * Everything the shell paints goes through here: the bar, panels, the
- * command palette, focus rings. The whole visual language is rounded
- * rectangles, soft shadows and translucency over a procedural
- * wallpaper, so those three primitives are the ones that had to be
- * genuinely good rather than merely correct.
+ * command palette, focus rings.
+ *
+ * The visual language is PRINT: flat opaque fills on an off-white
+ * ground, near-square corners, and hairline rules doing the work that
+ * a shadow and a rounded card would otherwise do. So the primitives
+ * that had to be genuinely good are the flat fill, the exactly-one-
+ * pixel rule, and the text on top of them -- not a soft shadow.
+ *
+ * draw_hrule/draw_vrule/draw_frame exist because an anti-aliased
+ * draw_line at width 1 lands on a fractional centre and comes back as
+ * two rows of half-grey. Structure drawn that way looks smudged, and
+ * a system whose only separator is a rule cannot afford a smudged
+ * rule. These snap to the pixel grid and fill integer spans: one row,
+ * full strength, and roughly ten times cheaper than the line it
+ * replaces, which is the same trade the whole theme makes.
+ *
+ * draw_round_rect_shadow and draw_blur_region are still here and still
+ * correct; the shipped themes simply never ask for them (blur_radius="0",
+ * shadow_opacity="0.00"), and blur no-ops at radius 0.
  *
  * Surfaces are 32-bit 0xAARRGGBB in native byte order. The shell's own
  * framebuffer is opaque, but intermediate layers carry alpha so panels
@@ -51,6 +66,17 @@ void draw_round_rect_border(surface *s, rect r, corners c, float width,
 void draw_round_rect_gradient(surface *s, rect r, corners c,
                               uint32_t top, uint32_t bottom, float a, int vertical);
 
+/* ── print primitives ──────────────────────────────────────────────
+ * Integer spans, pixel-snapped, no anti-aliasing and no distance
+ * field. `weight` is in whole pixels and is clamped to at least one:
+ * a rule that rounds to nothing is a separator that vanishes at one
+ * resolution and not another. */
+void draw_hrule(surface *s, int x, int y, int w, int weight, uint32_t rgb, float a);
+void draw_vrule(surface *s, int x, int y, int h, int weight, uint32_t rgb, float a);
+/* Four rules around a rect, drawn INSIDE it, so a frame never grows
+ * the box it is framing -- which is what keeps a painted edge and a
+ * hit rect the same rectangle. */
+void draw_frame(surface *s, rect r, int weight, uint32_t rgb, float a);
 void draw_circle(surface *s, float cx, float cy, float radius, uint32_t rgb, float a);
 void draw_line(surface *s, float x0, float y0, float x1, float y1,
                float width, uint32_t rgb, float a);

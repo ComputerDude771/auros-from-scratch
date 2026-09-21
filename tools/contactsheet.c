@@ -108,12 +108,13 @@ int main(int argc, char **argv)
         if (L->init) L->init(&c);
         surface *tile = surface_new(tw, th);
         if (!tile) continue;
-        shell_fonts f;
-        int base = theme_int(&t, "font_size", 14);
-        f.huge  = pick_font((float)base * 2.6f);
-        f.big   = pick_font((float)base * 1.7f);
-        f.mid   = pick_font((float)base * 1.2f);
-        f.small = pick_font((float)base);
+        /* The shared loader, not four hand-picked sizes. There are
+         * seven faces now; a copy of this that fills four leaves three
+         * NULL, and every element drawn in one of those silently
+         * vanishes from the sheet -- which is a picture of a desktop
+         * that does not exist, captioned as if it did. */
+        shell_fonts f = {0};
+        shell_fonts_load(&f, &c);
         L->paint(&c, tile, &f, wall);
         if (L->fini) L->fini(&c);
 
@@ -127,10 +128,7 @@ int main(int argc, char **argv)
             shell_text(sheet, label, (float)x0, (float)y0 - 8.f, IDS[k], ink, 0.85f);
 
         surface_free(tile);
-        if (f.huge)  font_free(f.huge);
-        if (f.big)   font_free(f.big);
-        if (f.mid)   font_free(f.mid);
-        if (f.small) font_free(f.small);
+        shell_fonts_free(&f);
     }
 
     uint32_t *out = malloc((size_t)sheet_w * sheet_h * sizeof *out);

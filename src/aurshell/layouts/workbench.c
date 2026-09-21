@@ -112,34 +112,63 @@ static int wb_hint_band(shell_ctx *c)
  * child, so the parts always sum back to exactly the parent: no
  * rounding crack between panes, no unfilled strip at the edge.
  */
-static void wb_split(rect r, int first, int n, int gap, rect *out)
+/* MASTER_BIAS applies to the FIRST cut only. A BSP of exactly equal
+ * halves produces a screen with no first pane and no second — every
+ * region the same size, every boundary on a midline, which is the
+ * tiler equivalent of centring everything. One biased cut at the top
+ * of the tree gives the work you are actually doing a visibly larger
+ * region and leaves the rest of the recursion untouched, so it does
+ * NOT reintroduce the starved-stack problem a fixed master fraction
+ * at every level would: the bias is applied once, and it is clamped,
+ * so the smallest pane at sixteen windows is the same shape it was. */
+#define MASTER_BIAS 1.20f
+
+static void wb_split_d(rect r, int first, int n, int gap, rect *out, int depth)
 {
     if (n <= 0) return;
     if (n == 1) { out[first] = r; return; }
 
-    int a = (n + 1) / 2, b = n - a;
+    /* At the top of the tree the cut favours the FIRST group and makes
+     * it the smaller COUNT, so slot 0 ends up in a region with fewer
+     * panes and more room: a master. Below the top it is the plain
+     * balanced BSP again, which is what keeps the sixteen-window case
+     * out of the sliver regime a fixed master fraction at every level
+     * would put it in. */
+    int a = (depth == 0) ? (n / 2 < 1 ? 1 : n / 2) : (n + 1) / 2;
+    int b = n - a;
+    float frac = (float)a / (float)n;
+    if (depth == 0) {
+        frac *= MASTER_BIAS;
+        if (frac > 0.70f) frac = 0.70f;
+        if (frac < 0.28f) frac = 0.28f;
+    }
 
     if (r.w >= r.h) {
         int avail = r.w - gap;
         if (avail < 2) avail = 2;          /* unreachable at sane sizes */
-        int wa = (int)((float)avail * (float)a / (float)n + 0.5f);
+        int wa = (int)((float)avail * frac + 0.5f);
         if (wa < 1) wa = 1;
         if (wa > avail - 1) wa = avail - 1;
         rect ra = { r.x,            r.y, wa,          r.h };
         rect rb = { r.x + wa + gap, r.y, avail - wa,  r.h };
-        wb_split(ra, first,     a, gap, out);
-        wb_split(rb, first + a, b, gap, out);
+        wb_split_d(ra, first,     a, gap, out, depth + 1);
+        wb_split_d(rb, first + a, b, gap, out, depth + 1);
     } else {
         int avail = r.h - gap;
         if (avail < 2) avail = 2;
-        int ha = (int)((float)avail * (float)a / (float)n + 0.5f);
+        int ha = (int)((float)avail * frac + 0.5f);
         if (ha < 1) ha = 1;
         if (ha > avail - 1) ha = avail - 1;
         rect ra = { r.x, r.y,            r.w, ha         };
         rect rb = { r.x, r.y + ha + gap, r.w, avail - ha };
-        wb_split(ra, first,     a, gap, out);
-        wb_split(rb, first + a, b, gap, out);
+        wb_split_d(ra, first,     a, gap, out, depth + 1);
+        wb_split_d(rb, first + a, b, gap, out, depth + 1);
     }
+}
+
+static void wb_split(rect r, int first, int n, int gap, rect *out)
+{
+    wb_split_d(r, first, n, gap, out, 0);
 }
 
 /* The area the panes get: everything below the status strip, above the
@@ -273,18 +302,17 @@ static void paint_pane(shell_ctx *c, surface *s, shell_fonts *f,
                        rect a, int wi, int focused, int hovered)
 {
     const win_entry *w = &c->wins[wi];
-    uint32_t tint = (w->app >= 0) ? c->apps[w->app].tint : c->accent;
+    uint32_t tint = (w->app >= 0) ? c->apps[w->app].tint : c->fg;
     shell_icon ic = (w->app >= 0) ? c->apps[w->app].icon : ICON_WINDOW;
     corners  cr   = corners_all((float)c->radius);
-    float    dim  = focused ? 1.f : 0.80f;
+    float    dim  = focused ? 1.f : 0.85f;
 
-    /* A short shadow, not the tall one a floating window gets: at a
-     * twelve pixel gap a big soft shadow just fills the gaps with
-     * smudge and the grid stops reading as a grid. */
-    draw_round_rect_shadow(s, a, cr, (float)c->shadow_r * 0.30f, 0x000000,
-                           c->shadow_a * 0.55f, 3);
-    draw_blur_region(s, a, c->blur_r);
-    draw_round_rect(s, a, cr, c->surface_c, c->panel_a);
+    /* No shadow at all. At a ten pixel gutter a soft shadow just fills
+     * the gutters with smudge and the grid stops reading as a grid —
+     * which is the one thing this archetype is selling. The gutter IS
+     * the separation; a rule closes each pane and that is enough. */
+    uint32_t paper = focused ? c->surface_c : c->bg_alt;
+    draw_round_rect(s, a, cr, paper, 1.f);
 
     int th = wb_title_h(c, f);
     if (th > a.h) th = a.h;
@@ -292,26 +320,23 @@ static void paint_pane(shell_ctx *c, surface *s, shell_fonts *f,
     rect tb = { a.x, a.y, a.w, th };
     corners tc = { (float)c->radius, (float)c->radius, 0, 0 };
     draw_round_rect(s, tb, tc,
-                    focused ? c->surface_hi : (hovered ? c->surface_c : c->bg_alt),
-                    focused ? 1.f : 0.88f);
-    draw_line(s, (float)a.x + 1.f, (float)(a.y + th), (float)(a.x + a.w - 1), (float)(a.y + th),
-              1.f, focused ? c->accent : c->overlay, focused ? 0.75f : 0.7f);
+                    focused ? c->bg_alt : (hovered ? c->surface_hi : c->bg), 1.f);
+    draw_hrule(s, a.x, a.y + th - 1, a.w, 1, c->overlay, 1.f);
 
-    float pad = (float)c->padding * 0.6f;
-    float icx = (float)a.x + pad + 8.f;
-    float tx  = icx + 15.f;
-    float by  = shell_baseline(f->small, (float)a.y, (float)th);
-    shell_icon_draw(s, ic, icx, (float)(a.y + th / 2), 15.f, tint, dim);
+    float pad = (float)c->padding * 0.55f;
+    float icx = (float)a.x + pad + 7.f;
+    float tx  = icx + 14.f;
+    float by  = shell_baseline(f->label, (float)a.y, (float)th);
+    shell_icon_draw(s, ic, icx, (float)(a.y + th / 2), 14.f, tint,
+                    focused ? c->bg_alt : c->bg, dim);
 
     char title[128];
-    wb_fit(title, sizeof title, f->small, w->title,
+    wb_fit(title, sizeof title, f->label, w->title,
            (float)(a.x + a.w) - pad - tx);
-    shell_text(s, f->small, tx, by, title, focused ? c->fg_hi : c->subtle, dim);
+    shell_text(s, f->label, tx, by, title, focused ? c->fg_hi : c->subtle, dim);
 
-    /* Focus ring last, so it sits over the titlebar's own edge. */
-    draw_round_rect_border(s, a, cr, focused ? (float)c->border : 1.f,
-                           focused ? c->accent : c->overlay,
-                           focused ? 0.95f : 0.55f);
+    draw_frame(s, a, focused ? 2 : 1, focused ? c->fg : c->overlay, 1.f);
+    if (focused) draw_hrule(s, a.x, a.y, a.w, 3, c->accent, 1.f);
 
     rect body = { a.x, a.y + th, a.w, a.h - th };
     if (body.h <= 2 || body.w <= 2) return;
@@ -324,32 +349,31 @@ static void paint_pane(shell_ctx *c, surface *s, shell_fonts *f,
 
     /* Placeholder, sized to the pane it is in: a fixed block looks
      * stranded in a big pane and overflows a small one. */
-    float cx = (float)body.x + (float)body.w * 0.5f;
-    float cy = (float)body.y + (float)body.h * 0.5f;
-    float isz = clampf((body.w < body.h ? (float)body.w : (float)body.h) * 0.22f, 16.f, 52.f);
+    float x   = (float)body.x + (float)c->padding * 0.9f;
+    float isz = clampf((body.w < body.h ? (float)body.w : (float)body.h) * 0.16f, 16.f, 46.f);
+    float room = (float)body.w - (float)c->padding * 1.8f;
 
     int show_name = body.h >= 96 && body.w >= 110;
     int show_sub  = body.h >= 152 && body.w >= 150 && w->subtitle[0];
-    float block = isz * 1.5f
-                + (show_name ? 16.f + (f->mid ? font_line_height(f->mid) : 22.f) : 0.f)
-                + (show_sub  ? 4.f  + (f->small ? font_line_height(f->small) : 17.f) : 0.f);
-    float top = cy - block * 0.5f;
-    float icy = top + isz * 0.75f;
+    float top = (float)body.y + (float)body.h * 0.30f;
 
-    draw_circle(s, cx, icy, isz * 0.78f, tint, dim * 0.12f);
-    shell_icon_draw(s, ic, cx, icy, isz, tint, dim * 0.62f);
+    shell_icon_draw(s, ic, x + isz * 0.5f, top, isz, tint, paper, dim * 0.9f);
 
     if (show_name) {
-        float ny = top + isz * 1.5f + 16.f + (f->mid ? font_ascent(f->mid) : 16.f);
+        font *nf = (body.w >= 260) ? f->dmid : f->mid;
+        float ny = top + isz * 0.5f + 20.f + (nf ? font_ascent(nf) : 16.f);
         char nm[128];
-        wb_fit(nm, sizeof nm, f->mid, w->title, (float)body.w - (float)c->padding * 2.f);
-        shell_text_centred(s, f->mid, cx, ny, nm, c->fg, dim * 0.85f);
+        wb_fit(nm, sizeof nm, nf, w->title, room);
+        shell_text(s, nf, x, ny, nm, c->fg_hi, dim * 0.92f);
         if (show_sub) {
+            draw_hrule(s, (int)x, (int)(ny + (nf ? font_descent(nf) : 6.f) + 11.f),
+                       (int)(room * 0.22f), 1, c->overlay, dim);
             char sb[128];
-            wb_fit(sb, sizeof sb, f->small, w->subtitle, (float)body.w - (float)c->padding * 2.f);
-            shell_text_centred(s, f->small, cx,
-                               ny + (f->mid ? font_line_height(f->mid) : 22.f) + 4.f,
-                               sb, c->muted, dim * 0.85f);
+            wb_fit(sb, sizeof sb, f->small, w->subtitle, room);
+            shell_text(s, f->small, x,
+                       ny + (nf ? font_descent(nf) : 6.f) + 24.f
+                          + (f->small ? font_ascent(f->small) : 11.f),
+                       sb, c->subtle, dim * 0.88f);
         }
     }
 }
@@ -357,13 +381,15 @@ static void paint_pane(shell_ctx *c, surface *s, shell_fonts *f,
 static void wb_meter(surface *s, float x, float y, float w, float h,
                      float frac, uint32_t col)
 {
+    /* A gauge rule, not a pill: two square spans, the ground and the
+     * reading. Same shape as every other rule on the screen. */
     rect back = { (int)x, (int)y, (int)w, (int)h };
-    draw_round_rect(s, back, corners_all(h * 0.5f), col, 0.18f);
+    draw_rect(s, back, col, 0.22f);
     if (frac < 0.f) return;
     int fw = (int)(w * clampf(frac, 0.f, 1.f) + 0.5f);
-    if (fw < (int)h) fw = (int)h;
+    if (fw < 2) fw = 2;
     rect fill = { (int)x, (int)y, fw, (int)h };
-    draw_round_rect(s, fill, corners_all(h * 0.5f), col, 0.85f);
+    draw_rect(s, fill, col, 0.95f);
 }
 
 /* status_strip="full": workspaces, what has focus, where you are in the
@@ -377,15 +403,14 @@ static void paint_status(shell_ctx *c, surface *s, shell_fonts *f,
     int nws = wb_ws_count(c);
     rect bar = { 0, 0, s->w, bh };
 
-    draw_blur_region(s, bar, c->blur_r);
-    draw_rect(s, bar, c->bg, 0.62f);
-    draw_line(s, 0.f, (float)bh, (float)s->w, (float)bh, 1.f, c->overlay, 0.6f);
+    draw_rect(s, bar, c->bg_alt, 1.f);
+    draw_hrule(s, 0, bh, s->w, 1, c->overlay, 1.f);
 
     float by = shell_baseline(f->small, 0.f, (float)bh);
     float x  = (float)c->margin;
 
-    draw_circle(s, x + 4.f, (float)bh * 0.5f, 3.6f, c->accent, 0.95f);
-    x += 16.f;
+    draw_rect(s, (rect){ (int)x, bh/2 - 4, 8, 8 }, c->accent, 1.f);
+    x += 20.f;
 
     /* How many windows each workspace holds. Occupied and current are
      * three visibly different states, not two shades of the same one. */
@@ -411,13 +436,14 @@ static void paint_status(shell_ctx *c, surface *s, shell_fonts *f,
         int hot = (p->hover_ws == i);
 
         if (cur) {
-            draw_round_rect(s, ch, corners_all((float)c->radius_sm), c->accent, 0.92f);
+            draw_round_rect(s, ch, corners_all((float)c->radius_sm), c->accent, 1.f);
         } else if (occ) {
-            draw_round_rect(s, ch, corners_all((float)c->radius_sm), c->surface_hi,
-                            hot ? 0.95f : 0.72f);
+            draw_round_rect(s, ch, corners_all((float)c->radius_sm),
+                            hot ? c->surface_hi : c->bg, 1.f);
+            draw_frame(s, ch, 1, c->overlay, 1.f);
         } else {
             if (hot) draw_round_rect(s, ch, corners_all((float)c->radius_sm),
-                                     c->surface_c, 0.5f);
+                                     c->bg, 0.8f);
             draw_round_rect_border(s, ch, corners_all((float)c->radius_sm), 1.f,
                                    c->overlay, 0.6f);
         }
@@ -458,8 +484,12 @@ static void paint_status(shell_ctx *c, surface *s, shell_fonts *f,
     }
     if (p->mem >= 0.f) {
         rx -= 38.f;
+        /* Ink until it matters. A readout that is the same colour as
+         * "this is the thing you are in" spends the signal on a number
+         * nobody is looking at; it goes red only when the machine is
+         * genuinely close to out of memory, which is a state. */
         wb_meter(s, rx, (float)bh * 0.5f - 2.5f, 38.f, 5.f, p->mem,
-                 p->mem > 0.88f ? c->accent_warm : c->accent);
+                 p->mem > 0.88f ? c->accent : c->fg);
         rx -= 6.f + shell_text_w(f->small, "mem");
         shell_text(s, f->small, rx, by, "mem", c->muted, 0.75f);
         rx -= 16.f;
@@ -471,9 +501,9 @@ static void paint_status(shell_ctx *c, surface *s, shell_fonts *f,
 
     if (c->focus >= 0 && c->focus < c->n_wins) {
         const win_entry *w = &c->wins[c->focus];
-        uint32_t tint = (w->app >= 0) ? c->apps[w->app].tint : c->accent;
+        uint32_t tint = (w->app >= 0) ? c->apps[w->app].tint : c->fg;
         shell_icon ic = (w->app >= 0) ? c->apps[w->app].icon : ICON_WINDOW;
-        shell_icon_draw(s, ic, x + 7.f, (float)bh * 0.5f, 14.f, tint, 0.9f);
+        shell_icon_draw(s, ic, x + 7.f, (float)bh * 0.5f, 14.f, tint, c->bg_alt, 0.95f);
         x += 20.f; avail -= 20.f;
 
         char pos[24]; pos[0] = 0;
@@ -529,7 +559,7 @@ static void paint_hints(shell_ctx *c, surface *s, shell_fonts *f)
 
     float capw[WB_N_HINTS], labw[WB_N_HINTS], total = 0.f;
     for (int i = 0; i < WB_N_HINTS; i++) {
-        capw[i] = shell_text_w(f->small, WB_HINTS[i].cap) + 13.f;
+        capw[i] = shell_text_w(f->label, WB_HINTS[i].cap) + 13.f;
         labw[i] = shell_text_w(f->small, WB_HINTS[i].label);
         total += capw[i] + 7.f + labw[i];
     }
@@ -539,33 +569,31 @@ static void paint_hints(shell_ctx *c, surface *s, shell_fonts *f)
     int pw = (int)(total + pad * 2.f);
     if (pw > s->w - c->margin * 2) pw = s->w - c->margin * 2;
     int gap = wb_gap(c);
-    rect pill = { (s->w - pw) / 2, s->h - gap - WB_HINT_H, pw, WB_HINT_H };
+    /* Off the axis: it sits on the same left measure as the pane grid
+     * above it rather than centred under it. Two things stacked on the
+     * screen's midline is not a composition. */
+    rect pill = { gap, s->h - gap - WB_HINT_H, pw, WB_HINT_H };
     p->hint_r = pill;
 
     corners pc = corners_all((float)c->radius_sm);
-    draw_round_rect_shadow(s, pill, pc, (float)c->shadow_r * 0.25f, 0x000000,
-                           c->shadow_a * 0.45f * a, 3);
-    draw_blur_region(s, pill, c->blur_r);
-    draw_round_rect(s, pill, pc, c->surface_c, c->panel_a * a);
-    draw_round_rect_border(s, pill, pc, 1.f,
-                           p->hover_hint ? c->accent : c->overlay,
-                           (p->hover_hint ? 0.8f : 0.6f) * a);
+    draw_round_rect(s, pill, pc, c->surface_c, a);
+    draw_frame(s, pill, 1, p->hover_hint ? c->fg : c->overlay, a);
 
     float x  = (float)pill.x + pad;
     float cy = (float)pill.y + (float)pill.h * 0.5f;
     int   chh = 17;
     for (int i = 0; i < WB_N_HINTS; i++) {
         rect cap = { (int)x, (int)(cy - (float)chh * 0.5f), (int)capw[i], chh };
-        draw_round_rect(s, cap, corners_all((float)chh * 0.32f), c->overlay, 0.55f * a);
-        shell_text_centred(s, f->small, x + capw[i] * 0.5f,
-                           shell_baseline(f->small, (float)cap.y, (float)chh),
-                           WB_HINTS[i].cap, c->fg, 0.9f * a);
+        draw_round_rect(s, cap, corners_all((float)c->radius_sm), c->fg_hi, 0.92f * a);
+        shell_text_centred(s, f->label, x + capw[i] * 0.5f,
+                           shell_baseline(f->label, (float)cap.y, (float)chh),
+                           WB_HINTS[i].cap, c->bg, a);
         x += capw[i] + 7.f;
         shell_text(s, f->small, x, shell_baseline(f->small, (float)pill.y, (float)pill.h),
-                   WB_HINTS[i].label, c->subtle, 0.82f * a);
+                   WB_HINTS[i].label, c->subtle, 0.9f * a);
         x += labw[i];
         if (i < WB_N_HINTS - 1) {
-            draw_circle(s, x + 7.5f, cy, 1.3f, c->muted, 0.5f * a);
+            draw_vrule(s, (int)x + 7, pill.y + 7, pill.h - 14, 1, c->overlay, 0.9f * a);
             x += 15.f;
         }
     }

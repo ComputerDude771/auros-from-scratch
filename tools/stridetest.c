@@ -90,21 +90,10 @@ int main(int argc, char **argv)
 
     /* One set of fonts for every archetype: loading is slow and the
      * glyph cache is what makes the second render of a pair cheap. */
-    static const char *FONTS[] = {
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-        NULL
-    };
+    shell_ctx fc; memset(&fc, 0, sizeof fc);
+    shell_theme_load(&fc, &t);
     shell_fonts f = {0};
-    for (int i = 0; FONTS[i] && !f.small; i++) {
-        f.small = font_load(FONTS[i], 14.f);
-        if (f.small) {
-            f.mid  = font_load(FONTS[i], 18.f);
-            f.big  = font_load(FONTS[i], 24.f);
-            f.huge = font_load(FONTS[i], 36.f);
-        }
-    }
+    shell_fonts_load(&f, &fc);
 
     int bad = 0;
     for (size_t k = 0; k < sizeof ALL / sizeof ALL[0]; k++) {

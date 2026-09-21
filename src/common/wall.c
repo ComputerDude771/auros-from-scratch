@@ -356,6 +356,145 @@ static void style_noise(rgb *fb, int w, int h, const wallcfg *c)
     }
 }
 
+/* ═══════════════════════════════════════════════════════════════════
+ *  letterpress — a press sheet, not a sky.
+ *
+ *  Everything a generated wallpaper normally reaches for is a light
+ *  effect: a glow, a ribbon, a blurred blob. All of them read as a
+ *  screen pretending to be a window onto something. This one reads as
+ *  a sheet of stock with work printed on it, which is the register
+ *  this product wants — a well-made printed manual, not a nebula.
+ *
+ *  Four things, and no fifth:
+ *    1. the tooth of the paper (fbm at a very low amplitude, c1 -> c2)
+ *    2. one tint block, off-centre at 28% of the width, because a
+ *       composition divided at 50% has not been composed
+ *    3. hairline rules that STOP SHORT of the edges they run toward,
+ *       which is what makes them read as drawn rather than as a border
+ *    4. exactly one saturated mark, small and solid, in c3
+ *
+ *  There is no interpolation between two hues anywhere in it. c3 is
+ *  never mixed with c4; it is either present at full strength inside
+ *  the register mark or absent. That is the entire colour system.
+ * ═══════════════════════════════════════════════════════════════════ */
+static void lp_hrule(rgb *fb, int w, int h, int x0, int x1, float y,
+                     float weight, rgb col, float a)
+{
+    if (a <= 0.f || weight <= 0.f) return;
+    if (x0 < 0) x0 = 0;
+    if (x1 > w) x1 = w;
+    float y0 = y - weight * 0.5f, y1 = y + weight * 0.5f;
+    int iy0 = (int)floorf(y0), iy1 = (int)ceilf(y1);
+    if (iy0 < 0) iy0 = 0;
+    if (iy1 > h) iy1 = h;
+    for (int yy = iy0; yy < iy1; yy++) {
+        /* Coverage, so a 1px rule on a fractional centre stays one
+         * even grey instead of two half-greys. */
+        float top = (float)yy > y0 ? (float)yy : y0;
+        float bot = (float)(yy + 1) < y1 ? (float)(yy + 1) : y1;
+        float cov = bot - top;
+        if (cov <= 0.f) continue;
+        for (int xx = x0; xx < x1; xx++) {
+            rgb *p = &fb[(size_t)yy * w + xx];
+            *p = mixc(*p, col, a * cov);
+        }
+    }
+}
+
+static void lp_vrule(rgb *fb, int w, int h, float x, int y0, int y1,
+                     float weight, rgb col, float a)
+{
+    if (a <= 0.f || weight <= 0.f) return;
+    if (y0 < 0) y0 = 0;
+    if (y1 > h) y1 = h;
+    float x0 = x - weight * 0.5f, x1 = x + weight * 0.5f;
+    int ix0 = (int)floorf(x0), ix1 = (int)ceilf(x1);
+    if (ix0 < 0) ix0 = 0;
+    if (ix1 > w) ix1 = w;
+    for (int xx = ix0; xx < ix1; xx++) {
+        float l = (float)xx > x0 ? (float)xx : x0;
+        float r = (float)(xx + 1) < x1 ? (float)(xx + 1) : x1;
+        float cov = r - l;
+        if (cov <= 0.f) continue;
+        for (int yy = y0; yy < y1; yy++) {
+            rgb *p = &fb[(size_t)yy * w + xx];
+            *p = mixc(*p, col, a * cov);
+        }
+    }
+}
+
+static void style_letterpress(rgb *fb, int w, int h, const wallcfg *c)
+{
+    float k = clampf(c->intensity, 0.f, 1.f);
+
+    /* 1. The stock. Two octaves at a long wavelength give the cloudy
+     *    unevenness of a laid paper; more octaves start to look like
+     *    noise, which is a texture nobody prints on. */
+    for (int y = 0; y < h; y++) {
+        float fy = (float)y / (float)h;
+        for (int x = 0; x < w; x++) {
+            float fx = (float)x / (float)w;
+            float n = fbm2(fx * 2.3f, fy * 1.7f, 2, 19);
+            fb[(size_t)y * w + x] = mixc(c->c1, c->c2, clampf((n - 0.35f) * 0.46f, 0.f, 1.f));
+        }
+    }
+
+    /* 2. The tint block. A flat panel of the deeper stock down the left
+     *    of the sheet, its edge at 28% — the one structural decision in
+     *    the whole image, and deliberately not in the middle. */
+    int bx = (int)((float)w * 0.28f);
+    for (int y = 0; y < h; y++)
+        for (int x = 0; x < bx; x++) {
+            rgb *p = &fb[(size_t)y * w + x];
+            *p = mixc(*p, c->c2, 0.62f * k);
+        }
+
+    /* 3. A ruled ground, so faint it reads as the paper rather than as
+     *    lines: the baseline grid a typesetter works over. */
+    int step = h / 16; if (step < 18) step = 18;
+    for (int y = step; y < h; y += step)
+        lp_hrule(fb, w, h, 0, w, (float)y + 0.5f, 1.f, c->c4, 0.05f * k);
+
+    /* 4. Rules that stop short. The long one runs from the block edge
+     *    to 95% and no further; the short heavy one lives inside the
+     *    block. Both are measured off the same two fractions the block
+     *    is, so the sheet has a grid even though nothing announces it. */
+    float y_long  = (float)h * 0.780f;
+    float y_short = (float)h * 0.140f;
+    int   x_right = (int)((float)w * 0.952f);
+
+    lp_hrule(fb, w, h, bx + (int)((float)w * 0.02f), x_right, y_long, 1.f, c->c4, 0.55f);
+    lp_hrule(fb, w, h, 0, bx, y_short, 2.f, c->c4, 0.45f);
+    lp_vrule(fb, w, h, (float)bx + 0.5f, 0, h, 1.f, c->c4, 0.42f);
+
+    /* 5. The one saturated mark on the sheet: a solid square sitting on
+     *    the right end of the long rule, the way a colour bar sits in
+     *    the trim of a press proof. It is the only place c3 appears,
+     *    and it is never mixed with anything. */
+    int side = (int)((float)h * 0.026f); if (side < 12) side = 12;
+    int mx = x_right - side, my = (int)y_long - side - 7;
+    for (int y = my; y < my + side; y++) {
+        if (y < 0 || y >= h) continue;
+        for (int x = mx; x < mx + side; x++) {
+            if (x < 0 || x >= w) continue;
+            fb[(size_t)y * w + x] = c->c3;
+        }
+    }
+    /* A second, much smaller one further along the rule: two marks make
+     * a sequence, which is how a proof sheet is read; one is an
+     * accident. The second is in the rule colour, not in c3 — the
+     * saturated ink is spent once. */
+    int s2 = side / 3; if (s2 < 4) s2 = 4;
+    int m2x = mx - side - 10, m2y = (int)y_long - s2 - 7;
+    for (int y = m2y; y < m2y + s2; y++) {
+        if (y < 0 || y >= h) continue;
+        for (int x = m2x; x < m2x + s2; x++) {
+            if (x < 0 || x >= w) continue;
+            fb[(size_t)y * w + x] = c->c4;
+        }
+    }
+}
+
 static void style_solid(rgb *fb, int w, int h, const wallcfg *c)
 {
     for (int i = 0; i < w*h; i++) fb[i] = c->c1;
@@ -408,6 +547,7 @@ void wall_render(uint32_t *px, int w, int h, const theme_t *t)
     else if (!strcmp(style, "gradient")) style_gradient(fb, w, h, &c);
     else if (!strcmp(style, "noise"))    style_noise(fb, w, h, &c);
     else if (!strcmp(style, "solid"))    style_solid(fb, w, h, &c);
+    else if (!strcmp(style, "letterpress")) style_letterpress(fb, w, h, &c);
     else                                 style_aurora(fb, w, h, &c);
 
     post(fb, w, h, &c);

@@ -69,6 +69,12 @@ animation_ms      = @animation_ms|int@
 animation_curve   = @animation_curve@
 
 # ── Typography ─────────────────────────────────────────────
+# Three faces, not one. `font_display` is set large and `font_text`
+# small; the contrast between them is the hierarchy, which is why
+# there is no display slot in a system that had only one face.
+font_display      = /usr/share/auros/fonts/@font_display@.ttf
+font_text         = /usr/share/auros/fonts/@font_text@.ttf
+font_text_bold    = /usr/share/auros/fonts/@font_text_bold@.ttf
 font_sans         = /usr/share/auros/fonts/@font_sans@.ttf
 font_mono         = /usr/share/auros/fonts/@font_mono@.ttf
 font_size         = @font_size|int@
