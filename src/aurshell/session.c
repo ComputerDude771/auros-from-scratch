@@ -235,10 +235,13 @@ static aurwl_win *window_under(shell_ctx *c, int x, int y, int *sx, int *sy)
              * starts a shadow's width above and to the left of what
              * is drawn. Without this every click landed about thirty
              * pixels off. */
-            int ox = 0, oy = 0;
+            int ox = 0, oy = 0, lw = s->w, lh = s->h;
             aurwl_win_content_offset(w, &ox, &oy);
-            if (sx) *sx = ox + (int)((long)(x - r.x) * s->w / r.w);
-            if (sy) *sy = oy + (int)((long)(y - r.y) * s->h / r.h);
+            /* ...and into the space the CLIENT measures in, which is
+             * the buffer's unless a viewport gave it another one. */
+            aurwl_win_logical_size(w, &lw, &lh);
+            if (sx) *sx = ox + (int)((long)(x - r.x) * lw / r.w);
+            if (sy) *sy = oy + (int)((long)(y - r.y) * lh / r.h);
             return w;
         }
     }

@@ -44,8 +44,58 @@
  * one a hundred thousand deep for the price of some memory. */
 #define PARENT_MAX    256
 #define MAX_WINS      128
+/* THE CEILINGS A CLIENT CANNOT PUSH THROUGH.
+ *
+ * MAX_WINS sat here, defined and used nowhere, from the day it was
+ * written -- so nothing capped surfaces, and 100,030 of them from one
+ * client took the compositor from 2.6 MB to 81.7 MB with no refusal
+ * and no error. Worse than the memory: every input event walks these
+ * lists, so 100,000 wl_pointers made ONE mouse movement cost twelve
+ * milliseconds, and a touchpad emits a hundred a second. The pointer
+ * being ruined is the system's, not the hostile client's.
+ *
+ * The numbers are deliberately generous -- a browser with many tabs
+ * and many menus is a normal client -- and are per client, so one
+ * program cannot spend another's. */
+#define MAX_SURFACES  4096      /* toplevels, popups, subsurfaces, cursors */
+#define MAX_SEAT_OBJ    64      /* pointers/keyboards/touches per client   */
+#define MAX_DATA_OBJ    64      /* data devices and sources per client     */
+/* The smallest a viewport destination may be clamped to, whatever the
+ * output is. A tiny or not-yet-known output must not make a legitimate
+ * client's window degenerate. The real bound is the output itself --
+ * see viewport_set_destination(). */
+#define VIEWPORT_FLOOR  1024
 
+/* A ROLE IS FOR LIFE.
+ *
+ * wayland.xml, wl_surface: "Once a wl_surface is given a role, it is
+ * set permanently for the whole lifetime of the wl_surface object."
+ *
+ * It was not. Every role check tested a RESOURCE POINTER rather than
+ * the role, and every role-object destructor set the role back to
+ * ROLE_NONE -- so a surface could be a subsurface and then a toplevel,
+ * or a cursor and then anything, and a mapped focused window could be
+ * made to disappear from the window list without the unmap path
+ * running, leaving the compositor's focus pointing at a window the
+ * shell had already torn down and the client believing its keys were
+ * still held.
+ *
+ * The comment on get_toplevel records that the two-xdg-roles version
+ * of exactly this was a 127-byte write into freed memory. That hole
+ * was closed for xdg-against-xdg and left open for
+ * subsurface-against-xdg and cursor-against-anything. */
 enum role { ROLE_NONE = 0, ROLE_TOPLEVEL, ROLE_POPUP, ROLE_SUBSURFACE, ROLE_CURSOR };
+
+static const char *role_name(int r)
+{
+    switch (r) {
+    case ROLE_TOPLEVEL:   return "a window";
+    case ROLE_POPUP:      return "a menu";
+    case ROLE_SUBSURFACE: return "part of another window";
+    case ROLE_CURSOR:     return "a pointer or a drag icon";
+    default:              return "nothing";
+    }
+}
 
 /* The half of wl_surface state that is double-buffered. Wayland's
  * central promise is that a frame is atomic: everything between two
@@ -109,6 +159,16 @@ struct aurwl_win {
     int                 want_act, want_max, want_full;
     int                 acked;
     int                 geo_x, geo_y, geo_w, geo_h;   /* window geometry */
+    /* The last few configure serials sent to this surface.
+     *
+     * NOT just the newest. A client is entitled to be a frame or two
+     * behind -- we send configure A, then B, and it acks A, having
+     * only just processed it. Rejecting that would post invalid_serial
+     * at a perfectly correct application and disconnect it, which is a
+     * far worse bug than the one the check is here to catch. What is
+     * refused is a serial that was NEVER sent. */
+    uint32_t            sent[4];
+    int                 n_sent;
     int                 has_geo;
 
     /* popup placement, relative to the parent surface's origin */
@@ -178,7 +238,105 @@ static uint32_t serial_of(aurwl *c) { return wl_display_next_serial(c->display);
 static void noop_destroy(struct wl_client *cl, struct wl_resource *r)
 { (void)cl; wl_resource_destroy(r); }
 
+/* One place sends a configure, and one place remembers which serial
+ * went out -- so ack_configure has something to check against. */
+static void send_configure(aurwl_win *w)
+{
+    if (!w || !w->xdg_surface) return;
+    uint32_t ser = serial_of(w->c);
+    w->sent[w->n_sent % 4] = ser;
+    w->n_sent++;
+    xdg_surface_send_configure(w->xdg_surface, ser);
+}
+
+static int serial_was_sent(const aurwl_win *w, uint32_t ser)
+{
+    int n = w->n_sent < 4 ? w->n_sent : 4;
+    for (int i = 0; i < n; i++) if (w->sent[i] == ser) return 1;
+    return 0;
+}
+
 static void res_unlink(struct wl_resource *r) { wl_list_remove(wl_resource_get_link(r)); }
+
+/* Give a surface its one role, or refuse. `err_res` and `err_code` are
+ * what the protocol says to complain on for THIS way of asking. */
+static int take_role(aurwl_win *w, int role, struct wl_resource *err_res,
+                     uint32_t err_code)
+{
+    if (!w) return 0;
+    if (w->role != ROLE_NONE && w->role != role) {
+        wl_resource_post_error(err_res, err_code,
+                               "this surface is already %s and cannot also be %s",
+                               role_name(w->role), role_name(role));
+        return 0;
+    }
+    w->role = role;
+    return 1;
+}
+
+/* HOW MANY OF A THING ONE CLIENT ALREADY HAS.
+ *
+ * Every input event walks these lists -- aurwl_pointer_motion,
+ * aurwl_key, send_modifiers -- so their length is the cost of using
+ * the machine. One client holding a hundred thousand wl_pointers made
+ * a SINGLE mouse movement take twelve milliseconds, and a touchpad
+ * sends a hundred a second. The pointer that stops working is not the
+ * hostile program's; it is hers.
+ *
+ * Counting on demand rather than keeping a tally: these lists are one
+ * or two entries long on a real machine, the count happens only when
+ * a client asks for another, and a number kept in two places is a
+ * number that will disagree with itself. */
+static int count_for_client(struct wl_list *list, struct wl_client *cl)
+{
+    int n = 0;
+    struct wl_resource *r;
+    wl_resource_for_each(r, list)
+        if (wl_resource_get_client(r) == cl) n++;
+    return n;
+}
+
+/* Say no, in the way the protocol has for saying no. A client that has
+ * asked for four thousand of something is either broken or hostile,
+ * and either way the honest answer is to stop it rather than to let it
+ * make the desktop unusable for everybody. */
+static int too_many(struct wl_client *cl, struct wl_resource *r,
+                    struct wl_list *list, int cap, const char *what)
+{
+    if (count_for_client(list, cl) < cap) return 0;
+    wl_resource_post_error(r, 0, "no more than %d %s per program", cap, what);
+    return 1;
+}
+
+/* RETIRE AN OFFER WITHOUT DESTROYING IT.
+ *
+ * A wl_data_offer is created by the compositor but OWNED BY THE
+ * CLIENT: the protocol says "the client must destroy the previous
+ * selection data_offer", and the interface has a destroy REQUEST and
+ * no destructor EVENT -- so there is no way to tell a client that we
+ * have destroyed one.
+ *
+ * Destroying them server-side, which is what retiring used to mean,
+ * freed a server-allocated id and handed the same id out for the next
+ * offer. The client's own object map refuses to re-reserve a live
+ * server slot, so the connection died with EINVAL -- and a dead
+ * connection is a dead application for GTK and Qt. TWO ORDINARY
+ * COPIES, from one window, killed the program.
+ *
+ * The reason retiring exists is sound and unchanged: a client holding
+ * an old offer must not go on reading a clipboard the user has since
+ * replaced. So the offer is disarmed -- its back-pointer nulled, which
+ * doffer_receive() already handles -- and dropped from our list,
+ * because from that moment it is the client's object and nothing
+ * else. The link is re-initialised so the destructor's own
+ * wl_list_remove is harmless whenever the client gets round to it. */
+static void offer_retire(struct wl_resource *offer)
+{
+    wl_resource_set_user_data(offer, NULL);
+    struct wl_list *l = wl_resource_get_link(offer);
+    wl_list_remove(l);
+    wl_list_init(l);
+}
 
 /* Send an event to every resource in a list. The seat lists are usually
  * one element long; they are lists because a client is entitled to hold
@@ -234,17 +392,77 @@ static void viewport_gone(struct wl_resource *r)
     aurwl_win *w = wl_resource_get_user_data(r);
     if (w && w->viewport == r) w->viewport = NULL;
 }
+/* Not implemented, and it says so rather than pretending. A source
+ * rectangle crops the buffer before scaling; nothing this desktop
+ * runs uses one. What it must NOT do is stay silent after the surface
+ * has gone, which the protocol makes an error. */
 static void viewport_set_source(struct wl_client *cl, struct wl_resource *r,
                                 wl_fixed_t x, wl_fixed_t y, wl_fixed_t w, wl_fixed_t h)
-{ (void)cl; (void)r; (void)x; (void)y; (void)w; (void)h; }
+{
+    (void)cl; (void)x; (void)y; (void)w; (void)h;
+    if (!wl_resource_get_user_data(r))
+        wl_resource_post_error(r, WP_VIEWPORT_ERROR_NO_SURFACE,
+                               "the surface this viewport belongs to is gone");
+}
+/* SIX REQUESTS USED TO FREEZE THE WHOLE MACHINE.
+ *
+ * A destination is what the surface is scaled TO, and this took any
+ * positive int32 and it was resampled to, which allocated dw*dh*4 and
+ * ran a bilinear pass with per-channel float maths over every pixel --
+ * on every commit. set_destination(16384, 16384) was
+ * one gibibyte resident and 9.4 seconds inside a single dispatch, with
+ * no repaint, no cursor and no keystroke anywhere on the desktop for
+ * the duration; a client that simply kept committing kept it that way
+ * for as long as it liked. On the 2 GB machines this product exists to
+ * rescue, the allocation alone is an out-of-memory kill of the
+ * compositor, which is every window on the screen.
+ *
+ * Nothing larger than the output can ever be SEEN, so nothing larger
+ * than that is worth computing. The cap is a few multiples of a big
+ * screen rather than exactly the output, because a client may
+ * legitimately be configured for a display it has not been told about
+ * yet, and because a cap that tracks a moving number is a cap that is
+ * wrong during the move.
+ *
+ * viewporter.xml also requires bad_value for any non-positive pair
+ * other than (-1,-1), which means "no destination". That was silently
+ * turned into zero. */
 static void viewport_set_destination(struct wl_client *cl, struct wl_resource *r,
                                      int32_t w, int32_t h)
 {
     (void)cl;
     aurwl_win *s = wl_resource_get_user_data(r);
-    if (!s) return;
-    s->pending.vp_dst_w = w > 0 ? w : 0;
-    s->pending.vp_dst_h = h > 0 ? h : 0;
+    if (!s) {
+        wl_resource_post_error(r, WP_VIEWPORT_ERROR_NO_SURFACE,
+                               "the surface this viewport belongs to is gone");
+        return;
+    }
+    if (w == -1 && h == -1) {            /* "forget the destination" */
+        s->pending.vp_dst_w = s->pending.vp_dst_h = 0;
+        return;
+    }
+    if (w <= 0 || h <= 0) {
+        wl_resource_post_error(r, WP_VIEWPORT_ERROR_BAD_VALUE,
+                               "destination %dx%d is not a size", w, h);
+        return;
+    }
+    /* THE SCREEN IS THE ONLY SIZE THAT MEANS ANYTHING.
+     *
+     * The destination is what the surface is resampled to, and the
+     * shell then scales that into whatever space the archetype gave
+     * it. Computing more pixels than the display has cannot make one
+     * of them more visible; it only costs a bilinear pass over every
+     * one of them, on every commit, on a machine with no GPU.
+     *
+     * A fixed generous cap was not enough: eight thousand squared is
+     * still 268 megabytes and sixty-seven million pixels, which the
+     * harness catches as a freeze. */
+    int capw = s->c->ow > VIEWPORT_FLOOR ? s->c->ow : VIEWPORT_FLOOR;
+    int caph = s->c->oh > VIEWPORT_FLOOR ? s->c->oh : VIEWPORT_FLOOR;
+    if (w > capw) w = capw;
+    if (h > caph) h = caph;
+    s->pending.vp_dst_w = w;
+    s->pending.vp_dst_h = h;
 }
 static const struct wp_viewport_interface viewport_impl = {
     .destroy = viewport_destroy, .set_source = viewport_set_source,
@@ -324,43 +542,41 @@ static int take_buffer(aurwl_win *w, struct wl_resource *buf)
  *
  * Bilinear, and only when the sizes actually differ, so the common case
  * costs a comparison. */
-static void resample_store(aurwl_win *w, int dw, int dh)
+/* THE COMPOSITOR DOES NOT RESAMPLE. THE SHELL SCALES ONCE.
+ *
+ * There was a bilinear resample here, run on every commit, to turn the
+ * buffer into the viewport's destination size. Two things were wrong
+ * with it.
+ *
+ * It was the whole of a denial of service. The destination was any
+ * positive int32, so six requests -- set_destination(16384, 16384) and
+ * a one-pixel buffer -- allocated a gibibyte and spent nine seconds
+ * inside a single dispatch, with nothing painted and no key or click
+ * answered anywhere on the desktop, for as long as the client cared to
+ * keep committing. Clamping the destination to the output helped and
+ * was not enough: a one-pixel buffer stretched to the screen is still
+ * a full pass over every pixel of it, on every commit, for ever.
+ *
+ * And it was wasted even when honest. The shell fits a window's
+ * content into whatever rectangle the archetype gave it -- that is one
+ * scale, already. Resampling first meant every viewport client was
+ * scaled twice, losing quality both times, and paying a fresh
+ * allocate-and-free of the whole surface on every frame.
+ *
+ * What a destination actually says is "this surface's LOGICAL size is
+ * N by M". That is a fact about layout and about where the pointer is,
+ * not about pixels, so it is recorded as one and costs nothing. */
+static void logical_size(const aurwl_win *w, int *lw, int *lh)
 {
-    surface *src = w->store;
-    if (!src || dw <= 0 || dh <= 0 || dw > MAX_DIM || dh > MAX_DIM) return;
-    if (src->w == dw && src->h == dh) return;
-
-    surface *dst = surface_new(dw, dh);
-    if (!dst) return;
-    for (int y = 0; y < dh; y++) {
-        float fy = ((float)y + 0.5f) * (float)src->h / (float)dh - 0.5f;
-        int y0 = (int)fy; if (y0 < 0) y0 = 0;
-        int y1 = y0 + 1 < src->h ? y0 + 1 : src->h - 1;
-        float ty = fy - (float)y0; if (ty < 0.f) ty = 0.f;
-        for (int x = 0; x < dw; x++) {
-            float fx = ((float)x + 0.5f) * (float)src->w / (float)dw - 0.5f;
-            int x0 = (int)fx; if (x0 < 0) x0 = 0;
-            int x1 = x0 + 1 < src->w ? x0 + 1 : src->w - 1;
-            float tx = fx - (float)x0; if (tx < 0.f) tx = 0.f;
-            uint32_t a = src->px[(size_t)y0 * src->stride + x0];
-            uint32_t b = src->px[(size_t)y0 * src->stride + x1];
-            uint32_t cc = src->px[(size_t)y1 * src->stride + x0];
-            uint32_t d = src->px[(size_t)y1 * src->stride + x1];
-            uint32_t out = 0;
-            for (int ch = 0; ch < 4; ch++) {
-                int sh = ch * 8;
-                float t0 = (float)((a >> sh) & 0xFF) + tx * (float)(((b >> sh) & 0xFF) - (int)((a >> sh) & 0xFF));
-                float t1 = (float)((cc >> sh) & 0xFF) + tx * (float)(((d >> sh) & 0xFF) - (int)((cc >> sh) & 0xFF));
-                int v = (int)(t0 + ty * (t1 - t0) + 0.5f);
-                v = v < 0 ? 0 : (v > 255 ? 255 : v);
-                out |= (uint32_t)v << sh;
-            }
-            dst->px[(size_t)y * dst->stride + x] = out;
-        }
+    int bw = w->cw, bh = w->ch;
+    if (w->current.vp_dst_w > 0 && w->current.vp_dst_h > 0) {
+        bw = w->current.vp_dst_w;
+        bh = w->current.vp_dst_h;
+    } else if (w->has_geo) {
+        bw = w->geo_w; bh = w->geo_h;
     }
-    surface_free(w->store);
-    w->store = dst;
-    w->cw = dw; w->ch = dh;
+    if (lw) *lw = bw > 0 ? bw : 1;
+    if (lh) *lh = bh > 0 ? bh : 1;
 }
 
 /* ── wl_surface ─────────────────────────────────────────────────── */
@@ -483,8 +699,6 @@ static void apply_commit(aurwl_win *w, int depth)
     if (p->attached) {
         if (p->buffer) {
             take_buffer(w, p->buffer);
-            if (w->current.vp_dst_w > 0 && w->current.vp_dst_h > 0)
-                resample_store(w, w->current.vp_dst_w, w->current.vp_dst_h);
             w->c->damage_seq++;
             wl_buffer_send_release(p->buffer);
             if (!w->mapped) surface_map(w);
@@ -523,7 +737,7 @@ static void surf_commit(struct wl_client *cl, struct wl_resource *r)
             xdg_toplevel_send_configure(w->xdg_toplevel, 0, 0, &states);
             wl_array_release(&states);
         }
-        xdg_surface_send_configure(w->xdg_surface, serial_of(w->c));
+        send_configure(w);
         return;
     }
     apply_commit(w, 0);
@@ -643,9 +857,32 @@ static void surface_free_res(struct wl_resource *r)
 
 /* ── wl_compositor ──────────────────────────────────────────────── */
 
+/* NOT count_for_client(): c->surfaces is a list of aurwl_win, linked
+ * by w->link, not a list of wl_resource links. Walking it as the
+ * latter reads whatever happens to sit at that offset -- which is the
+ * kind of mistake that compiles, runs, and gives a plausible number. */
+static int too_many_surfaces(struct wl_client *cl, struct wl_resource *r, aurwl *c)
+{
+    int n = 0;
+    aurwl_win *w;
+    wl_list_for_each(w, &c->surfaces, link)
+        if (w->res && wl_resource_get_client(w->res) == cl) n++;
+    if (n < MAX_SURFACES) return 0;
+    wl_resource_post_error(r, 0, "no more than %d windows per program",
+                           MAX_SURFACES);
+    return 1;
+}
+
 static void comp_create_surface(struct wl_client *cl, struct wl_resource *r, uint32_t id)
 {
     aurwl *c = wl_resource_get_user_data(r);
+    /* A browser with many tabs and many menus is a normal client, so
+     * the ceiling is high -- but there IS one. There was none: a
+     * hundred thousand surfaces from one program took the compositor
+     * from 2.6 MB to 82 MB without a word, and every one of them is
+     * walked by the shell once per frame and again for every pointer
+     * event. */
+    if (too_many_surfaces(cl, r, c)) return;
     aurwl_win *w = calloc(1, sizeof *w);
     if (!w) { wl_client_post_no_memory(cl); return; }
     w->c = c;
@@ -690,7 +927,7 @@ static void sub_destroy(struct wl_client *cl, struct wl_resource *r)
     aurwl_win *w = wl_resource_get_user_data(r);
     if (w && w->subsurface == r) {
         if (w->parent) { wl_list_remove(&w->child_link); wl_list_init(&w->child_link); w->parent = NULL; }
-        w->role = ROLE_NONE; w->subsurface = NULL;
+        w->subsurface = NULL;
     }
     wl_resource_destroy(r);
 }
@@ -803,9 +1040,12 @@ static void subcomp_get(struct wl_client *cl, struct wl_resource *r, uint32_t id
     }
     struct wl_resource *res = wl_resource_create(cl, &wl_subsurface_interface, 1, id);
     if (!res) { wl_client_post_no_memory(cl); return; }
+    if (!take_role(w, ROLE_SUBSURFACE, r, WL_SUBCOMPOSITOR_ERROR_BAD_SURFACE)) {
+        wl_resource_destroy(res);
+        return;
+    }
     wl_resource_set_implementation(res, &subsurface_impl, w, subsurface_gone);
     w->subsurface = res;
-    w->role = ROLE_SUBSURFACE;
     w->sub_sync = 1;                 /* the protocol's default */
     if (w->parent) wl_list_remove(&w->child_link);
     w->parent = p;
@@ -946,7 +1186,16 @@ static void ptr_set_cursor(struct wl_client *cl, struct wl_resource *r, uint32_t
     /* The shell draws one cursor for the whole system, from the theme,
      * so a client's cursor surface is accepted and not shown. Marking
      * it as a cursor keeps it out of the window list. */
-    if (surf) { aurwl_win *w = wl_resource_get_user_data(surf); if (w) w->role = ROLE_CURSOR; }
+    /* wayland.xml, wl_pointer.set_cursor: giving a surface the cursor
+     * role when it already has another is wl_pointer.role. This used
+     * to overwrite it unconditionally, so a mapped focused toplevel
+     * could be turned into a cursor -- dropping it out of the window
+     * list with no unmap, no leave event, and the shell's slot for it
+     * still standing. */
+    if (surf) {
+        aurwl_win *w = wl_resource_get_user_data(surf);
+        if (w) take_role(w, ROLE_CURSOR, r, WL_POINTER_ERROR_ROLE);
+    }
 }
 static const struct wl_pointer_interface pointer_impl_s = {
     .set_cursor = ptr_set_cursor, .release = noop_destroy,
@@ -957,6 +1206,7 @@ static const struct wl_touch_interface    touch_impl_s    = { .release = noop_de
 static void seat_get_pointer(struct wl_client *cl, struct wl_resource *r, uint32_t id)
 {
     aurwl *c = wl_resource_get_user_data(r);
+    if (too_many(cl, r, &c->pointers, MAX_SEAT_OBJ, "pointers")) return;
     struct wl_resource *p = wl_resource_create(cl, &wl_pointer_interface,
                                                wl_resource_get_version(r), id);
     if (!p) { wl_client_post_no_memory(cl); return; }
@@ -966,6 +1216,7 @@ static void seat_get_pointer(struct wl_client *cl, struct wl_resource *r, uint32
 static void seat_get_keyboard(struct wl_client *cl, struct wl_resource *r, uint32_t id)
 {
     aurwl *c = wl_resource_get_user_data(r);
+    if (too_many(cl, r, &c->keyboards, MAX_SEAT_OBJ, "keyboards")) return;
     struct wl_resource *k = wl_resource_create(cl, &wl_keyboard_interface,
                                                wl_resource_get_version(r), id);
     if (!k) { wl_client_post_no_memory(cl); return; }
@@ -986,6 +1237,7 @@ static void seat_get_keyboard(struct wl_client *cl, struct wl_resource *r, uint3
 static void seat_get_touch(struct wl_client *cl, struct wl_resource *r, uint32_t id)
 {
     aurwl *c = wl_resource_get_user_data(r);
+    if (too_many(cl, r, &c->touches, MAX_SEAT_OBJ, "touch devices")) return;
     struct wl_resource *t = wl_resource_create(cl, &wl_touch_interface,
                                                wl_resource_get_version(r), id);
     if (!t) { wl_client_post_no_memory(cl); return; }
@@ -1043,20 +1295,32 @@ static void dsrc_gone(struct wl_resource *r)
 {
     data_source *s = wl_resource_get_user_data(r);
     if (!s) return;
-    if (s->c->selection == r) s->c->selection = NULL;
+    int was_selection = (s->c->selection == r);
+    if (was_selection) s->c->selection = NULL;
     /* Any offer still pointing at this source now points at freed
      * memory. A paste from a menu that was open when the copying
      * application quit would have written through it -- which is a
      * perfectly ordinary thing for a person to do. */
     struct wl_resource *o, *ot;
     wl_resource_for_each_safe(o, ot, &s->c->offers)
-        if (wl_resource_get_user_data(o) == r) wl_resource_destroy(o);
-    /* And say so. Otherwise every client goes on showing a paste target
-     * for a clipboard that no longer exists, and pasting yields a pipe
-     * that closes immediately -- which reads as the application being
-     * broken rather than the clipboard being empty. */
-    struct wl_resource *dev;
-    wl_resource_for_each(dev, &s->c->devices) wl_data_device_send_selection(dev, NULL);
+        if (wl_resource_get_user_data(o) == r) offer_retire(o);
+    /* And say so -- but ONLY if what died was the clipboard, and only
+     * to the client that is entitled to hear about it.
+     *
+     * This used to fire on any source at all, to every device on the
+     * machine. So destroying a superseded source -- which is the
+     * ordinary end of a copy that has been replaced -- told every
+     * program the clipboard was empty while c->selection still named a
+     * live one. It also broadcast, which is the very thing the
+     * function below it is written not to do, for a reason it spells
+     * out at length. */
+    if (was_selection) {
+        struct wl_client *t = win_client(s->c->focus);
+        struct wl_resource *dev;
+        wl_resource_for_each(dev, &s->c->devices)
+            if (!t || wl_resource_get_client(dev) == t)
+                wl_data_device_send_selection(dev, NULL);
+    }
     free(s);
 }
 
@@ -1088,6 +1352,16 @@ static void send_selection_to(aurwl *c, struct wl_resource *dev)
     data_source *s = wl_resource_get_user_data(c->selection);
     if (!s) { wl_data_device_send_selection(dev, NULL); return; }
     struct wl_client *cl = wl_resource_get_client(dev);
+    /* One live offer per client, not one per focus change. This is
+     * called every time keyboard focus arrives, and nothing here
+     * retired the last one -- so alt-tabbing between two windows of
+     * one program minted a fresh wl_data_offer, on both sides, every
+     * time, for ever. The comment on set_selection said the leak was
+     * fixed; it was fixed for set_selection and not for this. */
+    struct wl_resource *o, *ot;
+    wl_resource_for_each_safe(o, ot, &c->offers)
+        if (wl_resource_get_client(o) == cl) offer_retire(o);
+
     struct wl_resource *offer = wl_resource_create(cl, &wl_data_offer_interface,
                                                    wl_resource_get_version(dev), 0);
     if (!offer) return;
@@ -1106,7 +1380,10 @@ static void ddev_start_drag(struct wl_client *cl, struct wl_resource *r,
     /* Drag and drop between applications is not wired up; a client that
      * starts one is told immediately that it ended, rather than being
      * left holding a drag that never resolves. */
-    if (icon) { aurwl_win *w = wl_resource_get_user_data(icon); if (w) w->role = ROLE_CURSOR; }
+    if (icon) {
+        aurwl_win *w = wl_resource_get_user_data(icon);
+        if (w) take_role(w, ROLE_CURSOR, r, WL_DATA_DEVICE_ERROR_ROLE);
+    }
     if (src) wl_data_source_send_cancelled(src);
 }
 static void ddev_set_selection(struct wl_client *cl, struct wl_resource *r,
@@ -1114,6 +1391,25 @@ static void ddev_set_selection(struct wl_client *cl, struct wl_resource *r,
 {
     (void)cl;
     aurwl *c = wl_resource_get_user_data(r);
+    /* THE CLIPBOARD BELONGS TO WHOEVER IS BEING TYPED INTO.
+     *
+     * There was no check of any kind here: the serial was stored and
+     * never compared with anything, and the caller's focus was never
+     * considered. So any background process could take the clipboard
+     * whenever it liked, and could keep firing `cancelled` at the
+     * program that really owned it -- which on the other side reads as
+     * copy quietly not working.
+     *
+     * Focus is the check the protocol's own wording implies (the
+     * selection event is defined as going to the client that has
+     * keyboard focus). A machine with nothing focused yet is the
+     * start-up case and is allowed, or the first program to run could
+     * never copy anything. */
+    struct wl_client *owner = win_client(c->focus);
+    if (owner && wl_resource_get_client(r) != owner) {
+        if (src) wl_data_source_send_cancelled(src);
+        return;
+    }
     if (c->selection && c->selection != src) wl_data_source_send_cancelled(c->selection);
     c->selection = src;
     c->selection_serial = serial;
@@ -1123,7 +1419,7 @@ static void ddev_set_selection(struct wl_client *cl, struct wl_resource *r,
      * reading the clipboard contents it described long after the user
      * had copied something else. */
     struct wl_resource *old, *oldt;
-    wl_resource_for_each_safe(old, oldt, &c->offers) wl_resource_destroy(old);
+    wl_resource_for_each_safe(old, oldt, &c->offers) offer_retire(old);
     /* Only the client with keyboard focus. The protocol says the
      * selection event goes to a client immediately before it receives
      * keyboard focus, and while it has focus -- and it says so for a
@@ -1158,6 +1454,7 @@ static void ddm_get_device(struct wl_client *cl, struct wl_resource *r, uint32_t
 {
     (void)seat;
     aurwl *c = wl_resource_get_user_data(r);
+    if (too_many(cl, r, &c->devices, MAX_DATA_OBJ, "clipboards")) return;
     struct wl_resource *dev = wl_resource_create(cl, &wl_data_device_interface,
                                                  wl_resource_get_version(r), id);
     if (!dev) { wl_client_post_no_memory(cl); return; }
@@ -1186,11 +1483,54 @@ typedef struct {
     int      ox, oy;
 } positioner;
 
+/* EVERY NUMBER BELOW CAME FROM A CLIENT.
+ *
+ * None of them was checked, and positioner_resolve() then added them
+ * together -- eight signed-overflow sites, confirmed by
+ * UndefinedBehaviorSanitizer. It does not reach a wild write, because
+ * draw_scaled clamps to the destination, so what it actually produces
+ * is undefined behaviour in the process that owns the display and a
+ * menu in the wrong place. damage_accum() in this same file does the
+ * same arithmetic in 64 bits with a comment about exactly why UB here
+ * is not acceptable; this is that job left half done.
+ *
+ * A menu bigger than a large screen is not a menu, so the bound is
+ * the same one the rest of the file uses and the arithmetic cannot
+ * leave int range. */
+#define POS_MAX  MAX_DIM
+
+static int pos_clamp(int32_t v)
+{
+    if (v >  POS_MAX) return  POS_MAX;
+    if (v < -POS_MAX) return -POS_MAX;
+    return (int)v;
+}
+
 static void pos_set_size(struct wl_client *cl, struct wl_resource *r, int32_t w, int32_t h)
-{ (void)cl; positioner *p = wl_resource_get_user_data(r); p->w = w; p->h = h; }
+{
+    (void)cl; positioner *p = wl_resource_get_user_data(r);
+    /* xdg-shell.xml: a size with a non-positive component is
+     * invalid_input. It was accepted, and a zero-sized popup is a menu
+     * she cannot see or press. */
+    if (w <= 0 || h <= 0) {
+        wl_resource_post_error(r, XDG_POSITIONER_ERROR_INVALID_INPUT,
+                               "a menu cannot be %dx%d", w, h);
+        return;
+    }
+    p->w = pos_clamp(w); p->h = pos_clamp(h);
+}
 static void pos_set_anchor_rect(struct wl_client *cl, struct wl_resource *r,
                                 int32_t x, int32_t y, int32_t w, int32_t h)
-{ (void)cl; positioner *p = wl_resource_get_user_data(r); p->ax=x; p->ay=y; p->aw=w; p->ah=h; }
+{
+    (void)cl; positioner *p = wl_resource_get_user_data(r);
+    if (w < 0 || h < 0) {
+        wl_resource_post_error(r, XDG_POSITIONER_ERROR_INVALID_INPUT,
+                               "an anchor cannot be %dx%d", w, h);
+        return;
+    }
+    p->ax = pos_clamp(x); p->ay = pos_clamp(y);
+    p->aw = pos_clamp(w); p->ah = pos_clamp(h);
+}
 static void pos_set_anchor(struct wl_client *cl, struct wl_resource *r, uint32_t a)
 { (void)cl; ((positioner *)wl_resource_get_user_data(r))->anchor = a; }
 static void pos_set_gravity(struct wl_client *cl, struct wl_resource *r, uint32_t g)
@@ -1198,7 +1538,8 @@ static void pos_set_gravity(struct wl_client *cl, struct wl_resource *r, uint32_
 static void pos_set_constraint(struct wl_client *cl, struct wl_resource *r, uint32_t a)
 { (void)cl; ((positioner *)wl_resource_get_user_data(r))->constraint = a; }
 static void pos_set_offset(struct wl_client *cl, struct wl_resource *r, int32_t x, int32_t y)
-{ (void)cl; positioner *p = wl_resource_get_user_data(r); p->ox = x; p->oy = y; }
+{ (void)cl; positioner *p = wl_resource_get_user_data(r);
+  p->ox = pos_clamp(x); p->oy = pos_clamp(y); }
 static void pos_set_reactive(struct wl_client *cl, struct wl_resource *r) { (void)cl; (void)r; }
 static void pos_set_parent_size(struct wl_client *cl, struct wl_resource *r, int32_t w, int32_t h)
 { (void)cl; (void)r; (void)w; (void)h; }
@@ -1278,7 +1619,7 @@ static void configure_toplevel(aurwl_win *w)
     if (w->want_full) { st = wl_array_add(&states, 4); if (st) *st = XDG_TOPLEVEL_STATE_FULLSCREEN; }
     xdg_toplevel_send_configure(w->xdg_toplevel, w->want_w, w->want_h, &states);
     wl_array_release(&states);
-    xdg_surface_send_configure(w->xdg_surface, serial_of(w->c));
+    send_configure(w);
 }
 
 static void tl_set_parent(struct wl_client *cl, struct wl_resource *r, struct wl_resource *p)
@@ -1328,7 +1669,10 @@ static void toplevel_gone(struct wl_resource *r)
     aurwl_win *w = wl_resource_get_user_data(r);
     if (!w) return;
     if (w->xdg_toplevel != r) return;      /* a stale duplicate */
-    w->xdg_toplevel = NULL; w->role = ROLE_NONE; w->acked = 0;
+    /* The role is NOT cleared: it is permanent for the surface's
+     * whole life, and clearing it here is what let a surface be given
+     * a second one. */
+    w->xdg_toplevel = NULL; w->acked = 0;
     if (w->mapped) surface_unmap(w);
 }
 
@@ -1348,7 +1692,7 @@ static void pop_reposition(struct wl_client *cl, struct wl_resource *r,
     w->want_w = p->w; w->want_h = p->h;
     xdg_popup_send_repositioned(r, token);
     xdg_popup_send_configure(r, w->px, w->py, p->w, p->h);
-    xdg_surface_send_configure(w->xdg_surface, serial_of(w->c));
+    send_configure(w);
 }
 static const struct xdg_popup_interface popup_impl = {
     .destroy = noop_destroy, .grab = pop_grab, .reposition = pop_reposition,
@@ -1358,7 +1702,7 @@ static void popup_gone(struct wl_resource *r)
     aurwl_win *w = wl_resource_get_user_data(r);
     if (!w) return;
     if (w->xdg_popup != r) return;
-    w->xdg_popup = NULL; w->role = ROLE_NONE; w->acked = 0;
+    w->xdg_popup = NULL; w->acked = 0;
     if (w->parent) { wl_list_remove(&w->child_link); wl_list_init(&w->child_link); w->parent = NULL; }
     if (w->mapped) surface_unmap(w);
 }
@@ -1383,9 +1727,12 @@ static void xs_get_toplevel(struct wl_client *cl, struct wl_resource *r, uint32_
     struct wl_resource *tl = wl_resource_create(cl, &xdg_toplevel_interface,
                                                 wl_resource_get_version(r), id);
     if (!tl) { wl_client_post_no_memory(cl); return; }
+    if (!take_role(w, ROLE_TOPLEVEL, r, XDG_WM_BASE_ERROR_ROLE)) {
+        wl_resource_destroy(tl);
+        return;
+    }
     wl_resource_set_implementation(tl, &toplevel_impl, w, toplevel_gone);
     w->xdg_toplevel = tl;
-    w->role = ROLE_TOPLEVEL;
 
     /* Version 5 says this must arrive before the first configure. What
      * goes in it is what we actually do: maximize and fullscreen are
@@ -1417,9 +1764,12 @@ static void xs_get_popup(struct wl_client *cl, struct wl_resource *r, uint32_t i
     struct wl_resource *pr = wl_resource_create(cl, &xdg_popup_interface,
                                                 wl_resource_get_version(r), id);
     if (!pr) { wl_client_post_no_memory(cl); return; }
+    if (!take_role(w, ROLE_POPUP, r, XDG_WM_BASE_ERROR_ROLE)) {
+        wl_resource_destroy(pr);
+        return;
+    }
     wl_resource_set_implementation(pr, &popup_impl, w, popup_gone);
     w->xdg_popup = pr;
-    w->role = ROLE_POPUP;
 
     aurwl_win *parent = NULL;
     if (parent_res) {
@@ -1448,11 +1798,31 @@ static void xs_set_geometry(struct wl_client *cl, struct wl_resource *r,
      * draws its own shadow into the margin. Without this the shell would
      * lay windows out by their shadows and everything would look loose
      * by a dozen pixels on every edge. */
-    w->geo_w = ww; w->geo_h = hh; w->has_geo = (ww > 0 && hh > 0);
+    if (ww <= 0 || hh <= 0) {
+        wl_resource_post_error(r, XDG_SURFACE_ERROR_INVALID_SIZE,
+                               "a window cannot be %dx%d", ww, hh);
+        return;
+    }
+    w->geo_w = ww; w->geo_h = hh; w->has_geo = 1;
     w->geo_x = x;  w->geo_y = y;
 }
+/* The serial has to be one we actually sent. Anything is accepted
+ * otherwise, which means a client that never received a configure --
+ * or that invented a number -- can make the compositor believe it is
+ * in a state it was never told to be in. xdg-shell.xml calls that
+ * invalid_serial. */
 static void xs_ack(struct wl_client *cl, struct wl_resource *r, uint32_t serial)
-{ (void)cl; (void)serial; aurwl_win *w = wl_resource_get_user_data(r); if (!w) return; w->acked = 1; }
+{
+    (void)cl;
+    aurwl_win *w = wl_resource_get_user_data(r);
+    if (!w) return;
+    if (!serial_was_sent(w, serial)) {
+        wl_resource_post_error(r, XDG_SURFACE_ERROR_INVALID_SERIAL,
+                               "no configure with serial %u was sent", serial);
+        return;
+    }
+    w->acked = 1;
+}
 
 static const struct xdg_surface_interface xdg_surface_impl = {
     .destroy = noop_destroy, .get_toplevel = xs_get_toplevel, .get_popup = xs_get_popup,
@@ -1525,7 +1895,7 @@ static void deco_answer(struct wl_resource *r)
 {
     zxdg_toplevel_decoration_v1_send_configure(r, ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE);
     aurwl_win *w = wl_resource_get_user_data(r);
-    if (w && w->xdg_surface) xdg_surface_send_configure(w->xdg_surface, serial_of(w->c));
+    if (w) send_configure(w);
 }
 static void deco_set_mode(struct wl_client *cl, struct wl_resource *r, uint32_t mode)
 { (void)cl; (void)mode; deco_answer(r); }
@@ -1882,10 +2252,16 @@ void aurwl_win_popup_offset(const aurwl_win *w, int *x, int *y)
 void aurwl_win_pref_size(const aurwl_win *w, int *w_out, int *h_out)
 {
     if (!w) { if (w_out) *w_out = 0; if (h_out) *h_out = 0; return; }
-    /* Window geometry when the client gave one, because that is the
-     * window without its shadow; the buffer otherwise. */
-    if (w_out) *w_out = w->has_geo ? w->geo_w : w->cw;
-    if (h_out) *h_out = w->has_geo ? w->geo_h : w->ch;
+    /* The size the client thinks its window is: a viewport destination
+     * if it set one, else the window geometry -- which is the window
+     * without its shadow -- else the buffer. */
+    logical_size(w, w_out, h_out);
+}
+
+void aurwl_win_logical_size(const aurwl_win *w, int *lw, int *lh)
+{
+    if (!w) { if (lw) *lw = 1; if (lh) *lh = 1; return; }
+    logical_size(w, lw, lh);
 }
 
 void aurwl_win_configure(aurwl_win *w, int width, int height,

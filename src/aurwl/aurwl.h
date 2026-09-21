@@ -82,6 +82,12 @@ surface    *aurwl_win_content(aurwl_win *w);
  * toolkit reserves for its own shadow. Add it to any surface-local
  * point measured against the content before handing it back. */
 void        aurwl_win_content_offset(const aurwl_win *w, int *x, int *y);
+/* The coordinate space the client expects to hear about -- the buffer's
+ * size, unless a viewport gave the surface a different logical one. A
+ * pointer position must be mapped into this before it is sent, or a
+ * client that uses a viewport is told the cursor is somewhere it is
+ * not. */
+void        aurwl_win_logical_size(const aurwl_win *w, int *lw, int *lh);
 
 /* What the client asked for, before the shell imposes anything. Zero
  * until the first buffer. A layout may use it to size a new window
