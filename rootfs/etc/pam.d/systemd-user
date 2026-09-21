@@ -1,0 +1,54 @@
+# Her own systemd, and why this file has to exist.
+#
+# THE SYMPTOM: no sound. Nothing else. The desktop came up, the wifi
+# worked, the browser opened, and there was no volume to set and
+# nothing came out of the speakers.
+#
+# THE CAUSE, in five steps, every one of them correct on its own:
+#
+#   1. build/forge expires the account's password on purpose, so that
+#      a shipped image carries no usable credential. The account's
+#      shadow entry reads lastchg=0.
+#   2. logind starts user@<uid>.service to run her own systemd, which
+#      is what starts pipewire and wireplumber.
+#   3. user@.service has PAMName=systemd-user, and the stack the
+#      distribution ships for it begins @include common-account.
+#   4. common-account is pam_unix with new_authtok_reqd=done, and
+#      pam_unix returns PAM_NEW_AUTHTOK_REQD for lastchg=0.
+#   5. systemd calls pam_acct_mgmt() before opening the session and
+#      treats a failure as fatal: 224/PAM.
+#
+# So there is no user systemd, so there is no pipewire, so there is no
+# sound -- and nothing anywhere says any of this. $XDG_RUNTIME_DIR is
+# still set and /run/user/<uid> still exists, because
+# user-runtime-dir@.service has no PAM stack at all and succeeds, so
+# even the shell's own "no runtime directory" warning stays quiet.
+#
+# HOW IT WAS MISSED ONCE. An adversarial review found this by reading
+# the five files above. It was then "disproved" on a booted machine
+# that showed user@1000.service active -- because the person checking
+# had logged in over the serial console first, been made to change the
+# password, and thereby cleared the very expiry that causes it. The
+# test created the condition that hid the bug. A later boot, checked
+# before logging in, failed with 224/PAM as predicted.
+#
+# WHY THIS AND NOT SOMETHING ELSE. Nothing in this product ever shows
+# a password prompt, so "the password must be changed" cannot be
+# communicated or acted upon by the person using the machine. The
+# expiry exists to stop a shipped image carrying a working credential,
+# and it does that job at the places where a credential is actually
+# used -- login, su, sudo, where a technician IS present and the
+# forced change is the intended first-run flow. Starting her own
+# systemd is not one of those places. It authenticates nobody; systemd
+# has already decided who runs it.
+#
+# The session lines below are the distribution's, unchanged.
+account required pam_permit.so
+
+session  required pam_selinux.so close
+session  required pam_selinux.so nottys open
+session  required pam_loginuid.so
+session  required pam_limits.so
+@include common-session-noninteractive
+session  optional pam_keyinit.so force revoke
+session  optional pam_systemd.so

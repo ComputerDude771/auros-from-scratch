@@ -279,6 +279,43 @@ else
     hit "no PAMName= on the unit"
 fi
 
+# ── HER OWN systemd HAS TO BE ABLE TO START ───────────────────────
+#
+# It is what runs pipewire, so if it cannot start there is no sound --
+# and nothing says so, because logind still makes /run/user/<uid> (that
+# service has no PAM stack) and $XDG_RUNTIME_DIR is still set, so even
+# the shell's own warning stays quiet.
+#
+# The image expires the account's password on purpose. The stack the
+# distribution ships for user@.service begins @include common-account,
+# which is pam_unix, which returns PAM_NEW_AUTHTOK_REQD for an expired
+# password, which systemd treats as fatal: 224/PAM.
+#
+# This is checked here, statically, BECAUSE THE OBVIOUS BOOT TEST
+# CANNOT SEE IT. Logging in over a console to look forces the password
+# change and clears the expiry -- so the machine you are inspecting is
+# no longer the machine that shipped, and user@<uid>.service reads
+# active. That happened, and this finding was wrongly dismissed
+# because of it.
+expired=$(awk -F: -v u="$USER_NAME" '$1==u{print $3}' "$RFS/etc/shadow" 2>/dev/null)
+if [ "${expired:-1}" = "0" ]; then
+    if [ -f "$RFS/etc/pam.d/systemd-user" ] &&
+       grep -qE '^account[[:space:]]+(required|sufficient)[[:space:]]+pam_permit' \
+            "$RFS/etc/pam.d/systemd-user"; then
+        printf '  %-58s ok\n' "an expired password cannot stop her own systemd"
+    else
+        printf '  %-58s NO SOUND\n' "the account password is expired"
+        printf '      user@%s.service will fail with 224/PAM, so pipewire\n' "$USER_NAME"
+        printf '      never starts and there is no sound -- silently, since\n'
+        printf '      /run/user/<uid> is still created by another service.\n'
+        printf '      Ship /etc/pam.d/systemd-user with a permissive account\n'
+        printf '      line, or stop expiring the password.\n'
+        hit "an expired password stops her own systemd: no sound"
+    fi
+else
+    printf '  %-58s ok\n' "the account password is not expired"
+fi
+
 tty=$(sed -n 's/^TTYPath=//p' "$UNIT" 2>/dev/null)
 if [ "${tty:-}" = "/dev/tty1" ]; then
     printf '  %-58s ok\n' "TTYPath=/dev/tty1, so the session is on seat0 vt1"
