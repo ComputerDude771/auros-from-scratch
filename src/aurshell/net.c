@@ -709,19 +709,32 @@ static void draw_bars(surface *s, int x, int cy, float k, int signal,
     }
 }
 
+/* Connect does nothing until there is something to send. A button that
+ * presses cleanly and has no effect is the failure this product keeps
+ * finding in itself, so it is drawn as unavailable and does not light
+ * up under the pointer -- tools/hittest.c's rule is that nothing
+ * highlights that cannot be clicked, and the converse is what makes a
+ * dimmed control honest rather than broken. */
+static int act_enabled(int a)
+{
+    if (a != A_JOIN) return 1;
+    return N.pw_n > 0 || !N.pick_secure;
+}
+
 static void paint_action(surface *s, shell_fonts *f, const shell_ctx *c,
-                         rect r, const char *label, int hot, int primary)
+                         rect r, const char *label, int hot, int primary,
+                         int enabled)
 {
     uint32_t fill = primary ? c->fg : c->surface_c;
     uint32_t ink  = primary ? c->bg : c->fg;
     if (hot && !primary) fill = c->surface_hi;
-    draw_rect(s, r, fill, 1.f);
+    draw_rect(s, r, fill, enabled ? 1.f : 0.45f);
     if (!primary) draw_frame(s, r, 1, c->subtle, hot ? 0.9f : 0.5f);
     font *ft = f->mid ? f->mid : f->small;
     if (!ft) return;
     shell_text_centred(s, ft, (float)r.x + r.w / 2.f,
                        shell_baseline(ft, (float)r.y, (float)r.h),
-                       label, ink, 1.f);
+                       label, ink, enabled ? 1.f : 0.5f);
 }
 
 void net_paint(shell_ctx *c, surface *s, shell_fonts *f)
@@ -857,6 +870,10 @@ void net_paint(shell_ctx *c, surface *s, shell_fonts *f)
             draw_bars(s, bars_x, r.y + r.h / 2, k, a->signal, c->fg, c->fg);
 
             float room = (float)(bars_x - r.x) - tagw - 28.f;
+            if (room < 40.f) room = 40.f;   /* a name squeezed to
+                                             * nothing draws nothing,
+                                             * and a row with no name
+                                             * is a row she cannot use */
             if (name)
                 shell_text_elided(s, name, (float)r.x + 4.f, by, room,
                                   a->name, c->fg, 1.f);
@@ -907,10 +924,11 @@ void net_paint(shell_ctx *c, surface *s, shell_fonts *f)
     /* ── the buttons ──────────────────────────────────────────── */
     for (int i = 0; i < g.n_acts; i++) {
         int a = g.act[i];
-        int primary = (a == A_JOIN) ||
-                      (a == A_CLOSE && N.page == P_JOINED);
+        int on = act_enabled(a);
+        int primary = on && ((a == A_JOIN) ||
+                             (a == A_CLOSE && N.page == P_JOINED));
         paint_action(s, f, c, g.acts[i], ACT_LABEL[a],
-                     N.hover_act == a, primary);
+                     N.hover_act == a, primary, on);
     }
 }
 
@@ -930,7 +948,10 @@ void net_motion(shell_ctx *c, int x, int y)
     net_view v = view_now();
     net_layout(c, c->screen_w, c->screen_h, &v, &g);
     for (int i = 0; i < g.n_acts; i++)
-        if (in_rect(g.acts[i], x, y)) { N.hover_act = g.act[i]; return; }
+        if (in_rect(g.acts[i], x, y)) {
+            if (act_enabled(g.act[i])) N.hover_act = g.act[i];
+            return;
+        }
     int from = clampi_(N.first_row, 0, N.n_aps > 0 ? N.n_aps - 1 : 0);
     for (int i = 0; i < g.n_rows; i++)
         if (in_rect(g.rows[i], x, y)) { N.hover = from + i; return; }
@@ -1004,7 +1025,13 @@ int net_click(shell_ctx *c, int x, int y)
     net_layout(c, c->screen_w, c->screen_h, &v, &g);
 
     for (int i = 0; i < g.n_acts; i++)
-        if (in_rect(g.acts[i], x, y)) { do_action(c, g.act[i]); return 1; }
+        if (in_rect(g.acts[i], x, y)) {
+            if (act_enabled(g.act[i])) do_action(c, g.act[i]);
+            return 1;                  /* taken either way; a press that
+                                        * fell through to the desktop
+                                        * would be worse than one that
+                                        * did nothing */
+        }
 
     if (N.page == P_LIST) {
         int from = clampi_(N.first_row, 0, N.n_aps > 0 ? N.n_aps - 1 : 0);
