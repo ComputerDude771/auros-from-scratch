@@ -1945,13 +1945,21 @@ static int trait_row(int good, const wchar_t *label, const wchar_t *body,
     if (h < S(34)) h = S(34);
     if (measure) return h;
 
-    fill_rr((float)x, (float)y, (float)w, (float)h, (float)S(9), tint, 0.10f);
-    float gx = (float)(x + pad + S(9)), gy = (float)(y + pad + S(9));
+    /* A rule down the left, not a tinted box.
+     *
+     * This is now the ONE mechanism the whole product uses to mark a
+     * qualification: the refusal page already ruled each blocked reason
+     * this way, and the website marks every claim's limit the same. A
+     * tinted rounded box here was a third device doing the same job,
+     * and three devices for one job is what makes an interface read as
+     * assembled rather than designed. */
+    fill_rr((float)x, (float)y, (float)S(4), (float)h, 0.f, tint, 1.f);
+    float gx = (float)(x + S(4) + pad + S(9)), gy = (float)(y + pad + S(9));
     if (good) glyph_check(gx, gy, (float)S(12), tint, 1.f);
     else      glyph_bang (gx, gy, (float)S(12), tint, 1.f);
-    text_draw(label, g_f_tiny, tint, x + pad + S(24), y + pad + S(3), lw,
+    text_draw(label, g_f_tiny, tint, x + S(4) + pad + S(24), y + pad + S(3), lw,
               DT_SINGLELINE);
-    text_draw(body, g_f_small, C_FG, tx, y + pad, tw, DT_WORDBREAK);
+    text_draw(body, g_f_small, C_FG, tx + S(4), y + pad, tw - S(4), DT_WORDBREAK);
     return h;
 }
 
