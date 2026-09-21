@@ -197,6 +197,33 @@ said the owner must retype the wifi password.
 `src/aurshell/foot.c` is the band; `src/aurshell/net.c` is the wifi
 panel behind its Internet button.
 
+## And when the desktop does not start at all
+
+`aurshell.service` used to say `OnFailure=getty@tty1.service`, above a
+comment explaining that a login prompt was better than a black screen
+and no way in. It was better. It was also a login prompt on a machine
+whose owner has never been told the account name, has never been told
+the password, and whose password the image expires on purpose so that
+it cannot be used by someone who guesses it. To her, a black screen and
+a console she cannot use are the same screen.
+
+`src/aurshell/sorry.c` is what appears instead: one sentence about what
+happened, one about what the machine is doing, one about what she can
+do. No buttons — nothing in this product may require a gesture, and a
+program that runs when the desktop has failed should not also depend on
+reading her mouse. The unit restarts the desktop when it exits, which
+is what makes "the computer is going to try again on its own" true
+rather than consoling.
+
+It is a separate program, not a mode of `aurshell`, because aurshell is
+the thing that just failed: running it again to apologise for itself
+works only in the cases where it would have worked anyway. It links
+three files — the mode-setter, the rasterizer, the font engine — and
+does nothing else. The fewer things it needs, the more of the failures
+it can survive to describe. `aursorry --png /tmp/x.png` draws it to a
+file, so looking at it does not require arranging for everything else
+to go wrong.
+
 ---
 
 ## For builders

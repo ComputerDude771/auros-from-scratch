@@ -393,7 +393,9 @@ stage_overlay() {
     inchroot "cd /usr/src/auros && \
         gcc -O2 -std=gnu11 -o /usr/sbin/aurinit aurinit/aurinit.c && \
         gcc -O2 -std=gnu11 -o /usr/bin/aurctl  aurinit/aurctl.c && \
-        gcc -O2 -std=gnu11 -o /usr/bin/aurwall aurwall/main.c common/theme.c common/wall.c common/png.c -lm" \
+        gcc -O2 -std=gnu11 -o /usr/bin/aurwall aurwall/main.c common/theme.c common/wall.c common/png.c -lm && \
+        gcc -O2 -std=gnu11 -o /usr/bin/aursorry aurshell/sorry.c aurshell/kms.c \
+            aurshell/draw.c common/font.c common/png.c -lm" \
         || die "building the AurOS stack inside the image failed"
 
     # Ferry — first-boot migration. The shell tools and data tables

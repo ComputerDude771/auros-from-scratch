@@ -1,0 +1,36 @@
+[Unit]
+Description=AurOS: telling the user the desktop did not start
+# Reached only from aurshell.service's OnFailure=, which fires after
+# systemd has given up restarting the shell.
+#
+# It used to be OnFailure=getty@tty1.service, above a comment saying
+# that was better than leaving the user with a black screen and no way
+# in. It WAS better. It was also a login prompt on a machine whose
+# owner has never been told the account name, has never been told the
+# password, and whose password this image expires on purpose. A black
+# screen and a console she cannot use are the same screen to her --
+# and docs/EASY.md rule 1 says no path in this product may bottom out
+# at a command line.
+Conflicts=getty@tty1.service
+After=getty@tty1.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/aursorry
+# And then try the desktop again, which is what makes the sentence on
+# that screen -- "the computer is going to try again on its own" --
+# true rather than consoling. reset-failed first, because systemd will
+# not start a unit it has already given up on.
+#
+# If the shell fails again this comes back, so the loop is: forty
+# seconds of a screen that speaks to her, one attempt, repeat. That is
+# not a fix, and it is not pretending to be one. It is the difference
+# between a machine that looks broken and a machine that says what is
+# wrong while it keeps trying.
+ExecStopPost=/bin/sh -c 'systemctl reset-failed aurshell.service; systemctl --no-block start aurshell.service'
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
+StandardInput=tty
+StandardOutput=journal
+StandardError=journal

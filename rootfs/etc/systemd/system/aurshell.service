@@ -1,13 +1,15 @@
 [Unit]
 Description=AurOS desktop shell
-# If the shell cannot start, fall back to a login prompt rather than
-# leaving the user with a black screen and no way in.
+# If the shell cannot start, say so in words, on the screen she is
+# looking at. See auros-sorry.service -- this used to be
+# getty@tty1.service, which is a login prompt on a machine whose owner
+# has never been told the account name or the password.
 #
 # This lives in [Unit]. It was in [Service], where systemd ignores it
 # with a warning nobody reads -- so the one thing standing between a
 # broken shell and a user with no way into their own computer silently
 # did not exist. Found by reading the journal of a booted image.
-OnFailure=getty@tty1.service
+OnFailure=auros-sorry.service
 After=auros-firstboot.service systemd-user-sessions.service
 Conflicts=getty@tty1.service
 After=getty@tty1.service
