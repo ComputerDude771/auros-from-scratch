@@ -14,6 +14,23 @@
 #define SUBPX      4
 #define CACHE_BINS 512
 
+/* Coverage transfer curve.
+ *
+ * Exact area coverage composited in device (sRGB) space renders unhinted
+ * light-on-dark UI text noticeably lighter than a hinted renderer does: a
+ * stem that falls between two pixel columns becomes two half-covered
+ * pixels, and two 50% greys on a dark background read as much less ink
+ * than one solid pixel, because sRGB is not linear in light. Hinting is
+ * how every other renderer buys that weight back; we deliberately do not
+ * hint, so a mild gamma on the coverage does it instead without moving a
+ * single outline point. 1.25 was picked by eye against FreeType at 12-14px
+ * on the Nocturne background: enough to match its apparent weight, small
+ * enough that dark-on-light text is not visibly fattened. Override with
+ * -DFONT_GAMMA=1.0 to get untouched analytic coverage. */
+#ifndef FONT_GAMMA
+#define FONT_GAMMA 1.25f
+#endif
+
 /* Sanity ceilings. None of these are format limits -- they exist so a
  * corrupt or hostile font cannot talk us into a gigabyte allocation. */
 #define MAX_FILE   (64u << 20)
@@ -433,7 +450,7 @@ static int loca_range(font *f, int gid, size_t *beg, size_t *end)
 
 static void glyf_outline(font *f, int gid, path *P, xform t, int depth);
 
-static void simple_glyph(font *f, rd *r, int ncont, path *P, xform t)
+static void simple_glyph(rd *r, int ncont, path *P, xform t)
 {
     if (ncont <= 0 || ncont > MAX_POINTS) return;
 
@@ -602,7 +619,7 @@ static void glyf_outline(font *f, int gid, path *P, xform t, int depth)
     int nc = rs16(&r);
     rd_skip(&r, 8);                            /* xMin yMin xMax yMax */
     if (r.bad) return;
-    if (nc >= 0) simple_glyph(f, &r, nc, P, t);
+    if (nc >= 0) simple_glyph(&r, nc, P, t);
     else         composite_glyph(f, &r, P, t, depth);
 }
 
@@ -713,6 +730,17 @@ static uint8_t *rasterise(const path *P, int w, int h)
                      P->p[e-1].x, P->p[e-1].y, P->p[s].x, P->p[s].y);
     }
 
+    /* One 256-entry table beats a powf() per pixel, and 0 and 255 are
+     * fixed points of any gamma, so fully-in and fully-out pixels stay
+     * exact whatever FONT_GAMMA is set to. */
+    static uint8_t ramp[256];
+    static int ramp_ready;
+    if (!ramp_ready) {
+        for (int i = 0; i < 256; i++)
+            ramp[i] = (uint8_t)(powf((float)i / 255.0f, 1.0f / FONT_GAMMA) * 255.0f + 0.5f);
+        ramp_ready = 1;
+    }
+
     for (int y = 0; y < h; y++) {
         const float *row = acc + (size_t)y * stride;
         uint8_t *out = cov + (size_t)y * w;
@@ -721,7 +749,7 @@ static uint8_t *rasterise(const path *P, int w, int h)
             sum += row[x];
             float a = sum < 0.0f ? -sum : sum;
             if (a > 1.0f) a = 1.0f;
-            out[x] = (uint8_t)(a * 255.0f + 0.5f);
+            out[x] = ramp[(int)(a * 255.0f + 0.5f)];
         }
     }
     free(acc);
@@ -982,6 +1010,9 @@ void font_draw(font *f, uint32_t *px, int w, int h,
 
     while (*utf8) {
         uint32_t cp = utf8_next(&utf8);
+        /* A long enough string can walk the pen out of float-to-int
+         * range; stop rather than let the cast go undefined. */
+        if (!(pen > -1e6f && pen < 1e6f)) break;
         glyph *probe = glyph_get(f, cp, 0);
         if (!probe) continue;
         if (prev >= 0) pen += kern_pair(f, prev, probe->gid);
