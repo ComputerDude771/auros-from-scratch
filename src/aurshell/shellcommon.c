@@ -14,11 +14,11 @@ float shell_text_w(font *f, const char *t) { return (f && t) ? font_text_width(f
 
 void shell_text(surface *s, font *f, float x, float y, const char *t, uint32_t c, float a)
 {
-    if (f && t && *t) font_draw(f, s->px, s->w, s->h, x, y, t, c, a);
+    if (f && t && *t) font_draw(f, s->px, s->w, s->h, s->stride, x, y, t, c, a);
 }
 void shell_text_centred(surface *s, font *f, float cx, float y, const char *t, uint32_t c, float a)
 {
-    if (f && t && *t) font_draw(f, s->px, s->w, s->h, cx - shell_text_w(f, t)/2.f, y, t, c, a);
+    if (f && t && *t) font_draw(f, s->px, s->w, s->h, s->stride, cx - shell_text_w(f, t)/2.f, y, t, c, a);
 }
 float shell_baseline(font *f, float y, float h)
 {

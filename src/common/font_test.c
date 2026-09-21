@@ -91,7 +91,7 @@ static probe probe_text(font *f, const char *s, float px)
     int h = (int)(px * 3.0f) + 8;
     p.c = canvas_new(w, h, 0x000000);
     if (!p.c.px) return p;
-    font_draw(f, p.c.px, w, h, px * 0.5f, px * 2.0f, s, 0xFFFFFF, 1.0f);
+    font_draw(f, p.c.px, w, h, w, px * 0.5f, px * 2.0f, s, 0xFFFFFF, 1.0f);
     for (int y = 0; y < h; y++)
         for (int x = 0; x < w; x++) {
             uint32_t v = p.c.px[(size_t)y * w + x] & 0xFF;
@@ -185,9 +185,9 @@ static int sheet(const char *ttf, const char *out)
     if (!hdr) { fprintf(stderr, "font_load failed: %s\n", ttf); free(cv.px); return 1; }
 
     float y = 46.0f;
-    font_draw(hdr, cv.px, cv.w, cv.h, 32.0f, y, "AurOS font.c \xE2\x80\x94 specimen",
+    font_draw(hdr, cv.px, cv.w, cv.h, cv.w, 32.0f, y, "AurOS font.c \xE2\x80\x94 specimen",
               ACC, 1.0f);
-    font_draw(hdr, cv.px, cv.w, cv.h, 360.0f, y, ttf, DIM, 1.0f);
+    font_draw(hdr, cv.px, cv.w, cv.h, cv.w, 360.0f, y, ttf, DIM, 1.0f);
     y += 18.0f;
     hline(&cv, (int)y, 0x1A2030);
     y += 24.0f;
@@ -201,7 +201,7 @@ static int sheet(const char *ttf, const char *out)
         snprintf(lab, sizeof lab, "%gpx   ascent %.1f  descent %.1f  line %.1f",
                  (double)px, (double)font_ascent(f), (double)font_descent(f),
                  (double)font_line_height(f));
-        font_draw(hdr, cv.px, cv.w, cv.h, 32.0f, y, lab, ACC, 0.85f);
+        font_draw(hdr, cv.px, cv.w, cv.h, cv.w, 32.0f, y, lab, ACC, 0.85f);
         y += 22.0f;
 
         /* Big sizes get the short samples so the sheet stays inside the
@@ -215,7 +215,7 @@ static int sheet(const char *ttf, const char *out)
                 "\xC3\xA7 \xC3\xB6 \xC3\x85 \xC3\x98 \xC5\x93 \xC3\x9F \xC3\x86 "
                 "\xD0\x9F\xD1\x80\xD0\xB8\xD0\xB2\xD0\xB5\xD1\x82";
             y += font_ascent(f);
-            font_draw(f, cv.px, cv.w, cv.h, 32.0f, y, txt, FG, 1.0f);
+            font_draw(f, cv.px, cv.w, cv.h, cv.w, 32.0f, y, txt, FG, 1.0f);
             y += font_line_height(f) - font_ascent(f);
         }
         y += 26.0f;
@@ -224,7 +224,7 @@ static int sheet(const char *ttf, const char *out)
 
     hline(&cv, (int)y, 0x1A2030);
     y += 24.0f;
-    font_draw(hdr, cv.px, cv.w, cv.h, 32.0f, y,
+    font_draw(hdr, cv.px, cv.w, cv.h, cv.w, 32.0f, y,
               "6x zoom \xE2\x80\x94 13px UI text, and 48px counters", ACC, 0.85f);
     y += 20.0f;
 
@@ -235,7 +235,7 @@ static int sheet(const char *ttf, const char *out)
         if (f) {
             canvas s = canvas_new(200, 22, BG);
             if (s.px) {
-                font_draw(f, s.px, s.w, s.h, 2.0f, 15.0f,
+                font_draw(f, s.px, s.w, s.h, s.w, 2.0f, 15.0f,
                           "Settings \xE2\x80\xA2 Files \xE2\x80\xA2 Ho\xCC\x88he 42%",
                           FG, 1.0f);
                 blit_zoom(&cv, 32, (int)y, &s, 6);
@@ -252,7 +252,7 @@ static int sheet(const char *ttf, const char *out)
         if (f) {
             canvas s = canvas_new(390, 62, BG);
             if (s.px) {
-                font_draw(f, s.px, s.w, s.h, 4.0f, 48.0f, "oeaBg@8%\xC3\xB6\xC3\xA9",
+                font_draw(f, s.px, s.w, s.h, s.w, 4.0f, 48.0f, "oeaBg@8%\xC3\xB6\xC3\xA9",
                           FG, 1.0f);
                 blit_zoom(&cv, 32, (int)y, &s, 3);
                 free(s.px);
@@ -354,12 +354,12 @@ static void selftest(const char *ttf)
     font_text_width(f, "\xFF\xFE\x80\x80 \xE0\x80 \xF7\xBF\xBF\xBF");
     canvas c = canvas_new(64, 64, BG);
     if (c.px) {
-        font_draw(f, c.px, 64, 64, -500.0f, 20.0f, "clip left", FG, 1.0f);
-        font_draw(f, c.px, 64, 64, 900.0f, 20.0f, "clip right", FG, 1.0f);
-        font_draw(f, c.px, 64, 64, 4.0f, -900.0f, "clip up", FG, 1.0f);
-        font_draw(f, c.px, 64, 64, 4.0f, 900.0f, "clip down", FG, 1.0f);
-        font_draw(f, c.px, 64, 64, 4.0f, 30.0f, "", FG, 1.0f);
-        font_draw(f, c.px, 64, 64, 4.0f, 30.0f, "x", FG, 0.0f);
+        font_draw(f, c.px, 64, 64, 64, -500.0f, 20.0f, "clip left", FG, 1.0f);
+        font_draw(f, c.px, 64, 64, 64, 900.0f, 20.0f, "clip right", FG, 1.0f);
+        font_draw(f, c.px, 64, 64, 64, 4.0f, -900.0f, "clip up", FG, 1.0f);
+        font_draw(f, c.px, 64, 64, 64, 4.0f, 900.0f, "clip down", FG, 1.0f);
+        font_draw(f, c.px, 64, 64, 64, 4.0f, 30.0f, "", FG, 1.0f);
+        font_draw(f, c.px, 64, 64, 64, 4.0f, 30.0f, "x", FG, 0.0f);
         free(c.px);
     }
     check(1, "clipping and degenerate draws survive");
@@ -433,7 +433,7 @@ static void exercise(font *f)
     if (!c.px) return;
     font_ascent(f); font_descent(f); font_line_height(f);
     font_text_width(f, "The quick brown fox \xC3\xA9\xC3\xB1\xC3\xBC 0123");
-    font_draw(f, c.px, c.w, c.h, 3.0f, 40.0f,
+    font_draw(f, c.px, c.w, c.h, c.w, 3.0f, 40.0f,
               "The quick brown fox \xC3\xA9\xC3\xB1\xC3\xBC 0123", FG, 1.0f);
     /* Sweep codepoints so cmap segment maths, composite recursion and
      * loca bounds all get walked on the mangled tables. */
@@ -445,7 +445,7 @@ static void exercise(font *f)
         else { buf[n++] = (char)(0xE0|(cp>>12)); buf[n++] = (char)(0x80|((cp>>6)&63));
                buf[n++] = (char)(0x80|(cp&63)); }
         buf[n] = 0;
-        font_draw(f, c.px, c.w, c.h, 3.0f, 40.0f, buf, FG, 1.0f);
+        font_draw(f, c.px, c.w, c.h, c.w, 3.0f, 40.0f, buf, FG, 1.0f);
     }
     free(c.px);
 }
@@ -569,13 +569,13 @@ static int twin(const char *fa, const char *fb, const char *out)
     if (!hdr) { free(cv.px); return 1; }
 
     float y = 40.0f;
-    font_draw(hdr, cv.px, cv.w, cv.h, 32.0f, y,
+    font_draw(hdr, cv.px, cv.w, cv.h, cv.w, 32.0f, y,
               "AurOS font.c \xE2\x80\x94 TrueType (A) vs OpenType/CFF (B), same strings",
               ACC, 1.0f);
     y += 20.0f;
-    font_draw(hdr, cv.px, cv.w, cv.h, 32.0f, y, fa, DIM, 1.0f);
+    font_draw(hdr, cv.px, cv.w, cv.h, cv.w, 32.0f, y, fa, DIM, 1.0f);
     y += 16.0f;
-    font_draw(hdr, cv.px, cv.w, cv.h, 32.0f, y, fb, DIM, 1.0f);
+    font_draw(hdr, cv.px, cv.w, cv.h, cv.w, 32.0f, y, fb, DIM, 1.0f);
     y += 12.0f;
     hline(&cv, (int)y, 0x1A2030);
     y += 20.0f;
@@ -588,12 +588,12 @@ static int twin(const char *fa, const char *fb, const char *out)
             /* The A/B rows share a baseline grid so a vertical scan of
              * the sheet compares like with like. */
             y += font_ascent(A);
-            font_draw(A, cv.px, cv.w, cv.h, 52.0f, y, SAMPLES[i], FG, 1.0f);
-            font_draw(hdr, cv.px, cv.w, cv.h, 32.0f, y, "A", DIM, 1.0f);
+            font_draw(A, cv.px, cv.w, cv.h, cv.w, 52.0f, y, SAMPLES[i], FG, 1.0f);
+            font_draw(hdr, cv.px, cv.w, cv.h, cv.w, 32.0f, y, "A", DIM, 1.0f);
             y += font_line_height(A) - font_ascent(A);
             y += font_ascent(B);
-            font_draw(B, cv.px, cv.w, cv.h, 52.0f, y, SAMPLES[i], FG, 1.0f);
-            font_draw(hdr, cv.px, cv.w, cv.h, 32.0f, y, "B", ACC, 0.7f);
+            font_draw(B, cv.px, cv.w, cv.h, cv.w, 52.0f, y, SAMPLES[i], FG, 1.0f);
+            font_draw(hdr, cv.px, cv.w, cv.h, cv.w, 32.0f, y, "B", ACC, 0.7f);
             y += font_line_height(B) - font_ascent(B);
             y += 6.0f;
         }
@@ -603,7 +603,7 @@ static int twin(const char *fa, const char *fb, const char *out)
 
     hline(&cv, (int)y, 0x1A2030);
     y += 18.0f;
-    font_draw(hdr, cv.px, cv.w, cv.h, 32.0f, y,
+    font_draw(hdr, cv.px, cv.w, cv.h, cv.w, 32.0f, y,
               "3x zoom \xE2\x80\x94 counters and curve quality, A above B", ACC, 0.85f);
     y += 14.0f;
 
@@ -614,7 +614,7 @@ static int twin(const char *fa, const char *fb, const char *out)
          * still fits the sheet with its left margin intact. */
         canvas s = canvas_new(400, 54, BG);
         if (s.px) {
-            font_draw(f, s.px, s.w, s.h, 4.0f, 40.0f, "oeaBg@8%SR&",
+            font_draw(f, s.px, s.w, s.h, s.w, 4.0f, 40.0f, "oeaBg@8%SR&",
                       k ? ACC : FG, 1.0f);
             blit_zoom(&cv, 32, (int)y, &s, 3);
             free(s.px);

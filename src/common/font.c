@@ -2239,7 +2239,7 @@ float font_text_width(font *f, const char *utf8)
     return pen;
 }
 
-void font_draw(font *f, uint32_t *px, int w, int h,
+void font_draw(font *f, uint32_t *px, int w, int h, int stride,
                float x, float y, const char *utf8, uint32_t color, float alpha)
 {
     if (!f || !px || !utf8 || w <= 0 || h <= 0) return;
@@ -2287,7 +2287,7 @@ void font_draw(font *f, uint32_t *px, int w, int h,
 
             for (int r = cy0; r < cy1; r++) {
                 const uint8_t *src = g->cov + (size_t)r * g->bw;
-                uint32_t *dst = px + (size_t)(gy + r) * w + gx;
+                uint32_t *dst = px + (size_t)(gy + r) * stride + gx;
                 for (int c = cx0; c < cx1; c++) {
                     uint32_t a = src[c];
                     if (!a) continue;

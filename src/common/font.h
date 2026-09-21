@@ -56,8 +56,22 @@ float font_text_width(font *f, const char *utf8);
 /* Blend text into a 32-bit 0x00RRGGBB framebuffer. (x, y) is the pen
  * origin on the BASELINE, not the top-left of the text box. `color` is
  * 0x00RRGGBB; `alpha` is an extra 0..1 multiplier over glyph coverage.
- * Clips to the framebuffer; out-of-range coordinates are not an error. */
-void  font_draw(font *f, uint32_t *px, int w, int h,
+ * Clips to the framebuffer; out-of-range coordinates are not an error.
+ *
+ * `stride` is the distance in PIXELS between the start of one row and
+ * the start of the next, and it is a separate argument from `w` because
+ * on a real display it is a different number. A scanout buffer's rows
+ * are padded out to the hardware's pitch alignment -- an Intel panel
+ * 1366 pixels wide has a stride of 1376 -- and code that uses the width
+ * as the stride writes each row a little further left than the last,
+ * shearing the whole image diagonally.
+ *
+ * This function used to take only w and use it for both. Every string
+ * in the shell was sheared on every machine whose pitch was not exactly
+ * 4 * width, and nothing could see it: offscreen surfaces are allocated
+ * with stride == width, and QEMU's 1024-wide display happens to be
+ * aligned already. Pass s->stride, not s->w. */
+void  font_draw(font *f, uint32_t *px, int w, int h, int stride,
                 float x, float y, const char *utf8, uint32_t color, float alpha);
 
 #endif

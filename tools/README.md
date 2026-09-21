@@ -25,6 +25,10 @@ cc -O2 -std=gnu11 -o /tmp/sheet tools/contactsheet.c src/aurshell/draw.c \
 cc -O2 -std=gnu11 -I src/common -o /tmp/kerning tools/kerning.c src/common/font.c -lm
 /tmp/kerning 36 /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf
 
+cc -O2 -std=gnu11 -o /tmp/stridetest tools/stridetest.c src/aurshell/draw.c \
+   src/aurshell/shellcommon.c src/aurshell/anim.c src/aurshell/layouts/*.c \
+   src/common/theme.c src/common/font.c -lm && /tmp/stridetest
+
 cc -O2 -std=gnu11 -o /tmp/contrast tools/contrast.c src/common/theme.c -lm
 /tmp/contrast /tmp/*.conf            # add --strict if the design uses rules
 
@@ -163,3 +167,17 @@ aurshell --shell shells/rail.shell --png /tmp/desk.png --size 1366 768 \
 
 That runs the same compositor, reconcile and input routing the booted
 machine runs. Only the destination differs.
+
+`stridetest` is the one harness that tests the environment every other
+harness cannot produce. A scanout buffer's rows are padded out to the
+hardware's pitch alignment -- 1366 pixels wide becomes 1376 of stride on
+Intel graphics -- and `surface_new()` allocates with stride == width, so
+every PNG render, the contact sheet, the hit-test harness and the
+preview tool run in a world where the two are equal. QEMU is 1024 wide
+and 1024 * 4 is already aligned, so it does not reproduce there either.
+
+It renders each archetype twice, once tight and once padded by an odd
+number of pixels, and requires the two to be pixel-identical inside the
+visible rectangle -- and the padding to be untouched. Load real fonts or
+it proves nothing about text: with NULL fonts `shell_text()` returns
+immediately and the primitive that was actually broken never runs.
