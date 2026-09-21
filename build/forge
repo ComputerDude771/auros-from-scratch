@@ -452,9 +452,40 @@ stage_overlay() {
     #
     # shellpreview.c is excluded by name because it is a second program
     # with its own main() that happens to live in the same folder.
-    SHELL_SRC=$(cd "$ROOT/src" && \
-        ls aurshell/*.c aurshell/layouts/*.c | grep -v '/shellpreview\.c$' | tr '\n' ' ')
+    # Every .c under aurshell that is not a SECOND PROGRAM. Excluded by
+    # having its own main(), not by being called shellpreview.c: the
+    # name is what this used to match, so the next tool parked in that
+    # directory would have been linked into the shell and the build
+    # would have died on "multiple definition of main".
+    #
+    # `|| true` on the substitution because under `set -e` a failing
+    # command substitution ends the build before the check below it can
+    # say anything useful -- which made that check dead code in exactly
+    # the case it was written for.
+    SHELL_SRC=$(cd "$ROOT/src" && {
+        for f in aurshell/*.c aurshell/layouts/*.c; do
+            [ -f "$f" ] || continue
+            grep -q '^int main(' "$f" && continue
+            printf '%s ' "$f"
+        done
+    }) || true
     [ -n "${SHELL_SRC:-}" ] || die "no aurshell sources found to build"
+    # main.c IS the program, so it is added back by name -- the only
+    # main() the shell is allowed to have.
+    SHELL_SRC="aurshell/main.c $SHELL_SRC"
+    # inchroot hands its argument to a shell, so every path in this
+    # list is word-split and pathname-expanded a second time inside the
+    # image. A file called "my panel.c" would arrive as two arguments;
+    # one with a * in it would re-glob against /usr/src/auros. Nothing
+    # in this repository has such a name, and refusing is how it stays
+    # that way -- a build that mangles its own source list and then
+    # reports a compile error is a very slow way to find this out.
+    for _f in $SHELL_SRC; do
+        case "$_f" in
+            *[!a-zA-Z0-9._/-]*)
+                die "source file '$_f' has a character the build cannot pass through a shell safely" ;;
+        esac
+    done
 
     if inchroot "cd /usr/src/auros && gcc -O2 -std=gnu11 -o /usr/bin/aurshell \
             $SHELL_SRC \

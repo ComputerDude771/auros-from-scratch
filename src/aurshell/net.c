@@ -97,9 +97,17 @@ static int   n_reaping;
 
 void net_reap(void)
 {
-    for (int i = n_reaping - 1; i >= 0; i--)
-        if (waitpid(reaping[i], NULL, WNOHANG) != 0)
+    for (int i = n_reaping - 1; i >= 0; i--) {
+        pid_t r = waitpid(reaping[i], NULL, WNOHANG);
+        /* >0 it exited. <0 with ECHILD means it is not ours to wait
+         * for any more, so the slot is stale either way. Any OTHER
+         * error -- EINTR, today impossible because every handler this
+         * program installs restarts, but one sigaction away from being
+         * possible -- must NOT be read as "gone", or a live child is
+         * forgotten and becomes a process nothing collects. */
+        if (r > 0 || (r < 0 && errno == ECHILD))
             reaping[i] = reaping[--n_reaping];
+    }
 }
 
 static void remember_to_reap(pid_t p)
@@ -492,7 +500,12 @@ int net_pump(shell_ctx *c)
     for (;;) {
         if (N.out_n >= OUT_MAX - 1) {
             /* More than sixteen kilobytes of network names is not a
-             * house, it is a fault or an attack. Take what we have. */
+             * house, it is a fault or an attack. Take what we have --
+             * and STOP the thing producing it. Closing the pipe and
+             * walking away leaves it alive until it next writes and
+             * takes a SIGPIPE, which for a program that has stopped
+             * writing is never. */
+            if (N.pid > 0) kill(N.pid, SIGTERM);
             break;
         }
         ssize_t r = read(N.fd, N.out + N.out_n, (size_t)(OUT_MAX - 1 - N.out_n));
@@ -1256,8 +1269,12 @@ int net_key(shell_ctx *c, int k)
 
 /* ── what a harness can measure ─────────────────────────────────────
  *
- * Every rectangle this panel expects her to press, for a view it is
- * handed rather than the one it happens to be in. tools/targets.c
+ * Every rectangle this panel puts under her finger, for a view it is
+ * handed rather than the one it happens to be in. Not quite the same
+ * as "every rectangle she can press": the password box is here because
+ * how big it is decides whether she can READ back what she typed, and
+ * pressing it does nothing -- there is no on-screen keyboard in this
+ * product for it to summon. tools/targets.c
  * walks all five screens at four text sizes and three panel sizes
  * through this, which is the only way docs/EASY.md rule 4 -- 44 pixels
  * at 1024x600 -- is a check rather than an intention.
