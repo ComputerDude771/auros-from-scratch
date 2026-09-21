@@ -185,7 +185,23 @@ packages_exclude="snapd ubuntu-advantage-tools popularity-contest"
 kiosk_mode="no"           # yes = single-app, no desktop, no shell access
 allowed_apps=""           # empty = everything installed is allowed
 blocked_apps=""
-allow_user_install="yes"  # may users install software?
+# May users install software?
+#
+# "yes" is what makes double-clicking a downloaded .deb work at all.
+# gdebi's own permission rule demands an administrator password in
+# every case, including for a person sitting at the machine, and this
+# product has no password prompt to show her and no password to give
+# her -- so without this the single sentence the whole product is built
+# around ("download it, double-click it, click Next") did nothing, in
+# silence. The same is true of the store: every install, remove and
+# update it performs is gated the same way.
+#
+# Saying yes means the person at this computer can install and remove
+# software without being asked for anything. On a personal machine that
+# person is the owner, and it is the trust Windows already extends to a
+# sole administrator. On a shared or managed machine, say no -- and
+# then nothing is granted and both paths correctly refuse.
+allow_user_install="yes"
 allow_settings_change="yes"
 allow_theme_change="yes"
 # May the person using this machine choose its wifi?

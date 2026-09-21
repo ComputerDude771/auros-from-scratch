@@ -35,6 +35,7 @@ cc -O2 -std=gnu11 -o /tmp/targets tools/targets.c src/aurshell/foot.c \
 
 sh tools/filetypes.sh      # needs packages_files installed on this machine
 sh tools/plainwords.sh
+sh tools/permissions.sh    # needs a rootfs a build has produced
 
 cc -O2 -std=gnu11 -o /tmp/kiosktest tools/kiosktest.c src/aurshell/apps.c \
    src/aurshell/shellcommon.c src/aurshell/draw.c src/aurshell/anim.c \
@@ -203,6 +204,31 @@ not text produce none; and the layout is read from
 already uses and `build/forge` already writes. Its last case feeds it a
 layout name that does not exist, because a typo in a profile must leave
 a keyboard in the wrong language rather than no keyboard at all.
+
+`permissions.sh` exists because the same bug happened three times in
+one day. The product puts a control on the screen, the control runs
+something, and the permission service refuses it in silence: the
+Internet button, then Turn off and opening a USB stick, then
+double-clicking a downloaded `.deb` — which is the single sentence the
+whole product is built around. Every one of them looked right and
+pressed cleanly. None of them did anything, and nothing said so: not
+the build, not the journal, not the screen.
+
+The cause is always the same. `aurshell` is a systemd service, and
+polkit's shipped rules are written in terms of a logind session, so
+every `allow_active=yes` in the distribution reads as `auth_admin` for
+us — and there is no authentication agent in this session for the
+prompt to appear in, and no password to type into it if there were.
+gdebi is worse: its action is `auth_admin` for *all three* cases, so a
+session does not save it either.
+
+It asks two questions of the image that was actually built, for every
+thing the product offers to do: does this permission exist at all (a
+typo in an action id is a grant that silently is not one, and polkit
+says nothing about an id it has never heard of), and does anything
+grant it. Checked by putting both failures back: removing the gdebi
+grant reports "Install a downloaded program — REFUSED", and misspelling
+`login1.power-off` reports "NO SUCH ACTION".
 
 `nettest` exists because the wifi panel's job is to turn what nmcli
 printed into something she can press, and that translation cannot be
