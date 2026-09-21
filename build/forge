@@ -1185,6 +1185,57 @@ stage_theme() {
               --width 1920 --height 1080 >/dev/null 2>&1" || note "wallpaper deferred to first boot"
     inchroot "grep -q auros /etc/profile || echo '[ -f /etc/auros/prompt.sh ] && . /etc/auros/prompt.sh' >> /etc/profile" || true
     inchroot "grep -q auros-motd /etc/profile || echo '[ -f /etc/auros/motd ] && cat /etc/auros/motd  # auros-motd' >> /etc/profile" || true
+
+    # ── AND NOW MAKE APPLICATIONS ACTUALLY USE IT ──────────────────
+    #
+    # aurora has just rendered /etc/auros/gtk/gtk.css, whose own first
+    # comment says it is "present so third-party GTK apps land inside
+    # the theme instead of punching a bright hole in it". Nothing read
+    # it. Not one file on the machine imported it, so every GTK
+    # application -- which is every application this product ships --
+    # came up in stock light Adwaita inside a dark desktop.
+    #
+    # Seen by booting the image and opening the file manager: a white
+    # window, with white sidebars and black text, in the middle of a
+    # near-black screen. The product's whole argument is that the look
+    # is total and hers, and the first thing she opens ignored it.
+    #
+    # GTK3 loads, in this order: the named theme, then
+    # $XDG_CONFIG_HOME/gtk-3.0/gtk.css. There is no system-wide file in
+    # that list -- /etc/xdg is not consulted for it -- so the import
+    # goes in the account's own config, and in /etc/skel so that an
+    # account made later gets it too. GTK4 reads the same shape one
+    # directory along.
+    theme_variant=$(sed -n 's/^theme_variant="\(.*\)"/\1/p' \
+                    "$RFS/usr/share/auros/themes/$theme.theme" 2>/dev/null | head -1)
+    [ -n "$theme_variant" ] || theme_variant="dark"
+    [ "$theme_variant" = "light" ] && prefer_dark=0 || prefer_dark=1
+
+    for _home in "$RFS/etc/skel" "$RFS/home/$default_user"; do
+        [ -d "$_home" ] || continue
+        for _v in 3.0 4.0; do
+            install -d -m 755 "$_home/.config/gtk-$_v"
+            cat > "$_home/.config/gtk-$_v/gtk.css" <<'EOL'
+/* Written by forge. The one line that makes the desktop's colours
+   reach the programs running on it. Edit /etc/auros/gtk/gtk.css, or
+   better, the theme it is rendered from. */
+@import url("file:///etc/auros/gtk/gtk.css");
+EOL
+            cat > "$_home/.config/gtk-$_v/settings.ini" <<EOL
+[Settings]
+gtk-application-prefer-dark-theme=$prefer_dark
+gtk-font-name=$(sed -n 's/^font_sans="\(.*\)"/\1/p' \
+                "$RFS/usr/share/auros/themes/$theme.theme" 2>/dev/null | head -1) 11
+gtk-cursor-theme-size=24
+gtk-enable-animations=1
+EOL
+        done
+    done
+    # The files were written as root into her home; they are hers.
+    if [ -d "$RFS/home/$default_user" ]; then
+        inchroot "chown -R $default_user:$default_user /home/$default_user/.config" || true
+    fi
+    note "the theme reaches GTK applications ($theme_variant, prefer-dark=$prefer_dark)"
     chroot_done
 }
 

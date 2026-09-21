@@ -231,8 +231,14 @@ static aurwl_win *window_under(shell_ctx *c, int x, int y, int *sx, int *sy)
              * the screen point mapped back through that same scale --
              * anything else puts the client's idea of the cursor
              * somewhere other than where the user sees it. */
-            if (sx) *sx = (int)((long)(x - r.x) * s->w / r.w);
-            if (sy) *sy = (int)((long)(y - r.y) * s->h / r.h);
+            /* ...and then back into the client's own surface, which
+             * starts a shadow's width above and to the left of what
+             * is drawn. Without this every click landed about thirty
+             * pixels off. */
+            int ox = 0, oy = 0;
+            aurwl_win_content_offset(w, &ox, &oy);
+            if (sx) *sx = ox + (int)((long)(x - r.x) * s->w / r.w);
+            if (sy) *sy = oy + (int)((long)(y - r.y) * s->h / r.h);
             return w;
         }
     }

@@ -78,6 +78,10 @@ const char *aurwl_win_app_id(const aurwl_win *w);
  * committed buffer, so it stays valid and unchanging for as long as the
  * shell needs to paint it. NULL before the first buffer arrives. */
 surface    *aurwl_win_content(aurwl_win *w);
+/* Where that content sits inside the client's surface -- the margin a
+ * toolkit reserves for its own shadow. Add it to any surface-local
+ * point measured against the content before handing it back. */
+void        aurwl_win_content_offset(const aurwl_win *w, int *x, int *y);
 
 /* What the client asked for, before the shell imposes anything. Zero
  * until the first buffer. A layout may use it to size a new window

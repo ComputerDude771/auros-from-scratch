@@ -87,6 +87,10 @@ struct aurwl_win {
      * every paint a lifetime question and every truncated shm file a
      * SIGBUS in the compositor. */
     surface            *store;
+    /* A window onto `store` -- same pixels, same stride, origin moved
+     * to the client's declared window geometry. See
+     * aurwl_win_content(). */
+    surface             view;
     int                 cw, ch;       /* client's own idea of its size  */
 
     int                 role;
@@ -1815,7 +1819,60 @@ aurwl_win *aurwl_window_at(const aurwl *c, int i)
 uint32_t    aurwl_win_id(const aurwl_win *w)     { return w ? w->id : 0; }
 const char *aurwl_win_title(const aurwl_win *w)  { return w ? w->title : ""; }
 const char *aurwl_win_app_id(const aurwl_win *w) { return w ? w->app_id : ""; }
-surface    *aurwl_win_content(aurwl_win *w)      { return w ? w->store : NULL; }
+/* THE WINDOW, NOT THE BUFFER.
+ *
+ * A GTK client draws its own drop shadow into a margin all the way
+ * round its buffer, and says which rectangle of that buffer is the
+ * actual window through xdg_surface.set_window_geometry. The shell
+ * fits whatever it is handed into the space the archetype gave it, so
+ * handing it the whole buffer FITTED THE SHADOW to the frame: every
+ * application sat inside a uniform empty border about thirty pixels
+ * wide on every edge, looking loose and wasting a tenth of the screen
+ * on a 1024x600 panel. The geometry was already being recorded, and
+ * was used for nothing but popup placement.
+ *
+ * Seen by booting the image and putting a file manager on the screen.
+ *
+ * The view shares the pixels -- same stride, moved origin -- so this
+ * costs nothing per frame, and its address is stable per window, which
+ * the shell's damage tracking relies on. (`store` is not: it is freed
+ * and reallocated whenever the client resizes.) */
+surface *aurwl_win_content(aurwl_win *w)
+{
+    if (!w || !w->store) return NULL;
+    surface *s = w->store;
+    int gx = 0, gy = 0, gw = s->w, gh = s->h;
+    if (w->has_geo) {
+        gx = w->geo_x; gy = w->geo_y; gw = w->geo_w; gh = w->geo_h;
+        /* Every one of these came from a client, so none of them is
+         * trusted to be inside the buffer it is describing. */
+        if (gx < 0 || gx >= s->w) gx = 0;
+        if (gy < 0 || gy >= s->h) gy = 0;
+        if (gw <= 0 || gw > s->w - gx) gw = s->w - gx;
+        if (gh <= 0 || gh > s->h - gy) gh = s->h - gy;
+    }
+    w->view = *s;
+    w->view.px = s->px + (size_t)gy * (size_t)s->stride + (size_t)gx;
+    w->view.w = gw;
+    w->view.h = gh;
+    return &w->view;
+}
+
+/* Where that view sits inside the client's own surface. A pointer
+ * position measured against the view has to have this added before it
+ * is sent back, or every click lands a shadow's width up and to the
+ * left of where she pressed. */
+void aurwl_win_content_offset(const aurwl_win *w, int *x, int *y)
+{
+    int gx = 0, gy = 0;
+    if (w && w->has_geo && w->store) {
+        gx = w->geo_x; gy = w->geo_y;
+        if (gx < 0 || gx >= w->store->w) gx = 0;
+        if (gy < 0 || gy >= w->store->h) gy = 0;
+    }
+    if (x) *x = gx;
+    if (y) *y = gy;
+}
 int         aurwl_win_is_popup(const aurwl_win *w) { return w && w->role == ROLE_POPUP; }
 aurwl_win  *aurwl_win_parent(const aurwl_win *w) { return w ? w->parent : NULL; }
 

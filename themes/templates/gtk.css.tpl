@@ -98,3 +98,53 @@ switch:checked       { background: @accent@; }
 check:checked, radio:checked { background: @accent@; border-color: @accent@; }
 separator { background: @overlay@; }
 selection { background: @accent|rgba:0.35@; color: @fg_hi@; }
+
+/* ── one title bar, not two ─────────────────────────────────────────
+ *
+ * AurOS's archetypes draw a window's title and its close button
+ * themselves, in the theme's colours, at a size docs/EASY.md says she
+ * can press. GTK3 ALSO draws a title bar for any window that has none
+ * of its own -- which is every application this product ships, since
+ * they all use a menu bar rather than a header bar.
+ *
+ * So a file manager came up with two title bars, two titles and two
+ * close buttons, one of them small and grey. "Which X do I press?" is
+ * not a question this product may ask her. Seen by booting the image
+ * and opening the file manager.
+ *
+ * Only GTK's FALLBACK bar is collapsed: `.default-decoration` is the
+ * class GTK puts on the one it invents. A real header bar carries the
+ * application's own controls -- its search, its menu -- and is left
+ * exactly alone.
+ *
+ * GTK's CSS has no way to hide a widget, so it is flattened instead:
+ * no height, no padding, nothing drawn, and its contents given no size
+ * of their own.
+ */
+window.csd > .titlebar.default-decoration,
+window.solid-csd > .titlebar.default-decoration {
+  min-height: 0;
+  padding: 0;
+  margin: 0;
+  border: none;
+  box-shadow: none;
+  background: none;
+}
+window.csd > .titlebar.default-decoration > *,
+window.solid-csd > .titlebar.default-decoration > * {
+  min-height: 0;
+  min-width: 0;
+  padding: 0;
+  margin: 0;
+  opacity: 0;
+}
+window.csd > .titlebar.default-decoration button.titlebutton,
+window.solid-csd > .titlebar.default-decoration button.titlebutton {
+  min-height: 0;
+  min-width: 0;
+  padding: 0;
+  margin: 0;
+  border: none;
+  background: none;
+  opacity: 0;
+}
