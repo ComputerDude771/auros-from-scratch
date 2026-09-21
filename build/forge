@@ -402,7 +402,7 @@ stage_overlay() {
     # shared libraries stay, because without them nothing on the desktop
     # can open a window.
     inchroot "apt-get update -qq && apt-get install -y --no-install-recommends \
-              gcc libc6-dev make pkg-config \
+              gcc libc6-dev make pkg-config libdbus-1-dev \
               libwayland-dev libwayland-bin wayland-protocols libxkbcommon-dev" \
         >/dev/null 2>&1 || true
     inchroot "cd /usr/src/auros && \
@@ -510,7 +510,8 @@ stage_overlay() {
             aurwl/gen/xdg-decoration-protocol.c aurwl/gen/viewporter-protocol.c \
             aurwl/gen/xdg-output-protocol.c \
             common/theme.c common/wall.c common/font.c common/png.c \
-            -I aurwl/gen -lwayland-server -lxkbcommon -lm"; then
+            -I aurwl/gen \$(pkg-config --cflags dbus-1) \
+            -lwayland-server -lxkbcommon \$(pkg-config --libs dbus-1) -lm"; then
         note "aurshell built ($(du -h "$RFS/usr/bin/aurshell" | cut -f1)), with the compositor"
     else
         die "aurshell did not build - the image would boot to a console"
@@ -525,7 +526,7 @@ stage_overlay() {
     # the binary that needs it and the desktop would not start.
     inchroot "apt-get install -y --no-install-recommends libwayland-server0 libxkbcommon0 >/dev/null 2>&1; \
               apt-mark manual libwayland-server0 libxkbcommon0 >/dev/null 2>&1; \
-              apt-get purge -y gcc libc6-dev make pkg-config libwayland-dev libwayland-bin \
+              apt-get purge -y gcc libc6-dev make pkg-config libdbus-1-dev libwayland-dev libwayland-bin \
                                wayland-protocols libxkbcommon-dev >/dev/null 2>&1; \
               apt-get autoremove -y >/dev/null 2>&1" || true
     # The generated code is a build artifact; leaving it in the image

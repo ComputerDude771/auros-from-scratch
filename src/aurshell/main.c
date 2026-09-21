@@ -35,6 +35,7 @@
 #include "net.h"
 #include "power.h"
 #include "osd.h"
+#include "notify.h"
 #include "settings.h"
 #include "bt.h"
 #include "watch.h"
@@ -1149,8 +1150,22 @@ int main(int argc, char **argv)
          * run.c -- this cannot be an ordering dependency, because the
          * thing to be ordered after is created by this unit's own PAM
          * stack. */
-        if (run_adopt_user_bus())
+        if (run_adopt_user_bus()) {
             fprintf(stderr, "aurshell: using the session bus logind made\n");
+            /* Re-announce there. A notification server on the bus the
+             * applications are NOT on is a server nothing can find. */
+            notify_close();
+        }
+        notify_open();          /* idempotent, and rate-limited inside */
+        /* Read the bus HERE, every pass, rather than only when its fd
+         * is readable. libdbus buffers: a message can be complete in
+         * the connection's own queue with nothing left on the socket,
+         * and a loop that only dispatches on POLLIN sits on it until
+         * the next message arrives to wake it. The fd stays in poll()
+         * so an idle desktop still wakes promptly; this is what makes
+         * sure it is never the only way. */
+        if (notify_pump(&c))  dirty = 1;
+        if (notify_step(&c)) dirty = 1;
         power_step();
         if (settings_step(&c)) dirty = 1;
         /* The handful of things this computer should speak up about
@@ -1352,6 +1367,9 @@ int main(int argc, char **argv)
             body.h = c.screen_h;
             L->paint(&c, &body, &f, wall);
             session_paint_popups(&c, &body);
+            /* Above the archetype and below the panels: a card must
+             * not cover a screen she opened deliberately. */
+            if (!SHELL_PANEL_OPEN(&c)) notify_paint(&c, fb, &f);
             net_paint(&c, fb, &f);
             settings_paint(&c, fb, &f);
             bt_paint(&c, fb, &f);
@@ -1423,7 +1441,14 @@ int main(int argc, char **argv)
         /* Animating: poll briefly so the next frame is soon. Idle: wait
          * a full second; with damage tracking there is nothing to do
          * until an event arrives, and the clock is handled above. */
-        struct pollfd pfd[MAX_INPUT_DEV + 4];
+        /* The devices, plus EVERY other thing this loop waits on. The
+         * bound was `+ 4` and there are now five of them -- inotify,
+         * the compositor, nmcli, bluetoothctl and the bus -- so adding
+         * the fifth wrote one pollfd past the end of a stack array.
+         * Counted from the list rather than from memory, and checked,
+         * because the next one added would have done it again. */
+        #define POLL_EXTRAS 5
+        struct pollfd pfd[MAX_INPUT_DEV + POLL_EXTRAS];
         int np = 0;
         /* How many device slots pfd[] describes. The walk below indexes
          * pfd[] BY DEVICE INDEX, so it must not run past this even if
@@ -1448,6 +1473,11 @@ int main(int argc, char **argv)
             netslot = np; pfd[np].fd = netfd;
             pfd[np].events = POLLIN; np++;
         }
+        /* In poll() so that a message arriving on an idle desktop
+         * wakes it at once. It is READ at the top of the loop, not
+         * here -- see the note there. */
+        int nofd = notify_fd();
+        if (nofd >= 0) { pfd[np].fd = nofd; pfd[np].events = POLLIN; np++; }
         int btfd = -1, btslot = -1;
         if ((btfd = bt_fd()) >= 0) {
             btslot = np; pfd[np].fd = btfd;
@@ -1457,6 +1487,14 @@ int main(int argc, char **argv)
          * the next thing to happen is its next buffer, not a keystroke. */
         int wait_ms = (animating || osd_visible() || settings_dragging()) ? 8
                     : (c.n_wins > 0 ? 16 : 1000);
+        if (np > (int)(sizeof pfd / sizeof pfd[0])) {
+            /* Unreachable by construction; here because the thing it
+             * guards is a stack overflow and "unreachable" is what was
+             * believed about the last one. */
+            fprintf(stderr, "aurshell: %d fds to wait on, room for %d\n",
+                    np, (int)(sizeof pfd / sizeof pfd[0]));
+            np = (int)(sizeof pfd / sizeof pfd[0]);
+        }
         if (poll(pfd, np, wait_ms) <= 0) continue;
         (void)wlfd;
 
@@ -1464,6 +1502,7 @@ int main(int argc, char **argv)
             if (net_pump(&c)) dirty = 1;
         if (btslot >= 0 && (pfd[btslot].revents & (POLLIN | POLLHUP | POLLERR)))
             if (bt_pump(&c)) dirty = 1;
+
 
         /* Walk backwards: dropping a device compacts the array, so a
          * forward walk would skip the entry moved into the hole. Bounded
@@ -1605,6 +1644,13 @@ int main(int argc, char **argv)
                         /* A panel covers the desktop while it is up, so it
                          * answers before the desktop does -- for the
                          * same reason the band answers before it. */
+                        /* A card is dismissed by pressing it, and it
+                         * is tested before the panels and before the
+                         * desktop because it is drawn on top of both.
+                         * Not before the band: the band is the way
+                         * out, and a card never covers it. */
+                        if (!taken && ev.value && !SHELL_PANEL_OPEN(&c))
+                            taken = notify_click(&c, c.mouse_x, c.mouse_y);
                         if (!taken && ev.value) {
                             taken = net_click(&c, c.mouse_x, c.mouse_y);
                             if (!taken)
@@ -1792,6 +1838,7 @@ int main(int argc, char **argv)
 
     net_fini();
     bt_fini();
+    notify_fini();
     if (c.wl) aurwl_destroy(c.wl);
     for (int i = 0; i < in.n; i++) { ioctl(in.fd[i], EVIOCGRAB, 0); close(in.fd[i]); }
     if (in.notify_fd >= 0) close(in.notify_fd);
