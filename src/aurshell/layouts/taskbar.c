@@ -627,18 +627,25 @@ static void paint_task_button(shell_ctx *c, surface *s, shell_fonts *f, int i, r
     uint32_t tint = win_tint(c, i);
     float r = (float)c->radius_sm;
 
+    /* The three fills are built from `overlay` and a wash of the accent
+     * rather than from `surface`, because a light theme's surface is
+     * white and its bar is nearly white: a surface-filled button would
+     * be the BRIGHTEST thing on the bar whether or not it was the
+     * active one. Overlay sits between bar and text in every theme, so
+     * the order stays right in both directions. */
     if (on) {
         draw_round_rect(s, b, corners_all(r), c->surface_hi, 0.98f);
+        draw_round_rect(s, b, corners_all(r), c->accent, 0.16f);
         draw_round_rect_border(s, b, corners_all(r), 1.5f, c->accent, 0.85f);
     } else if (mini) {
         /* Minimised: still open, still here, just not on the screen.
-         * Hollow rather than filled, so the bar shows at a glance what
-         * is in front of you and what is only "somewhere". */
-        draw_round_rect(s, b, corners_all(r), c->surface_c, hot ? 0.55f : 0.26f);
-        draw_round_rect_border(s, b, corners_all(r), 1.f, c->overlay, 0.7f);
+         * Barely filled, so the bar shows at a glance what is in front
+         * of you and what is only "somewhere". */
+        draw_round_rect(s, b, corners_all(r), c->overlay, hot ? 0.34f : 0.12f);
+        draw_round_rect_border(s, b, corners_all(r), 1.f, c->overlay, 0.55f);
     } else {
-        draw_round_rect(s, b, corners_all(r), c->surface_c, hot ? 0.8f : 0.5f);
-        draw_round_rect_border(s, b, corners_all(r), 1.f, c->overlay, hot ? 0.8f : 0.5f);
+        draw_round_rect(s, b, corners_all(r), c->overlay, hot ? 0.52f : 0.3f);
+        draw_round_rect_border(s, b, corners_all(r), 1.f, c->overlay, hot ? 0.85f : 0.6f);
     }
 
     /* Running indicator. A wide bar under the focused window, a short
@@ -677,10 +684,11 @@ static void paint_bar(shell_ctx *c, surface *s, shell_fonts *f)
     rect l = bar_slot(c, W, H, SLOT_LAUNCH);
     int lhot = (p->hover_slot == SLOT_LAUNCH) || p->menu_open;
     draw_round_rect(s, l, corners_all((float)c->radius_sm),
-                    p->menu_open ? c->surface_hi : c->surface_c, lhot ? 0.95f : 0.55f);
+                    p->menu_open ? c->surface_hi : c->overlay, lhot ? 0.95f : 0.32f);
+    if (p->menu_open) draw_round_rect(s, l, corners_all((float)c->radius_sm), c->accent, 0.16f);
     draw_round_rect_border(s, l, corners_all((float)c->radius_sm),
                            p->menu_open ? 1.5f : 1.f,
-                           p->menu_open ? c->accent : c->overlay, lhot ? 0.85f : 0.55f);
+                           p->menu_open ? c->accent : c->overlay, lhot ? 0.85f : 0.6f);
     float lcx = (float)l.x + 20.f, lcy = (float)l.y + (float)l.h * 0.5f;
     draw_circle(s, lcx, lcy, 8.f, c->accent, 0.22f);
     draw_circle(s, lcx, lcy, 4.5f, c->accent, 0.95f);
