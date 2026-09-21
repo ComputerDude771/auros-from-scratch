@@ -1279,6 +1279,7 @@ int main(int argc, char **argv)
         /* Idempotent, rate-limited inside, and it notices for itself
          * when the address has changed -- which the line above is not
          * the only thing that can do, since a spawn adopts too. */
+        notify_fit(&c);         /* never accept more than can be drawn */
         notify_open();
         /* Read the bus HERE, every pass, rather than only when its fd
          * is readable. libdbus buffers: a message can be complete in

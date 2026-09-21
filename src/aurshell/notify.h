@@ -83,6 +83,31 @@ int  notify_step(shell_ctx *c);
 /* How many are showing. The host repaints while this is not zero. */
 int  notify_showing(void);
 
+/* Tell it how big the screen is, once per pass of the main loop, so
+ * it never accepts more cards than can be drawn. At 1024x600 with her
+ * largest text only three fit; a fourth was accepted, counted, never
+ * painted -- and so could not be pressed away either. */
+void notify_fit(const shell_ctx *c);
+
+/* WHAT IS ACTUALLY ON CARD `i`, after everything a sending program
+ * asked for has been through the sanitiser. Read-only, NUL-terminated,
+ * and "" for a card that is not there.
+ *
+ * This exists because counting cards proves nothing about the text in
+ * them, and the text IS the notification: a harness that checked only
+ * notify_showing() passed while "Saved <report 2024>.pdf" was being
+ * drawn as "Saved .pdf". */
+const char *notify_card_app(int i);
+const char *notify_card_summary(int i);
+const char *notify_card_body(int i);
+/* 1 if this card will never go away by itself -- which only the shell
+ * may ask for. */
+int         notify_card_sticky(int i);
+/* The id the sending program knows this card by. Two live cards
+ * sharing one id means CloseNotification closes the wrong one and the
+ * real owner can never replace or close its own. */
+unsigned    notify_card_id(int i);
+
 /* ── the geometry contract ──────────────────────────────────────────
  *
  * The same one the band and the wifi panel keep: a pure function of a
