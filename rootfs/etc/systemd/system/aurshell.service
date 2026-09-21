@@ -31,7 +31,22 @@ RuntimeDirectoryMode=0700
 Environment=XDG_RUNTIME_DIR=/run/auros
 
 # The shell owns the display and reads evdev directly, so it needs the
-# tty and the input group rather than a seat from a display manager.
+# tty and these groups rather than a seat from a display manager.
+#
+#   video   /dev/dri/card0 -- the display
+#   input   /dev/input/event* -- the keyboard, mouse and touchpad
+#   audio   so the person can hear things
+#
+# These are set here rather than left to the account's groups because
+# the requirement belongs to the service, not to whoever happens to run
+# it. The comment above said "the input group" for months while nothing
+# on the machine put anyone in it -- which nobody noticed, because
+# without a User= line this ran as root and group membership did not
+# matter.
+#
+# The User= itself is written by build/forge into a drop-in, because the
+# account name is a profile setting and this file is not templated.
+SupplementaryGroups=video input audio
 TTYPath=/dev/tty1
 TTYReset=yes
 TTYVHangup=yes

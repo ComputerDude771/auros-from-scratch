@@ -128,6 +128,11 @@ typedef struct shell_ctx_s {
      * commands, and is enforced when the app table is built rather than
      * when an icon is pressed -- see shell_scan_apps(). */
     char  allowed_apps[256];
+    /* The other direction: everything EXCEPT these. An organisation
+     * usually wants a deny-list, not an allow-list, and this was
+     * written into /etc/auros/policy.conf by the build and read by
+     * nothing at all -- a knob that looked like a control and was not. */
+    char  blocked_apps[256];
     /* Set when the policy file exists but could not be trusted. The
      * allow-list is then not "empty" -- which would mean everything --
      * but "nothing", which is the only safe reading of a lockdown file

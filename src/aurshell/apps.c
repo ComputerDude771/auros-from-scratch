@@ -374,9 +374,34 @@ static int cmp_found(const void *a, const void *b)
  * Checked where the table is built rather than at launch, because an
  * icon a student can see and press and that then refuses teaches a room
  * full of teenagers exactly where the edges are. */
+/* Does `program` appear in this whitespace-or-comma separated list, by
+ * its full resolved path or by its basename? Whole token against whole
+ * name -- no prefixes, no suffixes. */
+static int named_in(const char *list, const char *program)
+{
+    if (!list || !*list || !program || !*program) return 0;
+    const char *base = strrchr(program, '/');
+    base = base ? base + 1 : program;
+    const char *p = list;
+    while (*p) {
+        while (*p == ' ' || *p == ',') p++;
+        const char *s = p;
+        while (*p && *p != ' ' && *p != ',') p++;
+        size_t n = (size_t)(p - s);
+        if (!n) continue;
+        if (strlen(base)    == n && !strncmp(base,    s, n)) return 1;
+        if (strlen(program) == n && !strncmp(program, s, n)) return 1;
+    }
+    return 0;
+}
+
 static int allowed(const shell_ctx *c, const char *program)
 {
     if (c->deny_all_apps) return 0;
+    /* Deny beats allow, and is checked first: a program named in both
+     * lists is a mistake by whoever wrote the profile, and the safe
+     * reading of a contradictory lockdown is the restrictive one. */
+    if (named_in(c->blocked_apps, program)) return 0;
     if (!c->allowed_apps[0]) return 1;
     if (!program || !*program) return 0;
 

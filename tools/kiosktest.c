@@ -133,6 +133,26 @@ int main(void)
         }
     check("a semicolon becomes an argument, not a second command", split_right);
 
+    /* The other direction: everything except these. This knob was
+     * written into the policy file by the build and read by nothing --
+     * an organisation that set it got no protection and no warning. */
+    printf("\nwith blocked_apps=\"true\" and no allow-list:\n");
+    shell_ctx b; memset(&b, 0, sizeof b);
+    snprintf(b.blocked_apps, sizeof b.blocked_apps, "%s", "true");
+    shell_scan_apps(&b);
+    check("a blocked program is refused",                      !can_run(&b, "/usr/bin/true"));
+    check("everything else is still offered",                  b.n_apps > 0);
+
+    /* Named in both lists. Whoever wrote that profile made a mistake,
+     * and the safe reading of a contradictory lockdown is the
+     * restrictive one. */
+    printf("\nwith the same program allowed AND blocked:\n");
+    shell_ctx d; memset(&d, 0, sizeof d);
+    snprintf(d.allowed_apps, sizeof d.allowed_apps, "%s", "true");
+    snprintf(d.blocked_apps, sizeof d.blocked_apps, "%s", "true");
+    shell_scan_apps(&d);
+    check("deny wins over allow",                              !can_run(&d, "/usr/bin/true"));
+
     /* A file that is not a file. Either of these used to block forever
      * in shell_scan_apps, before the compositor starts and before the
      * first frame -- so the desktop never appeared, and on a kiosk

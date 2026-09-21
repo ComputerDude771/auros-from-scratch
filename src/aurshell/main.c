@@ -441,6 +441,7 @@ static void load_policy(shell_ctx *c, const char *path)
     c->allow_tty = 1;
     c->kiosk = 0;
     c->allowed_apps[0] = 0;
+    c->blocked_apps[0] = 0;
     c->deny_all_apps = 0;
 
     struct stat st;
@@ -480,6 +481,8 @@ static void load_policy(shell_ctx *c, const char *path)
     c->kiosk              = strcmp(theme_str(&p, "kiosk_mode",            "no"),  "yes") == 0;
     snprintf(c->allowed_apps, sizeof c->allowed_apps, "%s",
              theme_str(&p, "allowed_apps", ""));
+    snprintf(c->blocked_apps, sizeof c->blocked_apps, "%s",
+             theme_str(&p, "blocked_apps", ""));
 }
 
 int main(int argc, char **argv)

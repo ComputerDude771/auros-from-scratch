@@ -485,11 +485,29 @@ XKBVARIANT="${keyboard_variant:-}"
 BACKSPACE="guess"
 EOL
 
-    inchroot "id -u $default_user >/dev/null 2>&1 || useradd -m -s /bin/bash -G sudo,audio,video,netdev $default_user"
+    inchroot "id -u $default_user >/dev/null 2>&1 || useradd -m -s /bin/bash -G sudo,audio,video,input,netdev $default_user"
     # Placeholder credential. First boot forces a change; a shipped
     # image must never carry a usable password.
     inchroot "echo '$default_user:auros' | chpasswd; passwd -e $default_user" || true
     inchroot "passwd -l root" || true
+
+    # THE DESKTOP DOES NOT RUN AS ROOT.
+    #
+    # It did. aurshell.service had no User= line, so the shell, the
+    # compositor and every program either of them started ran as root --
+    # including the browser, on a machine whose owner cannot evaluate
+    # what that means. Chrome refuses to start as root at all, so the
+    # single application this product exists to provide would not have
+    # come up.
+    #
+    # The account name is a profile setting and the unit file is not
+    # templated, so the User= goes in a drop-in written here. The groups
+    # it needs are in the unit itself, where the requirement belongs.
+    install -d "$RFS/etc/systemd/system/aurshell.service.d"
+    cat > "$RFS/etc/systemd/system/aurshell.service.d/user.conf" <<EOL
+[Service]
+User=$default_user
+EOL
 
     # The archetype. This one symlink decides how the whole computer
     # behaves; everything else in this stage only decides how it looks.

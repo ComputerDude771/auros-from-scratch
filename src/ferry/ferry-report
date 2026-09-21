@@ -77,7 +77,7 @@ OneDrive online-only files|live on the server, not the disk; hydrate them in One
 EFS-encrypted files|need your Windows encryption certificate to read
 Files on a locked BitLocker volume|unreadable until unlocked in Windows
 DRM-protected media (Kindle, some iTunes/Audible)|licensed to the old machine
-Installed Windows programs themselves|are Windows binaries; the report lists Linux equivalents to reinstall
+Installed Windows programs themselves|were built for Windows and do not run here
 Print and device drivers|are hardware- and OS-specific; Linux supplies its own
 Windows Hello PIN, fingerprint and face|are sealed to this PC'\''s TPM
 Outlook .ost caches and the Windows Mail store|are server copies; re-add the account and it re-syncs'
