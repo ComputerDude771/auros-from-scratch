@@ -82,6 +82,10 @@ cc -O2 -std=gnu11 -o /tmp/wlhostile tools/wlhostile.c src/aurwl/aurwl.c \
 cc -O2 -std=gnu11 -o /tmp/hittest tools/hittest.c src/aurshell/draw.c \
    src/aurshell/shellcommon.c src/aurshell/anim.c src/aurshell/layouts/*.c \
    src/common/theme.c src/common/font.c -lm && /tmp/hittest
+
+cc -O2 -std=gnu11 -o /tmp/keytest tools/keytest.c src/aurwl/aurwl.c \
+   src/aurshell/draw.c build/gen/*-protocol.c -Ibuild/gen \
+   $(pkg-config --cflags --libs wayland-server xkbcommon) -lm && /tmp/keytest
 ```
 
 `blur_equiv` carries a verbatim copy of the *old* implementation, so it
@@ -167,6 +171,25 @@ and `P.` visibly fall apart. Badly spaced display type is itself one of
 the things that makes software look machine-made — and the alternative
 was to pick typefaces around the engine's limitation rather than for
 their merits.
+
+`keytest` exists because every text field in this product read one
+hardcoded table — `qwertyuiop`, `asdfghjkl`, `zxcvbnm` — with a comment
+above it claiming that a real session got its characters from the
+keymap. No such path existed. So there were no capital letters anywhere
+in the operating system, no character that needs Shift, and on a French
+keyboard every letter was wrong — on a machine whose own profile said
+`keyboard_layout="fr"`, because that field was read by nobody either.
+The visible consequence is small and total: a wifi password with a
+capital in it cannot be typed, so the machine cannot get online.
+
+It checks the three claims that replaced the table — modifiers resolve
+through the real keymap (Shift+1 is `!`, and Caps Lock is *not* Shift,
+which would turn a password's `1` into `!` invisibly); keys that are
+not text produce none; and the layout is read from
+`/etc/default/keyboard`, which is the file the rest of the system
+already uses and `build/forge` already writes. Its last case feeds it a
+layout name that does not exist, because a typo in a profile must leave
+a keyboard in the wrong language rather than no keyboard at all.
 
 `wltest` fails a window that maps but arrives as one flat colour, not
 just one that never maps. A window full of one colour is what a client

@@ -1188,10 +1188,29 @@ int main(int argc, char **argv)
                          * full-screen application is a machine the user
                          * cannot get out of -- which on a kiosk is the
                          * whole product and everywhere else is a trap. */
+                        /* What this key TYPES, from the keymap the
+                         * machine is actually configured with, read
+                         * BEFORE the key is delivered: xkb resolves a
+                         * keycode against the modifier state as of
+                         * key-down, and session_key() is what advances
+                         * that state. Read it afterwards and every
+                         * capital letter comes back lowercase.
+                         *
+                         * This is what makes a wifi password with a
+                         * capital in it, or any keyboard that is not
+                         * American, work at all. Cleared again after
+                         * dispatch so no archetype can read a stale
+                         * character on the next key. */
+                        c.key_text[0] = 0;
+                        if (ev.value && c.wl)
+                            aurwl_key_utf8(c.wl, ev.code, c.key_text,
+                                           sizeof c.key_text);
+
                         int consumed = 0;
                         if (!super_down)
                             consumed = session_key(&c, ev.code, ev.value != 0);
                         if (!consumed && ev.value && L->key) L->key(&c, ev.code);
+                        c.key_text[0] = 0;
                         dirty = 1;
                     }
                 }

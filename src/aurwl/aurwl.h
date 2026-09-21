@@ -126,6 +126,23 @@ int         aurwl_key(aurwl *c, uint32_t evdev_code, int pressed, uint32_t time_
  * the client's idea of Shift drifts from the user's. */
 void        aurwl_update_modifiers(aurwl *c);
 
+/* What this key actually TYPES, under the modifiers held right now,
+ * according to the keymap the compositor compiled. Writes a NUL
+ * terminated UTF-8 string and returns its length; 0 for keys that
+ * produce no text.
+ *
+ * The shell needs this for its own text fields -- searching for a
+ * program, typing a wireless password -- and the alternative it had was
+ * a hardcoded QWERTY table with no shift, no digits above the letters
+ * and no punctuation. On a French keyboard that table types q for a. A
+ * wireless password is case-sensitive and usually contains both, so it
+ * was not merely wrong abroad; it was unusable everywhere.
+ *
+ * Call this BEFORE handing the key to a client: xkb resolves a key
+ * against the modifier state as it was when the key went down, and
+ * aurwl_key() updates that state as part of delivering it. */
+int         aurwl_key_utf8(const aurwl *c, uint32_t evdev_code, char *out, size_t n);
+
 /* Bumped every time a client commits new pixels. The shell repaints
  * only when something changed, and without this it would have no way to
  * know that something did -- so it would either repaint forever or miss

@@ -158,6 +158,13 @@ typedef struct shell_ctx_s {
     /* mouse_down is set BEFORE click() is dispatched, and click() is
      * dispatched on PRESS. Layouts start drags there and end them in
      * motion() when mouse_down goes false, so the order matters. */
+    /* What the key currently being delivered TYPES, if anything: a
+     * NUL-terminated UTF-8 string from the real keymap. Empty for keys
+     * that are not text. An archetype with a text field reads this
+     * instead of guessing from the keycode, which is the only way a
+     * password with a capital letter or a French keyboard works. */
+    char  key_text[8];
+
     int   mouse_x, mouse_y, mouse_down;
     int   hover;               /* layout-defined hot item, -1 none   */
 

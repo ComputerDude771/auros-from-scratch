@@ -1565,6 +1565,73 @@ static void bind_deco(struct wl_client *cl, void *data, uint32_t ver, uint32_t i
  * That indirection is the only reason an application we did not write
  * can be typed into in Greek, Dvorak or Hungarian: we never decide what
  * a key means, we only say which key moved. */
+
+/* WHERE THE LAYOUT COMES FROM
+ *
+ * /etc/default/keyboard, which is the file the rest of the system --
+ * the console, the installer, every other desktop -- already reads, and
+ * which build/forge already writes from the profile's keyboard_layout.
+ * Reading it here rather than inventing a second setting is the whole
+ * point: profiles/multilingual.profile says keyboard_layout="fr" and
+ * that line did nothing at all until this function read it, so a French
+ * machine typed QWERTY into every application on it.
+ *
+ * Environment wins when it is set, because a person testing a layout
+ * should not have to edit a system file to do it.
+ *
+ * KEY="value", KEY=value, comments and blank lines. Deliberately not a
+ * shell parser: this file is a fixed four-line format written by the
+ * distribution, and running a shell to read four assignments would be a
+ * larger surface than the thing it reads.
+ */
+static void kb_defaults(char *buf, size_t bufn, const char **model,
+                        const char **layout, const char **variant,
+                        const char **options)
+{
+    /* The path is overridable so that a layout can be tried without
+     * editing a system file -- by an installer offering a choice, by a
+     * live session, and by tools/keytest.c, which is how the parser
+     * below is proved against the quoting the real file uses. */
+    const char *path = getenv("AUROS_KB_FILE");
+    if (!path || !*path) path = "/etc/default/keyboard";
+
+    FILE *f = fopen(path, "r");
+    if (!f) return;
+    char line[256];
+    size_t used = 0;
+    while (fgets(line, sizeof line, f)) {
+        char *k = line;
+        while (*k == ' ' || *k == '\t') k++;
+        if (*k == '#' || *k == '\n' || !*k) continue;
+        char *eq = strchr(k, '=');
+        if (!eq) continue;
+        *eq = 0;
+        char *v = eq + 1;
+
+        /* trim the key's trailing space, and the value's newline */
+        for (char *e = eq - 1; e >= k && (*e == ' ' || *e == '\t'); e--) *e = 0;
+        size_t vl = strlen(v);
+        while (vl && (v[vl-1] == '\n' || v[vl-1] == '\r' ||
+                      v[vl-1] == ' '  || v[vl-1] == '\t')) v[--vl] = 0;
+        if (vl >= 2 && ((v[0] == '"' && v[vl-1] == '"') ||
+                        (v[0] == '\'' && v[vl-1] == '\''))) { v[vl-1] = 0; v++; vl -= 2; }
+        if (!vl) continue;                 /* XKBVARIANT="" means none */
+
+        const char **slot = NULL;
+        if      (!strcmp(k, "XKBMODEL"))   slot = model;
+        else if (!strcmp(k, "XKBLAYOUT"))  slot = layout;
+        else if (!strcmp(k, "XKBVARIANT")) slot = variant;
+        else if (!strcmp(k, "XKBOPTIONS")) slot = options;
+        if (!slot || *slot) continue;      /* env already answered */
+
+        if (used + vl + 1 > bufn) continue;
+        memcpy(buf + used, v, vl + 1);
+        *slot = buf + used;
+        used += vl + 1;
+    }
+    fclose(f);
+}
+
 static int build_keymap(aurwl *c)
 {
     c->keymap_fd = -1;
@@ -1572,10 +1639,33 @@ static int build_keymap(aurwl *c)
     if (!c->xkb) return -1;
 
     struct xkb_rule_names names = {0};
+    names.model   = getenv("AUROS_KB_MODEL");
     names.layout  = getenv("AUROS_KB_LAYOUT");
     names.variant = getenv("AUROS_KB_VARIANT");
     names.options = getenv("AUROS_KB_OPTIONS");
+    /* An empty environment variable is not a layout. */
+    if (names.model   && !*names.model)   names.model   = NULL;
+    if (names.layout  && !*names.layout)  names.layout  = NULL;
+    if (names.variant && !*names.variant) names.variant = NULL;
+    if (names.options && !*names.options) names.options = NULL;
+
+    char kbbuf[512];
+    kb_defaults(kbbuf, sizeof kbbuf, &names.model, &names.layout,
+                &names.variant, &names.options);
+
     c->keymap = xkb_keymap_new_from_names(c->xkb, &names, XKB_KEYMAP_COMPILE_NO_FLAGS);
+    if (!c->keymap && (names.layout || names.variant || names.options || names.model)) {
+        /* A layout name that does not compile must not leave the
+         * machine with no keyboard. Say so and fall back to xkb's own
+         * default, which is a usable keyboard in the wrong language --
+         * strictly better than a dead one. */
+        fprintf(stderr, "aurwl: keyboard layout \"%s%s%s\" did not compile; "
+                        "using the default layout\n",
+                names.layout ? names.layout : "",
+                names.variant ? "-" : "", names.variant ? names.variant : "");
+        struct xkb_rule_names none = {0};
+        c->keymap = xkb_keymap_new_from_names(c->xkb, &none, XKB_KEYMAP_COMPILE_NO_FLAGS);
+    }
     if (!c->keymap) return -1;
     c->xkb_state = xkb_state_new(c->keymap);
     if (!c->xkb_state) return -1;
@@ -1798,6 +1888,24 @@ static void send_modifiers(aurwl *c)
 }
 
 void aurwl_update_modifiers(aurwl *c) { if (c) send_modifiers(c); }
+
+int aurwl_key_utf8(const aurwl *c, uint32_t code, char *out, size_t n)
+{
+    if (out && n) out[0] = 0;
+    if (!c || !c->xkb_state || !out || n < 2) return 0;
+    /* +8 is the offset between an evdev keycode and an X/xkb one, which
+     * is the convention every keymap in the world is written against. */
+    int len = xkb_state_key_get_utf8(c->xkb_state, code + 8, out, n);
+    if (len < 0 || (size_t)len >= n) { out[0] = 0; return 0; }
+    /* Control characters are keys, not text: Return, Tab, Escape and
+     * Backspace all produce one, and a text field that inserted them
+     * would show a box where the person expected something to happen. */
+    if (len == 1 && ((unsigned char)out[0] < 0x20 || out[0] == 0x7F)) {
+        out[0] = 0;
+        return 0;
+    }
+    return len;
+}
 
 void aurwl_set_focus(aurwl *c, aurwl_win *w)
 {

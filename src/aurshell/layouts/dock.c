@@ -838,9 +838,22 @@ static void l_motion(shell_ctx *c, int x, int y)
     c->hover = hv;
 }
 
-/* evdev keycodes. A real session gets characters from the keymap; this
- * is the fallback so the archetype is complete on its own, and it is a
- * table rather than a switch because that is all it deserves to be. */
+/* ── what a key types ───────────────────────────────────────────────
+ *
+ * The real session fills c->key_text from the keymap the machine is
+ * actually configured with, which is the only way a capital letter, a
+ * character that needs Shift, or a keyboard that is not American ever
+ * produces the right thing. This table is the fallback for the builds
+ * with no compositor behind them -- the preview renderer, the contact
+ * sheet, the hit-test harness -- so the archetype still works when it
+ * is being drawn rather than run.
+ *
+ * It is deliberately NOT consulted when key_text is available. The
+ * first version of this file had only the table, with a comment saying
+ * a real session got characters from the keymap, and no such path
+ * existed: every machine in the world typed lowercase unshifted QWERTY
+ * and a password with a capital in it could not be entered.
+ */
 static char key_char(int k)
 {
     static const struct { int base; const char *row; } R[] = {
@@ -853,6 +866,41 @@ static char key_char(int k)
         if (k >= R[i].base && k < R[i].base + len) return R[i].row[k - R[i].base];
     }
     return 0;
+}
+
+/* The keymap's answer if there is one, the table's if there is not.
+ * Returns a NUL-terminated UTF-8 string, empty for keys that are not
+ * text at all. */
+static const char *key_typed(const shell_ctx *c, int k, char *tmp, size_t n)
+{
+    if (c->key_text[0]) return c->key_text;
+    char ch = key_char(k);
+    if (!ch || n < 2) { if (n) tmp[0] = 0; return tmp; }
+    tmp[0] = ch; tmp[1] = 0;
+    return tmp;
+}
+
+/* Back up over one CHARACTER, not one byte. Deleting a byte out of a
+ * multi-byte character leaves half of one behind, which draws as a box
+ * that backspace then cannot remove either. */
+static void text_backspace(char *q, int *qn)
+{
+    while (*qn > 0) {
+        unsigned char b = (unsigned char)q[--*qn];
+        q[*qn] = 0;
+        if ((b & 0xC0) != 0x80) break;     /* not a continuation byte */
+    }
+}
+
+/* Append one typed string, if it fits whole. Half a character is worse
+ * than none of it. */
+static void text_append(char *q, int *qn, size_t cap, const char *t)
+{
+    size_t len = strlen(t);
+    if (!len || *qn + len >= cap) return;
+    memcpy(q + *qn, t, len);
+    *qn += (int)len;
+    q[*qn] = 0;
 }
 
 static void l_key(shell_ctx *c, int k)
@@ -870,12 +918,13 @@ static void l_key(shell_ctx *c, int k)
                 find_open(c, 0); return;
             case 103: p->find_sel = clampi(p->find_sel - 1, 0, nres ? nres - 1 : 0); return;
             case 108: p->find_sel = clampi(p->find_sel + 1, 0, nres ? nres - 1 : 0); return;
-            case 14:  if (p->qn) p->q[--p->qn] = 0;                            /* BACKSPACE */
+            case 14:  text_backspace(p->q, &p->qn);                            /* BACKSPACE */
                       p->find_sel = 0; return;
             default: break;
         }
-        char ch = key_char(k);
-        if (ch && p->qn < (int)sizeof p->q - 1) { p->q[p->qn++] = ch; p->q[p->qn] = 0; p->find_sel = 0; }
+        char tmp[8];
+        const char *t = key_typed(c, k, tmp, sizeof tmp);
+        if (*t) { text_append(p->q, &p->qn, sizeof p->q, t); p->find_sel = 0; }
         return;
     }
 
@@ -885,10 +934,13 @@ static void l_key(shell_ctx *c, int k)
      * whole second half of the archetype: five favourites you point at,
      * everything else you name. Making people first find a search box
      * before they can type a name puts a lookup in front of the lookup. */
-    char ch = key_char(k);
-    if (ch && ch != ' ') {
+    char tmp[8];
+    const char *t = key_typed(c, k, tmp, sizeof tmp);
+    if (*t && t[0] != ' ') {
         find_open(c, 1);
-        p->q[0] = ch; p->q[1] = 0; p->qn = 1;
+        p->q[0] = 0; p->qn = 0;            /* the first letter, not the
+                                            * last query plus one */
+        text_append(p->q, &p->qn, sizeof p->q, t);
     }
 }
 
