@@ -55,6 +55,15 @@ cc -g -O1 -fsanitize=address -std=gnu11 -o /tmp/wltest_asan tools/wltest.c \
    -Ibuild/gen $(pkg-config --cflags --libs wayland-server xkbcommon) -lm
 sh tools/wlstress.sh /tmp/wltest_asan
 
+# and against clients that are actively trying to break it
+wayland-scanner client-header \
+  /usr/share/wayland-protocols/stable/xdg-shell/xdg-shell.xml \
+  build/gen/xdg-shell-client.h
+cc -O2 -std=gnu11 -o /tmp/wlhostile tools/wlhostile.c src/aurwl/aurwl.c \
+   src/aurshell/draw.c build/gen/*-protocol.c -Ibuild/gen \
+   $(pkg-config --cflags --libs wayland-server wayland-client xkbcommon) -lm
+/tmp/wlhostile
+
 cc -O2 -std=gnu11 -o /tmp/hittest tools/hittest.c src/aurshell/draw.c \
    src/aurshell/shellcommon.c src/aurshell/anim.c src/aurshell/layouts/*.c \
    src/common/theme.c src/common/font.c -lm && /tmp/hittest
@@ -181,3 +190,14 @@ number of pixels, and requires the two to be pixel-identical inside the
 visible rectangle -- and the padding to be untouched. Load real fonts or
 it proves nothing about text: with NULL fonts `shell_text()` returns
 immediately and the primitive that was actually broken never runs.
+
+`wlhostile` is a Wayland client that misbehaves on purpose, and a
+harness that runs it against a fresh compositor. Each case passes only
+if the compositor refused the hostile client AND then still served an
+ordinary one -- refusing is the correct answer, so "it disconnected
+them" is a pass and "it kept talking to them" would not be.
+
+Every case in it was a real defect. Two were four-request crashes in a
+process that owns the display; one wrote 127 bytes of the client's
+choosing into freed memory; two were hangs, which in this process are
+as fatal as a crash and harder to explain to the person it happens to.

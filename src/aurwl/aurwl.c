@@ -138,6 +138,10 @@ struct aurwl {
      * a client's clipboard menu -- so the offers have to be findable
      * when that happens. */
     struct wl_list      offers;
+    /* Tracked so a mode change can re-send the logical size. It could
+     * not before, so after a resize every client kept the old screen
+     * size and sized its full-screen windows to it. */
+    struct wl_list      xdg_outputs;
 
     int                 ow, oh, refresh_mhz;
     uint32_t            next_id;
@@ -177,6 +181,8 @@ static void res_unlink(struct wl_resource *r) { wl_list_remove(wl_resource_get_l
  * two wl_pointers and expect both to work. */
 #define FOR_EACH_RES(var, list) \
     struct wl_resource *var; wl_resource_for_each(var, list)
+
+static struct wl_client *win_client(aurwl_win *w);
 
 static int clampi(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
 
@@ -304,6 +310,55 @@ static int take_buffer(aurwl_win *w, struct wl_resource *buf)
     return 1;
 }
 
+/* Resample a store to the size a viewport asks for.
+ *
+ * wp_viewporter says the surface's size is the viewport's destination,
+ * not the buffer's -- the buffer is scaled to it. We advertised the
+ * global and ignored the request, which happens to be harmless for
+ * every client measured (GTK and Chromium both set a destination equal
+ * to their buffer at scale 1) and is a lie the moment one does not.
+ *
+ * Bilinear, and only when the sizes actually differ, so the common case
+ * costs a comparison. */
+static void resample_store(aurwl_win *w, int dw, int dh)
+{
+    surface *src = w->store;
+    if (!src || dw <= 0 || dh <= 0 || dw > MAX_DIM || dh > MAX_DIM) return;
+    if (src->w == dw && src->h == dh) return;
+
+    surface *dst = surface_new(dw, dh);
+    if (!dst) return;
+    for (int y = 0; y < dh; y++) {
+        float fy = ((float)y + 0.5f) * (float)src->h / (float)dh - 0.5f;
+        int y0 = (int)fy; if (y0 < 0) y0 = 0;
+        int y1 = y0 + 1 < src->h ? y0 + 1 : src->h - 1;
+        float ty = fy - (float)y0; if (ty < 0.f) ty = 0.f;
+        for (int x = 0; x < dw; x++) {
+            float fx = ((float)x + 0.5f) * (float)src->w / (float)dw - 0.5f;
+            int x0 = (int)fx; if (x0 < 0) x0 = 0;
+            int x1 = x0 + 1 < src->w ? x0 + 1 : src->w - 1;
+            float tx = fx - (float)x0; if (tx < 0.f) tx = 0.f;
+            uint32_t a = src->px[(size_t)y0 * src->stride + x0];
+            uint32_t b = src->px[(size_t)y0 * src->stride + x1];
+            uint32_t cc = src->px[(size_t)y1 * src->stride + x0];
+            uint32_t d = src->px[(size_t)y1 * src->stride + x1];
+            uint32_t out = 0;
+            for (int ch = 0; ch < 4; ch++) {
+                int sh = ch * 8;
+                float t0 = (float)((a >> sh) & 0xFF) + tx * (float)(((b >> sh) & 0xFF) - (int)((a >> sh) & 0xFF));
+                float t1 = (float)((cc >> sh) & 0xFF) + tx * (float)(((d >> sh) & 0xFF) - (int)((cc >> sh) & 0xFF));
+                int v = (int)(t0 + ty * (t1 - t0) + 0.5f);
+                v = v < 0 ? 0 : (v > 255 ? 255 : v);
+                out |= (uint32_t)v << sh;
+            }
+            dst->px[(size_t)y * dst->stride + x] = out;
+        }
+    }
+    surface_free(w->store);
+    w->store = dst;
+    w->cw = dw; w->ch = dh;
+}
+
 /* ── wl_surface ─────────────────────────────────────────────────── */
 
 static void surface_map(aurwl_win *w);
@@ -424,6 +479,8 @@ static void apply_commit(aurwl_win *w, int depth)
     if (p->attached) {
         if (p->buffer) {
             take_buffer(w, p->buffer);
+            if (w->current.vp_dst_w > 0 && w->current.vp_dst_h > 0)
+                resample_store(w, w->current.vp_dst_w, w->current.vp_dst_h);
             w->c->damage_seq++;
             wl_buffer_send_release(p->buffer);
             if (!w->mapped) surface_map(w);
@@ -493,8 +550,36 @@ static void surface_unmap(aurwl_win *w)
 {
     aurwl *c = w->c;
     w->mapped = 0;
-    if (c->focus == w)     c->focus = NULL;
-    if (c->ptr_focus == w) c->ptr_focus = NULL;
+    /* An unmapped xdg_surface goes back to needing the initial
+     * handshake: the client commits with no buffer and waits for a
+     * configure. `acked` stayed set across the unmap, so that second
+     * handshake was skipped, no configure was ever sent, and the client
+     * waited forever -- a window that is hidden and never comes back.
+     * GTK dodges it by destroying the role object on hide; a client
+     * that follows the documented lighter path does not. */
+    w->acked = 0;
+
+    /* The surface object is still alive -- the client only attached a
+     * null buffer -- so it has no way to find out it lost focus unless
+     * we say so. Without the keyboard leave it must assume its keys are
+     * still down, and key repeat runs forever. */
+    uint32_t ser = serial_of(c);
+    if (c->focus == w) {
+        struct wl_client *cl = win_client(w);
+        FOR_EACH_RES(k, &c->keyboards)
+            if (wl_resource_get_client(k) == cl) wl_keyboard_send_leave(k, ser, w->res);
+        c->focus = NULL;
+    }
+    if (c->ptr_focus == w) {
+        struct wl_client *cl = win_client(w);
+        FOR_EACH_RES(pp, &c->pointers)
+            if (wl_resource_get_client(pp) == cl) {
+                wl_pointer_send_leave(pp, ser, w->res);
+                if (wl_resource_get_version(pp) >= WL_POINTER_FRAME_SINCE_VERSION)
+                    wl_pointer_send_frame(pp);
+            }
+        c->ptr_focus = NULL;
+    }
 }
 
 static void surface_free_res(struct wl_resource *r)
@@ -773,18 +858,21 @@ static void output_send(aurwl *c, struct wl_resource *r)
     wl_output_send_mode(r, WL_OUTPUT_MODE_CURRENT | WL_OUTPUT_MODE_PREFERRED,
                         c->ow, c->oh, c->refresh_mhz);
     if (ver >= WL_OUTPUT_SCALE_SINCE_VERSION) wl_output_send_scale(r, 1);
-    if (ver >= WL_OUTPUT_NAME_SINCE_VERSION)  wl_output_send_name(r, "AUR-1");
-    if (ver >= WL_OUTPUT_DESCRIPTION_SINCE_VERSION) wl_output_send_description(r, "AurOS display");
+    /* name and description are sent once per object and never again --
+     * this function also runs on every mode change and VT return. */
     if (ver >= WL_OUTPUT_DONE_SINCE_VERSION)  wl_output_send_done(r);
 }
 static const struct wl_output_interface output_impl = { .release = noop_destroy };
-static void bind_output(struct wl_client *cl, void *data, uint32_t ver, uint32_t id)
+static void bind_output(struct wl_client *cl, void *data, uint32_t ver_, uint32_t id)
 {
     aurwl *c = data;
-    struct wl_resource *r = wl_resource_create(cl, &wl_output_interface, (int)ver, id);
+    struct wl_resource *r = wl_resource_create(cl, &wl_output_interface, (int)ver_, id);
     if (!r) { wl_client_post_no_memory(cl); return; }
     wl_resource_set_implementation(r, &output_impl, c, res_unlink);
     wl_list_insert(&c->outputs, wl_resource_get_link(r));
+    int ver = (int)ver_;
+    if (ver >= WL_OUTPUT_NAME_SINCE_VERSION)        wl_output_send_name(r, "AUR-1");
+    if (ver >= WL_OUTPUT_DESCRIPTION_SINCE_VERSION) wl_output_send_description(r, "AurOS display");
     output_send(c, r);
 }
 
@@ -792,6 +880,36 @@ static void bind_output(struct wl_client *cl, void *data, uint32_t ver, uint32_t
  * and GTK still asks for it; without it the toolkit waits for an output
  * description that never arrives before settling its first frame. */
 static const struct zxdg_output_v1_interface xdg_output_impl = { .destroy = noop_destroy };
+/* Send an xdg_output's properties and close the sequence.
+ *
+ * From version 3 the closing event is wl_output.done, not
+ * zxdg_output_v1.done -- and a toolkit that follows that waits for the
+ * wl_output.done which used to be sent before get_xdg_output was ever
+ * called, so it never applied the logical size and reported the monitor
+ * as unknown. The name and description guard was also inverted: they
+ * exist since version 2, and were being sent to version 1 clients
+ * (where libwayland calls a listener slot that does not exist and
+ * aborts the client) and withheld from the versions that want them. */
+static void xdg_output_send(aurwl *c, struct wl_resource *res)
+{
+    int ver = wl_resource_get_version(res);
+    zxdg_output_v1_send_logical_position(res, 0, 0);
+    zxdg_output_v1_send_logical_size(res, c->ow, c->oh);
+    if (ver >= 2 && ver < 3) {
+        zxdg_output_v1_send_name(res, "AUR-1");
+        zxdg_output_v1_send_description(res, "AurOS display");
+    }
+    if (ver < 3) {
+        zxdg_output_v1_send_done(res);
+    } else {
+        struct wl_client *cl = wl_resource_get_client(res);
+        FOR_EACH_RES(o, &c->outputs)
+            if (wl_resource_get_client(o) == cl &&
+                wl_resource_get_version(o) >= WL_OUTPUT_DONE_SINCE_VERSION)
+                wl_output_send_done(o);
+    }
+}
+
 static void xdgout_get(struct wl_client *cl, struct wl_resource *r, uint32_t id,
                        struct wl_resource *out)
 {
@@ -800,14 +918,9 @@ static void xdgout_get(struct wl_client *cl, struct wl_resource *r, uint32_t id,
     struct wl_resource *res = wl_resource_create(cl, &zxdg_output_v1_interface,
                                                  wl_resource_get_version(r), id);
     if (!res) { wl_client_post_no_memory(cl); return; }
-    wl_resource_set_implementation(res, &xdg_output_impl, c, NULL);
-    zxdg_output_v1_send_logical_position(res, 0, 0);
-    zxdg_output_v1_send_logical_size(res, c->ow, c->oh);
-    if (wl_resource_get_version(res) < 3) {
-        zxdg_output_v1_send_name(res, "AUR-1");
-        zxdg_output_v1_send_description(res, "AurOS display");
-    }
-    zxdg_output_v1_send_done(res);
+    wl_resource_set_implementation(res, &xdg_output_impl, c, res_unlink);
+    wl_list_insert(&c->xdg_outputs, wl_resource_get_link(res));
+    xdg_output_send(c, res);
 }
 static const struct zxdg_output_manager_v1_interface xdg_output_mgr_impl = {
     .destroy = noop_destroy, .get_xdg_output = xdgout_get,
@@ -854,11 +967,15 @@ static void seat_get_keyboard(struct wl_client *cl, struct wl_resource *r, uint3
     if (!k) { wl_client_post_no_memory(cl); return; }
     wl_resource_set_implementation(k, &keyboard_impl_s, c, res_unlink);
     wl_list_insert(&c->keyboards, wl_resource_get_link(k));
-    if (c->keymap_fd >= 0)
-        wl_keyboard_send_keymap(k, WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1,
-                                c->keymap_fd, (uint32_t)c->keymap_size);
-    else
-        wl_keyboard_send_keymap(k, WL_KEYBOARD_KEYMAP_FORMAT_NO_KEYMAP, -1, 0);
+    /* An fd, always. libwayland dups every fd argument as it marshals,
+     * and dup(-1) fails -- which drops the message and flags the client
+     * errored. So a machine with no xkb data did not degrade to "no key
+     * translation" as intended: it disconnected every client at
+     * get_keyboard, and nothing could open a window at all. */
+    wl_keyboard_send_keymap(k,
+        c->keymap_size ? WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1
+                       : WL_KEYBOARD_KEYMAP_FORMAT_NO_KEYMAP,
+        c->keymap_fd, (uint32_t)c->keymap_size);
     if (wl_resource_get_version(k) >= WL_KEYBOARD_REPEAT_INFO_SINCE_VERSION)
         wl_keyboard_send_repeat_info(k, 25, 400);
 }
@@ -927,9 +1044,15 @@ static void dsrc_gone(struct wl_resource *r)
      * memory. A paste from a menu that was open when the copying
      * application quit would have written through it -- which is a
      * perfectly ordinary thing for a person to do. */
-    struct wl_resource *o;
-    wl_resource_for_each(o, &s->c->offers)
-        if (wl_resource_get_user_data(o) == r) wl_resource_set_user_data(o, NULL);
+    struct wl_resource *o, *ot;
+    wl_resource_for_each_safe(o, ot, &s->c->offers)
+        if (wl_resource_get_user_data(o) == r) wl_resource_destroy(o);
+    /* And say so. Otherwise every client goes on showing a paste target
+     * for a clipboard that no longer exists, and pasting yields a pipe
+     * that closes immediately -- which reads as the application being
+     * broken rather than the clipboard being empty. */
+    struct wl_resource *dev;
+    wl_resource_for_each(dev, &s->c->devices) wl_data_device_send_selection(dev, NULL);
     free(s);
 }
 
@@ -997,11 +1120,19 @@ static void ddev_set_selection(struct wl_client *cl, struct wl_resource *r,
      * had copied something else. */
     struct wl_resource *old, *oldt;
     wl_resource_for_each_safe(old, oldt, &c->offers) wl_resource_destroy(old);
-    /* Everyone who can paste has to hear that there is something new,
-     * including the client that just copied -- its own paste menu reads
-     * the selection the same way everyone else's does. */
+    /* Only the client with keyboard focus. The protocol says the
+     * selection event goes to a client immediately before it receives
+     * keyboard focus, and while it has focus -- and it says so for a
+     * reason. Broadcasting it handed every background process on the
+     * machine a live wl_data_offer for whatever the user had just
+     * copied, readable at any moment with nothing on screen to show it.
+     * Copy a password out of a password manager and every running
+     * program could read it. */
+    struct wl_client *t = win_client(c->focus);
+    if (!t) return;
     struct wl_resource *dev;
-    wl_resource_for_each(dev, &c->devices) send_selection_to(c, dev);
+    wl_resource_for_each(dev, &c->devices)
+        if (wl_resource_get_client(dev) == t) send_selection_to(c, dev);
 }
 static const struct wl_data_device_interface data_device_impl = {
     .start_drag = ddev_start_drag, .set_selection = ddev_set_selection,
@@ -1028,7 +1159,9 @@ static void ddm_get_device(struct wl_client *cl, struct wl_resource *r, uint32_t
     if (!dev) { wl_client_post_no_memory(cl); return; }
     wl_resource_set_implementation(dev, &data_device_impl, c, res_unlink);
     wl_list_insert(&c->devices, wl_resource_get_link(dev));
-    send_selection_to(c, dev);
+    /* Nothing is offered here. A client gets the selection when it is
+     * given keyboard focus, not when it asks for a data device -- which
+     * it does at startup, long before the user has chosen it. */
 }
 static const struct wl_data_device_manager_interface ddm_impl = {
     .create_data_source = ddm_create_source, .get_data_device = ddm_get_device,
@@ -1191,7 +1324,7 @@ static void toplevel_gone(struct wl_resource *r)
     aurwl_win *w = wl_resource_get_user_data(r);
     if (!w) return;
     if (w->xdg_toplevel != r) return;      /* a stale duplicate */
-    w->xdg_toplevel = NULL; w->role = ROLE_NONE;
+    w->xdg_toplevel = NULL; w->role = ROLE_NONE; w->acked = 0;
     if (w->mapped) surface_unmap(w);
 }
 
@@ -1221,7 +1354,7 @@ static void popup_gone(struct wl_resource *r)
     aurwl_win *w = wl_resource_get_user_data(r);
     if (!w) return;
     if (w->xdg_popup != r) return;
-    w->xdg_popup = NULL; w->role = ROLE_NONE;
+    w->xdg_popup = NULL; w->role = ROLE_NONE; w->acked = 0;
     if (w->parent) { wl_list_remove(&w->child_link); wl_list_init(&w->child_link); w->parent = NULL; }
     if (w->mapped) surface_unmap(w);
 }
@@ -1231,7 +1364,7 @@ static void popup_gone(struct wl_resource *r)
 static void xs_get_toplevel(struct wl_client *cl, struct wl_resource *r, uint32_t id)
 {
     aurwl_win *w = wl_resource_get_user_data(r);
-    if (!w) { wl_resource_post_error(r, 0, "surface is gone"); return; }
+    if (!w) { wl_resource_post_error(r, XDG_SURFACE_ERROR_UNCONFIGURED_BUFFER, "surface is gone"); return; }
     /* One role object per surface, which the spec requires anyway. The
      * surface stores a single pointer to each kind, so a second one is
      * invisible to the disarming in surface_free_res() -- it stays
@@ -1249,13 +1382,29 @@ static void xs_get_toplevel(struct wl_client *cl, struct wl_resource *r, uint32_
     wl_resource_set_implementation(tl, &toplevel_impl, w, toplevel_gone);
     w->xdg_toplevel = tl;
     w->role = ROLE_TOPLEVEL;
+
+    /* Version 5 says this must arrive before the first configure. What
+     * goes in it is what we actually do: maximize and fullscreen are
+     * handled; the window menu is not, and minimising is the shell's
+     * own idea rather than something a client can ask for, so claiming
+     * either would put a button in the client's title bar that does
+     * nothing. */
+    if (wl_resource_get_version(tl) >= XDG_TOPLEVEL_WM_CAPABILITIES_SINCE_VERSION) {
+        struct wl_array caps; wl_array_init(&caps);
+        uint32_t *cp;
+        cp = wl_array_add(&caps, 4); if (cp) *cp = XDG_TOPLEVEL_WM_CAPABILITIES_MAXIMIZE;
+        cp = wl_array_add(&caps, 4); if (cp) *cp = XDG_TOPLEVEL_WM_CAPABILITIES_FULLSCREEN;
+        xdg_toplevel_send_wm_capabilities(tl, &caps);
+        wl_array_release(&caps);
+    }
 }
 static void xs_get_popup(struct wl_client *cl, struct wl_resource *r, uint32_t id,
                          struct wl_resource *parent_res, struct wl_resource *pos_res)
 {
     aurwl_win *w = wl_resource_get_user_data(r);
     positioner *p = pos_res ? wl_resource_get_user_data(pos_res) : NULL;
-    if (!w || !p) { wl_resource_post_error(r, 0, "surface or positioner is gone"); return; }
+    if (!w || !p) { wl_resource_post_error(r, XDG_SURFACE_ERROR_UNCONFIGURED_BUFFER,
+                               "surface or positioner is gone"); return; }
     if (w->xdg_toplevel || w->xdg_popup) {
         wl_resource_post_error(r, XDG_WM_BASE_ERROR_ROLE,
                                "this surface already has a role");
@@ -1327,7 +1476,7 @@ static void wm_get_xdg_surface(struct wl_client *cl, struct wl_resource *r, uint
                                struct wl_resource *surf)
 {
     aurwl_win *w = surf ? wl_resource_get_user_data(surf) : NULL;
-    if (!w) { wl_resource_post_error(r, 0, "no such surface"); return; }
+    if (!w) { wl_resource_post_error(r, XDG_WM_BASE_ERROR_ROLE, "no such surface"); return; }
     if (w->xdg_surface) {
         wl_resource_post_error(r, XDG_WM_BASE_ERROR_ROLE,
                                "this surface already has an xdg_surface");
@@ -1361,16 +1510,23 @@ static void bind_wm_base(struct wl_client *cl, void *data, uint32_t ver, uint32_
  * every window, is what makes an AurOS theme mean something. Clients
  * that insist on drawing their own are not fought with. */
 
+/* A decoration configure is state the client must acknowledge, and the
+ * serial to acknowledge it with comes from xdg_surface.configure. Sent
+ * on its own, the client was handed something to ack and no way to ack
+ * it -- toolkits latch the decoration mode inside their xdg_surface
+ * configure handler, so a set_mode after mapping did not take effect
+ * until some unrelated later configure happened to arrive. Two title
+ * bars, or none. */
+static void deco_answer(struct wl_resource *r)
+{
+    zxdg_toplevel_decoration_v1_send_configure(r, ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE);
+    aurwl_win *w = wl_resource_get_user_data(r);
+    if (w && w->xdg_surface) xdg_surface_send_configure(w->xdg_surface, serial_of(w->c));
+}
 static void deco_set_mode(struct wl_client *cl, struct wl_resource *r, uint32_t mode)
-{
-    (void)cl; (void)mode;
-    zxdg_toplevel_decoration_v1_send_configure(r, ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE);
-}
+{ (void)cl; (void)mode; deco_answer(r); }
 static void deco_unset_mode(struct wl_client *cl, struct wl_resource *r)
-{
-    (void)cl;
-    zxdg_toplevel_decoration_v1_send_configure(r, ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE);
-}
+{ (void)cl; deco_answer(r); }
 static const struct zxdg_toplevel_decoration_v1_interface deco_impl = {
     .destroy = noop_destroy, .set_mode = deco_set_mode, .unset_mode = deco_unset_mode,
 };
@@ -1381,11 +1537,16 @@ static void decomgr_get(struct wl_client *cl, struct wl_resource *r, uint32_t id
                         struct wl_resource *tl)
 {
     aurwl_win *w = tl ? wl_resource_get_user_data(tl) : NULL;
-    if (w && w->decoration) { wl_resource_post_error(r, 0, "already decorated"); return; }
+    if (w && w->decoration) { wl_resource_post_error(r, ZXDG_TOPLEVEL_DECORATION_V1_ERROR_ALREADY_CONSTRUCTED,
+                               "already decorated"); return; }
     struct wl_resource *d = wl_resource_create(cl, &zxdg_toplevel_decoration_v1_interface, 1, id);
     if (!d) { wl_client_post_no_memory(cl); return; }
     wl_resource_set_implementation(d, &deco_impl, w, deco_gone);
     if (w) w->decoration = d;
+    /* At construction the client has not made its initial commit yet,
+     * so the configure that answers this one is the one that handshake
+     * produces. Sending another here would be a second, unanswerable
+     * sequence. */
     zxdg_toplevel_decoration_v1_send_configure(d, ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE);
 }
 static const struct zxdg_decoration_manager_v1_interface decomgr_impl = {
@@ -1451,6 +1612,7 @@ aurwl *aurwl_create(int w, int h, int refresh_mhz)
     wl_list_init(&c->touches);   wl_list_init(&c->outputs);
     wl_list_init(&c->devices);
     wl_list_init(&c->offers);
+    wl_list_init(&c->xdg_outputs);
 
     c->display = wl_display_create();
     if (!c->display) { free(c); return NULL; }
@@ -1479,6 +1641,16 @@ aurwl *aurwl_create(int w, int h, int refresh_mhz)
 
     if (build_keymap(c) < 0)
         fprintf(stderr, "aurwl: no xkb keymap; clients will get no key translation\n");
+
+    if (c->keymap_fd < 0) {
+        /* An empty sealed memfd rather than nothing: see the comment in
+         * seat_get_keyboard about what -1 costs. */
+        c->keymap_fd = memfd_create("aurwl-nokeymap", MFD_CLOEXEC | MFD_ALLOW_SEALING);
+        if (c->keymap_fd >= 0)
+            fcntl(c->keymap_fd, F_ADD_SEALS,
+                  F_SEAL_SHRINK | F_SEAL_GROW | F_SEAL_WRITE | F_SEAL_SEAL);
+        c->keymap_size = 0;
+    }
 
     c->socket = wl_display_add_socket_auto(c->display);
     if (!c->socket) {
@@ -1528,6 +1700,7 @@ void aurwl_resize_output(aurwl *c, int w, int h)
     if (!c || (w == c->ow && h == c->oh)) return;
     c->ow = w; c->oh = h;
     FOR_EACH_RES(r, &c->outputs) output_send(c, r);
+    FOR_EACH_RES(x, &c->xdg_outputs) xdg_output_send(c, x);
 }
 
 /* ── the window list ────────────────────────────────────────────── */
@@ -1614,9 +1787,13 @@ static void send_modifiers(aurwl *c)
     uint32_t lck = xkb_state_serialize_mods(c->xkb_state, XKB_STATE_MODS_LOCKED);
     uint32_t grp = xkb_state_serialize_layout(c->xkb_state, XKB_STATE_LAYOUT_EFFECTIVE);
     uint32_t ser = serial_of(c);
+    /* To the focused client only. With no focus this used to go to
+     * everyone, telling every background process the live Shift, Ctrl
+     * and Alt state of a keyboard none of them was reading. */
     struct wl_client *target = win_client(c->focus);
+    if (!target) return;
     FOR_EACH_RES(k, &c->keyboards)
-        if (!target || wl_resource_get_client(k) == target)
+        if (wl_resource_get_client(k) == target)
             wl_keyboard_send_modifiers(k, ser, dep, lat, lck, grp);
 }
 
