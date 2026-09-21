@@ -120,6 +120,42 @@ static void band(const char *label, int kiosk, int allow_settings,
                            i + 1, RES[r].w, RES[r].h);
                     fail++;
                 }
+
+            /* And the three things Turn off asks before it does
+             * anything. That screen is reached by a person who may
+             * have pressed the wrong thing, so the way back off it has
+             * to be as hittable as the way on. */
+            rect p[FOOT_POWER_MAX]; int pw[FOOT_POWER_MAX];
+            int pn = foot_power_buttons(&c, RES[r].w, RES[r].h, p, pw);
+            for (int i = 0; i < pn; i++) {
+                char nm[64];
+                snprintf(nm, sizeof nm, "power choice %d (text %.0f%%)",
+                         i + 1, (double)(SCALES[k] * 100.f));
+                measure(nm, p[i], RES[r].w, RES[r].h);
+            }
+            for (int i = 0; i < pn; i++) {
+                for (int j = i + 1; j < pn; j++) {
+                    int ox = !(p[i].x + p[i].w <= p[j].x ||
+                               p[j].x + p[j].w <= p[i].x);
+                    int oy = !(p[i].y + p[i].h <= p[j].y ||
+                               p[j].y + p[j].h <= p[i].y);
+                    if (ox && oy) {
+                        printf("    FAIL power choices %d and %d overlap "
+                               "at %dx%d text %.0f%%\n", i + 1, j + 1,
+                               RES[r].w, RES[r].h,
+                               (double)(SCALES[k] * 100.f));
+                        fail++;
+                    }
+                }
+                if (p[i].x < 0 || p[i].y < 0 ||
+                    p[i].x + p[i].w > RES[r].w ||
+                    p[i].y + p[i].h > c.screen_h) {
+                    printf("    FAIL power choice %d is outside the screen "
+                           "at %dx%d text %.0f%%\n", i + 1, RES[r].w,
+                           RES[r].h, (double)(SCALES[k] * 100.f));
+                    fail++;
+                }
+            }
         }
 }
 

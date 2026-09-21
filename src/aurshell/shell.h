@@ -201,7 +201,10 @@ typedef struct shell_ctx_s {
     int   want_reload;
     int   foot_hover;          /* which button, -1 for none             */
     int   no_foot;             /* a profile turned the band off         */
-    int   want_power_off;      /* she pressed Turn off                  */
+    /* What she asked the machine to do with itself. The band sets it;
+     * the host carries it out. `1` off, `2` start again, `3` sleep. */
+    int   want_power_off;
+    int   power_open;          /* the three choices are on screen       */
 
     /* ── the running system ─────────────────────────────────────── */
     /* The Wayland server applications connect to, or NULL. It is NULL

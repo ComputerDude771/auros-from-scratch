@@ -1109,13 +1109,27 @@ int main(int argc, char **argv)
          * is a machine she unplugs, and unplugging is how filesystems
          * get corrupted. */
         if (c.want_power_off) {
+            int what = c.want_power_off;
             c.want_power_off = 0;
-            fprintf(stderr, "aurshell: shutting down at the user's request\n");
-            const char *argv_off[] = { "/usr/bin/systemctl", "poweroff", NULL };
-            if (!c.wl || aurwl_spawn(c.wl, argv_off) < 0) {
+            /* 1 off, 2 start again, 3 sleep -- see foot.h. Sleep is
+             * the one that does NOT end the session, so the shell goes
+             * on running and paints again when the machine wakes. */
+            static const char *VERB[4] = { NULL, "poweroff", "reboot", "suspend" };
+            static const char *SAID[4] = { NULL, "shutting down",
+                                           "restarting", "going to sleep" };
+            if (what < 1 || what > 3) what = 1;
+            fprintf(stderr, "aurshell: %s at the user's request\n", SAID[what]);
+            const char *argv_off[] = { "/usr/bin/systemctl", VERB[what], NULL };
+            int started = c.wl ? (aurwl_spawn(c.wl, argv_off) > 0) : 0;
+            if (!started) started = (run_detached(argv_off) == 0);
+            /* Only the ones that END the session have a last resort:
+             * a machine that cannot suspend should stay awake, not
+             * power itself off because the suspend failed. */
+            if (!started && what != 3) {
                 sync();
-                reboot(RB_POWER_OFF);
+                reboot(what == 2 ? RB_AUTOBOOT : RB_POWER_OFF);
             }
+            dirty = 1;
         }
 
         int animating = L->step ? L->step(&c, dt) : 0;

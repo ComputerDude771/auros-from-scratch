@@ -116,6 +116,74 @@ int foot_buttons(const shell_ctx *c, int sw, int sh, rect *out, int *which)
     return n;
 }
 
+/* ── the three things she can do to the machine ─────────────────── */
+
+enum { P_OFF = 1, P_RESTART = 2, P_SLEEP = 3, P_BACK = 4 };
+
+static const struct { int id; const char *label, *note; } POWER[] = {
+    { P_OFF,     "Turn it off",
+                 "Everything closes. It will not come on by itself." },
+    { P_RESTART, "Start it again",
+                 "It goes off and comes straight back on." },
+    { P_SLEEP,   "Let it sleep",
+                 "The screen goes dark. Press a key to wake it." },
+    { P_BACK,    "Never mind",
+                 "Go back to what you were doing." },
+};
+#define N_POWER ((int)(sizeof POWER / sizeof POWER[0]))
+
+/* Can this computer sleep at all? The kernel says so in one file, and
+ * offering a person a button for something their machine cannot do is
+ * the failure this product keeps finding in itself. */
+static int can_sleep(void)
+{
+    FILE *f = fopen("/sys/power/state", "r");
+    if (!f) return 0;
+    char buf[128] = {0};
+    if (!fgets(buf, sizeof buf, f)) { fclose(f); return 0; }
+    fclose(f);
+    return strstr(buf, "mem") != NULL || strstr(buf, "freeze") != NULL;
+}
+
+int foot_power_open(const shell_ctx *c) { return c && c->power_open; }
+
+int foot_power_buttons(const shell_ctx *c, int sw, int sh,
+                       rect *out, int *which)
+{
+    if (!c || c->kiosk) return 0;
+    int body = sh - foot_height(c);
+    if (body <= 0) body = sh;
+    float k = (c->text_scale > 0.1f) ? c->text_scale : 1.f;
+
+    int n = 0;
+    int ids[FOOT_POWER_MAX];
+    for (int i = 0; i < N_POWER && n < FOOT_POWER_MAX; i++) {
+        if (POWER[i].id == P_SLEEP && !can_sleep()) continue;
+        ids[n++] = POWER[i].id;
+    }
+
+    /* One under another, big, down the left measure. A column rather
+     * than a row because these are not equivalent choices to be
+     * scanned -- they are read one at a time, and the last of them is
+     * the way out. */
+    int gx = sw / 12; if (gx < 20) gx = 20;
+    int w = sw - 2 * gx; if (w > (int)(560.f * k)) w = (int)(560.f * k);
+    int h = (int)(52.f + 26.f * k); if (h < FOOT_TARGET) h = FOOT_TARGET;
+    int gap = (int)(10.f * k); if (gap < 8) gap = 8;
+
+    int total = n * h + (n - 1) * gap;
+    int top = (body - total) / 2 + (int)(20.f * k);
+    if (top < (int)(70.f * k)) top = (int)(70.f * k);
+    if (top + total > body) top = body - total;
+    if (top < 0) top = 0;
+
+    for (int i = 0; i < n; i++) {
+        out[i] = (rect){ gx, top + i * (h + gap), w, h };
+        which[i] = ids[i];
+    }
+    return n;
+}
+
 int foot_height(const shell_ctx *c)
 {
     if (!c || c->no_foot) return 0;
@@ -224,6 +292,42 @@ void foot_paint(shell_ctx *c, surface *s, shell_fonts *f)
         }
     }
 
+    /* The three choices, above the archetype and below the band --
+     * the way out of them is never covered by them. */
+    if (c->power_open) {
+        rect all = { 0, 0, s->w, top };
+        draw_rect(s, all, FOOT_BG, 0.96f);
+
+        font *big = f->big ? f->big : f->mid;
+        font *nm  = f->mid ? f->mid : f->small;
+        font *sm  = f->tiny ? f->tiny : f->small;
+        float k = (c->text_scale > 0.1f) ? c->text_scale : 1.f;
+        int gx = s->w / 12; if (gx < 20) gx = 20;
+        if (big)
+            shell_text(s, big, (float)gx, (float)(40.f * k),
+                       "What should this computer do?", FOOT_INK, 1.f);
+
+        rect pb[FOOT_POWER_MAX]; int pw[FOOT_POWER_MAX];
+        int pn = foot_power_buttons(c, s->w, s->h, pb, pw);
+        for (int i = 0; i < pn; i++) {
+            int hot = c->foot_hover == -100 - pw[i];
+            draw_rect(s, pb[i], hot ? FOOT_HOT : FOOT_BG, 1.f);
+            draw_frame(s, pb[i], 1, FOOT_RULE, hot ? 1.f : 0.6f);
+            const char *label = "", *note = "";
+            for (int j = 0; j < N_POWER; j++)
+                if (POWER[j].id == pw[i]) { label = POWER[j].label;
+                                            note = POWER[j].note; }
+            if (nm)
+                shell_text(s, nm, (float)pb[i].x + 16.f,
+                           (float)pb[i].y + (float)(14.f * k) + font_ascent(nm),
+                           label, FOOT_INK, 1.f);
+            if (sm)
+                shell_text_elided(s, sm, (float)pb[i].x + 16.f,
+                                  (float)pb[i].y + pb[i].h - (float)(12.f * k),
+                                  (float)pb[i].w - 32.f, note, FOOT_DIM, 0.9f);
+        }
+    }
+
     rect band = { 0, top, s->w, h };
     draw_rect(s, band, FOOT_BG, 1.f);
     draw_hrule(s, 0, top, s->w, 1, FOOT_RULE, 1.f);
@@ -278,6 +382,18 @@ void foot_paint(shell_ctx *c, surface *s, shell_fonts *f)
 void foot_motion(shell_ctx *c, int x, int y)
 {
     c->foot_hover = -1;
+    if (c->power_open && y < c->screen_h) {
+        rect pb[FOOT_POWER_MAX]; int pw[FOOT_POWER_MAX];
+        int pn = foot_power_buttons(c, c->screen_w,
+                                    c->screen_h + foot_height(c), pb, pw);
+        for (int i = 0; i < pn; i++)
+            if (x >= pb[i].x && x < pb[i].x + pb[i].w &&
+                y >= pb[i].y && y < pb[i].y + pb[i].h) {
+                c->foot_hover = -100 - pw[i];
+                return;
+            }
+        return;
+    }
     rect r[B_N]; int which[B_N];
     int n = foot_buttons(c, c->screen_w, c->screen_h + foot_height(c), r, which);
     for (int i = 0; i < n; i++)
@@ -322,9 +438,32 @@ int foot_click(shell_ctx *c, int x, int y)
             foot_save_text_scale(c->text_scale);
             return 1;
         case B_POWER:
-            c->want_power_off = 1;
+            /* It used to turn the machine off, here, on one press of a
+             * button that is always on screen. No confirmation, no way
+             * back, and no way to do the other two things a person
+             * wants from that corner of a computer. */
+            c->power_open = !c->power_open;
+            if (c->power_open) { c->help_open = 0; c->net_open = 0;
+                                 c->settings_open = 0; }
             return 1;
         }
+    }
+
+    if (c->power_open && y < c->screen_h) {
+        rect pb[FOOT_POWER_MAX]; int pw[FOOT_POWER_MAX];
+        int pn = foot_power_buttons(c, c->screen_w, full_h, pb, pw);
+        for (int i = 0; i < pn; i++) {
+            if (x < pb[i].x || x >= pb[i].x + pb[i].w ||
+                y < pb[i].y || y >= pb[i].y + pb[i].h) continue;
+            if (pw[i] == P_BACK) c->power_open = 0;
+            else { c->want_power_off = pw[i]; c->power_open = 0; }
+            return 1;
+        }
+        /* Inside the question but not on an answer: swallowed. A press
+         * that fell through would reach the desktop underneath, and on
+         * THIS screen the thing underneath is whatever she was doing
+         * before she thought about turning the machine off. */
+        return 1;
     }
 
     /* A press anywhere on the help panel closes it. Asking her to find

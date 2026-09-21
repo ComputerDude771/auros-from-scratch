@@ -63,6 +63,25 @@ int  foot_buttons(const shell_ctx *c, int sw, int sh, rect *out, int *which);
  * turned the band off entirely, which a kiosk does. */
 int  foot_height(const shell_ctx *c);
 
+/* ── what Turn off asks first ───────────────────────────────────────
+ *
+ * It used to ask nothing. One press of a button in a strip that is
+ * always on screen, and the machine went off -- no confirmation, no
+ * way back, and no way to do the other two things a person wants from
+ * that corner of a computer: start it again, and put it to sleep.
+ *
+ * docs/EASY.md rule 6 says every state she can reach she can leave,
+ * and "off" is the one state that rule cannot reach into afterwards.
+ * So this is the exception that gets a question: three big choices and
+ * a way back, on a screen that says what each one means.
+ *
+ * FOOT_POWER_MAX is the most it ever offers. Sleep is absent on a
+ * machine that cannot do it; a kiosk has none of this at all. */
+#define FOOT_POWER_MAX 4
+int  foot_power_buttons(const shell_ctx *c, int sw, int sh,
+                        rect *out, int *which);
+int  foot_power_open(const shell_ctx *c);
+
 /* Paint into the FULL-height surface, after the archetype has painted
  * into its shorter one. */
 void foot_paint(shell_ctx *c, surface *full, shell_fonts *f);
