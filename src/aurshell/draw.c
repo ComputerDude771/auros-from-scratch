@@ -300,64 +300,101 @@ void draw_line(surface *s, float x0, float y0, float x1, float y1,
         }
 }
 
-/* Separable box blur, run three times. Three box passes converge on a
+/* ── box blur ──────────────────────────────────────────────────────
+ *
+ * Separable box blur run three times. Three box passes converge on a
  * Gaussian (central limit theorem) and each pass is a running sum, so
- * cost is independent of the radius. */
-static void box_blur_pass(uint32_t *src, uint32_t *dst, int w, int h, int stride,
-                          int radius, int horizontal)
-{
-    int outer = horizontal ? h : w;
-    int inner = horizontal ? w : h;
-    int step  = horizontal ? 1 : stride;
-    int jump  = horizontal ? stride : 1;
-    int win   = radius * 2 + 1;
+ * the cost is independent of the radius.
+ *
+ * Two things here are not obvious and both were measured, not guessed:
+ *
+ * 1. NO DIVISION. The naive pass divides four channels by the window
+ *    width for every pixel of every pass -- 24 integer divisions per
+ *    pixel per blur. Integer division is 20-40 cycles on the hardware
+ *    we target, and at 1366x768 that alone is most of a frame. It is
+ *    replaced by a multiply-and-shift by a precomputed reciprocal,
+ *    which is EXACT here, not approximate: tools/recip_proof.c checks
+ *    every (window, sum) pair a blur can produce, all 4.2 million of
+ *    them, for radius 1..128.
+ *
+ * 2. NO STRIDED WALK. The vertical pass of the naive version steps a
+ *    whole row between reads, so on a wide region every single pixel
+ *    access is a cache miss. Instead the buffer is transposed once and
+ *    the vertical passes run as horizontal ones. Horizontal and
+ *    vertical box filters commute, so doing H,H,H,V,V,V instead of
+ *    H,V,H,V,H,V is the same filter; the intermediate rounding differs
+ *    by at most a hair and it is a blurred backdrop.
+ * ───────────────────────────────────────────────────────────────── */
 
-    /* Integer accumulators, not float. A running sum of bytes is exact
-     * in int, whereas float add/subtract drifts over a long row and can
-     * push a channel a hair above 255 -- which, shifted into place
-     * unclamped, spills into the NEXT channel and paints coloured
-     * streaks across every blurred panel. That was a real bug here. */
-    for (int o = 0; o < outer; o++) {
-        uint32_t *line_s = src + (size_t)o * jump;
-        uint32_t *line_d = dst + (size_t)o * jump;
+#define BLUR_MAX_RADIUS 128   /* beyond this a blur is a flat fill */
+
+/* One pass along rows. src and dst are w x h, tightly packed. */
+static void box_blur_rows(const uint32_t *src, uint32_t *dst,
+                          int w, int h, int radius)
+{
+    int win = radius * 2 + 1;
+    uint32_t recip = (0xFFFFFFFFu / (uint32_t)win) + 1u;
+    int half = win / 2;
+
+    for (int y = 0; y < h; y++) {
+        const uint32_t *ls = src + (size_t)y * w;
+        uint32_t       *ld = dst + (size_t)y * w;
+        /* Integer accumulators, not float: a running sum of bytes is
+         * exact in int, whereas float add/subtract drifts over a long
+         * row and can push a channel a hair above 255 -- which, shifted
+         * into place unclamped, spills into the NEXT channel and paints
+         * coloured streaks across every blurred panel. Real bug, once. */
         int32_t ra = 0, rr = 0, rg = 0, rb = 0;
 
+        uint32_t first = ls[0], last = ls[w - 1];
+        /* Seed the window, clamping the taps that hang off either end
+         * to the edge pixel -- the same edge rule the running update
+         * below uses, so the two never disagree. */
         for (int i = -radius; i <= radius; i++) {
-            int k = i < 0 ? 0 : (i >= inner ? inner - 1 : i);
-            uint32_t p = line_s[(size_t)k * step];
+            uint32_t p = i < 0 ? first : (i >= w ? last : ls[i]);
             ra += (int32_t)((p >> 24) & 0xFF); rr += (int32_t)((p >> 16) & 0xFF);
             rg += (int32_t)((p >> 8)  & 0xFF); rb += (int32_t)( p        & 0xFF);
         }
-        for (int i = 0; i < inner; i++) {
-            /* Rounded integer division, then clamp defensively. */
-            int32_t oa = (ra + win/2) / win, orr = (rr + win/2) / win;
-            int32_t og = (rg + win/2) / win, ob  = (rb + win/2) / win;
-            if (oa  < 0) oa  = 0;
-            if (oa  > 255) oa  = 255;
-            if (orr < 0) orr = 0;
-            if (orr > 255) orr = 255;
-            if (og  < 0) og  = 0;
-            if (og  > 255) og  = 255;
-            if (ob  < 0) ob  = 0;
-            if (ob  > 255) ob  = 255;
-            line_d[(size_t)i * step] = ((uint32_t)oa << 24) | ((uint32_t)orr << 16) |
-                                       ((uint32_t)og  << 8) |  (uint32_t)ob;
 
-            int add = i + radius + 1; if (add >= inner) add = inner - 1;
-            int sub = i - radius;     if (sub < 0)      sub = 0;
-            uint32_t pa = line_s[(size_t)add * step], ps = line_s[(size_t)sub * step];
+        for (int x = 0; x < w; x++) {
+            uint32_t oa = (uint32_t)(((uint64_t)(uint32_t)(ra + half) * recip) >> 32);
+            uint32_t orr= (uint32_t)(((uint64_t)(uint32_t)(rr + half) * recip) >> 32);
+            uint32_t og = (uint32_t)(((uint64_t)(uint32_t)(rg + half) * recip) >> 32);
+            uint32_t ob = (uint32_t)(((uint64_t)(uint32_t)(rb + half) * recip) >> 32);
+            ld[x] = (oa << 24) | (orr << 16) | (og << 8) | ob;
+
+            int add = x + radius + 1, sub = x - radius;
+            uint32_t pa = add >= w ? last  : ls[add];
+            uint32_t ps = sub < 0  ? first : ls[sub];
             ra += (int32_t)((pa >> 24) & 0xFF) - (int32_t)((ps >> 24) & 0xFF);
             rr += (int32_t)((pa >> 16) & 0xFF) - (int32_t)((ps >> 16) & 0xFF);
             rg += (int32_t)((pa >> 8)  & 0xFF) - (int32_t)((ps >> 8)  & 0xFF);
             rb += (int32_t)( pa        & 0xFF) - (int32_t)( ps        & 0xFF);
         }
     }
-    (void)w; (void)h;
+}
+
+/* Blocked transpose. The block keeps both the read and the write side
+ * inside a handful of cache lines; a naive transpose misses on one side
+ * or the other for every pixel, which is the cost we came here to
+ * avoid. */
+#define TBLK 32
+static void transpose(const uint32_t *src, uint32_t *dst, int w, int h)
+{
+    for (int by = 0; by < h; by += TBLK)
+        for (int bx = 0; bx < w; bx += TBLK) {
+            int ye = by + TBLK < h ? by + TBLK : h;
+            int xe = bx + TBLK < w ? bx + TBLK : w;
+            for (int y = by; y < ye; y++)
+                for (int x = bx; x < xe; x++)
+                    dst[(size_t)x * h + y] = src[(size_t)y * w + x];
+        }
 }
 
 void draw_blur_region(surface *s, rect r, int radius)
 {
     if (radius < 1) return;
+    if (radius > BLUR_MAX_RADIUS) radius = BLUR_MAX_RADIUS;
     int x0 = r.x < 0 ? 0 : r.x, y0 = r.y < 0 ? 0 : r.y;
     int x1 = r.x + r.w > s->w ? s->w : r.x + r.w;
     int y1 = r.y + r.h > s->h ? s->h : r.y + r.h;
@@ -372,10 +409,18 @@ void draw_blur_region(surface *s, rect r, int radius)
         memcpy(a + (size_t)y * w, s->px + (size_t)(y0 + y) * s->stride + x0,
                (size_t)w * sizeof *a);
 
-    for (int pass = 0; pass < 3; pass++) {
-        box_blur_pass(a, b, w, h, w, radius, 1);
-        box_blur_pass(b, a, w, h, w, radius, 0);
-    }
+    box_blur_rows(a, b, w, h, radius);      /* horizontal x3 */
+    box_blur_rows(b, a, w, h, radius);
+    box_blur_rows(a, b, w, h, radius);
+
+    transpose(b, a, w, h);                  /* now h x w */
+
+    box_blur_rows(a, b, h, w, radius);      /* "vertical" x3 */
+    box_blur_rows(b, a, h, w, radius);
+    box_blur_rows(a, b, h, w, radius);
+
+    transpose(b, a, h, w);                  /* back to w x h */
+
     for (int y = 0; y < h; y++)
         memcpy(s->px + (size_t)(y0 + y) * s->stride + x0, a + (size_t)y * w,
                (size_t)w * sizeof *a);
