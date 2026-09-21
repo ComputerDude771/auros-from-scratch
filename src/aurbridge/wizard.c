@@ -140,7 +140,7 @@ static uint32_t *g_px;
 static int      g_mw, g_mh;
 
 static HFONT g_f_title, g_f_h2, g_f_h3, g_f_body, g_f_bodyb, g_f_small,
-             g_f_smallb, g_f_tiny, g_f_input, g_f_brand;
+             g_f_smallb, g_f_tiny, g_f_input;
 
 static RECT  g_clip;                   /* clip for hand-rasterised pixels */
 
@@ -283,6 +283,25 @@ static void stroke_rr(float x, float y, float w, float h, float r,
             float d = fabsf(sd_rr((float)px + 0.5f, (float)py + 0.5f,
                                   cx, cy, hw, hh, r)) - ht;
             blend_px(px, py, col, clampf(0.5f - d, 0.f, 1.f) * alpha);
+        }
+}
+
+/* The AurOS mark. Drawn, not typed: a missing glyph in a substituted
+ * font would put a hollow box where the brand should be. */
+static void fill_diamond(float cx, float cy, float r, uint32_t col, float a)
+{
+    GdiFlush();
+    int x0 = (int)floorf(cx - r) - 1, x1 = (int)ceilf(cx + r) + 1;
+    int y0 = (int)floorf(cy - r) - 1, y1 = (int)ceilf(cy + r) + 1;
+    if (x0 < g_clip.left) x0 = g_clip.left;
+    if (y0 < g_clip.top)  y0 = g_clip.top;
+    if (x1 > g_clip.right)  x1 = g_clip.right;
+    if (y1 > g_clip.bottom) y1 = g_clip.bottom;
+    for (int py = y0; py < y1; py++)
+        for (int px = x0; px < x1; px++) {
+            float d = (fabsf((float)px + 0.5f - cx) + fabsf((float)py + 0.5f - cy) - r)
+                      * 0.70711f;
+            blend_px(px, py, col, clampf(0.5f - d, 0.f, 1.f) * a);
         }
 }
 
@@ -736,6 +755,8 @@ static int nav_allowed(page_id p)
     }
 }
 
+static int g_max_page;
+
 static void goto_page(page_id p)
 {
     if (!nav_allowed(p)) {
@@ -746,6 +767,7 @@ static void goto_page(page_id p)
         return;
     }
     g_page = p;
+    if ((int)p > g_max_page) g_max_page = (int)p;
     g_focus = -1;
     g_focus_ring = 0;
     InvalidateRect(g_hwnd, NULL, FALSE);
@@ -1062,7 +1084,7 @@ static void draw_rail(void)
     int x = S(36);
     int y = S(40);
 
-    text_draw(L"◆", g_f_brand, C_ACCENT, x, y - S(2), S(40), DT_LEFT);
+    fill_diamond((float)(x + S(8)), (float)(y + S(13)), (float)S(9), C_ACCENT, 1.f);
     text_draw(L"AurOS", g_f_h2, C_FG_HI, x + S(28), y, S(160), DT_LEFT);
     text_draw(L"AurBridge installer", g_f_small, C_SUBTLE,
               x + S(28), y + S(26), S(190), DT_LEFT);
@@ -1186,47 +1208,13 @@ static int page_checking(int x, int y, int w)
     int y0 = y;
     int done = g_pf_valid;
 
-    y += text_draw(L"Checking this PC", g_f_title, C_FG_HI, x, y, w, DT_WORDBREAK) + S(12);
-    y += text_draw(L"We read the drives, the battery and the way this PC starts up. "
-                   L"Nothing is written and nothing is changed by this page.",
-                   g_f_body, C_SUBTLE, x, y, w > S(640) ? S(640) : w, DT_WORDBREAK) + S(26);
+    y += text_draw(L"Checking this PC", g_f_title, C_FG_HI, x, y, w, DT_WORDBREAK) + S(10);
+    y += text_draw(L"We only read. Nothing on this PC is written to or changed.",
+                   g_f_body, C_SUBTLE, x, y, w, DT_SINGLELINE) + S(20);
 
-    for (int i = 0; i < N_CHK; i++) {
-        int sev   = done ? chk_group_sev(i) : -1;
-        int state = !done ? 1 : (i < g_reveal ? 2 : 1);
-        int res   = (done && i < g_reveal) ? chk_group_res(i) : -1;
-
-        /* the last group is only interesting if something landed in it */
-        if (i == N_CHK - 1 && done && sev < 0) continue;
-
-        int rh = S(52);
-        int hot = (state == 2 && sev >= PF_WARN);
-        if (hot)
-            fill_rr((float)x, (float)y, (float)w, (float)rh, (float)S(10),
-                    sev_color(sev), 0.07f);
-
-        status_icon((float)(x + S(18)), (float)(y + rh / 2), (float)S(11),
-                    state, sev < 0 ? PF_PASS : sev);
-
-        int tx = x + S(46);
-        int tw = w - S(60);
-        text_draw(CHK[i].label, g_f_bodyb,
-                  state == 2 ? C_FG_HI : C_MUTED, tx, y + S(8), tw, DT_SINGLELINE);
-        if (res >= 0 && sev >= PF_WARN) {
-            wchar_t t[128];
-            a2w(g_report.results[res].title, t, 128);
-            text_draw(t, g_f_small, sev_color(sev), tx, y + S(28), tw, DT_SINGLELINE);
-        } else {
-            text_draw(CHK[i].note, g_f_small, state == 2 ? C_SUBTLE : C_MUTED,
-                      tx, y + S(28), tw, DT_SINGLELINE);
-        }
-        y += rh + S(4);
-    }
-
-    y += S(14);
-    if (!done) {
-        y += text_draw(L"Reading…", g_f_small, C_SUBTLE, x, y, w, DT_SINGLELINE);
-    } else if (g_reveal >= N_CHK) {
+    /* The answer goes above the list, not below it: it is the one thing
+     * on this page the user is waiting for. */
+    if (done && g_reveal >= N_CHK) {
         wchar_t msg[200];
         uint32_t c;
         if (g_report.n_block > 0) {
@@ -1246,10 +1234,44 @@ static int page_checking(int x, int y, int w)
             c = C_ACCENT;
         }
         msg[199] = 0;
-        fill_rr((float)x, (float)y, (float)w, (float)S(48), (float)S(10), c, 0.10f);
+        fill_rr((float)x, (float)y, (float)w, (float)S(48), (float)S(10), c, 0.11f);
+        stroke_rr((float)x, (float)y, (float)w, (float)S(48), (float)S(10), 1.f, c, 0.3f);
         RECT b = { x + S(18), y, x + w, y + S(48) };
         text_in(msg, g_f_bodyb, c, b, DT_SINGLELINE | DT_VCENTER);
-        y += S(48);
+        y += S(48) + S(20);
+    } else if (!done) {
+        y += text_draw(L"Reading\u2026", g_f_small, C_SUBTLE, x, y, w, DT_SINGLELINE) + S(16);
+    }
+
+    for (int i = 0; i < N_CHK; i++) {
+        int sev   = done ? chk_group_sev(i) : -1;
+        int state = !done ? 1 : (i < g_reveal ? 2 : 1);
+        int res   = (done && i < g_reveal) ? chk_group_res(i) : -1;
+
+        /* the last group is only interesting if something landed in it */
+        if (i == N_CHK - 1 && done && sev < 0) continue;
+
+        int rh = S(48);
+        if (state == 2 && sev >= PF_WARN)
+            fill_rr((float)x, (float)y, (float)w, (float)rh, (float)S(10),
+                    sev_color(sev), 0.07f);
+
+        status_icon((float)(x + S(18)), (float)(y + rh / 2), (float)S(11),
+                    state, sev < 0 ? PF_PASS : sev);
+
+        int tx = x + S(46);
+        int tw = w - S(60);
+        text_draw(CHK[i].label, g_f_bodyb,
+                  state == 2 ? C_FG_HI : C_MUTED, tx, y + S(6), tw, DT_SINGLELINE);
+        if (res >= 0 && sev >= PF_WARN) {
+            wchar_t t[128];
+            a2w(g_report.results[res].title, t, 128);
+            text_draw(t, g_f_small, sev_color(sev), tx, y + S(25), tw, DT_SINGLELINE);
+        } else {
+            text_draw(CHK[i].note, g_f_small, state == 2 ? C_SUBTLE : C_MUTED,
+                      tx, y + S(25), tw, DT_SINGLELINE);
+        }
+        y += rh + S(2);
     }
     return y - y0;
 }
@@ -2060,6 +2082,18 @@ static void render(void)
     clip_reset();
 
     if (g_content_h > g_view_h) {
+        /* fade into the card edge rather than shearing text at it */
+        int fx = g_card.left + S(3), fw = g_card.right - g_card.left - S(6);
+        int fh = S(22);
+        if (g_scroll[g_page] > 0)
+            for (int i = 0; i < fh; i++)
+                fill_rr((float)fx, (float)(g_card.top + S(2) + i), (float)fw, 1.f,
+                        0.f, C_SURFACE, 0.97f * (1.f - (float)i / (float)fh));
+        if (g_scroll[g_page] < scroll_max())
+            for (int i = 0; i < fh; i++)
+                fill_rr((float)fx, (float)(g_foot.top - S(3) - i), (float)fw, 1.f,
+                        0.f, C_SURFACE, 0.97f * (1.f - (float)i / (float)fh));
+
         int tx = g_card.right - S(13);
         int th = S(6);
         float frac = (float)g_view_h / (float)g_content_h;
@@ -2242,7 +2276,7 @@ static HFONT mkfont(int px, int weight)
 static void fonts_free(void)
 {
     HFONT *all[] = { &g_f_title, &g_f_h2, &g_f_h3, &g_f_body, &g_f_bodyb,
-                     &g_f_small, &g_f_smallb, &g_f_tiny, &g_f_input, &g_f_brand };
+                     &g_f_small, &g_f_smallb, &g_f_tiny, &g_f_input };
     for (int i = 0; i < (int)(sizeof all / sizeof all[0]); i++)
         if (*all[i]) { DeleteObject(*all[i]); *all[i] = NULL; }
 }
@@ -2258,7 +2292,6 @@ static void fonts_make(void)
     g_f_smallb = mkfont(13, FW_BOLD);
     g_f_tiny   = mkfont(11, FW_BOLD);
     g_f_input  = mkfont(20, FW_SEMIBOLD);
-    g_f_brand  = mkfont(22, FW_NORMAL);
 }
 
 static void backbuffer(int w, int h)
@@ -2347,7 +2380,23 @@ static void tick(void)
         need = 1;                      /* caret blink */
     }
 
-    if (g_selftest && g_ticks > 40) {
+    /* Scripted run: press Enter on the welcome page, let preflight run,
+     * then keep pressing Enter and see how far the wizard will go. On a
+     * machine preflight refuses, the answer must stay at BLOCKED. */
+    if (g_selftest) {
+        if (g_ticks == 10 || (g_ticks >= 70 && g_ticks <= 110 && g_ticks % 6 == 0))
+            PostMessageW(g_hwnd, WM_KEYDOWN, VK_RETURN, 0);
+        if (g_ticks == 60) {
+            char p2[MAX_PATH + 40];
+            _snprintf(p2, sizeof p2 - 1, "%s/selftest-after-enter.bmp", g_selftest_dir);
+            p2[sizeof p2 - 1] = 0;
+            InvalidateRect(g_hwnd, NULL, FALSE);
+            UpdateWindow(g_hwnd);
+            save_bmp(p2);
+        }
+    }
+
+    if (g_selftest && g_ticks > 120) {
         char path[MAX_PATH + 32];
         _snprintf(path, sizeof path - 1, "%s/selftest-window.bmp", g_selftest_dir);
         path[sizeof path - 1] = 0;
@@ -2364,6 +2413,13 @@ static void tick(void)
             fprintf(f, "preflight done   : %d (blocks=%d warns=%d results=%d)\n",
                     g_pf_valid, g_report.n_block, g_report.n_warn, g_report.n);
             fprintf(f, "widgets on page  : %d\n", g_nw);
+            fprintf(f, "furthest page    : %d (%s)\n", g_max_page,
+                    g_max_page >= (int)PAGE_BACKUP ? "PAST THE GATE"
+                                                   : "gate held");
+            fprintf(f, "nav_allowed backup..progress: ");
+            for (int pg = (int)PAGE_BACKUP; pg < (int)PAGE_COUNT; pg++)
+                fprintf(f, "%d", nav_allowed((page_id)pg));
+            fprintf(f, "\n");
             fclose(f);
         }
         PostQuitMessage(0);

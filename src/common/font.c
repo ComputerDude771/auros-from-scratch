@@ -40,6 +40,7 @@
 #define MAX_PATH   200000       /* flattened points per glyph */
 #define MAX_DIM    4096         /* glyph bitmap edge, px */
 #define MAX_DEPTH  6            /* composite nesting */
+#define MAX_FD     256          /* CID-keyed CFF font dicts */
 
 /* ── bounds-checked big-endian reader ─────────────────────────────
  * Every table offset, glyph index and array length below comes out of
@@ -93,6 +94,28 @@ static void rd_to(rd *r, size_t off)
 /* F2Dot14: composite scale factors. 0x4000 == 1.0. */
 static float rf2dot14(rd *r) { return (float)rs16(r) * (1.0f / 16384.0f); }
 
+/* ── CFF INDEX ────────────────────────────────────────────────────
+ * The Compact Font Format's universal array-of-blobs container: it
+ * holds the font names, the Top DICTs, the strings, the subroutines and
+ * the charstrings alike. On disk it is count(u16), offSize(u8), then
+ * (count + 1) offsets of offSize bytes each, then the data.
+ *
+ * Two traps live in those few bytes. The offsets are 1-BASED and are
+ * measured from the byte *preceding* the data area, so element i starts
+ * at (data - 1) + offsets[i]; reading them as 0-based shifts every blob
+ * by one byte, which turns charstrings into plausible noise rather than
+ * into an obvious error. And count == 0 is legal, in which case the
+ * INDEX is those two bytes and nothing else -- no offSize follows, so a
+ * parser that reads the third byte anyway carries on decoding whatever
+ * structure came next. */
+typedef struct {
+    size_t   offs;    /* absolute offset of offsets[0] */
+    size_t   base;    /* absolute; element i begins at base + offsets[i] */
+    size_t   end;     /* absolute offset one past the whole INDEX */
+    uint32_t count;
+    uint32_t osz;     /* 1..4 */
+} cff_index;
+
 /* ── cached glyph ─────────────────────────────────────────────────
  * Keyed by codepoint and subpixel phase, chained in a fixed bucket
  * array, and never evicted: a shell draws from a small, stable set of
@@ -126,8 +149,23 @@ struct font {
     struct { uint32_t cp1; int32_t gid; } gc[GID_BINS];
 
     int      nglyphs, nhmetrics, loca_long;
-    float    upem, scale, px;
+    float    scale;        /* px per font unit: everything else derives */
     float    ascent, descent, line_gap;
+
+    /* CFF: OpenType/PostScript outlines. `is_cff` selects the outline
+     * loader and nothing else -- cmap, hmtx, kern, the glyph cache and
+     * the rasteriser are shared with the `glyf` path, and so is every
+     * function in font.h. Callers never learn which format they got. */
+    int        is_cff, is_cid;
+    size_t     cff, cff_len;
+    cff_index  charstrings;    /* indexed by glyph id, exactly like loca */
+    cff_index  gsubrs, lsubrs;
+    cff_index  fdarray;        /* CID-keyed only */
+    cff_index *fdsubrs;        /* CID-keyed only: local subrs per font dict */
+    int        nfd;
+    size_t     fdselect;       /* absolute, 0 if absent */
+    size_t     charset;        /* absolute, 0 = predefined ISOAdobe */
+    float      fm[6];          /* FontMatrix: charstring units -> em */
 
     glyph   *bin[CACHE_BINS];
 };
@@ -156,9 +194,9 @@ typedef struct {
     int  *end; int ne, ecap;   /* one-past-last index of each contour */
     int   start;               /* first point of the contour in progress */
     int   oom;
-} path;
+} outline;
 
-static int path_add(path *P, float x, float y)
+static int ol_add(outline *P, float x, float y)
 {
     if (P->oom) return 0;
     if (P->np >= P->pcap) {
@@ -174,7 +212,7 @@ static int path_add(path *P, float x, float y)
     P->p[P->np].x = x; P->p[P->np].y = y; P->np++;
     return 1;
 }
-static void path_close(path *P)
+static void ol_close(outline *P)
 {
     if (P->oom) return;
     if (P->np - P->start < 3) { P->np = P->start; return; }   /* degenerate */
@@ -187,7 +225,7 @@ static void path_close(path *P)
     P->end[P->ne++] = P->np;
     P->start = P->np;
 }
-static void path_free(path *P) { free(P->p); free(P->end); }
+static void ol_free(outline *P) { free(P->p); free(P->end); }
 
 /* Flatten a quadratic to line segments.
  *
@@ -195,7 +233,7 @@ static void path_free(path *P) { free(P->p); free(P->end); }
  * error falls as 1/n^2 under uniform subdivision, so n = sqrt(d/(4*tol))
  * hits the tolerance with the fewest segments. At tol = 1/16 px the
  * facets are far below what 8-bit coverage can show. */
-static void path_quad(path *P, float x0, float y0, float cx, float cy,
+static void ol_quad(outline *P, float x0, float y0, float cx, float cy,
                       float x1, float y1)
 {
     float ax = x0 - 2.0f*cx + x1, ay = y0 - 2.0f*cy + y1;
@@ -205,8 +243,43 @@ static void path_quad(path *P, float x0, float y0, float cx, float cy,
     if (n > 64) n = 64;
     for (int i = 1; i <= n; i++) {
         float t = (float)i / (float)n, u = 1.0f - t;
-        path_add(P, u*u*x0 + 2.0f*u*t*cx + t*t*x1,
+        ol_add(P, u*u*x0 + 2.0f*u*t*cx + t*t*x1,
                     u*u*y0 + 2.0f*u*t*cy + t*t*y1);
+    }
+}
+
+/* Flatten a cubic to line segments.
+ *
+ * CFF outlines are cubic where TrueType's are quadratic, so they need
+ * their own error bound. Writing B(t) - chord(t) as t(1-t)[(1-t)a + t b]
+ * with a = 3P1 - 2P0 - P3 and b = 3P2 - P0 - 2P3 makes the deviation at
+ * most max(|a|,|b|)/4, and like the quadratic case it falls as 1/n^2
+ * under uniform subdivision -- so n = 2 * sqrt(|a| or |b|) lands on the
+ * same 1/16 px tolerance ol_quad() uses. (da/db are squared lengths, so
+ * the fourth root below is the square root of the length.)
+ *
+ * d is clamped before the cast because a corrupt charstring can pile up
+ * enough deltas to reach an infinity, and converting that to int is
+ * undefined. The 64-segment cap only bites above ~1000px type, where it
+ * still leaves the facets a tenth of a pixel deep. */
+static void ol_cubic(outline *P, float x0, float y0, float x1, float y1,
+                     float x2, float y2, float x3, float y3)
+{
+    float ax = 3.0f*x1 - 2.0f*x0 - x3, ay = 3.0f*y1 - 2.0f*y0 - y3;
+    float bx = 3.0f*x2 - x0 - 2.0f*x3, by = 3.0f*y2 - y0 - 2.0f*y3;
+    float da = ax*ax + ay*ay, db = bx*bx + by*by;
+    float d  = da > db ? da : db;
+    if (!(d >= 0.0f)) d = 0.0f;                /* a NaN lands here */
+    if (d > 1e12f)    d = 1e12f;
+    int n = (int)ceilf(sqrtf(sqrtf(d)) * 2.0f);
+    if (n < 1)  n = 1;
+    if (n > 64) n = 64;
+    for (int i = 1; i <= n; i++) {
+        float t = (float)i / (float)n, u = 1.0f - t;
+        float uu = u*u, tt = t*t;
+        float c0 = uu*u, c1 = 3.0f*uu*t, c2 = 3.0f*u*tt, c3 = tt*t;
+        ol_add(P, c0*x0 + c1*x1 + c2*x2 + c3*x3,
+                  c0*y0 + c1*y1 + c2*y2 + c3*y3);
     }
 }
 
@@ -470,9 +543,9 @@ static int loca_range(font *f, int gid, size_t *beg, size_t *end)
     return 1;
 }
 
-static void glyf_outline(font *f, int gid, path *P, xform t, int depth);
+static void glyf_outline(font *f, int gid, outline *P, xform t, int depth);
 
-static void simple_glyph(rd *r, int ncont, path *P, xform t)
+static void simple_glyph(rd *r, int ncont, outline *P, xform t)
 {
     if (ncont <= 0 || ncont > MAX_POINTS) return;
 
@@ -556,7 +629,7 @@ static void simple_glyph(rd *r, int ncont, path *P, xform t)
             first = s; count = n;
         }
 
-        path_add(P, start.x, start.y);
+        ol_add(P, start.x, start.y);
         pt cur = start, ctl = {0, 0};
         int have_ctl = 0;
 
@@ -564,26 +637,26 @@ static void simple_glyph(rd *r, int ncont, path *P, xform t)
             int i = s + ((first - s) + k) % n;
             pt  p = pts[i];
             if (flg[i] & 1) {
-                if (have_ctl) path_quad(P, cur.x, cur.y, ctl.x, ctl.y, p.x, p.y);
-                else          path_add(P, p.x, p.y);
+                if (have_ctl) ol_quad(P, cur.x, cur.y, ctl.x, ctl.y, p.x, p.y);
+                else          ol_add(P, p.x, p.y);
                 cur = p; have_ctl = 0;
             } else if (have_ctl) {
                 /* Two controls in a row: the on-curve point between
                  * them is IMPLIED at their midpoint. */
                 pt mid = { 0.5f*(ctl.x + p.x), 0.5f*(ctl.y + p.y) };
-                path_quad(P, cur.x, cur.y, ctl.x, ctl.y, mid.x, mid.y);
+                ol_quad(P, cur.x, cur.y, ctl.x, ctl.y, mid.x, mid.y);
                 cur = mid; ctl = p;
             } else { ctl = p; have_ctl = 1; }
         }
-        if (have_ctl) path_quad(P, cur.x, cur.y, ctl.x, ctl.y, start.x, start.y);
-        path_close(P);
+        if (have_ctl) ol_quad(P, cur.x, cur.y, ctl.x, ctl.y, start.x, start.y);
+        ol_close(P);
     }
 
 done:
     free(ends); free(flg); free(pts);
 }
 
-static void composite_glyph(font *f, rd *r, path *P, xform t, int depth)
+static void composite_glyph(font *f, rd *r, outline *P, xform t, int depth)
 {
     uint32_t flags;
     int guard = 0;
@@ -629,7 +702,7 @@ static void composite_glyph(font *f, rd *r, path *P, xform t, int depth)
     } while (flags & 0x0020);                  /* MORE_COMPONENTS */
 }
 
-static void glyf_outline(font *f, int gid, path *P, xform t, int depth)
+static void glyf_outline(font *f, int gid, outline *P, xform t, int depth)
 {
     size_t beg, end;
     if (P->oom || !loca_range(f, gid, &beg, &end)) return;
@@ -643,6 +716,843 @@ static void glyf_outline(font *f, int gid, path *P, xform t, int depth)
     if (r.bad) return;
     if (nc >= 0) simple_glyph(&r, nc, P, t);
     else         composite_glyph(f, &r, P, t, depth);
+}
+
+/* ── CFF: containers ──────────────────────────────────────────────
+ *
+ * An OpenType/PostScript font keeps its outlines in a `CFF ` table: a
+ * complete Compact Font Format font-set embedded whole inside the sfnt.
+ * Almost everything in it is reached by an offset from the start of
+ * that table, and every one of those offsets comes from the file, so
+ * the CFF table's own [base, base+len) window is the bound that every
+ * read below is checked against.
+ *
+ * Layout, in the order the loader walks it:
+ *
+ *   header (hdrSize says where it ends -- it is NOT always 4)
+ *   Name INDEX        -- font names; skipped, but its length is needed
+ *   Top DICT INDEX    -- one DICT per font; entry 0 is the only one
+ *   String INDEX      -- glyph/custom names; skipped, length needed
+ *   Global Subr INDEX -- shared subroutines, referenced by callgsubr
+ *   ... then wherever the Top DICT points: CharStrings, Private DICT,
+ *       charset, and for CID fonts FDArray + FDSelect.
+ */
+
+/* Read an INDEX header at `pos`. See the cff_index comment for the two
+ * traps (1-based offsets, the count == 0 short form). */
+static int cff_index_read(font *f, size_t pos, cff_index *ix)
+{
+    size_t lim = f->cff + f->cff_len;
+    memset(ix, 0, sizeof *ix);
+
+    rd r = rd_at(f->data, lim, pos);
+    uint32_t count = ru16(&r);
+    if (r.bad) return 0;
+    if (count == 0) { ix->end = r.p; return 1; }     /* two bytes and done */
+
+    uint32_t osz = ru8(&r);
+    if (r.bad || osz < 1 || osz > 4) return 0;
+    size_t narr = (size_t)(count + 1) * osz;
+    if (narr > lim - r.p) return 0;
+
+    ix->count = count;
+    ix->osz   = osz;
+    ix->offs  = r.p;
+    ix->base  = r.p + narr - 1;                      /* offsets are 1-based */
+
+    /* offsets[count] is the total data size, and is what says where the
+     * INDEX ends -- there is no length field anywhere else. */
+    rd t = rd_at(f->data, lim, r.p + (size_t)count * osz);
+    uint32_t last = 0;
+    for (uint32_t k = 0; k < osz; k++) last = (last << 8) | ru8(&t);
+    if (t.bad || last < 1 || last > lim - ix->base) return 0;
+    ix->end = ix->base + last;
+    return 1;
+}
+
+/* Byte range of element `i`. Reading offsets[i] and offsets[i+1] in one
+ * pass works because they are adjacent; the reader is capped at the end
+ * of the offset array so a huge `i` cannot walk into the data. */
+static int cff_index_get(const font *f, const cff_index *ix, uint32_t i,
+                         size_t *beg, size_t *end)
+{
+    if (i >= ix->count) return 0;
+    rd r = rd_at(f->data, ix->base + 1, ix->offs + (size_t)i * ix->osz);
+    uint32_t a = 0, b = 0;
+    for (uint32_t k = 0; k < ix->osz; k++) a = (a << 8) | ru8(&r);
+    for (uint32_t k = 0; k < ix->osz; k++) b = (b << 8) | ru8(&r);
+    if (r.bad || a < 1 || b < a) return 0;
+    if (b > ix->end - ix->base) return 0;
+    *beg = ix->base + a;
+    *end = ix->base + b;
+    return 1;                                  /* beg == end: empty glyph */
+}
+
+/* Subroutine numbers are stored biased so that small negative numbers
+ * reach the front of the array. The bias depends on the array's own
+ * size, which means a font that lies about its subr count also shifts
+ * every call in every charstring. */
+static int cff_bias(uint32_t n)
+{
+    return n < 1240 ? 107 : n < 33900 ? 1131 : 32768;
+}
+
+/* ── CFF DICTs ────────────────────────────────────────────────────
+ * A DICT is postfix: operands, then the operator they belong to. Number
+ * encoding is *almost* the charstring encoding -- but b0 == 255 is a
+ * reserved byte here and a 16.16 fixed-point number there, and b0 == 30
+ * is a nibble-packed real here and nothing there. Sharing one number
+ * reader between the two would be a bug, so there are two. */
+
+static void dict_put(char *buf, size_t cap, size_t *n, char ch)
+{
+    if (*n + 1 < cap) buf[(*n)++] = ch;
+}
+
+/* Real number: BCD nibbles, 0-9 literal, a '.', b 'E', c 'E-', e '-',
+ * f terminator. The loop always runs to the terminator even once the
+ * text buffer is full, because stopping early would leave the DICT
+ * cursor in the middle of a number. */
+static double cff_real(rd *r)
+{
+    char   buf[64];
+    size_t n = 0;
+    int    done = 0, guard = 0;
+
+    while (!done && ++guard <= 64) {
+        uint32_t b = ru8(r);
+        if (r->bad) break;
+        for (int half = 0; half < 2 && !done; half++) {
+            uint32_t v = half ? (b & 0x0F) : (b >> 4);
+            switch (v) {
+            case 0xA: dict_put(buf, sizeof buf, &n, '.'); break;
+            case 0xB: dict_put(buf, sizeof buf, &n, 'E'); break;
+            case 0xC: dict_put(buf, sizeof buf, &n, 'E');
+                      dict_put(buf, sizeof buf, &n, '-'); break;
+            case 0xD: break;                             /* reserved */
+            case 0xE: dict_put(buf, sizeof buf, &n, '-'); break;
+            case 0xF: done = 1; break;
+            default:  dict_put(buf, sizeof buf, &n, (char)('0' + v)); break;
+            }
+        }
+    }
+    buf[n] = '\0';
+    return strtod(buf, NULL);
+}
+
+/* Operand -> offset. Anything outside int32 (or a NaN, which a malformed
+ * real can produce) is junk; -1 is the "absent" sentinel every field
+ * below is initialised to, and every use is guarded by a > 0 test. */
+static long cff_long(double v)
+{
+    if (!(v > -2147483649.0 && v < 2147483648.0)) return -1;
+    return (long)v;
+}
+
+/* Only the operators this rasteriser acts on are kept. Everything else
+ * -- BlueValues, StdHW, FontBBox, the name/copyright SIDs -- is hinting
+ * or metadata we do not use, and is skipped by clearing the stack. */
+typedef struct {
+    long  charstrings, charset, fdarray, fdselect, cstype;
+    long  priv_off, priv_sz, subrs;
+    int   is_cid, have_fm;
+    float fm[6];
+} cff_dict;
+
+static void cff_dict_init(cff_dict *d)
+{
+    memset(d, 0, sizeof *d);
+    d->charstrings = d->fdarray = d->fdselect = d->priv_off = -1;
+    d->priv_sz = d->subrs = d->cstype = -1;
+    d->charset = 0;                            /* 0 = predefined ISOAdobe */
+}
+
+static int cff_dict_parse(font *f, size_t beg, size_t end, cff_dict *d)
+{
+    double st[48];
+    int    n = 0;
+    long   guard = 0;
+    rd     r = rd_at(f->data, end, beg);
+
+    while (r.p < end && !r.bad) {
+        if (++guard > 100000) return 0;
+        uint32_t b0 = ru8(&r);
+
+        if (b0 == 28) { double v = (double)(int16_t)ru16(&r); if (n < 48) st[n++] = v; }
+        else if (b0 == 29) { double v = (double)(int32_t)ru32(&r); if (n < 48) st[n++] = v; }
+        else if (b0 == 30) { double v = cff_real(&r); if (n < 48) st[n++] = v; }
+        else if (b0 >= 32 && b0 <= 246) { if (n < 48) st[n++] = (double)b0 - 139.0; }
+        else if (b0 >= 247 && b0 <= 250) {
+            double b1 = (double)ru8(&r);
+            if (n < 48) st[n++] = ((double)b0 - 247.0) * 256.0 + b1 + 108.0;
+        } else if (b0 >= 251 && b0 <= 254) {
+            double b1 = (double)ru8(&r);
+            if (n < 48) st[n++] = -(((double)b0 - 251.0) * 256.0) - b1 - 108.0;
+        } else {
+            /* Operator. 12 is an escape byte: the real opcode is the one
+             * after it, and it shares numbers with the one-byte set, so
+             * the two spaces are kept apart by the +1200. */
+            uint32_t op = b0;
+            if (b0 == 12) op = 1200 + ru8(&r);
+            if (r.bad) break;
+            switch (op) {
+            case   15: if (n > 0) d->charset     = cff_long(st[n-1]); break;
+            case   17: if (n > 0) d->charstrings = cff_long(st[n-1]); break;
+            case   18: if (n > 1) { d->priv_sz  = cff_long(st[n-2]);
+                                    d->priv_off = cff_long(st[n-1]); } break;
+            case   19: if (n > 0) d->subrs      = cff_long(st[n-1]); break;
+            case 1206: if (n > 0) d->cstype     = cff_long(st[n-1]); break;
+            case 1207: if (n >= 6) {
+                           for (int i = 0; i < 6; i++) d->fm[i] = (float)st[i];
+                           d->have_fm = 1;
+                       } break;
+            case 1230: d->is_cid = 1; break;                   /* ROS */
+            case 1236: if (n > 0) d->fdarray    = cff_long(st[n-1]); break;
+            case 1237: if (n > 0) d->fdselect   = cff_long(st[n-1]); break;
+            default: break;      /* reserved or uninteresting: just clear */
+            }
+            n = 0;
+        }
+    }
+    return !r.bad;
+}
+
+/* ── charset: GID -> SID ──────────────────────────────────────────
+ * Glyph ids come from `cmap`, so the charset is not needed to draw
+ * text. The one thing that does need it is `seac` (below), which names
+ * its two components by StandardEncoding code rather than by GID. That
+ * is rare enough that the reverse lookup is left as a linear scan
+ * instead of being unpacked into a table at load. */
+static int cff_gid_for_sid(font *f, uint32_t sid)
+{
+    if (sid == 0 || f->nglyphs <= 0) return 0;
+
+    /* Predefined charsets (0 ISOAdobe, 1 Expert, 2 ExpertSubset) are not
+     * stored in the file. For ISOAdobe -- the only one worth humouring --
+     * SID and GID coincide over the standard-strings range. */
+    if (!f->charset)
+        return sid < (uint32_t)f->nglyphs ? (int)sid : 0;
+
+    rd r = rd_at(f->data, f->cff + f->cff_len, f->charset);
+    uint32_t fmt = ru8(&r);
+    if (r.bad) return 0;
+
+    if (fmt == 0) {
+        /* .notdef is GID 0 and is never listed, so the array starts at
+         * GID 1 -- an off-by-one here mis-maps every accent. */
+        for (int gid = 1; gid < f->nglyphs; gid++) {
+            uint32_t s = ru16(&r);
+            if (r.bad) break;
+            if (s == sid) return gid;
+        }
+    } else if (fmt == 1 || fmt == 2) {
+        int gid = 1;
+        while (gid < f->nglyphs) {
+            uint32_t first = ru16(&r);
+            uint32_t nleft = (fmt == 1) ? ru8(&r) : ru16(&r);
+            if (r.bad) break;
+            if (sid >= first && sid - first <= nleft) {
+                long hit = (long)gid + (long)(sid - first);
+                return hit < f->nglyphs ? (int)hit : 0;
+            }
+            gid += (int)nleft + 1;
+        }
+    }
+    return 0;
+}
+
+/* StandardEncoding code -> SID.
+ *
+ * Codes 32..126 map onto SIDs 1..95 in order, which is the whole of
+ * ASCII and covers every base letter seac ever uses. Above that the map
+ * is sparse: the codes below take SIDs 96..149 consecutively, so the
+ * table only has to list the codes. */
+static const uint8_t STD_HI[] = {
+    161,162,163,164,165,166,167,168,169,170,171,172,173,174,175,
+    177,178,179,180,
+    182,183,184,185,186,187,188,189,
+    191,
+    193,194,195,196,197,198,199,200,
+    202,203,
+    205,206,207,208,
+    225,
+    227,
+    232,233,234,235,
+    241,
+    245,
+    248,249,250,251
+};
+
+static int cff_seac_gid(font *f, int code)
+{
+    if (code < 32 || code > 255) return 0;
+    if (code <= 126) return cff_gid_for_sid(f, (uint32_t)(code - 31));
+    for (unsigned i = 0; i < sizeof STD_HI / sizeof *STD_HI; i++)
+        if (STD_HI[i] == code) return cff_gid_for_sid(f, 96 + i);
+    return 0;
+}
+
+/* ── CID keying ───────────────────────────────────────────────────
+ * A CID-keyed CFF has no single Private DICT: each glyph belongs to one
+ * of several "font dicts" chosen by FDSelect, and the local subroutine
+ * array lives in that dict's Private DICT. Using the wrong one turns
+ * every callsubr into a jump to an unrelated blob of bytes. */
+static int cff_fd_of(font *f, int gid)
+{
+    if (!f->fdselect || gid < 0) return 0;
+    rd r = rd_at(f->data, f->cff + f->cff_len, f->fdselect);
+    uint32_t fmt = ru8(&r);
+    if (r.bad) return 0;
+
+    if (fmt == 0) {                            /* one byte per glyph */
+        rd g = rd_at(f->data, f->cff + f->cff_len, f->fdselect + 1 + (size_t)gid);
+        uint32_t fd = ru8(&g);
+        return g.bad ? 0 : (int)fd;
+    }
+    if (fmt == 3) {                            /* sorted ranges */
+        uint32_t nr = ru16(&r);
+        if (r.bad || nr == 0) return 0;
+        size_t arr = r.p;
+        uint32_t lo = 0, hi = nr;
+        /* Each record is first(u16) + fd(u8); the range runs up to the
+         * next record's `first`, with a sentinel u16 after the last. */
+        while (lo < hi) {
+            uint32_t mid = lo + (hi - lo) / 2;
+            rd m = rd_at(f->data, f->cff + f->cff_len, arr + (size_t)mid * 3);
+            uint32_t first = ru16(&m);
+            if (m.bad) return 0;
+            if (first > (uint32_t)gid) hi = mid; else lo = mid + 1;
+        }
+        if (lo == 0) return 0;                 /* below the first range */
+        rd m = rd_at(f->data, f->cff + f->cff_len, arr + (size_t)(lo - 1) * 3 + 2);
+        uint32_t fd = ru8(&m);
+        return m.bad ? 0 : (int)fd;
+    }
+    return 0;
+}
+
+static const cff_index *cff_subrs_for(font *f, int gid)
+{
+    if (f->is_cid && f->fdsubrs) {
+        int fd = cff_fd_of(f, gid);
+        if (fd >= 0 && fd < f->nfd) return &f->fdsubrs[fd];
+    }
+    return &f->lsubrs;
+}
+
+/* ── Type 2 charstring interpreter ────────────────────────────────
+ *
+ * A charstring is a stack machine with no branches, so the only way to
+ * lose the plot is to consume the wrong number of bytes for an
+ * operator. Two places make that easy:
+ *
+ *   - hintmask/cntrmask are followed by a raw bitmask whose LENGTH is
+ *     (number of stem hints declared so far + 7) / 8. Nothing delimits
+ *     it. Miscount the stems by one and, eight hints later, the mask
+ *     length changes and every byte after it decodes as a different
+ *     operator.
+ *   - the first stack-clearing operator may carry an extra LEADING
+ *     operand, the advance width. Leave it on the stack and the glyph's
+ *     first move is read off by one argument.
+ *
+ * Both are handled once, here, rather than at each operator.
+ */
+#define MAX_T2_DEPTH  10        /* spec's own subroutine nesting limit */
+#define MAX_T2_OPS    100000    /* runaway or mutually recursive subrs */
+#define MAX_T2_STACK  48        /* spec's operand stack depth */
+#define MAX_SEAC      2         /* accent composition is never nested */
+
+typedef struct {
+    font            *f;
+    outline         *P;
+    xform            t;         /* charstring units -> device pixels */
+    const cff_index *lsub;      /* local subrs for this glyph's FD */
+    float            st[MAX_T2_STACK];
+    float            x, y;      /* current point, charstring units */
+    long             ops;
+    int              nst, nstems, open, width_done, done, seac;
+} t2;
+
+static void cff_glyph_path(font *f, int gid, outline *P, xform t, int seac);
+
+static pt t2_dev(const t2 *c, float x, float y)
+{
+    pt p = { c->t.a * x + c->t.c * y + c->t.e,
+             c->t.b * x + c->t.d * y + c->t.f };
+    return p;
+}
+
+static void t2_pt(t2 *c, float x, float y)
+{
+    pt p = t2_dev(c, x, y);
+    ol_add(c->P, p.x, p.y);
+}
+
+/* CFF has no closepath operator: a contour is closed implicitly by the
+ * next rmoveto or by endchar, and its last point is joined back to its
+ * first. The rasteriser already closes every contour it is handed, so
+ * "close" here is only the bookkeeping that ends one and starts the
+ * next. */
+static void t2_move(t2 *c, float dx, float dy)
+{
+    if (c->open) ol_close(c->P);
+    c->x += dx; c->y += dy;
+    t2_pt(c, c->x, c->y);
+    c->open = 1;
+}
+
+/* A draw before any moveto is malformed. Starting the contour at the
+ * current point loses nothing and keeps whatever geometry follows. */
+static void t2_begin(t2 *c)
+{
+    if (!c->open) { t2_pt(c, c->x, c->y); c->open = 1; }
+}
+
+static void t2_line(t2 *c, float dx, float dy)
+{
+    t2_begin(c);
+    c->x += dx; c->y += dy;
+    t2_pt(c, c->x, c->y);
+}
+
+/* Every Type 2 curve operator is a cubic; the specialised ones (hh, hv,
+ * vv, vh, the flexes) differ only in which deltas they imply to be
+ * zero, so they all funnel through here as six explicit deltas. */
+static void t2_curve(t2 *c, float dx1, float dy1, float dx2, float dy2,
+                     float dx3, float dy3)
+{
+    t2_begin(c);
+    float x1 = c->x + dx1, y1 = c->y + dy1;
+    float x2 = x1    + dx2, y2 = y1    + dy2;
+    float x3 = x2    + dx3, y3 = y2    + dy3;
+    pt a = t2_dev(c, c->x, c->y), b = t2_dev(c, x1, y1);
+    pt d = t2_dev(c, x2, y2),     e = t2_dev(c, x3, y3);
+    ol_cubic(c->P, a.x, a.y, b.x, b.y, d.x, d.y, e.x, e.y);
+    c->x = x3; c->y = y3;
+}
+
+/* Drop the leading width operand, if this is the first stack-clearing
+ * operator and one is present.
+ *
+ * The advance itself is taken from `hmtx` -- OpenType requires the two
+ * to agree, and hmtx is what the layout code already reads -- so the
+ * value is discarded. It still has to be *removed*: it is a LEADING
+ * operand, so leaving it shifts every real argument by one.
+ *
+ * `pairs` means the operator's own argument count is even (the stem
+ * operators, rmoveto, endchar): an odd count then betrays the width.
+ * hmoveto and vmoveto take exactly one argument, so for them it is a
+ * count of two that betrays it. */
+static void t2_width(t2 *c, int pairs)
+{
+    if (c->width_done) return;
+    c->width_done = 1;
+    int extra = pairs ? (c->nst & 1) : (c->nst > 1);
+    if (extra && c->nst > 0) {
+        memmove(c->st, c->st + 1, (size_t)(c->nst - 1) * sizeof c->st[0]);
+        c->nst--;
+    }
+}
+
+static void t2_run(t2 *c, size_t beg, size_t end, int depth)
+{
+    rd     r = rd_at(c->f->data, end, beg);
+    float *s = c->st;
+
+    while (r.p < end && !r.bad && !c->done) {
+        /* One budget for the whole glyph, shared across subroutine
+         * calls: a pair of subrs that call each other would otherwise
+         * spin forever inside the depth limit. */
+        if (++c->ops > MAX_T2_OPS) { c->done = 1; return; }
+
+        uint32_t b0 = ru8(&r);
+
+        /* Operands. Note 255: a 16.16 FIXED number here, a reserved byte
+         * in a DICT. 28 is a 16-bit integer in both. 29 is NOT a 32-bit
+         * integer here -- it is the callgsubr operator. */
+        if (b0 >= 32 || b0 == 28) {
+            float v;
+            if      (b0 == 28)  v = (float)(int16_t)ru16(&r);
+            else if (b0 <= 246) v = (float)b0 - 139.0f;
+            else if (b0 <= 250) v =  (float)(((int)b0 - 247) * 256 + (int)ru8(&r) + 108);
+            else if (b0 <= 254) v = -(float)(((int)b0 - 251) * 256 + (int)ru8(&r) + 108);
+            else                v = (float)(int32_t)ru32(&r) * (1.0f / 65536.0f);
+            if (r.bad) return;
+            if (c->nst >= MAX_T2_STACK) { c->done = 1; return; }
+            s[c->nst++] = v;
+            continue;
+        }
+
+        switch (b0) {
+
+        case 1: case 3: case 18: case 23:      /* hstem vstem hstemhm vstemhm */
+            t2_width(c, 1);
+            c->nstems += c->nst / 2;
+            c->nst = 0;
+            break;
+
+        case 19: case 20: {                    /* hintmask cntrmask */
+            /* Operands still on the stack are an implicit vstemhm: the
+             * spec lets the operator itself be elided when a stem list
+             * runs straight into a mask. They must be counted, because
+             * they lengthen the mask that follows. */
+            t2_width(c, 1);
+            c->nstems += c->nst / 2;
+            c->nst = 0;
+            rd_skip(&r, (size_t)(c->nstems + 7) / 8);
+            if (r.bad) return;
+            break;
+        }
+
+        case 21:                               /* rmoveto */
+            t2_width(c, 1);
+            if (c->nst >= 2) t2_move(c, s[c->nst-2], s[c->nst-1]);
+            c->nst = 0;
+            break;
+
+        case 22:                               /* hmoveto */
+            t2_width(c, 0);
+            if (c->nst >= 1) t2_move(c, s[c->nst-1], 0.0f);
+            c->nst = 0;
+            break;
+
+        case 4:                                /* vmoveto */
+            t2_width(c, 0);
+            if (c->nst >= 1) t2_move(c, 0.0f, s[c->nst-1]);
+            c->nst = 0;
+            break;
+
+        case 5:                                /* rlineto */
+            for (int i = 0; i + 1 < c->nst; i += 2) t2_line(c, s[i], s[i+1]);
+            c->nst = 0;
+            break;
+
+        case 6: case 7: {                      /* hlineto vlineto */
+            /* One argument per segment, alternating axis. The operator
+             * only picks which axis the FIRST segment uses. */
+            int horiz = (b0 == 6);
+            for (int i = 0; i < c->nst; i++, horiz = !horiz) {
+                if (horiz) t2_line(c, s[i], 0.0f);
+                else       t2_line(c, 0.0f, s[i]);
+            }
+            c->nst = 0;
+            break;
+        }
+
+        case 8:                                /* rrcurveto */
+            for (int i = 0; i + 5 < c->nst; i += 6)
+                t2_curve(c, s[i], s[i+1], s[i+2], s[i+3], s[i+4], s[i+5]);
+            c->nst = 0;
+            break;
+
+        case 24: {                             /* rcurveline */
+            int i = 0;
+            while (c->nst - i >= 8) {          /* keep 2 back for the line */
+                t2_curve(c, s[i], s[i+1], s[i+2], s[i+3], s[i+4], s[i+5]);
+                i += 6;
+            }
+            if (c->nst - i >= 2) t2_line(c, s[i], s[i+1]);
+            c->nst = 0;
+            break;
+        }
+
+        case 25: {                             /* rlinecurve */
+            int i = 0;
+            while (c->nst - i >= 8) {          /* keep 6 back for the curve */
+                t2_line(c, s[i], s[i+1]);
+                i += 2;
+            }
+            if (c->nst - i >= 6)
+                t2_curve(c, s[i], s[i+1], s[i+2], s[i+3], s[i+4], s[i+5]);
+            c->nst = 0;
+            break;
+        }
+
+        case 26: {                             /* vvcurveto */
+            /* Vertical start and end tangents: only the first curve of
+             * the run may have a horizontal nudge, and it is the odd
+             * leading operand. */
+            int i = 0; float dx = 0.0f;
+            if (c->nst & 1) { dx = s[0]; i = 1; }
+            for (; i + 3 < c->nst; i += 4, dx = 0.0f)
+                t2_curve(c, dx, s[i], s[i+1], s[i+2], 0.0f, s[i+3]);
+            c->nst = 0;
+            break;
+        }
+
+        case 27: {                             /* hhcurveto */
+            int i = 0; float dy = 0.0f;
+            if (c->nst & 1) { dy = s[0]; i = 1; }
+            for (; i + 3 < c->nst; i += 4, dy = 0.0f)
+                t2_curve(c, s[i], dy, s[i+1], s[i+2], s[i+3], 0.0f);
+            c->nst = 0;
+            break;
+        }
+
+        case 30: case 31: {                    /* vhcurveto hvcurveto */
+            /* Four arguments per curve, alternating between "starts
+             * horizontal, ends vertical" and the reverse. A trailing
+             * FIFTH argument on the last group is the one free
+             * coordinate of the final point, which would otherwise be
+             * pinned to the axis. */
+            int horiz = (b0 == 31), i = 0;
+            while (c->nst - i >= 4) {
+                float last = (c->nst - i == 5) ? s[i+4] : 0.0f;
+                if (horiz) t2_curve(c, s[i], 0.0f, s[i+1], s[i+2], last, s[i+3]);
+                else       t2_curve(c, 0.0f, s[i], s[i+1], s[i+2], s[i+3], last);
+                i += 4;
+                horiz = !horiz;
+            }
+            c->nst = 0;
+            break;
+        }
+
+        case 10: case 29: {                    /* callsubr callgsubr */
+            const cff_index *ix = (b0 == 10) ? c->lsub : &c->f->gsubrs;
+            if (c->nst < 1) break;
+            float v = s[--c->nst];
+            if (!(v > -70000.0f && v < 70000.0f)) break;
+            long idx = (long)v + cff_bias(ix->count);
+            size_t sb, se;
+            if (depth + 1 >= MAX_T2_DEPTH) break;
+            if (idx < 0 || !cff_index_get(c->f, ix, (uint32_t)idx, &sb, &se)) break;
+            t2_run(c, sb, se, depth + 1);
+            if (c->done) return;
+            break;
+        }
+
+        case 11:                               /* return */
+            return;
+
+        case 14: {                             /* endchar */
+            t2_width(c, 1);
+            /* Four remaining arguments mean `seac`: the Type 1 accented-
+             * character shortcut, still emitted by Type1-to-OTF
+             * conversions. bchar and achar are StandardEncoding CODES,
+             * not glyph ids, so they go through the charset. */
+            if (c->nst >= 4 && c->seac < MAX_SEAC) {
+                float adx = s[c->nst-4], ady = s[c->nst-3];
+                float bc  = s[c->nst-2], ac  = s[c->nst-1];
+                int bchar = (bc >= 0.0f && bc <= 255.0f) ? (int)bc : -1;
+                int achar = (ac >= 0.0f && ac <= 255.0f) ? (int)ac : -1;
+                if (c->open) ol_close(c->P);
+                c->open = 0;
+                int bg = cff_seac_gid(c->f, bchar);
+                int ag = cff_seac_gid(c->f, achar);
+                if (bg > 0) cff_glyph_path(c->f, bg, c->P, c->t, c->seac + 1);
+                if (ag > 0 && adx > -1e6f && adx < 1e6f &&
+                              ady > -1e6f && ady < 1e6f) {
+                    xform o = { 1.0f, 0.0f, 0.0f, 1.0f, adx, ady };
+                    cff_glyph_path(c->f, ag, c->P, xf_mul(o, c->t), c->seac + 1);
+                }
+            }
+            if (c->open) ol_close(c->P);
+            c->open = 0;
+            c->done = 1;
+            return;
+        }
+
+        case 12: {                             /* escape */
+            uint32_t b1 = ru8(&r);
+            if (r.bad) return;
+            switch (b1) {
+            case 34:                           /* hflex */
+                /* A flex is two cubics that together replace what would
+                 * be a nearly-flat curve; the variants exist only to
+                 * save bytes by implying the zero deltas. hflex pins
+                 * both ends and both outer controls to one y, and the
+                 * second curve mirrors the first's dy2 so the pen ends
+                 * back on the starting line. */
+                if (c->nst >= 7) {
+                    t2_curve(c, s[0], 0.0f, s[1],  s[2], s[3], 0.0f);
+                    t2_curve(c, s[4], 0.0f, s[5], -s[2], s[6], 0.0f);
+                }
+                break;
+            case 35:                           /* flex (the 13th arg is a
+                                                * depth threshold: unused,
+                                                * we always draw curves) */
+                if (c->nst >= 12) {
+                    t2_curve(c, s[0], s[1], s[2],  s[3], s[4],  s[5]);
+                    t2_curve(c, s[6], s[7], s[8],  s[9], s[10], s[11]);
+                }
+                break;
+            case 36:                           /* hflex1 */
+                if (c->nst >= 9) {
+                    t2_curve(c, s[0], s[1], s[2], s[3], s[4], 0.0f);
+                    t2_curve(c, s[5], 0.0f, s[6], s[7], s[8],
+                             -(s[1] + s[3] + s[7]));
+                }
+                break;
+            case 37:                           /* flex1 */
+                if (c->nst >= 11) {
+                    /* The 11th operand is the single free coordinate of
+                     * the endpoint; the other one snaps back to wherever
+                     * the flex started, and which is which is decided by
+                     * whichever axis the flex travelled further along. */
+                    float sx = c->x, sy = c->y;
+                    float dx = s[0] + s[2] + s[4] + s[6] + s[8];
+                    float dy = s[1] + s[3] + s[5] + s[7] + s[9];
+                    float ex, ey;
+                    if (fabsf(dx) > fabsf(dy)) { ex = sx + dx + s[10]; ey = sy; }
+                    else                       { ex = sx; ey = sy + dy + s[10]; }
+                    t2_curve(c, s[0], s[1], s[2], s[3], s[4], s[5]);
+                    float x2 = c->x + s[6] + s[8], y2 = c->y + s[7] + s[9];
+                    t2_curve(c, s[6], s[7], s[8], s[9], ex - x2, ey - y2);
+                }
+                break;
+            default:
+                /* The arithmetic and storage operators (add, ifelse,
+                 * random, put/get, ...) exist but no shipping font uses
+                 * them. Guessing at their arity would desynchronise the
+                 * rest of the charstring, so the glyph stops here. */
+                c->done = 1;
+                return;
+            }
+            c->nst = 0;
+            break;
+        }
+
+        default:
+            /* Reserved opcode: whatever this charstring is, it is not a
+             * Type 2 one. Stop rather than resynchronise on luck. */
+            c->done = 1;
+            return;
+        }
+    }
+}
+
+static void cff_glyph_path(font *f, int gid, outline *P, xform t, int seac)
+{
+    size_t beg, end;
+    if (P->oom || gid < 0 || gid >= f->nglyphs) return;
+    if (!cff_index_get(f, &f->charstrings, (uint32_t)gid, &beg, &end)) return;
+
+    t2 c;
+    memset(&c, 0, sizeof c);
+    c.f = f; c.P = P; c.t = t; c.seac = seac;
+    c.lsub = cff_subrs_for(f, gid);
+    t2_run(&c, beg, end, 0);
+    /* A charstring that ran off its end without an endchar still owes
+     * us its last contour. */
+    if (c.open) ol_close(P);
+}
+
+/* ── CFF load ─────────────────────────────────────────────────────
+ * Walks the container once and records where the pieces are. Nothing is
+ * copied out of the file: charstrings are interpreted in place. */
+static int cff_load(font *f, size_t off, size_t len, float upem)
+{
+    f->cff = off;
+    f->cff_len = len;
+    size_t lim = off + len;
+
+    /* Header: major, minor, hdrSize, offSize. hdrSize is what says where
+     * the Name INDEX begins; it is 4 in every font anyone ships, but the
+     * field exists precisely so it need not be, and hard-coding 4 would
+     * break on a padded header. */
+    rd r = rd_at(f->data, lim, off);
+    uint32_t major = ru8(&r);
+    rd_skip(&r, 1);                            /* minor */
+    uint32_t hdrsz = ru8(&r);
+    if (r.bad || major != 1 || hdrsz < 4 || hdrsz > len) return 0;
+
+    cff_index names, top, strings;
+    if (!cff_index_read(f, off + hdrsz, &names))        return 0;
+    if (!cff_index_read(f, names.end,   &top))          return 0;
+    if (!cff_index_read(f, top.end,     &strings))      return 0;
+    if (!cff_index_read(f, strings.end, &f->gsubrs))    return 0;
+
+    /* Only the first font of the set is used: an sfnt-embedded CFF is
+     * required to hold exactly one, and a FontSet with several inside a
+     * `CFF ` table is malformed. */
+    size_t tb, te;
+    if (!cff_index_get(f, &top, 0, &tb, &te)) return 0;
+
+    cff_dict d;
+    cff_dict_init(&d);
+    if (!cff_dict_parse(f, tb, te, &d)) return 0;
+
+    /* CharstringType 1 means Type 1 charstrings in a CFF wrapper: a
+     * different, encrypted-lineage format. Refuse instead of feeding it
+     * to a Type 2 interpreter. */
+    if (d.cstype != -1 && d.cstype != 2) return 0;
+    if (d.charstrings <= 0 || (size_t)d.charstrings >= len) return 0;
+    if (!cff_index_read(f, off + (size_t)d.charstrings, &f->charstrings)) return 0;
+    if (f->charstrings.count == 0) return 0;
+
+    /* The FontMatrix maps charstring units onto the EM SQUARE, whereas
+     * everything else in this file works in head's font units and
+     * multiplies by f->scale. Folding unitsPerEm in here once converts
+     * the matrix into font units, so the CFF glyph transform ends up
+     * being the same `* f->scale` the glyf path uses.
+     *
+     * The matrix is normally exactly 1/unitsPerEm. Its DEFAULT, though,
+     * is 1/1000 -- so a 2048-upem font that omits it would be scaled by
+     * 1/1000 and come out at half size. An absent matrix therefore
+     * falls back to the identity (charstring units ARE font units),
+     * which is head's upem, rather than to the CFF default. */
+    if (d.have_fm &&
+        fabsf(d.fm[0]) > 1e-7f && fabsf(d.fm[0]) < 1.0f &&
+        fabsf(d.fm[3]) > 1e-7f && fabsf(d.fm[3]) < 1.0f &&
+        fabsf(d.fm[1]) < 4.0f  && fabsf(d.fm[2]) < 4.0f &&
+        fabsf(d.fm[4]) < 16.0f && fabsf(d.fm[5]) < 16.0f) {
+        for (int i = 0; i < 6; i++) f->fm[i] = d.fm[i] * upem;
+    } else {
+        f->fm[0] = f->fm[3] = 1.0f;
+        f->fm[1] = f->fm[2] = f->fm[4] = f->fm[5] = 0.0f;
+    }
+
+    /* Private DICT. Its own Subrs offset is relative to the Private
+     * DICT's start, not to the table -- the one offset in CFF that is
+     * not measured from the table base. */
+    if (d.priv_off > 0 && d.priv_sz > 0 &&
+        (size_t)d.priv_off < len && (size_t)d.priv_sz <= len - (size_t)d.priv_off) {
+        size_t pb = off + (size_t)d.priv_off;
+        cff_dict pd;
+        cff_dict_init(&pd);
+        if (cff_dict_parse(f, pb, pb + (size_t)d.priv_sz, &pd) && pd.subrs > 0)
+            cff_index_read(f, pb + (size_t)pd.subrs, &f->lsubrs);
+    }
+
+    f->is_cid = d.is_cid;
+    if (d.is_cid) {
+        if (d.fdselect > 0 && (size_t)d.fdselect < len)
+            f->fdselect = off + (size_t)d.fdselect;
+        if (d.fdarray > 0 && (size_t)d.fdarray < len &&
+            cff_index_read(f, off + (size_t)d.fdarray, &f->fdarray) &&
+            f->fdarray.count > 0 && f->fdarray.count <= MAX_FD) {
+            f->fdsubrs = calloc(f->fdarray.count, sizeof *f->fdsubrs);
+            if (!f->fdsubrs) return 0;
+            f->nfd = (int)f->fdarray.count;
+            for (int i = 0; i < f->nfd; i++) {
+                size_t fb, fe;
+                cff_dict fd, qd;
+                if (!cff_index_get(f, &f->fdarray, (uint32_t)i, &fb, &fe)) continue;
+                cff_dict_init(&fd);
+                if (!cff_dict_parse(f, fb, fe, &fd)) continue;
+                if (fd.priv_off <= 0 || fd.priv_sz <= 0) continue;
+                if ((size_t)fd.priv_off >= len ||
+                    (size_t)fd.priv_sz > len - (size_t)fd.priv_off) continue;
+                size_t qb = off + (size_t)fd.priv_off;
+                cff_dict_init(&qd);
+                if (cff_dict_parse(f, qb, qb + (size_t)fd.priv_sz, &qd) && qd.subrs > 0)
+                    cff_index_read(f, qb + (size_t)qd.subrs, &f->fdsubrs[i]);
+            }
+        }
+    }
+
+    /* charset is only consulted by seac; 0/1/2 are the predefined ones,
+     * which are not in the file at all. */
+    if (d.charset > 2 && (size_t)d.charset < len) f->charset = off + (size_t)d.charset;
+
+    /* CharStrings is the authority on how many glyphs there are. maxp
+     * should agree, but if it claims more, every extra id would index
+     * past the end of the INDEX. */
+    if ((int)f->charstrings.count < f->nglyphs) f->nglyphs = (int)f->charstrings.count;
+    if (f->nglyphs <= 0) return 0;
+
+    f->is_cff = 1;
+    return 1;
 }
 
 /* ── rasteriser ───────────────────────────────────────────────────
@@ -743,7 +1653,7 @@ static void acc_edge(float *acc, int stride, int w, int h,
     }
 }
 
-static uint8_t *rasterise(const path *P, int w, int h)
+static uint8_t *rasterise(const outline *P, int w, int h)
 {
     size_t stride = (size_t)w + 2;
     float *acc = calloc(stride * (size_t)h, sizeof *acc);
@@ -795,12 +1705,27 @@ static glyph *glyph_build(font *f, uint32_t cp, int phase)
     int gid = map_gid(f, cp);
     g->adv = advance_of(f, gid);
 
-    path P = {0};
-    xform t = { f->scale, 0.0f, 0.0f, -f->scale,   /* y grows down on screen */
-                (float)phase / (float)SUBPX, 0.0f };
-    glyf_outline(f, gid, &P, t, 0);
+    outline P = {0};
+    if (f->is_cff) {
+        /* f->fm holds the FontMatrix already folded into font units, so
+         * this is the glyf transform with a (usually identity) 2x2 in
+         * front of it -- and the interpreter can work in device space
+         * throughout instead of transforming a point list afterwards.
+         * Row-vector convention, as everywhere else here:
+         *     x' = a*x + c*y + e,   y' = b*x + d*y + f. */
+        xform t;
+        t.a =  f->fm[0] * f->scale;  t.b = -f->fm[1] * f->scale;
+        t.c =  f->fm[2] * f->scale;  t.d = -f->fm[3] * f->scale;
+        t.e =  f->fm[4] * f->scale + (float)phase / (float)SUBPX;
+        t.f = -f->fm[5] * f->scale;
+        cff_glyph_path(f, gid, &P, t, 0);
+    } else {
+        xform t = { f->scale, 0.0f, 0.0f, -f->scale, /* y grows down on screen */
+                    (float)phase / (float)SUBPX, 0.0f };
+        glyf_outline(f, gid, &P, t, 0);
+    }
 
-    if (P.oom || P.ne == 0 || P.np == 0) { path_free(&P); return g; }
+    if (P.oom || P.ne == 0 || P.np == 0) { ol_free(&P); return g; }
 
     float x0 = P.p[0].x, x1 = x0, y0 = P.p[0].y, y1 = y0;
     for (int i = 1; i < P.np; i++) {
@@ -809,24 +1734,27 @@ static glyph *glyph_build(font *f, uint32_t cp, int phase)
         if (P.p[i].y < y0) y0 = P.p[i].y;
         if (P.p[i].y > y1) y1 = P.p[i].y;
     }
-    /* NaN or an absurd bbox means the outline is junk; a blank glyph is
-     * the correct rendering of junk. The magnitude test doubles as the
-     * guard that makes the float-to-int casts below well defined. */
+    /* NaN or an absurd bbox means the outline is junk, and a blank glyph
+     * is the correct rendering of junk. The magnitude bound does double
+     * duty: it makes the float-to-int casts below defined, and it keeps
+     * the origin inside the int16 fields of the cache entry. No real
+     * glyph is 30000px across at the 2000px size ceiling. */
     if (!(x1 >= x0) || !(y1 >= y0) ||
-        !(x0 > -1e6f) || !(x1 < 1e6f) || !(y0 > -1e6f) || !(y1 < 1e6f)) {
-        path_free(&P); return g;
+        !(x0 > -30000.0f) || !(x1 < 30000.0f) ||
+        !(y0 > -30000.0f) || !(y1 < 30000.0f)) {
+        ol_free(&P); return g;
     }
 
     int bx = (int)floorf(x0) - 1, by = (int)floorf(y0) - 1;
     int bw = (int)ceilf(x1) + 1 - bx, bh = (int)ceilf(y1) + 1 - by;
-    if (bw <= 0 || bh <= 0 || bw > MAX_DIM || bh > MAX_DIM) { path_free(&P); return g; }
+    if (bw <= 0 || bh <= 0 || bw > MAX_DIM || bh > MAX_DIM) { ol_free(&P); return g; }
 
     for (int i = 0; i < P.np; i++) { P.p[i].x -= (float)bx; P.p[i].y -= (float)by; }
 
     g->cov = rasterise(&P, bw, bh);
     if (g->cov) { g->bw = (uint16_t)bw; g->bh = (uint16_t)bh;
                   g->x0 = (int16_t)bx;  g->y0 = (int16_t)by; }
-    path_free(&P);
+    ol_free(&P);
     return g;
 }
 
@@ -889,7 +1817,6 @@ font *font_load(const char *path, float px)
     }
     fclose(fp);
     f->size = (size_t)sz;
-    f->px   = px;
 
     /* A .ttc is a directory of table directories sharing one blob; the
      * shell only ever wants the first face. */
@@ -906,12 +1833,17 @@ font *font_load(const char *path, float px)
         ver = ru32(&d);
         if (d.bad) goto fail;
     }
-    /* `OTTO` is a valid sfnt whose outlines live in a CFF table: real
-     * fonts, but a completely different curve format. Rejecting here is
-     * honest; silently producing blank text is not. */
-    if (ver != 0x00010000u && ver != tag4("true")) goto fail;
+    /* Three sfnt flavours get this far. 0x00010000 and `true` carry
+     * `glyf` outlines; `OTTO` carries a `CFF ` table instead. Which
+     * outline loader actually runs is decided below by which table is
+     * present rather than by this tag, because the two do occasionally
+     * disagree and the tables are the ones that have to be read. */
+    if (ver != 0x00010000u && ver != tag4("true") && ver != tag4("OTTO"))
+        goto fail;
 
     size_t off, len;
+    int32_t  loca_fmt = 0;
+    uint32_t upem = 0;
     if (!find_table(f->data, f->size, dir, tag4("head"), &off, &len) || len < 54) goto fail;
     {
         /* Seek to each field rather than counting skips: `head` has two
@@ -920,14 +1852,16 @@ font *font_load(const char *path, float px)
         rd h = rd_at(f->data, f->size, off + 12);
         if (ru32(&h) != 0x5F0F3CF5u) goto fail;          /* magicNumber */
         rd_to(&h, off + 18);
-        uint32_t upem = ru16(&h);
+        upem = ru16(&h);
         rd_to(&h, off + 50);
-        int32_t fmt = rs16(&h);                          /* indexToLocFormat */
-        if (h.bad || upem < 16 || upem > 16384 || (fmt != 0 && fmt != 1)) goto fail;
-        f->upem = (float)upem;
-        f->loca_long = fmt;
+        loca_fmt = rs16(&h);                             /* indexToLocFormat */
+        if (h.bad || upem < 16 || upem > 16384) goto fail;
+        /* Range-checked in the `glyf` branch instead of here: a CFF font
+         * has no `loca`, and refusing one over a field nothing reads
+         * would turn a perfectly good OTF into a desktop with no text. */
+        f->loca_long = (loca_fmt == 1);
     }
-    f->scale = px / f->upem;
+    f->scale = px / (float)upem;
 
     if (!find_table(f->data, f->size, dir, tag4("hhea"), &off, &len) || len < 36) goto fail;
     {
@@ -958,14 +1892,39 @@ font *font_load(const char *path, float px)
      * hmtx still renders correctly for the glyphs it does cover. */
     if ((size_t)f->nhmetrics * 4 > f->hmtx_len) f->nhmetrics = (int)(f->hmtx_len / 4);
 
-    if (!find_table(f->data, f->size, dir, tag4("loca"), &f->loca, &f->loca_len)) goto fail;
-    if (!find_table(f->data, f->size, dir, tag4("glyf"), &f->glyf, &f->glyf_len)) goto fail;
+    /* Outline format. `glyf` + `loca` is TrueType, `CFF ` is
+     * OpenType/PostScript, and a well-formed file has exactly one of the
+     * two. If both somehow appear, `glyf` wins: whatever the sfnt tag
+     * claims, a file with real `loca` and `glyf` tables is a TrueType
+     * font and the CFF is the afterthought.
+     *
+     * `CFF2` -- the variable-font successor -- is deliberately NOT
+     * accepted. It reuses CFF's INDEX containers, which makes it look
+     * parseable, but its charstrings are a different dialect: blend and
+     * vsindex operators driven by an item variation store, and no width
+     * operand at all. Feeding one to the Type 2 interpreter below would
+     * not fail loudly; it would draw confident nonsense. A CFF2-only
+     * font matches neither branch here and is refused. */
     {
-        size_t need = (size_t)(f->nglyphs + 1) * (f->loca_long ? 4u : 2u);
-        if (need > f->loca_len) {
-            int fit = (int)(f->loca_len / (f->loca_long ? 4u : 2u)) - 1;
-            if (fit <= 0) goto fail;
-            f->nglyphs = fit;
+        size_t co = 0, cl = 0;
+        int have_glyf = find_table(f->data, f->size, dir, tag4("glyf"),
+                                   &f->glyf, &f->glyf_len)
+                     && find_table(f->data, f->size, dir, tag4("loca"),
+                                   &f->loca, &f->loca_len);
+        int have_cff  = find_table(f->data, f->size, dir, tag4("CFF "), &co, &cl);
+
+        if (have_glyf) {
+            if (loca_fmt != 0 && loca_fmt != 1) goto fail;
+            size_t need = (size_t)(f->nglyphs + 1) * (f->loca_long ? 4u : 2u);
+            if (need > f->loca_len) {
+                int fit = (int)(f->loca_len / (f->loca_long ? 4u : 2u)) - 1;
+                if (fit <= 0) goto fail;
+                f->nglyphs = fit;
+            }
+        } else if (have_cff) {
+            if (cl < 8 || !cff_load(f, co, cl, (float)upem)) goto fail;
+        } else {
+            goto fail;
         }
     }
 
@@ -993,6 +1952,7 @@ void font_free(font *f)
         glyph *g = f->bin[i];
         while (g) { glyph *n = g->next; free(g->cov); free(g); g = n; }
     }
+    free(f->fdsubrs);
     free(f->data);
     free(f);
 }
