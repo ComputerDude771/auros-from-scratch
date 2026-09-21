@@ -14,7 +14,22 @@ After=getty@tty1.service
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/aurshell
+# Wrapped in a session bus, and not as a nicety. A real desktop
+# application will not start at all without one: the first thing a
+# browser does on a machine with no session bus is fail with "Cannot
+# autolaunch D-Bus without X11 $DISPLAY" -- an error about X11, on a
+# machine that has no X11 and never will. Wrapping here gives the shell
+# and every application it starts the same bus, which is also what makes
+# single-instance applications and "open this link" work between them.
+ExecStart=/usr/bin/dbus-run-session -- /usr/bin/aurshell
+
+# A Wayland socket has to live somewhere a client can find it, and a
+# system service gets no XDG_RUNTIME_DIR from anybody. Without this the
+# compositor has nowhere to bind and not one application can start.
+RuntimeDirectory=auros
+RuntimeDirectoryMode=0700
+Environment=XDG_RUNTIME_DIR=/run/auros
+
 # The shell owns the display and reads evdev directly, so it needs the
 # tty and the input group rather than a seat from a display manager.
 TTYPath=/dev/tty1

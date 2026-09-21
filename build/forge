@@ -120,13 +120,52 @@ stage_packages() {
 }
 
 # ── browser: never let a desktop ship without one, silently ───────
+#
+# The preferred source is Mozilla's own apt repository, because Ubuntu's
+# `firefox` is a transitional package that pulls in snapd, and this
+# build purges snapd. If that repository cannot be reached from the
+# build host -- a proxy, an air gap, a blocked domain -- the image falls
+# back to a real browser from Ubuntu's own archive rather than shipping
+# with none. A person who downloads an operating system and finds it
+# cannot open a web page does not care which network the builder was on.
+install_browser_pkg() {
+    inchroot "apt-get install -y --no-install-recommends $1" >/dev/null 2>&1
+}
+
+stage_browser_fallback() {
+    local why="$1" fb="${browser_fallback:-}"
+    if [ -z "$fb" ]; then
+        MISSING_BROWSER=1
+        printf '%s\n' "browser=MISSING" >> "$RFS/etc/auros/build-warnings"
+        say "${C_ERR}WARNING${C_RST}: $why, and no browser_fallback is set."
+        note "The image will have NO BROWSER. Do not ship this image."
+        return 0
+    fi
+    say "${C_ERR}NOTE${C_RST}: $why."
+    note "Falling back to $fb from the Ubuntu archive."
+    if install_browser_pkg "$fb"; then
+        printf '%s\n' "browser=$fb (fallback; $why)" >> "$RFS/etc/auros/build-warnings"
+        note "$fb installed — the desktop has a working browser"
+    else
+        MISSING_BROWSER=1
+        printf '%s\n' "browser=MISSING" >> "$RFS/etc/auros/build-warnings"
+        say "${C_ERR}WARNING${C_RST}: the fallback browser $fb also failed to install."
+        note "The image will have NO BROWSER. Do not ship this image."
+    fi
+}
+
 stage_browser() {
     case "${browser_source:-none}" in
       none|"") note "no browser requested"; return 0 ;;
+      archive)
+        install_browser_pkg "$browser" \
+            && { note "$browser installed from the Ubuntu archive"; return 0; }
+        stage_browser_fallback "$browser is not installable from the archive"
+        return 0 ;;
       snap)
         inchroot "apt-get install -y --no-install-recommends snapd $browser" \
-            && note "$browser installed via snap" \
-            || die "browser install failed"
+            && { note "$browser installed via snap"; return 0; }
+        stage_browser_fallback "the snap install of $browser failed"
         return 0 ;;
       mozilla-apt) ;;
       *) die "unknown browser_source: $browser_source" ;;
@@ -136,13 +175,7 @@ stage_browser() {
     inchroot "install -d -m 0755 /etc/apt/keyrings"
     if ! inchroot "curl -fsSL --max-time 30 https://packages.mozilla.org/apt/repo-signing-key.gpg \
                    -o /etc/apt/keyrings/packages.mozilla.org.asc" 2>/dev/null; then
-        # A silently browserless desktop is worse than a failed build:
-        # it would be discovered by the user, after the install.
-        MISSING_BROWSER=1
-        printf '%s\n' "browser=MISSING" >> "$RFS/etc/auros/build-warnings"
-        say "${C_ERR}WARNING${C_RST}: packages.mozilla.org is unreachable from this build host."
-        note "The image will have NO BROWSER. This is a build-environment"
-        note "limitation, not a design choice. Do not ship this image."
+        stage_browser_fallback "packages.mozilla.org is unreachable from this build host"
         return 0
     fi
     cat > "$RFS/etc/apt/sources.list.d/mozilla.list" <<'EOL'
@@ -154,9 +187,17 @@ Package: firefox*
 Pin: origin packages.mozilla.org
 Pin-Priority: 1000
 EOL
-    inchroot "apt-get update -qq && apt-get install -y --no-install-recommends $browser" \
-        || die "browser install from the Mozilla repo failed"
-    note "$browser installed from the Mozilla apt repo (real .deb, no snap)"
+    if inchroot "apt-get update -qq && apt-get install -y --no-install-recommends $browser"; then
+        note "$browser installed from the Mozilla apt repo (real .deb, no snap)"
+    else
+        # Leaving the repo configured after it failed means the first
+        # `apt update` the user runs fails too, on a machine they have
+        # owned for five minutes.
+        rm -f "$RFS/etc/apt/sources.list.d/mozilla.list" \
+              "$RFS/etc/apt/preferences.d/mozilla" \
+              "$RFS/etc/apt/keyrings/packages.mozilla.org.asc"
+        stage_browser_fallback "the install of $browser from the Mozilla repo failed"
+    fi
 }
 
 # ── stage 3: overlay our own stack ─────────────────────────────────
@@ -178,10 +219,18 @@ stage_overlay() {
     # they link the same way every other package on the system does.
     install -d "$RFS/usr/src/auros"
     cp -r "$ROOT/src/common" "$ROOT/src/aurinit" "$ROOT/src/aurwall" "$ROOT/src/aurshell" \
-          "$ROOT/src/aurfetch" "$ROOT/src/ferry" "$RFS/usr/src/auros/" 2>/dev/null || true
+          "$ROOT/src/aurfetch" "$ROOT/src/ferry" "$ROOT/src/aurwl" "$RFS/usr/src/auros/" 2>/dev/null || true
 
     chroot_prep
-    inchroot "apt-get update -qq && apt-get install -y --no-install-recommends gcc libc6-dev make" >/dev/null 2>&1 || true
+    # The compositor needs libwayland-server and xkbcommon, and their
+    # headers plus wayland-scanner and the protocol XML at build time.
+    # The -dev packages and the scanner are purged again below; the two
+    # shared libraries stay, because without them nothing on the desktop
+    # can open a window.
+    inchroot "apt-get update -qq && apt-get install -y --no-install-recommends \
+              gcc libc6-dev make pkg-config \
+              libwayland-dev libwayland-bin wayland-protocols libxkbcommon-dev" \
+        >/dev/null 2>&1 || true
     inchroot "cd /usr/src/auros && \
         gcc -O2 -std=gnu11 -o /usr/sbin/aurinit aurinit/aurinit.c && \
         gcc -O2 -std=gnu11 -o /usr/bin/aurctl  aurinit/aurctl.c && \
@@ -213,22 +262,63 @@ stage_overlay() {
     # Every archetype is compiled in; the .shell file picks one at run
     # time. They are small, and an image that cannot switch archetype
     # without a rebuild is not the product we promised.
+    # The Wayland protocol marshalling code is generated, not vendored:
+    # it is a mechanical transform of XML the distribution already
+    # ships, and a checked-in copy is a copy that silently goes stale
+    # against the headers it is compiled with.
+    # The Wayland protocol marshalling code is generated, not vendored:
+    # it is a mechanical transform of XML the distribution already
+    # ships, and a checked-in copy is a copy that goes stale against the
+    # headers it is compiled against without anyone noticing.
+    #
+    # This is a hard failure rather than a fallback. There is no version
+    # of this product that cannot run an application, so an image that
+    # would ship without a compositor is not a lesser AurOS -- it is a
+    # desktop where every icon silently does nothing, discovered by the
+    # user, after the install.
+    inchroot "cd /usr/src/auros/aurwl && mkdir -p gen && \
+            for p in /usr/share/wayland-protocols/stable/xdg-shell/xdg-shell.xml \
+                     /usr/share/wayland-protocols/unstable/xdg-decoration/xdg-decoration-unstable-v1.xml \
+                     /usr/share/wayland-protocols/stable/viewporter/viewporter.xml \
+                     /usr/share/wayland-protocols/unstable/xdg-output/xdg-output-unstable-v1.xml; do \
+                n=\$(basename \$p .xml | sed -e 's/-unstable-v1//'); \
+                wayland-scanner server-header \$p gen/\$n-server.h || exit 1; \
+                wayland-scanner private-code  \$p gen/\$n-protocol.c || exit 1; \
+            done" \
+        || die "wayland-scanner failed: no compositor could be built"
+
     if inchroot "cd /usr/src/auros && gcc -O2 -std=gnu11 -o /usr/bin/aurshell \
             aurshell/main.c aurshell/draw.c aurshell/kms.c \
             aurshell/shellcommon.c aurshell/anim.c aurshell/pad.c \
             aurshell/layouts/rail.c aurshell/layouts/tiles.c \
             aurshell/layouts/locked.c aurshell/layouts/taskbar.c \
             aurshell/layouts/dock.c aurshell/layouts/workbench.c \
-            common/theme.c common/wall.c common/font.c common/png.c -lm"; then
-        note "aurshell built ($(du -h "$RFS/usr/bin/aurshell" | cut -f1))"
+            aurwl/aurwl.c aurwl/gen/xdg-shell-protocol.c \
+            aurwl/gen/xdg-decoration-protocol.c aurwl/gen/viewporter-protocol.c \
+            aurwl/gen/xdg-output-protocol.c \
+            aurshell/session.c aurshell/apps.c \
+            common/theme.c common/wall.c common/font.c common/png.c \
+            -I aurwl/gen -lwayland-server -lxkbcommon -lm"; then
+        note "aurshell built ($(du -h "$RFS/usr/bin/aurshell" | cut -f1)), with the compositor"
     else
-        note "aurshell NOT built - the image will boot to a console"
+        die "aurshell did not build - the image would boot to a console"
     fi
 
     inchroot "systemctl enable auros-firstboot.service >/dev/null 2>&1" || true
     [ -x "$RFS/usr/bin/aurshell" ] && inchroot "systemctl enable aurshell.service >/dev/null 2>&1" || true
 
-    inchroot "apt-get purge -y gcc libc6-dev make >/dev/null 2>&1; apt-get autoremove -y >/dev/null 2>&1" || true
+    # Headers and the code generator go; the shared libraries the shell
+    # now links against must not, so they are marked manual first --
+    # autoremove would otherwise take libwayland-server out from under
+    # the binary that needs it and the desktop would not start.
+    inchroot "apt-get install -y --no-install-recommends libwayland-server0 libxkbcommon0 >/dev/null 2>&1; \
+              apt-mark manual libwayland-server0 libxkbcommon0 >/dev/null 2>&1; \
+              apt-get purge -y gcc libc6-dev make pkg-config libwayland-dev libwayland-bin \
+                               wayland-protocols libxkbcommon-dev >/dev/null 2>&1; \
+              apt-get autoremove -y >/dev/null 2>&1" || true
+    # The generated code is a build artifact; leaving it in the image
+    # ships source nobody will ever compile there.
+    rm -rf "$RFS/usr/src/auros/aurwl/gen"
     chroot_done
     rm -rf "$RFS/usr/src/auros"
 
