@@ -13,6 +13,7 @@
  * unhinted renderer makes. */
 #define SUBPX      4
 #define CACHE_BINS 512
+#define GPOS_MAX_SUB 32   /* pair-adjustment subtables we will consult */
 #define GID_BINS   256
 
 /* Coverage transfer curve.
@@ -141,6 +142,17 @@ struct font {
     size_t   cmap_sub;     /* absolute offset of the chosen subtable */
     size_t   kern_pairs;   /* absolute offset of the format-0 pair array */
     uint32_t kern_n;
+
+    /* GPOS pair kerning. Most modern fonts ship NO legacy `kern` table
+     * at all -- Inter, IBM Plex, Charis SIL and Alegreya Sans all carry
+     * their kerning only here -- so without this they render entirely
+     * unkerned. Invisible at 14px; plainly visible in a 36px headline,
+     * where "Ta", "Wo" and "P." fall apart. Only the pair-adjustment
+     * lookups of the `kern` feature are collected; everything else in
+     * GPOS (marks, cursive attachment, contextual positioning) is a
+     * shaping engine's job and is not attempted. */
+    size_t   gsub_kern[GPOS_MAX_SUB];   /* absolute subtable offsets */
+    int      n_gsub_kern;
 
     /* cmap lookups are a binary search over a few thousand ranges, and
      * a line of text hits the same few dozen codepoints over and over,
@@ -461,6 +473,244 @@ static int map_gid(font *f, uint32_t cp)
     return gid;
 }
 
+/* ── GPOS pair kerning ────────────────────────────────────────────
+ *
+ * Enough of OpenType positioning to kern a line of text, and no more.
+ * The shape of it:
+ *
+ *   GPOS -> FeatureList -> the features tagged 'kern'
+ *        -> LookupList  -> their lookups, keeping LookupType 2
+ *                          (pair adjustment), following LookupType 9
+ *                          (extension) to whatever it wraps
+ *        -> subtables   -> format 1 (explicit pairs) or 2 (class pairs)
+ *
+ * Every read goes through the bounds-checked reader, and every offset
+ * is validated against the table it came from, because this parses
+ * attacker-supplied files: a font is data from the internet.
+ */
+
+/* Bytes in a ValueRecord: two per set bit of the format word. */
+static int value_size(uint32_t fmt)
+{
+    int n = 0;
+    for (int i = 0; i < 8; i++) if (fmt & (1u << i)) n++;
+    return n * 2;
+}
+
+/* XAdvance out of a ValueRecord, in font units. It sits after
+ * XPlacement and YPlacement if those are present. */
+static int32_t value_xadvance(font *f, size_t off, uint32_t fmt)
+{
+    if (!(fmt & 0x0004)) return 0;             /* no XAdvance in this record */
+    size_t skip = 0;
+    if (fmt & 0x0001) skip += 2;               /* XPlacement */
+    if (fmt & 0x0002) skip += 2;               /* YPlacement */
+    rd r = rd_at(f->data, f->size, off + skip);
+    int32_t v = rs16(&r);
+    return r.bad ? 0 : v;
+}
+
+/* Coverage index of a glyph, or -1. Formats 1 (sorted list) and 2
+ * (ranges) are the only two that exist. */
+static int coverage_index(font *f, size_t off, int gid)
+{
+    rd r = rd_at(f->data, f->size, off);
+    uint32_t fmt = ru16(&r), n = ru16(&r);
+    if (r.bad) return -1;
+
+    if (fmt == 1) {
+        uint32_t lo = 0, hi = n;               /* the list is sorted */
+        while (lo < hi) {
+            uint32_t mid = (lo + hi) / 2;
+            rd g = rd_at(f->data, f->size, off + 4 + (size_t)mid * 2);
+            uint32_t v = ru16(&g);
+            if (g.bad) return -1;
+            if ((int)v < gid) lo = mid + 1;
+            else if ((int)v > gid) hi = mid;
+            else return (int)mid;
+        }
+        return -1;
+    }
+    if (fmt == 2) {
+        uint32_t lo = 0, hi = n;
+        while (lo < hi) {
+            uint32_t mid = (lo + hi) / 2;
+            rd g = rd_at(f->data, f->size, off + 4 + (size_t)mid * 6);
+            uint32_t start = ru16(&g), end = ru16(&g), first = ru16(&g);
+            if (g.bad) return -1;
+            if (gid < (int)start) hi = mid;
+            else if (gid > (int)end) lo = mid + 1;
+            else return (int)(first + (uint32_t)gid - start);
+        }
+    }
+    return -1;
+}
+
+/* Class of a glyph in a ClassDef. Unlisted glyphs are class 0. */
+static int class_of(font *f, size_t off, int gid)
+{
+    if (!off) return 0;
+    rd r = rd_at(f->data, f->size, off);
+    uint32_t fmt = ru16(&r);
+    if (r.bad) return 0;
+
+    if (fmt == 1) {
+        uint32_t start = ru16(&r), n = ru16(&r);
+        if (r.bad || gid < (int)start || (uint32_t)gid >= start + n) return 0;
+        rd g = rd_at(f->data, f->size, off + 6 + (size_t)(gid - (int)start) * 2);
+        uint32_t c = ru16(&g);
+        return g.bad ? 0 : (int)c;
+    }
+    if (fmt == 2) {
+        uint32_t n = ru16(&r);
+        if (r.bad) return 0;
+        uint32_t lo = 0, hi = n;
+        while (lo < hi) {
+            uint32_t mid = (lo + hi) / 2;
+            rd g = rd_at(f->data, f->size, off + 4 + (size_t)mid * 6);
+            uint32_t start = ru16(&g), end = ru16(&g), cls = ru16(&g);
+            if (g.bad) return 0;
+            if (gid < (int)start) hi = mid;
+            else if (gid > (int)end) lo = mid + 1;
+            else return (int)cls;
+        }
+    }
+    return 0;
+}
+
+/* Record one lookup's pair-adjustment subtables. */
+static void gpos_take_lookup(font *f, size_t lookup_off, size_t gpos_end)
+{
+    rd r = rd_at(f->data, f->size, lookup_off);
+    uint32_t type = ru16(&r), flag = ru16(&r), n = ru16(&r);
+    (void)flag;
+    if (r.bad || n > 512) return;
+
+    for (uint32_t i = 0; i < n && f->n_gsub_kern < GPOS_MAX_SUB; i++) {
+        rd s = rd_at(f->data, f->size, lookup_off + 6 + (size_t)i * 2);
+        uint32_t rel = ru16(&s);
+        if (s.bad) return;
+        size_t sub = lookup_off + rel;
+        if (sub >= gpos_end) continue;
+
+        if (type == 9) {
+            /* Extension: a 16-bit indirection to a real subtable that
+             * lives beyond the 64KiB an offset can reach. */
+            rd e = rd_at(f->data, f->size, sub);
+            uint32_t efmt = ru16(&e), etype = ru16(&e), eoff = ru32(&e);
+            if (e.bad || efmt != 1 || etype != 2) continue;
+            size_t real = sub + eoff;
+            if (real >= gpos_end) continue;
+            f->gsub_kern[f->n_gsub_kern++] = real;
+        } else if (type == 2) {
+            f->gsub_kern[f->n_gsub_kern++] = sub;
+        }
+    }
+}
+
+static void gpos_init(font *f, size_t off, size_t len)
+{
+    size_t end = off + len;
+    rd r = rd_at(f->data, f->size, off);
+    uint32_t major = ru16(&r);
+    rd_skip(&r, 2);                            /* minorVersion */
+    rd_skip(&r, 2);                            /* scriptListOffset */
+    uint32_t feat_rel = ru16(&r), look_rel = ru16(&r);
+    if (r.bad || major != 1 || !feat_rel || !look_rel) return;
+
+    size_t feat = off + feat_rel, look = off + look_rel;
+    if (feat >= end || look >= end) return;
+
+    rd fl = rd_at(f->data, f->size, feat);
+    uint32_t nfeat = ru16(&fl);
+    if (fl.bad || nfeat > 4096) return;
+
+    for (uint32_t i = 0; i < nfeat && f->n_gsub_kern < GPOS_MAX_SUB; i++) {
+        rd fr = rd_at(f->data, f->size, feat + 2 + (size_t)i * 6);
+        uint32_t tag = ru32(&fr), frel = ru16(&fr);
+        if (fr.bad) return;
+        /* 'kern' only. 'kdup' and friends are not ours to interpret. */
+        if (tag != tag4("kern")) continue;
+
+        size_t ft = feat + frel;
+        if (ft >= end) continue;
+        rd ftab = rd_at(f->data, f->size, ft);
+        rd_skip(&ftab, 2);                     /* featureParamsOffset */
+        uint32_t nl = ru16(&ftab);
+        if (ftab.bad || nl > 512) continue;
+
+        for (uint32_t j = 0; j < nl && f->n_gsub_kern < GPOS_MAX_SUB; j++) {
+            rd li = rd_at(f->data, f->size, ft + 4 + (size_t)j * 2);
+            uint32_t idx = ru16(&li);
+            if (li.bad) break;
+
+            rd ll = rd_at(f->data, f->size, look);
+            uint32_t nlook = ru16(&ll);
+            if (ll.bad || idx >= nlook) break;
+            rd lo = rd_at(f->data, f->size, look + 2 + (size_t)idx * 2);
+            uint32_t lrel = ru16(&lo);
+            if (lo.bad || look + lrel >= end) break;
+            gpos_take_lookup(f, look + lrel, end);
+        }
+    }
+}
+
+static float gpos_pair(font *f, int left, int right)
+{
+    for (int i = 0; i < f->n_gsub_kern; i++) {
+        size_t sub = f->gsub_kern[i];
+        rd r = rd_at(f->data, f->size, sub);
+        uint32_t fmt = ru16(&r), cov_rel = ru16(&r);
+        uint32_t vf1 = ru16(&r), vf2 = ru16(&r);
+        if (r.bad || !cov_rel) continue;
+
+        int ci = coverage_index(f, sub + cov_rel, left);
+        if (ci < 0) continue;
+
+        int v1 = value_size(vf1), v2 = value_size(vf2);
+
+        if (fmt == 1) {
+            uint32_t npair = ru16(&r);
+            if (r.bad || (uint32_t)ci >= npair) continue;
+            rd ps = rd_at(f->data, f->size, sub + 10 + (size_t)ci * 2);
+            uint32_t prel = ru16(&ps);
+            if (ps.bad) continue;
+            size_t set = sub + prel;
+            rd pr = rd_at(f->data, f->size, set);
+            uint32_t nv = ru16(&pr);
+            if (pr.bad || nv > 65535) continue;
+            size_t rec = 2 + (size_t)v1 + (size_t)v2;
+            /* The records are sorted by secondGlyph. */
+            uint32_t lo = 0, hi = nv;
+            while (lo < hi) {
+                uint32_t mid = (lo + hi) / 2;
+                rd g = rd_at(f->data, f->size, set + 2 + (size_t)mid * rec);
+                uint32_t second = ru16(&g);
+                if (g.bad) break;
+                if ((int)second < right) lo = mid + 1;
+                else if ((int)second > right) hi = mid;
+                else {
+                    int32_t adv = value_xadvance(f, set + 2 + (size_t)mid * rec + 2, vf1);
+                    if (adv) return (float)adv * f->scale;
+                    break;
+                }
+            }
+        } else if (fmt == 2) {
+            uint32_t cd1 = ru16(&r), cd2 = ru16(&r);
+            uint32_t n1 = ru16(&r), n2 = ru16(&r);
+            if (r.bad || !n1 || !n2 || n1 > 4096 || n2 > 4096) continue;
+            int c1 = class_of(f, cd1 ? sub + cd1 : 0, left);
+            int c2 = class_of(f, cd2 ? sub + cd2 : 0, right);
+            if (c1 < 0 || c2 < 0 || (uint32_t)c1 >= n1 || (uint32_t)c2 >= n2) continue;
+            size_t rec = (size_t)v1 + (size_t)v2;
+            size_t at = sub + 16 + ((size_t)c1 * n2 + (size_t)c2) * rec;
+            int32_t adv = value_xadvance(f, at, vf1);
+            if (adv) return (float)adv * f->scale;
+        }
+    }
+    return 0.0f;
+}
+
 /* ── hmtx / kern ─────────────────────────────────────────────────── */
 static float advance_of(font *f, int gid)
 {
@@ -504,7 +754,7 @@ static void kern_init(font *f, size_t off, size_t len)
 
 static float kern_pair(font *f, int left, int right)
 {
-    if (!f->kern_n) return 0.0f;
+    if (!f->kern_n) return f->n_gsub_kern ? gpos_pair(f, left, right) : 0.0f;
     uint32_t want = ((uint32_t)left << 16) | (uint32_t)right;
     uint32_t lo = 0, hi = f->kern_n;
     while (lo < hi) {
@@ -517,7 +767,9 @@ static float kern_pair(font *f, int left, int right)
         else if (key > want) hi = mid;
         else return (float)val * f->scale;
     }
-    return 0.0f;
+    /* A font may ship both tables and split the work between them, so
+     * a miss in `kern` is not an answer. */
+    return f->n_gsub_kern ? gpos_pair(f, left, right) : 0.0f;
 }
 
 /* ── glyf ────────────────────────────────────────────────────────── */
@@ -1932,10 +2184,15 @@ font *font_load(const char *path, float px)
         cmap_pick(f, off, len);
     if (!f->cmap_sub) goto fail;               /* no way to map text to glyphs */
 
-    /* Kerning is optional in every sense: absent, Apple-format, or
-     * GPOS-only fonts all just render unkerned. */
+    /* Kerning comes from either table, or both. The legacy `kern` is
+     * tried first because it is a flat sorted array and cheap; GPOS is
+     * where every modern font actually keeps it. A font with neither
+     * renders unkerned, which is a legitimate outcome and not an
+     * error. */
     if (find_table(f->data, f->size, dir, tag4("kern"), &off, &len) && len >= 6)
         kern_init(f, off, len);
+    if (find_table(f->data, f->size, dir, tag4("GPOS"), &off, &len) && len >= 10)
+        gpos_init(f, off, len);
 
     return f;
 

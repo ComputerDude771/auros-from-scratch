@@ -8,6 +8,7 @@ exit non-zero when they fail.
 |---|---|
 | `recip_proof.c` | The blur's multiply-and-shift replacement for integer division is **exact** — checked over every (window, sum) pair a blur can produce, all 4.2 million of them, for radius 1..128. Not a spot check. |
 | `blur_equiv.c` | The rewritten blur matches the one it replaced pixel for pixel, on adversarial full-contrast noise across 9 radii × 8 region shapes including off-screen, 1×1 and 1-pixel-wide slivers. Also times both. |
+| `kerning.c` | How much kerning the engine actually applies, per font. The answer used to be "none" for almost every modern typeface. |
 | `contrast.c` | Can the person this is for actually read it? WCAG relative-luminance contrast for every meaningful colour pair, in every theme. A floor, not a target: clearing it does not make a design good, failing it makes one unusable. |
 | `contactsheet.c` | All six archetypes for one theme, in one image, at a real panel size. A design decision is not judged one screen at a time — what separates a system from a look is whether it survives six different interaction models. |
 | `hittest.c` | Two things. **Clicks land where the archetype paints** — sweeps `click()` across four resolutions and checks each consumed click against a mask of what was actually drawn. **Nothing highlights that cannot be clicked** — wherever hovering changes the frame, clicking must change it further. |
@@ -20,6 +21,9 @@ cc -O2 -std=gnu11 -o /tmp/sheet tools/contactsheet.c src/aurshell/draw.c \
    src/common/theme.c src/common/wall.c src/common/font.c src/common/png.c -lm
 # the conf is a RESOLVED shell.conf, not a .theme -- see below
 /tmp/sheet /tmp/nocturne.conf /tmp/sheet.png
+
+cc -O2 -std=gnu11 -I src/common -o /tmp/kerning tools/kerning.c src/common/font.c -lm
+/tmp/kerning 36 /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf
 
 cc -O2 -std=gnu11 -o /tmp/contrast tools/contrast.c src/common/theme.c -lm
 /tmp/contrast /tmp/*.conf            # add --strict if the design uses rules
@@ -98,3 +102,17 @@ shadows with hairlines: then the rule *is* the structure, and an
 invisible rule is an invisible structure. Every current theme sits near
 **1.4:1** on `col_overlay`, so any direction built on rules has to raise
 it and prove it with `--strict`.
+
+`kerning` exists because the answer was silently "none". `font.c` read
+only the legacy `kern` table, and almost every typeface drawn this
+century ships its kerning solely in GPOS. Measured across every font
+installed here, **every proportional face went from 0.00px to kerning
+9 or 10 of 10 test pairs**; monospace and symbol faces correctly still
+report 0.00, which is what they should do.
+
+This mattered for a design reason, not a technical one: the redesign
+asks for a display face at 36px, and at that size unkerned `Ta`, `Wo`
+and `P.` visibly fall apart. Badly spaced display type is itself one of
+the things that makes software look machine-made — and the alternative
+was to pick typefaces around the engine's limitation rather than for
+their merits.
