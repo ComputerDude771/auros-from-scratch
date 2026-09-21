@@ -295,9 +295,9 @@ void notify_local(const char *summary, const char *body)
 void notify_fit(const shell_ctx *c)
 {
     if (!c || c->screen_w <= 0) return;
-    notify_view v = { NOTIFY_MAX,
-                      (c->text_scale > 0.1f) ? c->text_scale : 1.f,
-                      foot_height(c) };
+    notify_view v;
+    notify_view_now(c, &v);
+    v.n = NOTIFY_MAX;
     notify_geom g;
     notify_layout(c->screen_w, c->screen_h + v.foot_h, &v, &g);
     vis_cap = g.n > 0 ? g.n : 1;
@@ -775,9 +775,30 @@ void notify_fini(void)
 int notify_fd(void)
 {
     int fd = -1;
-    if (!N.conn || !N.owned) return -1;
+    /* WHENEVER THERE IS A CONNECTION, not only once we own the name.
+     *
+     * This returned -1 during the handshake, so the bus was not in the
+     * host's poll() while joining it -- and an idle desktop polls for
+     * a whole second at a time. The handshake takes several passes of
+     * the loop (queue, write, read the Hello reply, send RequestName,
+     * read that reply), and several passes at one second each is eight
+     * seconds against a four-second deadline. So on a real machine it
+     * timed out, backed off, and timed out again, for ever: the
+     * desktop was fine and nothing could ever tell her anything.
+     *
+     * Found by booting the image. It cannot be found from a harness
+     * that pumps in a tight loop, because there the passes cost
+     * milliseconds -- which is exactly what putting the fd back in
+     * poll() restores. */
+    if (!N.conn) return -1;
     if (!dbus_connection_get_unix_fd(N.conn, &fd)) return -1;
     return fd;
+}
+
+int notify_wait_ms(void)
+{
+    if (N.state == NS_HELLO || N.state == NS_NAME) return 30;
+    return -1;
 }
 
 int notify_pump(shell_ctx *c)
@@ -849,6 +870,7 @@ void notify_view_now(const shell_ctx *c, notify_view *v)
     v->n = N.count;
     v->text_scale = (c && c->text_scale > 0.1f) ? c->text_scale : 1.f;
     v->foot_h = c ? foot_height(c) : 0;
+    v->bar_h  = c ? c->bar_h + 8 : 0;
 }
 
 void notify_layout(int sw, int sh, const notify_view *v, notify_geom *g)
@@ -873,7 +895,7 @@ void notify_layout(int sw, int sh, const notify_view *v, notify_geom *g)
      * the way out must never be under a card. */
     int x = sw - w - margin;
     if (x < margin) x = margin;
-    int y = margin;
+    int y = margin + (v->bar_h > 0 ? v->bar_h : 0);
 
     int body = sh - v->foot_h;
     int n = v->n > NOTIFY_MAX ? NOTIFY_MAX : v->n;

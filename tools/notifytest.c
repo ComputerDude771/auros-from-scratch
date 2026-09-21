@@ -226,7 +226,9 @@ int main(void)
                 for (int n = 1; n <= NOTIFY_MAX; n++) {
                     shell_ctx c; fresh(&c);
                     c.text_scale = K[k];
-                    notify_view v = { n, K[k], foot_height(&c) };
+                    notify_view v;
+                    notify_view_now(&c, &v);
+                    v.n = n; v.text_scale = K[k];
                     notify_geom g;
                     notify_layout(RES[r].w, RES[r].h, &v, &g);
                     for (int i = 0; i < g.n; i++) {
@@ -234,7 +236,7 @@ int main(void)
                         measured++;
                         int shorter = a.w < a.h ? a.w : a.h;
                         if (shorter < NOTIFY_TARGET) small++;
-                        if (a.x < 0 || a.y < 0 ||
+                        if (a.x < 0 || a.y < v.bar_h ||
                             a.x + a.w > RES[r].w ||
                             a.y + a.h > RES[r].h - v.foot_h) offscreen++;
                         for (int j = 0; j < i; j++) {
@@ -249,7 +251,8 @@ int main(void)
                  measured, NOTIFY_TARGET);
         ok(w, measured > 0 && small == 0);
         ok("no card is drawn over another", overlap == 0);
-        ok("no card is off the screen, or over the band", offscreen == 0);
+        ok("no card is off the screen, over the band, or over the clock",
+           offscreen == 0);
     }
 
     /* ── the real thing, over a real bus ────────────────────────── */

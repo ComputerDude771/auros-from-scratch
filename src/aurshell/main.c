@@ -1669,6 +1669,10 @@ int main(int argc, char **argv)
         int wait_ms = screen_dark ? 1000
                     : (animating || osd_visible() || settings_dragging()) ? 8
                     : (c.n_wins > 0 ? 16 : 1000);
+        /* Something in the middle of joining the session bus would be
+         * slept straight through otherwise: see notify.h. */
+        int nw = notify_wait_ms();
+        if (nw >= 0 && nw < wait_ms) wait_ms = nw;
         if (np > (int)(sizeof pfd / sizeof pfd[0])) {
             /* Unreachable by construction; here because the thing it
              * guards is a stack overflow and "unreachable" is what was

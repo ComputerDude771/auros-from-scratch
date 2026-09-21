@@ -75,6 +75,19 @@ void notify_fini(void);
 
 /* For the host's poll(). -1 when there is no connection. */
 int  notify_fd(void);
+
+/* The longest the host may sleep, in milliseconds, or -1 for "no
+ * opinion, sleep as long as you like".
+ *
+ * Joining a bus is several round trips -- libdbus's own authentication
+ * exchange, then Hello, then RequestName -- and some of them are
+ * waiting to WRITE rather than to read, so watching the socket for
+ * readability is not enough to wake for them. An idle desktop polls
+ * for a second at a time, which turned a handshake of eight passes
+ * into eight seconds and timed it out. Rather than teach the host
+ * about DBusWatch for the sake of one second of one boot, the join
+ * simply asks it not to sleep long while it is happening. */
+int  notify_wait_ms(void);
 /* Read whatever arrived. 1 if the screen has something new to show. */
 int  notify_pump(shell_ctx *c);
 /* Once per pass: retire the ones whose time is up. 1 if changed. */
@@ -119,6 +132,13 @@ typedef struct {
     int n;              /* how many cards are up, 0..NOTIFY_MAX */
     float text_scale;   /* hers */
     int   foot_h;       /* the band's height, which they sit above */
+    /* The archetype's own strip along the top -- the one with the
+     * clock in it. The first card used to start at the margin and
+     * cover it, which on a booted machine meant the time was hidden
+     * by a notification about a USB stick. Four of the six archetypes
+     * put a bar there; the two that do not lose a little space at the
+     * top, which costs nothing and keeps one rule instead of six. */
+    int   bar_h;
 } notify_view;
 
 typedef struct {
