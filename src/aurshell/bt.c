@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <dirent.h>
 #include <sys/wait.h>
 
 #include "bt.h"
@@ -172,15 +173,49 @@ static int read_trouble(const char *out)
     return BTT_FAILED;
 }
 
-/* ── the sequence ───────────────────────────────────────────────── */
+/* ── the sequence ───────────────────────────────────────────────────
+ *
+ * IS THERE A RADIO AT ALL, asked of a directory and not of a program.
+ *
+ * bluetoothctl does not answer this question; it waits for it. On a
+ * machine with no controller `bluetoothctl power on` blocks -- not
+ * fails, blocks, indefinitely, waiting for one to appear. The panel
+ * showed "Nothing found nearby yet" and the advice to hold the button
+ * on her headphones, forever, on a computer that has no Bluetooth in
+ * it. Found by opening the panel on a booted machine; it cannot be
+ * seen from the code, because the code looks correct and the program
+ * it calls simply never comes back.
+ *
+ * The kernel publishes the answer as a directory. An empty one is a
+ * machine with no Bluetooth, known instantly, with nothing started.
+ */
+static int have_adapter(void)
+{
+    const char *v = getenv("AUROS_BLUETOOTH");
+    const char *dir = (v && *v) ? v : "/sys/class/bluetooth";
+    DIR *d = opendir(dir);
+    if (!d) return 0;
+    int found = 0;
+    struct dirent *e;
+    while ((e = readdir(d)))
+        if (e->d_name[0] != '.') { found = 1; break; }
+    closedir(d);
+    return found;
+}
 
 static void start_job(int job)
 {
     switch (job) {
     case J_RADIO: {
         /* She pressed the button; wanting the radio on is not a
-         * separate question. Idempotent. */
-        const char *a[] = { "bluetoothctl", "power", "on", NULL };
+         * separate question. Idempotent.
+         *
+         * --timeout on EVERY invocation, not only the ones that
+         * obviously wait: bluetoothctl's habit is to block rather than
+         * to fail, and a helper that never returns is a panel that
+         * never moves. */
+        const char *a[] = { "bluetoothctl", "--timeout", "5",
+                            "power", "on", NULL };
         if (child_start(J_RADIO, a) < 0) {
             B.page = BT_TROUBLE; B.trouble = BTT_NOTOOL;
         }
@@ -198,7 +233,8 @@ static void start_job(int job)
         break;
     }
     case J_LIST: {
-        const char *a[] = { "bluetoothctl", "devices", NULL };
+        const char *a[] = { "bluetoothctl", "--timeout", "5",
+                            "devices", NULL };
         child_start(J_LIST, a);
         break;
     }
@@ -222,6 +258,16 @@ void bt_opened(shell_ctx *c)
     B.page = BT_LIST;
     B.sel = -1; B.first_row = 0; B.hover_act = -1;
     B.moved_once = 0; B.trouble = 0; B.scanning = 0;
+    B.n_devs = 0;
+    /* Asked of the kernel before anything is started. A machine with
+     * no Bluetooth says so at once rather than after a helper that
+     * would never have come back. */
+    if (!have_adapter()) {
+        B.have_radio = 0;
+        B.page = BT_TROUBLE;
+        B.trouble = BTT_NORADIO;
+        return;
+    }
     start_job(J_RADIO);
 }
 
@@ -551,8 +597,11 @@ static void do_action(shell_ctx *c, int a)
     switch (a) {
     case A_CLOSE: c->bt_open = 0; break;
     case A_BACK:  child_stop(); B.page = BT_LIST; break;
-    case A_AGAIN: B.page = BT_LIST; B.first_row = 0; B.sel = -1;
-                  start_job(J_RADIO); break;
+    case A_AGAIN:
+        B.page = BT_LIST; B.first_row = 0; B.sel = -1; B.n_devs = 0;
+        if (!have_adapter()) { B.page = BT_TROUBLE; B.trouble = BTT_NORADIO; }
+        else start_job(J_RADIO);
+        break;
     case A_MORE: {
         bt_view v = view_now();
         bt_geom g;

@@ -38,6 +38,7 @@
 #include "osd.h"
 #include "settings.h"
 #include "bt.h"
+#include "watch.h"
 #include "run.h"
 #include "../aurwl/aurwl.h"
 #include "pad.h"
@@ -941,6 +942,13 @@ int main(int argc, char **argv)
                         "anything else in the user session will not be "
                         "found.\n", rd);
     }
+    /* Ask the sound server how loud it is ONCE, here, while the
+     * machine is still starting and a few hundred milliseconds cost
+     * nothing. Every later reader uses the answer. Doing it lazily
+     * meant the first press of Settings paid for it, on the one screen
+     * that has to feel immediate. */
+    power_refresh();
+
     c.wl = aurwl_create(disp->width, disp->height, disp->refresh_mhz);
     if (c.wl) {
         c.spawn = session_spawn;
@@ -1066,6 +1074,12 @@ int main(int argc, char **argv)
             dirty = 1;
         }
         if (settings_step(&c)) dirty = 1;
+        /* The handful of things this computer should speak up about
+         * without being asked. Today that is the battery: reading it
+         * and warning about it are not the same feature, and a laptop
+         * that dies in the middle of a sentence has not been unhelpful
+         * once, it has lost her work. */
+        if (watch_tick(&c)) dirty = 1;
         if (c.net_open != net_open_last) {
             if (c.net_open) {
                 net_opened(&c);

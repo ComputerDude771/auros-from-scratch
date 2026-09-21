@@ -226,14 +226,24 @@ int power_brightness_set(int percent)
  * thing changing it is us. */
 static int vol_pct = -1;
 static int vol_muted = 0;
+/* Whether the question has been asked at all. Asking costs a program
+ * start, and on a machine with no sound server it costs the whole
+ * timeout -- so it is asked once, and a machine that answered "there
+ * is none" is never asked again. Opening Settings used to pay that
+ * every time, which on a machine with no sound was a visible stall on
+ * the one screen that is supposed to feel immediate. */
+static int vol_known = 0;
 
 #define SINK "@DEFAULT_AUDIO_SINK@"
 
 static void volume_ask(void)
 {
+    vol_known = 1;
     char out[128];
     const char *argv[] = { "wpctl", "get-volume", SINK, NULL };
-    if (run_capture(argv, out, sizeof out, 700) <= 0) { vol_pct = -1; return; }
+    /* Short. This is on the path of opening a panel, and a person who
+     * pressed Settings is watching the screen. */
+    if (run_capture(argv, out, sizeof out, 400) <= 0) { vol_pct = -1; return; }
     /* "Volume: 0.43" or "Volume: 0.43 [MUTED]" */
     const char *p = strstr(out, "Volume:");
     if (!p) { vol_pct = -1; return; }
@@ -245,11 +255,18 @@ static void volume_ask(void)
     vol_muted = strstr(out, "MUTED") != NULL;
 }
 
-void power_refresh(void) { volume_ask(); }
+/* Ask again -- but only on a machine that has already said it has
+ * sound. On one that has not, this is the difference between a panel
+ * that opens at once and a panel that waits for a program to time
+ * out. */
+void power_refresh(void)
+{
+    if (!vol_known || vol_pct >= 0) volume_ask();
+}
 
 int power_volume(void)
 {
-    if (vol_pct < 0) volume_ask();
+    if (!vol_known) volume_ask();
     return vol_pct;
 }
 
