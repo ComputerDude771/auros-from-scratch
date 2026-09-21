@@ -433,10 +433,15 @@ static void paint_tile(shell_ctx *c, surface *s, shell_fonts *f, int app,
                         (float)(t.x + pad) + isz * 0.5f,
                         (float)t.y + (float)t.h * 0.5f,
                         isz, ink, paper, alpha * 0.98f);
-        shell_text(s, nf, x, name_b, c->apps[app].name, c->fg_hi, alpha * 0.98f);
+        /* Bounded by the tile, not by hope. Package names and their
+         * descriptions are as long as their authors felt like, and an
+         * unbounded draw runs off the tile, past the screen edge, and
+         * over whatever is beside it. */
+        float tw = (float)(t.x + t.w - pad) - x;
+        shell_text_elided(s, nf, x, name_b, tw, c->apps[app].name, c->fg_hi, alpha * 0.98f);
         draw_hrule(s, (int)x, ruley, (int)(room * 0.62f), 2, c->fg_hi, alpha * 0.85f);
-        shell_text(s, f->small, x, (float)ruley + 16.f + ha,
-                   c->apps[app].hint, c->subtle, alpha * 0.92f);
+        shell_text_elided(s, f->small, x, (float)ruley + 16.f + ha, tw,
+                          c->apps[app].hint, c->subtle, alpha * 0.92f);
         return;
     }
 
@@ -460,11 +465,12 @@ static void paint_tile(shell_ctx *c, surface *s, shell_fonts *f, int app,
     int   hint   = (name_b - la > (float)(t.y + pad) + isz + 10.f);
     if (!hint) name_b = (float)(t.y + t.h - pad) - ld;
 
-    shell_text(s, nf, (float)(t.x + pad), name_b, c->apps[app].name,
-               c->fg_hi, alpha * 0.98f);
+    float tw = (float)(t.w - 2 * pad);
+    shell_text_elided(s, nf, (float)(t.x + pad), name_b, tw, c->apps[app].name,
+                      c->fg_hi, alpha * 0.98f);
     if (hint)
-        shell_text(s, f->small, (float)(t.x + pad), hint_b, c->apps[app].hint,
-                   c->subtle, alpha * 0.92f);
+        shell_text_elided(s, f->small, (float)(t.x + pad), hint_b, tw,
+                          c->apps[app].hint, c->subtle, alpha * 0.92f);
 }
 
 /* The growing thing. One composition, two sets of words: the button's
