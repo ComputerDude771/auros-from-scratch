@@ -92,17 +92,6 @@ static rect  lerp_rect(rect a, rect b, float t)
  * is opaque") over the region just painted costs one pass and keeps the
  * repair here, rather than changing a file five other renderers are
  * being written against at the same time. */
-static void seal(surface *s, rect r)
-{
-    int x0 = r.x < 0 ? 0 : r.x, y0 = r.y < 0 ? 0 : r.y;
-    int x1 = r.x + r.w > s->w ? s->w : r.x + r.w;
-    int y1 = r.y + r.h > s->h ? s->h : r.y + r.h;
-    for (int y = y0; y < y1; y++) {
-        uint32_t *row = s->px + (size_t)y * s->stride;
-        for (int x = x0; x < x1; x++) row[x] |= 0xFF000000u;
-    }
-}
-
 /* ── the three bands of the screen ──────────────────────────────────
  * The bar is taller than a status strip because it holds real targets,
  * not just read-only text. */
@@ -156,14 +145,20 @@ static rect bar_slot(shell_ctx *c, int W, int H, int slot)
 
     if (slot < 0 || slot >= c->n_wins) return none;
 
+    /* Window buttons share whatever is left between the launcher and
+     * the indicators. They give up their label before their icon and
+     * their width before their gap, because a button that is still
+     * there and still hittable is worth more than a readable one — it
+     * is the only way back to a buried window. */
+    int bgap  = c->n_wins > 12 ? 4 : gap;
     int x0    = lr.x + lr.w + gap * 2;
     int avail = tr.x - gap * 2 - x0;
     if (avail < 0) avail = 0;
     int n  = c->n_wins < 1 ? 1 : c->n_wins;
-    int bw = (avail - gap * (n - 1)) / n;
-    bw = clampi(bw, ih + 10, c->target_large ? 208 : 176);
+    int bw = (avail - bgap * (n - 1)) / n;
+    bw = clampi(bw, 26, c->target_large ? 208 : 176);
 
-    rect b = { x0 + slot * (bw + gap), by + pad, bw, ih };
+    rect b = { x0 + slot * (bw + bgap), by + pad, bw, ih };
     if (b.x + b.w > tr.x - gap) b.w = 0;    /* no room left: not drawn, not clickable */
     return b;
 }
@@ -197,13 +192,10 @@ static rect cascade_geom(shell_ctx *c, int W, int H, int i)
     if (ww > W - 2 * m) ww = W - 2 * m;
     if (wh > bot - top - 2 * m) wh = bot - top - 2 * m;
 
-    /* The pile starts a little in from the top-left corner rather than
-     * jammed against it, so a screen with two or three things open
-     * looks composed instead of swept into one corner — and so the
-     * first window a person opens is not sitting under the pointer. */
     /* Give the pile the room it needs first and spread whatever is left
-     * over around it, so two windows look composed on the desktop and
-     * eight still step cleanly instead of being shoved into a corner. */
+     * over around it: two windows then look composed on the desktop
+     * instead of swept into the top-left corner, and eight still step
+     * cleanly. The first window also does not open under the pointer. */
     int n = c->n_wins < 1 ? 1 : c->n_wins;
     int step = cascade_step(c);
     int need = (n - 1) * step;
@@ -655,9 +647,11 @@ static void paint_task_button(shell_ctx *c, surface *s, shell_fonts *f, int i, r
     rect ind = { b.x + b.w / 2 - (int)(iw * 0.5f), b.y + b.h - 4, (int)iw, 3 };
     draw_round_rect(s, ind, corners_all(1.5f), c->accent, on ? 0.95f : (mini ? 0.55f : 0.6f));
 
-    float cx = (float)b.x + 18.f;
+    int narrow = b.w < 64;
+    float cx = narrow ? (float)b.x + (float)b.w * 0.5f : (float)b.x + 18.f;
     shell_icon_draw(s, win_icon(c, i), cx, (float)b.y + (float)b.h * 0.46f, 19.f,
                     tint, mini ? 0.55f : (on ? 1.f : 0.85f));
+    if (narrow) return;             /* icon only: the label would not fit */
 
     float tx = cx + 16.f;
     float room = (float)(b.x + b.w) - tx - 10.f;
@@ -700,14 +694,41 @@ static void paint_bar(shell_ctx *c, surface *s, shell_fonts *f)
 
     /* Window buttons. */
     if (c->n_wins == 0) {
-        rect first = bar_slot(c, W, H, SLOT_LAUNCH);
-        shell_text(s, f->small, (float)(first.x + first.w + 18),
-                   shell_baseline(f->small, (float)first.y, (float)first.h),
-                   "Nothing open yet — pick something from All Programs",
-                   c->muted, 0.85f);
+        /* An empty strip is the one moment this model has nothing to
+         * say for itself, so it says it in words. */
+        rect tray0 = bar_slot(c, W, H, SLOT_TRAY);
+        float hx = (float)(l.x + l.w + 18);
+        char hb[80];
+        const char *hint = fit_text(f->small,
+                                    "Nothing open yet — pick something from All Programs",
+                                    hb, sizeof hb, (float)tray0.x - hx - 16.f);
+        shell_text(s, f->small, hx, shell_baseline(f->small, (float)l.y, (float)l.h),
+                   hint, c->muted, 0.85f);
     }
-    for (int i = 0; i < c->n_wins; i++)
-        paint_task_button(c, s, f, i, bar_slot(c, W, H, i));
+    int dropped = 0, last_x = 0;
+    for (int i = 0; i < c->n_wins; i++) {
+        rect b = bar_slot(c, W, H, i);
+        if (b.w <= 0) { dropped++; continue; }
+        last_x = b.x + b.w;
+        paint_task_button(c, s, f, i, b);
+    }
+    /* Past a certain count the strip runs out of room. Saying how many
+     * are missing is the honest failure: the alternatives this
+     * archetype's ancestors reached for — grouping buttons by program,
+     * scrolling the strip — are each a second thing to learn, which is
+     * exactly what the person who chose this archetype was avoiding.
+     * Those windows are still reachable from the keyboard cycle, and on
+     * a strip so full that even the count has nowhere to sit, the strip
+     * itself is the message. */
+    if (dropped > 0) {
+        char more[32];
+        snprintf(more, sizeof more, "+%d", dropped);
+        rect bar_tray = bar_slot(c, W, H, SLOT_TRAY);
+        float mx = (float)(last_x + 10);
+        if (mx + shell_text_w(f->small, more) < (float)bar_tray.x - 8.f)
+            shell_text(s, f->small, mx, shell_baseline(f->small, (float)l.y, (float)l.h),
+                       more, c->subtle, 0.85f);
+    }
 
     /* Indicators. Read-only: this archetype keeps status where people
      * expect it and does not pretend the corner is a control panel. */
@@ -842,11 +863,9 @@ static void l_paint(shell_ctx *c, surface *s, shell_fonts *f, const surface *wal
         rect a = win_part(c, s->w, s->h, i, WP_FRAME);
         if (t < 0.999f) a = lerp_rect(a, fold_target(c, s->w, s->h, i), 1.f - t);
         paint_window(c, s, f, i, a, i == c->focus && !c->wins[i].minimised, t);
-        seal(s, a);
     }
 
     paint_bar(c, s, f);
-    seal(s, bar_slot(c, s->w, s->h, SLOT_BAR));
     paint_menu(c, s, f);
 }
 

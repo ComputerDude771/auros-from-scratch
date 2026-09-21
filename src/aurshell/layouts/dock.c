@@ -65,23 +65,6 @@ static dock_priv *P(shell_ctx *c) { return (dock_priv *)c->priv; }
  * region about to be painted costs one OR per pixel and keeps the
  * workaround inside this file, where it can be deleted the day the
  * rasteriser and the compositor agree about alpha. */
-static void seal(surface *s, rect r)
-{
-    int x0 = r.x < 0 ? 0 : r.x, y0 = r.y < 0 ? 0 : r.y;
-    int x1 = r.x + r.w > s->w ? s->w : r.x + r.w;
-    int y1 = r.y + r.h > s->h ? s->h : r.y + r.h;
-    for (int y = y0; y < y1; y++) {
-        uint32_t *p = s->px + (size_t)y * s->stride;
-        for (int x = x0; x < x1; x++) p[x] |= 0xFF000000u;
-    }
-}
-
-/* Grow a rect by the room a shadow needs on every side. */
-static rect bleed(shell_ctx *c, rect r, int extra)
-{
-    int m = c->shadow_r + 12 + extra;
-    return (rect){ r.x - m, r.y - m, r.w + 2 * m, r.h + 2 * m };
-}
 static float clampf(float v, float a, float b) { return v < a ? a : (v > b ? b : v); }
 static int   clampi(int v, int a, int b) { return v < a ? a : (v > b ? b : v); }
 
@@ -359,7 +342,6 @@ static void paint_win(shell_ctx *c, surface *s, shell_fonts *f, int i, int focus
     corners rc = corners_all((float)c->radius);
     float al = focused ? 1.f : 0.93f;
 
-    seal(s, bleed(c, a, 0));
     draw_round_rect_shadow(s, a, rc, (float)c->shadow_r * (focused ? 1.3f : 0.9f),
                            0x000000, c->shadow_a * (focused ? 1.f : 0.85f), focused ? 14 : 9);
     draw_blur_region(s, a, c->blur_r);
@@ -441,7 +423,6 @@ static void paint_dock(shell_ctx *c, surface *s, shell_fonts *f, float alpha)
     rect strip = dock_rect(c, s->w, s->h, -1);
     corners rc = corners_all((float)c->radius + 6.f);
 
-    seal(s, bleed(c, (rect){ strip.x, strip.y - 44, strip.w, strip.h + 44 }, 0));
     draw_round_rect_shadow(s, strip, rc, (float)c->shadow_r, 0x000000, c->shadow_a * alpha, 10);
     draw_blur_region(s, strip, c->blur_r);
     draw_round_rect(s, strip, rc, c->surface_c, alpha * c->panel_a);
@@ -543,7 +524,6 @@ static void paint_find(shell_ctx *c, surface *s, shell_fonts *f)
     float al = clampf(p->veil.value, 0.f, 1.f);
     corners rc = corners_all((float)c->radius + 2.f);
 
-    seal(s, bleed(c, a, 8));
     draw_round_rect_shadow(s, a, rc, (float)c->shadow_r * 1.4f, 0x000000, c->shadow_a * al, 16);
     draw_blur_region(s, a, c->blur_r);
     draw_round_rect(s, a, rc, c->surface_c, al * clampf(c->panel_a + 0.07f, 0.f, 1.f));
@@ -627,7 +607,6 @@ static void l_paint(shell_ctx *c, surface *s, shell_fonts *f, const surface *wal
     float veil = clampf(p->veil.value, 0.f, 1.f);
     if (veil > 0.01f) {
         rect full = { 0, 0, s->w, s->h };
-        seal(s, full);
         /* Enough softening to push the desktop behind the field, not
          * so much that the wallpaper stops being anything at all. */
         draw_blur_region(s, full, (int)((float)c->blur_r * 0.5f * veil));
@@ -643,7 +622,6 @@ static void l_paint(shell_ctx *c, surface *s, shell_fonts *f, const surface *wal
      * raise a window, "always in the same spot" stops being true —
      * there would be two spots. */
     int bh = c->bar_h;
-    seal(s, (rect){ 0, 0, s->w, bh + 2 });
     draw_rect(s, (rect){ 0, 0, s->w, bh }, c->bg, 0.5f);
     draw_line(s, 0, (float)bh, (float)s->w, (float)bh, 1.f, c->overlay, 0.45f);
     draw_circle(s, (float)(c->margin + 8), (float)(bh / 2), 6.f, c->accent, 0.95f);

@@ -2037,6 +2037,7 @@ void font_draw(font *f, uint32_t *px, int w, int h,
                     a = (uint32_t)((float)a * alpha + 0.5f);
                     if (!a) continue;
                     uint32_t d = dst[c];
+                    uint32_t da = (d >> 24) & 0xFF;
                     uint32_t dr = (d >> 16) & 0xFF, dg = (d >> 8) & 0xFF, db = d & 0xFF;
                     /* +127 before the divide rounds to nearest, which
                      * keeps a full-coverage pixel exactly the source
@@ -2044,7 +2045,18 @@ void font_draw(font *f, uint32_t *px, int w, int h,
                     uint32_t nr = (dr * (255 - a) + sr * a + 127) / 255;
                     uint32_t ng = (dg * (255 - a) + sg * a + 127) / 255;
                     uint32_t nb = (db * (255 - a) + sb * a + 127) / 255;
-                    dst[c] = (nr << 16) | (ng << 8) | nb;
+                    /* Carry the alpha byte. This used to be dropped, and
+                     * the surface compositor reads that byte as coverage:
+                     * every glyph left a hole of alpha 0 behind it, so
+                     * anything translucent drawn over text afterwards --
+                     * a window shadow crossing the title of the window
+                     * below, say -- blended against nothing and collapsed
+                     * the text to pure black. Two layouts hit it
+                     * independently and each patched around it locally.
+                     * Standard src-over: on an opaque destination this is
+                     * exactly 255, so nothing else changes. */
+                    uint32_t na = da + (a * (255 - da) + 127) / 255;
+                    dst[c] = (na << 24) | (nr << 16) | (ng << 8) | nb;
                 }
             }
         }
