@@ -13,6 +13,7 @@
  * unhinted renderer makes. */
 #define SUBPX      4
 #define CACHE_BINS 512
+#define GID_BINS   256
 
 /* Coverage transfer curve.
  *
@@ -92,11 +93,15 @@ static void rd_to(rd *r, size_t off)
 /* F2Dot14: composite scale factors. 0x4000 == 1.0. */
 static float rf2dot14(rd *r) { return (float)rs16(r) * (1.0f / 16384.0f); }
 
-/* ── cached glyph ────────────────────────────────────────────────── */
+/* ── cached glyph ─────────────────────────────────────────────────
+ * Keyed by codepoint and subpixel phase, chained in a fixed bucket
+ * array, and never evicted: a shell draws from a small, stable set of
+ * strings, so the cache converges to a few hundred kilobytes and stays
+ * there. Text from an unbounded source would want an LRU; the shell is
+ * not that, and pretending otherwise would buy complexity for nothing. */
 typedef struct glyph {
     struct glyph *next;
     uint32_t key;          /* codepoint * SUBPX + phase */
-    uint16_t gid;
     uint16_t bw, bh;       /* coverage bitmap size, 0 for blank glyphs */
     int16_t  x0, y0;       /* bitmap origin relative to (pen, baseline) */
     float    adv;          /* advance in px; independent of the phase */
@@ -113,6 +118,12 @@ struct font {
     size_t   cmap_sub;     /* absolute offset of the chosen subtable */
     size_t   kern_pairs;   /* absolute offset of the format-0 pair array */
     uint32_t kern_n;
+
+    /* cmap lookups are a binary search over a few thousand ranges, and
+     * a line of text hits the same few dozen codepoints over and over,
+     * so a direct-mapped cache in front of it earns its 2 KiB. Slots
+     * store codepoint+1 so a zeroed table reads as empty. */
+    struct { uint32_t cp1; int32_t gid; } gc[GID_BINS];
 
     int      nglyphs, nhmetrics, loca_long;
     float    upem, scale, px;
@@ -364,6 +375,17 @@ static int cmap_lookup(font *f, uint32_t cp)
     if (!gid && cp < 0x100 && fmt == 4)
         gid = cmap_fmt4(f, f->cmap_sub, 0xF000 + cp);
     return (gid >= 0 && gid < f->nglyphs) ? gid : 0;
+}
+
+static int map_gid(font *f, uint32_t cp)
+{
+    uint32_t h = ((cp + 1u) * 2654435761u) >> 22;
+    h &= GID_BINS - 1;
+    if (f->gc[h].cp1 == cp + 1u) return f->gc[h].gid;
+    int gid = cmap_lookup(f, cp);
+    f->gc[h].cp1 = cp + 1u;
+    f->gc[h].gid = gid;
+    return gid;
 }
 
 /* ── hmtx / kern ─────────────────────────────────────────────────── */
@@ -770,13 +792,13 @@ static glyph *glyph_build(font *f, uint32_t cp, int phase)
     glyph *g = calloc(1, sizeof *g);
     if (!g) return NULL;
     g->key = cp * SUBPX + (uint32_t)phase;
-    g->gid = (uint16_t)cmap_lookup(f, cp);
-    g->adv = advance_of(f, g->gid);
+    int gid = map_gid(f, cp);
+    g->adv = advance_of(f, gid);
 
     path P = {0};
     xform t = { f->scale, 0.0f, 0.0f, -f->scale,   /* y grows down on screen */
                 (float)phase / (float)SUBPX, 0.0f };
-    glyf_outline(f, g->gid, &P, t, 0);
+    glyf_outline(f, gid, &P, t, 0);
 
     if (P.oom || P.ne == 0 || P.np == 0) { path_free(&P); return g; }
 
@@ -980,20 +1002,19 @@ float font_descent(const font *f)     { return f ? f->descent : 0.0f; }
 float font_line_height(const font *f) { return f ? f->ascent + f->descent + f->line_gap : 0.0f; }
 
 /* ── layout ──────────────────────────────────────────────────────── */
+/* Measuring is pure metric work -- cmap, hmtx and kern -- and never
+ * touches the rasteriser. Laying out a paragraph to find where it wraps
+ * must not cost a bitmap for every glyph in it. */
 float font_text_width(font *f, const char *utf8)
 {
     if (!f || !utf8) return 0.0f;
     float pen = 0.0f;
     int prev = -1;
     while (*utf8) {
-        uint32_t cp = utf8_next(&utf8);
-        /* Phase 0 is enough for measuring: the advance does not depend
-         * on where in the pixel the glyph was rasterised. */
-        glyph *g = glyph_get(f, cp, 0);
-        if (!g) continue;
-        if (prev >= 0) pen += kern_pair(f, prev, g->gid);
-        pen += g->adv;
-        prev = g->gid;
+        int gid = map_gid(f, utf8_next(&utf8));
+        if (prev >= 0) pen += kern_pair(f, prev, gid);
+        pen += advance_of(f, gid);
+        prev = gid;
     }
     return pen;
 }
@@ -1021,16 +1042,21 @@ void font_draw(font *f, uint32_t *px, int w, int h,
         /* A long enough string can walk the pen out of float-to-int
          * range; stop rather than let the cast go undefined. */
         if (!(pen > -1e6f && pen < 1e6f)) break;
-        glyph *probe = glyph_get(f, cp, 0);
-        if (!probe) continue;
-        if (prev >= 0) pen += kern_pair(f, prev, probe->gid);
-        prev = probe->gid;
+
+        /* The glyph id has to be known before the phase, because kerning
+         * moves the pen and so decides which phase is wanted. Looking it
+         * up through cmap rather than through a phase-0 cache entry is
+         * what keeps a misaligned run from rasterising every glyph
+         * twice. */
+        int gid = map_gid(f, cp);
+        if (prev >= 0) pen += kern_pair(f, prev, gid);
+        prev = gid;
 
         int ix = (int)floorf(pen);
         int ph = (int)((pen - (float)ix) * SUBPX + 0.5f);
         if (ph >= SUBPX) { ph = 0; ix++; }
-        glyph *g = ph ? glyph_get(f, cp, ph) : probe;
-        if (!g) { pen += probe->adv; continue; }
+        glyph *g = glyph_get(f, cp, ph);
+        if (!g) { pen += advance_of(f, gid); continue; }
 
         if (g->cov) {
             int gx = ix + g->x0, gy = base + g->y0;

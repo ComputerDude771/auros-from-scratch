@@ -38,6 +38,7 @@
 #endif
 
 #include <windows.h>
+#include <windowsx.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -68,7 +69,7 @@
 
 #define CR(c) RGB(((c)>>16)&0xFF, ((c)>>8)&0xFF, (c)&0xFF)
 
-/* Theme picker data, transcribed from themes/*.theme. The installed
+/* Theme picker data, transcribed from the theme files in themes/. The installed
  * system reads the .theme files themselves; the installer cannot, since
  * it runs on Windows before AurOS exists. Keep these in step with
  * themes/<name>.theme — identity block + core palette + accents. */
@@ -382,9 +383,12 @@ static void backdrop_build(int w, int h)
              * on a cheap panel, which is most of our market */
             int d = (int)(((x * 7 + y * 13) & 3) - 1);
             int ri = (int)r + d, gi = (int)g + d, bi = (int)b + d;
-            if (ri < 0) ri = 0; if (ri > 255) ri = 255;
-            if (gi < 0) gi = 0; if (gi > 255) gi = 255;
-            if (bi < 0) bi = 0; if (bi > 255) bi = 255;
+            if (ri < 0) ri = 0;
+            if (gi < 0) gi = 0;
+            if (bi < 0) bi = 0;
+            if (ri > 255) ri = 255;
+            if (gi > 255) gi = 255;
+            if (bi > 255) bi = 255;
             g_bgcache[(size_t)y * (size_t)w + (size_t)x] =
                 ((uint32_t)ri << 16) | ((uint32_t)gi << 8) | (uint32_t)bi;
         }
@@ -1009,8 +1013,10 @@ static void layout(void)
 
 static void set_clip(int l, int t, int r, int b)
 {
-    if (l < 0) l = 0; if (t < 0) t = 0;
-    if (r > g_mw) r = g_mw; if (b > g_mh) b = g_mh;
+    if (l < 0) l = 0;
+    if (t < 0) t = 0;
+    if (r > g_mw) r = g_mw;
+    if (b > g_mh) b = g_mh;
     g_clip.left = l; g_clip.top = t; g_clip.right = r; g_clip.bottom = b;
     HRGN rgn = CreateRectRgn(l, t, r, b);
     SelectClipRgn(g_mdc, rgn);
@@ -2306,4 +2312,359 @@ static int save_bmp(const char *path)
     fwrite(g_px, bytes, 1, f);
     fclose(f);
     return 1;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+ *  Window
+ * ═══════════════════════════════════════════════════════════════════ */
+static int g_paints;
+static int g_selftest;
+static char g_selftest_dir[MAX_PATH];
+
+static void tick(void)
+{
+    g_ticks++;
+    g_caret_on = ((g_ticks / 9) & 1) == 0;
+    int need = 0;
+
+    if (g_page == PAGE_CHECKING) {
+        if (!g_pf_valid && InterlockedCompareExchange(&g_pf_state, 2, 2) == 2) {
+            g_pf_valid = 1;
+            g_reveal   = 0;
+            g_settle   = 0;
+        }
+        if (g_pf_valid) {
+            /* The stagger is presentation only: every row below shows the
+             * result preflight actually returned, revealed in order. */
+            if (g_reveal < N_CHK) { if ((g_ticks & 1) == 0) g_reveal++; }
+            else if (++g_settle == 10) check_advance();
+        }
+        need = 1;
+    } else if (g_page == PAGE_PROGRESS) {
+        install_tick();
+        need = 1;
+    } else if (g_page == PAGE_CONSENT) {
+        need = 1;                      /* caret blink */
+    }
+
+    if (g_selftest && g_ticks > 40) {
+        char path[MAX_PATH + 32];
+        _snprintf(path, sizeof path - 1, "%s/selftest-window.bmp", g_selftest_dir);
+        path[sizeof path - 1] = 0;
+        save_bmp(path);
+        _snprintf(path, sizeof path - 1, "%s/selftest.log", g_selftest_dir);
+        path[sizeof path - 1] = 0;
+        FILE *f = fopen(path, "w");
+        if (f) {
+            fprintf(f, "window created   : %s\n", g_hwnd ? "yes" : "no");
+            fprintf(f, "client size      : %dx%d @ %d dpi\n", g_cw, g_ch, g_dpi);
+            fprintf(f, "WM_PAINT handled : %d\n", g_paints);
+            fprintf(f, "back buffer      : %s\n", g_px ? "ok" : "MISSING");
+            fprintf(f, "page             : %d\n", (int)g_page);
+            fprintf(f, "preflight done   : %d (blocks=%d warns=%d results=%d)\n",
+                    g_pf_valid, g_report.n_block, g_report.n_warn, g_report.n);
+            fprintf(f, "widgets on page  : %d\n", g_nw);
+            fclose(f);
+        }
+        PostQuitMessage(0);
+        return;
+    }
+    if (need && g_hwnd) InvalidateRect(g_hwnd, NULL, FALSE);
+}
+
+static void on_char(wchar_t c)
+{
+    if (g_focus < 0 || g_focus >= g_nw) return;
+    if (g_w[g_focus].id != ID_INPUT_AGREE) return;
+    size_t n = wcslen(g_agree);
+    if (c == 8) {                                  /* backspace */
+        if (n) g_agree[n - 1] = 0;
+    } else if (c >= 32 && c != 127) {
+        if (n + 1 < (sizeof g_agree / sizeof g_agree[0])) {
+            g_agree[n] = c;
+            g_agree[n + 1] = 0;
+        }
+    }
+    InvalidateRect(g_hwnd, NULL, FALSE);
+}
+
+static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM wp, LPARAM lp)
+{
+    switch (m) {
+    case WM_CREATE:
+        g_hwnd = h;
+        g_dpi  = dpi_for(h);
+        fonts_make();
+        dark_titlebar(h);
+        SetTimer(h, 1, 60, NULL);
+        return 0;
+
+    case WM_SIZE:
+        g_cw = LOWORD(lp); g_ch = HIWORD(lp);
+        backbuffer(g_cw, g_ch);
+        InvalidateRect(h, NULL, FALSE);
+        return 0;
+
+    case WM_GETMINMAXINFO: {
+        MINMAXINFO *mm = (MINMAXINFO *)lp;
+        mm->ptMinTrackSize.x = S(920);
+        mm->ptMinTrackSize.y = S(640);
+        return 0;
+    }
+
+    case WM_DPICHANGED: {
+        g_dpi = (int)HIWORD(wp);
+        fonts_make();
+        RECT *r = (RECT *)lp;
+        SetWindowPos(h, NULL, r->left, r->top, r->right - r->left,
+                     r->bottom - r->top, SWP_NOZORDER | SWP_NOACTIVATE);
+        InvalidateRect(h, NULL, FALSE);
+        return 0;
+    }
+
+    case WM_ERASEBKGND:
+        return 1;
+
+    case WM_PAINT: {
+        PAINTSTRUCT ps;
+        HDC dc = BeginPaint(h, &ps);
+        backbuffer(g_cw, g_ch);
+        render();
+        g_paints++;
+        if (g_px) BitBlt(dc, 0, 0, g_cw, g_ch, g_mdc, 0, 0, SRCCOPY);
+        EndPaint(h, &ps);
+        return 0;
+    }
+
+    case WM_TIMER:
+        tick();
+        return 0;
+
+    case WM_MOUSEMOVE: {
+        g_mouse.x = GET_X_LPARAM(lp); g_mouse.y = GET_Y_LPARAM(lp);
+        int hot = w_find_at(g_mouse.x, g_mouse.y);
+        if (hot != g_hot_idx) { g_hot_idx = hot; InvalidateRect(h, NULL, FALSE); }
+        return 0;
+    }
+
+    case WM_MOUSELEAVE:
+        g_mouse.x = g_mouse.y = -1; g_hot_idx = -1;
+        InvalidateRect(h, NULL, FALSE);
+        return 0;
+
+    case WM_LBUTTONDOWN:
+        g_mouse.x = GET_X_LPARAM(lp); g_mouse.y = GET_Y_LPARAM(lp);
+        g_mouse_down = 1;
+        g_press_idx  = w_find_at(g_mouse.x, g_mouse.y);
+        if (g_press_idx >= 0) { g_focus = g_press_idx; g_focus_ring = 0; }
+        SetCapture(h);
+        InvalidateRect(h, NULL, FALSE);
+        return 0;
+
+    case WM_LBUTTONUP: {
+        g_mouse.x = GET_X_LPARAM(lp); g_mouse.y = GET_Y_LPARAM(lp);
+        g_mouse_down = 0;
+        ReleaseCapture();
+        int up = w_find_at(g_mouse.x, g_mouse.y);
+        if (up >= 0 && up == g_press_idx) widget_activate(g_w[up].id);
+        g_press_idx = -1;
+        InvalidateRect(h, NULL, FALSE);
+        return 0;
+    }
+
+    case WM_MOUSEWHEEL:
+        scroll_by(-GET_WHEEL_DELTA_WPARAM(wp) * S(60) / WHEEL_DELTA);
+        InvalidateRect(h, NULL, FALSE);
+        return 0;
+
+    case WM_SETCURSOR:
+        if (LOWORD(lp) == HTCLIENT) {
+            SetCursor(LoadCursorW(NULL, (LPCWSTR)(g_hot_idx >= 0 ? IDC_HAND : IDC_ARROW)));
+            return TRUE;
+        }
+        break;
+
+    case WM_CHAR:
+        on_char((wchar_t)wp);
+        return 0;
+
+    case WM_KEYDOWN:
+        switch (wp) {
+        case VK_TAB:
+            focus_step((GetKeyState(VK_SHIFT) & 0x8000) ? -1 : 1);
+            break;
+        case VK_RETURN:
+            if (g_focus >= 0 && g_focus < g_nw && g_w[g_focus].kind == W_BUTTON)
+                widget_activate(g_w[g_focus].id);
+            else
+                do_primary();
+            break;
+        case VK_SPACE:
+            if (g_focus >= 0 && g_focus < g_nw && g_w[g_focus].kind != W_INPUT &&
+                g_w[g_focus].kind != W_BUTTON)
+                widget_activate(g_w[g_focus].id);
+            else if (g_focus >= 0 && g_focus < g_nw && g_w[g_focus].kind == W_BUTTON)
+                widget_activate(g_w[g_focus].id);
+            break;
+        case VK_ESCAPE:
+            if (g_page == PAGE_PROGRESS && g_install_running) MessageBeep(MB_ICONASTERISK);
+            else if (g_page == PAGE_WELCOME || g_page == PAGE_BLOCKED ||
+                     g_page == PAGE_PROGRESS) PostMessageW(h, WM_CLOSE, 0, 0);
+            else goto_page(back_target());
+            break;
+        case VK_LEFT:  focus_step(-1); break;
+        case VK_RIGHT: focus_step(1);  break;
+        case VK_UP:    scroll_by(-S(60)); break;
+        case VK_DOWN:  scroll_by(S(60));  break;
+        case VK_PRIOR: scroll_by(-g_view_h + S(40)); break;
+        case VK_NEXT:  scroll_by(g_view_h - S(40));  break;
+        case VK_HOME:  g_scroll[g_page] = 0; break;
+        case VK_END:   g_scroll[g_page] = scroll_max(); break;
+        default: break;
+        }
+        InvalidateRect(h, NULL, FALSE);
+        return 0;
+
+    case WM_CLOSE:
+        if (g_install_running) {
+            if (MessageBoxW(h, L"Stop setting up AurOS?\n\nNothing on this PC has "
+                               L"been changed, so it is safe to stop here.",
+                            L"AurBridge", MB_YESNO | MB_ICONQUESTION) != IDYES)
+                return 0;
+        }
+        DestroyWindow(h);
+        return 0;
+
+    case WM_DESTROY:
+        KillTimer(h, 1);
+        PostQuitMessage(0);
+        return 0;
+
+    default: break;
+    }
+    return DefWindowProcW(h, m, wp, lp);
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+ *  Dev harness — screenshots.
+ *
+ *  Rendering only: no window is shown, no input is accepted, no phase
+ *  stub is reached that the interactive path would not reach, and
+ *  nav_allowed() is untouched. It exists so the pages can be reviewed
+ *  as images on a machine that is not running Windows.
+ * ═══════════════════════════════════════════════════════════════════ */
+static void shot_save(const char *dir, const char *name)
+{
+    char p[MAX_PATH + 64];
+    _snprintf(p, sizeof p - 1, "%s/%s.bmp", dir, name);
+    p[sizeof p - 1] = 0;
+    render();
+    render();                 /* second pass settles deferred focus */
+    save_bmp(p);
+}
+
+static int shot_run(const char *dir)
+{
+    g_shot_mode = 1;
+    g_dpi = 96;
+    g_cw = 1120; g_ch = 760;
+    backbuffer(g_cw, g_ch);
+    if (!g_px) return 2;
+    fonts_make();
+    detect_defaults();
+
+    g_page = PAGE_WELCOME;  shot_save(dir, "1-welcome");
+
+    g_page = PAGE_CHECKING; g_pf_valid = 0; g_reveal = 0;
+    shot_save(dir, "2a-checking-running");
+
+    pf_run(&g_report);                     /* read-only */
+    g_pf_valid = 1; g_reveal = N_CHK;
+    shot_save(dir, "2b-checking-done");
+
+    if (g_report.n_block > 0) { g_page = PAGE_BLOCKED; shot_save(dir, "3-blocked"); }
+
+    g_page = PAGE_BACKUP;   shot_save(dir, "4a-backup-empty");
+    g_ack_backup = g_ack_usb = 1;
+    shot_save(dir, "4b-backup-done");
+
+    g_page = PAGE_CONSENT;  g_want_focus_id = ID_INPUT_AGREE;
+    shot_save(dir, "5a-consent");
+    g_scroll[PAGE_CONSENT] = 10000;
+    wcscpy(g_agree, AGREE_WORD);
+    shot_save(dir, "5b-consent-typed");
+
+    g_page = PAGE_CHOOSE;   shot_save(dir, "6a-choose");
+    g_choice = 1; shot_save(dir, "6b-choose-replace");
+    g_choice = 0; g_ack_replace = 0;
+
+    g_page = PAGE_PERSONALIZE; shot_save(dir, "7-personalize");
+
+    g_ready_confirm = 1;
+    g_page = PAGE_READY;    shot_save(dir, "8-ready");
+
+    install_begin();
+    for (int i = 0; i < 30; i++) install_tick();
+    g_page = PAGE_PROGRESS; shot_save(dir, "9-progress");
+    for (int i = 0; i < 60; i++) install_tick();
+    shot_save(dir, "9b-progress-end");
+    return 0;
+}
+
+/* ═══════════════════════════════════════════════════════════════════ */
+int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
+{
+    (void)prev; (void)cmd;
+
+    const char *shot = NULL;
+    for (int i = 1; i < __argc; i++) {
+        if (!strcmp(__argv[i], "--shot") && i + 1 < __argc) shot = __argv[++i];
+        else if (!strcmp(__argv[i], "--selftest") && i + 1 < __argc) {
+            g_selftest = 1;
+            _snprintf(g_selftest_dir, sizeof g_selftest_dir - 1, "%s", __argv[++i]);
+            g_selftest_dir[sizeof g_selftest_dir - 1] = 0;
+        }
+    }
+
+    dpi_opt_in();
+    if (shot) return shot_run(shot);
+
+    detect_defaults();
+
+    WNDCLASSEXW wc;
+    memset(&wc, 0, sizeof wc);
+    wc.cbSize        = sizeof wc;
+    wc.style         = CS_HREDRAW | CS_VREDRAW | CS_DBLCLKS;
+    wc.lpfnWndProc   = wndproc;
+    wc.hInstance     = inst;
+    wc.hCursor       = LoadCursorW(NULL, (LPCWSTR)IDC_ARROW);
+    wc.hbrBackground = NULL;
+    wc.lpszClassName = L"AurBridgeWizard";
+    wc.hIcon         = LoadIconW(NULL, (LPCWSTR)IDI_APPLICATION);
+    if (!RegisterClassExW(&wc)) return 1;
+
+    g_dpi = dpi_for(NULL);
+    RECT r = { 0, 0, S(1120), S(760) };
+    AdjustWindowRect(&r, WS_OVERLAPPEDWINDOW, FALSE);
+    int ww = r.right - r.left, wh = r.bottom - r.top;
+    int sx = (GetSystemMetrics(SM_CXSCREEN) - ww) / 2;
+    int sy = (GetSystemMetrics(SM_CYSCREEN) - wh) / 2;
+    if (sx < 0) sx = 0;
+    if (sy < 0) sy = 0;
+
+    HWND h = CreateWindowExW(0, wc.lpszClassName, L"Install AurOS",
+                             WS_OVERLAPPEDWINDOW, sx, sy, ww, wh,
+                             NULL, NULL, inst, NULL);
+    if (!h) return 1;
+
+    ShowWindow(h, g_selftest ? SW_SHOWNOACTIVATE : show);
+    UpdateWindow(h);
+
+    MSG msg;
+    while (GetMessageW(&msg, NULL, 0, 0) > 0) {
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+    }
+    fonts_free();
+    return 0;
 }

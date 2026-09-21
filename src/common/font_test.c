@@ -168,7 +168,8 @@ static int sheet(const char *ttf, const char *out)
     const float sizes[] = { 12.0f, 14.0f, 18.0f, 32.0f, 64.0f };
     const int   nsizes  = 5;
 
-    canvas cv = canvas_new(1280, 1500, BG);
+    const int CW = 1280, CH = 1364;
+    canvas cv = canvas_new(CW, CH, BG);
     if (!cv.px) return 1;
 
     font *hdr = font_load(ttf, 20.0f);
@@ -254,8 +255,9 @@ static int sheet(const char *ttf, const char *out)
 
     font_free(hdr);
     int rc = png_write_rgb(out, cv.px, cv.w, cv.h);
+    printf("wrote %s (%dx%d, content ends at y=%d) rc=%d\n",
+           out, CW, CH, (int)y, rc);
     free(cv.px);
-    printf("wrote %s (%dx%d) rc=%d\n", out, 1280, 1500, rc);
     return rc;
 }
 
