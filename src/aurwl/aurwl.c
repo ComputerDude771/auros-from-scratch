@@ -87,6 +87,7 @@ struct aurwl_win {
     struct wl_resource *xdg_toplevel;
     struct wl_resource *xdg_popup;
     struct wl_resource *decoration;
+    struct wl_resource *viewport;
     char                title[128];
     char                app_id[128];
     int                 want_w, want_h;      /* last configure we sent  */
@@ -121,6 +122,11 @@ struct aurwl {
     struct wl_list      surfaces;
     struct wl_list      seats;        /* wl_seat resources              */
     struct wl_list      pointers, keyboards, touches, outputs, devices;
+    /* Live wl_data_offers. An offer holds its source resource as user
+     * data, and the source can be destroyed while the offer is still on
+     * a client's clipboard menu -- so the offers have to be findable
+     * when that happens. */
+    struct wl_list      offers;
 
     int                 ow, oh, refresh_mhz;
     uint32_t            next_id;
@@ -199,8 +205,13 @@ static void viewport_destroy(struct wl_client *cl, struct wl_resource *r)
 {
     (void)cl;
     aurwl_win *w = wl_resource_get_user_data(r);
-    if (w) { w->pending.vp_dst_w = w->pending.vp_dst_h = 0; }
+    if (w) { w->pending.vp_dst_w = w->pending.vp_dst_h = 0; w->viewport = NULL; }
     wl_resource_destroy(r);
+}
+static void viewport_gone(struct wl_resource *r)
+{
+    aurwl_win *w = wl_resource_get_user_data(r);
+    if (w && w->viewport == r) w->viewport = NULL;
 }
 static void viewport_set_source(struct wl_client *cl, struct wl_resource *r,
                                 wl_fixed_t x, wl_fixed_t y, wl_fixed_t w, wl_fixed_t h)
@@ -439,6 +450,28 @@ static void surface_free_res(struct wl_resource *r)
     if (c->focus == w)     c->focus = NULL;
     if (c->ptr_focus == w) c->ptr_focus = NULL;
 
+    /* When a client dies, libwayland destroys its resources in an order
+     * we do not choose -- and it destroyed the wl_surface BEFORE the
+     * xdg_surface built on it. The xdg_surface's destructor then wrote
+     * through this freed pointer.
+     *
+     * That is not a corner case. It is what happens every single time
+     * an application crashes or is killed, and it took the compositor
+     * down with it -- so one misbehaving program closed every other
+     * window on the machine. Found by SIGKILLing a terminal under
+     * AddressSanitizer; it is not reachable by any polite client, which
+     * is exactly why it survived the polite tests.
+     *
+     * Every resource that points back here is disarmed before the
+     * memory goes. Their destructors already check for NULL, so they
+     * become no-ops in whatever order libwayland runs them. */
+    struct wl_resource *dependents[] = {
+        w->xdg_toplevel, w->xdg_popup, w->xdg_surface,
+        w->subsurface, w->decoration, w->viewport,
+    };
+    for (size_t i = 0; i < sizeof dependents / sizeof dependents[0]; i++)
+        if (dependents[i]) wl_resource_set_user_data(dependents[i], NULL);
+
     /* A parent may outlive its children or the other way round; both
      * directions have to be unhooked or the next walk of either list
      * follows a pointer into freed memory. */
@@ -448,8 +481,11 @@ static void surface_free_res(struct wl_resource *r)
         wl_list_init(&ch->child_link);
         ch->parent = NULL;
     }
-    if (w->parent) { wl_list_remove(&w->child_link); w->parent = NULL; }
-    else if (w->child_link.next) wl_list_remove(&w->child_link);
+    /* child_link is wl_list_init()'d at creation, so it is always a
+     * valid node -- removing one that was never inserted just re-points
+     * it at itself. */
+    wl_list_remove(&w->child_link);
+    w->parent = NULL;
 
     struct wl_resource *cb, *cbt;
     wl_resource_for_each_safe(cb, cbt, &w->frame_cbs) wl_resource_destroy(cb);
@@ -553,9 +589,23 @@ static void subcomp_get(struct wl_client *cl, struct wl_resource *r, uint32_t id
                         struct wl_resource *surf, struct wl_resource *parent)
 {
     (void)r;
-    aurwl_win *w = wl_resource_get_user_data(surf);
-    aurwl_win *p = wl_resource_get_user_data(parent);
-    if (!w || !p || w == p) { wl_client_post_no_memory(cl); return; }
+    aurwl_win *w = surf ? wl_resource_get_user_data(surf) : NULL;
+    aurwl_win *p = parent ? wl_resource_get_user_data(parent) : NULL;
+    if (!w || !p || w == p) {
+        wl_resource_post_error(r, WL_SUBCOMPOSITOR_ERROR_BAD_SURFACE,
+                               "a surface cannot be its own subsurface");
+        return;
+    }
+    /* A cycle -- A below B, then B below A -- makes apply_commit()
+     * recurse until the stack runs out, and the client can build one
+     * with two ordinary requests. The protocol forbids it; nothing
+     * enforced it. */
+    for (aurwl_win *a = p; a; a = a->parent)
+        if (a == w) {
+            wl_resource_post_error(r, WL_SUBCOMPOSITOR_ERROR_BAD_SURFACE,
+                                   "subsurface loop");
+            return;
+        }
     struct wl_resource *res = wl_resource_create(cl, &wl_subsurface_interface, 1, id);
     if (!res) { wl_client_post_no_memory(cl); return; }
     wl_resource_set_implementation(res, &subsurface_impl, w, subsurface_gone);
@@ -584,7 +634,9 @@ static void vper_get(struct wl_client *cl, struct wl_resource *r, uint32_t id,
     (void)r;
     struct wl_resource *res = wl_resource_create(cl, &wp_viewport_interface, 1, id);
     if (!res) { wl_client_post_no_memory(cl); return; }
-    wl_resource_set_implementation(res, &viewport_impl, wl_resource_get_user_data(surf), NULL);
+    aurwl_win *w = wl_resource_get_user_data(surf);
+    wl_resource_set_implementation(res, &viewport_impl, w, viewport_gone);
+    if (w) w->viewport = res;
 }
 static const struct wp_viewporter_interface viewporter_impl = {
     .destroy = noop_destroy, .get_viewport = vper_get,
@@ -759,6 +811,13 @@ static void dsrc_gone(struct wl_resource *r)
     data_source *s = wl_resource_get_user_data(r);
     if (!s) return;
     if (s->c->selection == r) s->c->selection = NULL;
+    /* Any offer still pointing at this source now points at freed
+     * memory. A paste from a menu that was open when the copying
+     * application quit would have written through it -- which is a
+     * perfectly ordinary thing for a person to do. */
+    struct wl_resource *o;
+    wl_resource_for_each(o, &s->c->offers)
+        if (wl_resource_get_user_data(o) == r) wl_resource_set_user_data(o, NULL);
     free(s);
 }
 
@@ -767,6 +826,8 @@ static void doffer_accept(struct wl_client *cl, struct wl_resource *r, uint32_t 
 static void doffer_receive(struct wl_client *cl, struct wl_resource *r, const char *mime, int32_t fd)
 {
     (void)cl;
+    /* NULL means the application that copied has since quit. The read
+     * end still has to be closed or the paste hangs forever. */
     struct wl_resource *src = wl_resource_get_user_data(r);
     if (src) wl_data_source_send_send(src, mime, fd);
     /* Our end of the pipe must go, or the reader never sees EOF and a
@@ -791,7 +852,8 @@ static void send_selection_to(aurwl *c, struct wl_resource *dev)
     struct wl_resource *offer = wl_resource_create(cl, &wl_data_offer_interface,
                                                    wl_resource_get_version(dev), 0);
     if (!offer) return;
-    wl_resource_set_implementation(offer, &data_offer_impl, c->selection, NULL);
+    wl_resource_set_implementation(offer, &data_offer_impl, c->selection, res_unlink);
+    wl_list_insert(&c->offers, wl_resource_get_link(offer));
     wl_data_device_send_data_offer(dev, offer);
     for (int i = 0; i < s->n_mimes; i++) wl_data_offer_send_offer(offer, s->mimes[i]);
     wl_data_device_send_selection(dev, offer);
@@ -960,11 +1022,15 @@ static void configure_toplevel(aurwl_win *w)
 
 static void tl_set_parent(struct wl_client *cl, struct wl_resource *r, struct wl_resource *p)
 { (void)cl; (void)r; (void)p; }
+/* Every handler below can be reached after its surface is gone: the
+ * resource outlives the surface for as long as it takes libwayland to
+ * work through a dead client's object list, and we disarm it rather
+ * than destroy it. So `w` being NULL is ordinary, not exceptional. */
 static void tl_set_title(struct wl_client *cl, struct wl_resource *r, const char *t)
-{ (void)cl; aurwl_win *w = wl_resource_get_user_data(r);
+{ (void)cl; aurwl_win *w = wl_resource_get_user_data(r); if (!w) return;
   snprintf(w->title, sizeof w->title, "%s", t ? t : ""); }
 static void tl_set_app_id(struct wl_client *cl, struct wl_resource *r, const char *a)
-{ (void)cl; aurwl_win *w = wl_resource_get_user_data(r);
+{ (void)cl; aurwl_win *w = wl_resource_get_user_data(r); if (!w) return;
   snprintf(w->app_id, sizeof w->app_id, "%s", a ? a : ""); }
 static void tl_show_menu(struct wl_client *cl, struct wl_resource *r, struct wl_resource *s,
                          uint32_t ser, int32_t x, int32_t y)
@@ -979,13 +1045,13 @@ static void tl_set_max(struct wl_client *cl, struct wl_resource *r, int32_t w_, 
 static void tl_set_min(struct wl_client *cl, struct wl_resource *r, int32_t w_, int32_t h_)
 { (void)cl; (void)r; (void)w_; (void)h_; }
 static void tl_maximize(struct wl_client *cl, struct wl_resource *r)
-{ (void)cl; aurwl_win *w = wl_resource_get_user_data(r); w->want_max = 1; configure_toplevel(w); }
+{ (void)cl; aurwl_win *w = wl_resource_get_user_data(r); if (!w) return; w->want_max = 1; configure_toplevel(w); }
 static void tl_unmaximize(struct wl_client *cl, struct wl_resource *r)
-{ (void)cl; aurwl_win *w = wl_resource_get_user_data(r); w->want_max = 0; configure_toplevel(w); }
+{ (void)cl; aurwl_win *w = wl_resource_get_user_data(r); if (!w) return; w->want_max = 0; configure_toplevel(w); }
 static void tl_fullscreen(struct wl_client *cl, struct wl_resource *r, struct wl_resource *o)
-{ (void)cl; (void)o; aurwl_win *w = wl_resource_get_user_data(r); w->want_full = 1; configure_toplevel(w); }
+{ (void)cl; (void)o; aurwl_win *w = wl_resource_get_user_data(r); if (!w) return; w->want_full = 1; configure_toplevel(w); }
 static void tl_unfullscreen(struct wl_client *cl, struct wl_resource *r)
-{ (void)cl; aurwl_win *w = wl_resource_get_user_data(r); w->want_full = 0; configure_toplevel(w); }
+{ (void)cl; aurwl_win *w = wl_resource_get_user_data(r); if (!w) return; w->want_full = 0; configure_toplevel(w); }
 static void tl_minimize(struct wl_client *cl, struct wl_resource *r) { (void)cl; (void)r; }
 
 static const struct xdg_toplevel_interface toplevel_impl = {
@@ -1038,6 +1104,7 @@ static void popup_gone(struct wl_resource *r)
 static void xs_get_toplevel(struct wl_client *cl, struct wl_resource *r, uint32_t id)
 {
     aurwl_win *w = wl_resource_get_user_data(r);
+    if (!w) { wl_resource_post_error(r, 0, "surface is gone"); return; }
     struct wl_resource *tl = wl_resource_create(cl, &xdg_toplevel_interface,
                                                 wl_resource_get_version(r), id);
     if (!tl) { wl_client_post_no_memory(cl); return; }
@@ -1049,7 +1116,8 @@ static void xs_get_popup(struct wl_client *cl, struct wl_resource *r, uint32_t i
                          struct wl_resource *parent_res, struct wl_resource *pos_res)
 {
     aurwl_win *w = wl_resource_get_user_data(r);
-    positioner *p = wl_resource_get_user_data(pos_res);
+    positioner *p = pos_res ? wl_resource_get_user_data(pos_res) : NULL;
+    if (!w || !p) { wl_resource_post_error(r, 0, "surface or positioner is gone"); return; }
     struct wl_resource *pr = wl_resource_create(cl, &xdg_popup_interface,
                                                 wl_resource_get_version(r), id);
     if (!pr) { wl_client_post_no_memory(cl); return; }
@@ -1074,7 +1142,7 @@ static void xs_get_popup(struct wl_client *cl, struct wl_resource *r, uint32_t i
 static void xs_set_geometry(struct wl_client *cl, struct wl_resource *r,
                             int32_t x, int32_t y, int32_t ww, int32_t hh)
 {
-    (void)cl; aurwl_win *w = wl_resource_get_user_data(r);
+    (void)cl; aurwl_win *w = wl_resource_get_user_data(r); if (!w) return;
     /* The visible window is usually smaller than the buffer: a toolkit
      * draws its own shadow into the margin. Without this the shell would
      * lay windows out by their shadows and everything would look loose
@@ -1083,7 +1151,7 @@ static void xs_set_geometry(struct wl_client *cl, struct wl_resource *r,
     w->geo_x = x;  w->geo_y = y;
 }
 static void xs_ack(struct wl_client *cl, struct wl_resource *r, uint32_t serial)
-{ (void)cl; (void)serial; aurwl_win *w = wl_resource_get_user_data(r); w->acked = 1; }
+{ (void)cl; (void)serial; aurwl_win *w = wl_resource_get_user_data(r); if (!w) return; w->acked = 1; }
 
 static const struct xdg_surface_interface xdg_surface_impl = {
     .destroy = noop_destroy, .get_toplevel = xs_get_toplevel, .get_popup = xs_get_popup,
@@ -1110,7 +1178,8 @@ static void wm_create_positioner(struct wl_client *cl, struct wl_resource *r, ui
 static void wm_get_xdg_surface(struct wl_client *cl, struct wl_resource *r, uint32_t id,
                                struct wl_resource *surf)
 {
-    aurwl_win *w = wl_resource_get_user_data(surf);
+    aurwl_win *w = surf ? wl_resource_get_user_data(surf) : NULL;
+    if (!w) { wl_resource_post_error(r, 0, "no such surface"); return; }
     struct wl_resource *xs = wl_resource_create(cl, &xdg_surface_interface,
                                                 wl_resource_get_version(r), id);
     if (!xs) { wl_client_post_no_memory(cl); return; }
@@ -1158,8 +1227,8 @@ static void deco_gone(struct wl_resource *r)
 static void decomgr_get(struct wl_client *cl, struct wl_resource *r, uint32_t id,
                         struct wl_resource *tl)
 {
-    (void)r;
-    aurwl_win *w = wl_resource_get_user_data(tl);
+    aurwl_win *w = tl ? wl_resource_get_user_data(tl) : NULL;
+    if (w && w->decoration) { wl_resource_post_error(r, 0, "already decorated"); return; }
     struct wl_resource *d = wl_resource_create(cl, &zxdg_toplevel_decoration_v1_interface, 1, id);
     if (!d) { wl_client_post_no_memory(cl); return; }
     wl_resource_set_implementation(d, &deco_impl, w, deco_gone);
@@ -1228,6 +1297,7 @@ aurwl *aurwl_create(int w, int h, int refresh_mhz)
     wl_list_init(&c->pointers);  wl_list_init(&c->keyboards);
     wl_list_init(&c->touches);   wl_list_init(&c->outputs);
     wl_list_init(&c->devices);
+    wl_list_init(&c->offers);
 
     c->display = wl_display_create();
     if (!c->display) { free(c); return NULL; }
@@ -1276,7 +1346,16 @@ void aurwl_destroy(aurwl *c)
     if (c->keymap)    xkb_keymap_unref(c->keymap);
     if (c->xkb)       xkb_context_unref(c->xkb);
     if (c->keymap_fd >= 0) close(c->keymap_fd);
-    if (c->display)   wl_display_destroy(c->display);
+    if (c->display) {
+        /* wl_display_destroy() does not tear down connected clients, so
+         * every surface, buffer and store they still hold is simply
+         * abandoned. On process exit that is only untidy -- but it also
+         * means the shutdown path never exercises the destructors, and
+         * a destructor that is never run on a normal exit is one nobody
+         * notices is broken. */
+        wl_display_destroy_clients(c->display);
+        wl_display_destroy(c->display);
+    }
     free(c);
 }
 

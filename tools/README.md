@@ -28,6 +28,29 @@ cc -O2 -std=gnu11 -I src/common -o /tmp/kerning tools/kerning.c src/common/font.
 cc -O2 -std=gnu11 -o /tmp/contrast tools/contrast.c src/common/theme.c -lm
 /tmp/contrast /tmp/*.conf            # add --strict if the design uses rules
 
+# the compositor: generate the protocol code first, then build both
+mkdir -p build/gen
+for x in /usr/share/wayland-protocols/stable/xdg-shell/xdg-shell.xml \
+         /usr/share/wayland-protocols/unstable/xdg-decoration/xdg-decoration-unstable-v1.xml \
+         /usr/share/wayland-protocols/stable/viewporter/viewporter.xml \
+         /usr/share/wayland-protocols/unstable/xdg-output/xdg-output-unstable-v1.xml; do
+  n=$(basename "$x" .xml | sed s/-unstable-v1//)
+  wayland-scanner server-header "$x" "build/gen/$n-server.h"
+  wayland-scanner private-code  "$x" "build/gen/$n-protocol.c"
+done
+cc -O2 -std=gnu11 -o /tmp/wltest tools/wltest.c src/aurwl/aurwl.c \
+   src/aurshell/draw.c src/common/png.c build/gen/*-protocol.c \
+   -Ibuild/gen $(pkg-config --cflags --libs wayland-server xkbcommon) -lm
+/tmp/wltest -s 8 -o /tmp/shm -- weston-simple-shm       # does a client arrive?
+sh tools/wlstress.sh /tmp/wltest                        # does it survive one crashing?
+
+# and again with AddressSanitizer -- the plain build survived two of the
+# stress cases while corrupting the heap, which is worse than crashing
+cc -g -O1 -fsanitize=address -std=gnu11 -o /tmp/wltest_asan tools/wltest.c \
+   src/aurwl/aurwl.c src/aurshell/draw.c src/common/png.c build/gen/*-protocol.c \
+   -Ibuild/gen $(pkg-config --cflags --libs wayland-server xkbcommon) -lm
+sh tools/wlstress.sh /tmp/wltest_asan
+
 cc -O2 -std=gnu11 -o /tmp/hittest tools/hittest.c src/aurshell/draw.c \
    src/aurshell/shellcommon.c src/aurshell/anim.c src/aurshell/layouts/*.c \
    src/common/theme.c src/common/font.c -lm && /tmp/hittest
@@ -116,3 +139,27 @@ and `P.` visibly fall apart. Badly spaced display type is itself one of
 the things that makes software look machine-made — and the alternative
 was to pick typefaces around the engine's limitation rather than for
 their merits.
+
+`wltest` fails a window that maps but arrives as one flat colour, not
+just one that never maps. A window full of one colour is what a client
+draws when it has given up, and a compositor that hands out buffers but
+never reads them back would otherwise pass its own test.
+
+`wlstress.sh` exists because of a real crash: a SIGKILLed terminal
+segfaulted the compositor. libwayland destroys a dead client's resources
+in an order the compositor does not choose, and it freed the wl_surface
+before running the xdg_surface destructor, which then wrote through the
+freed pointer. That is not a corner case -- it is every crash of every
+program, and it meant one misbehaving application closed every other
+window on the machine. No polite client can reach it, which is exactly
+why the polite tests all passed.
+
+To see the whole desktop with real software in it, without a screen:
+
+```sh
+aurshell --shell shells/rail.shell --png /tmp/desk.png --size 1366 768 \
+         --with-app 'epiphany-browser https://example.com'
+```
+
+That runs the same compositor, reconcile and input routing the booted
+machine runs. Only the destination differs.
