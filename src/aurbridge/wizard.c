@@ -1361,14 +1361,21 @@ static void glyph_search(float cx, float cy, float s, uint32_t c, float a)
 static int feature_row(int glyph, const wchar_t *title, const wchar_t *body,
                        int x, int y, int w, uint32_t tint)
 {
+    /* No tinted chip behind the glyph.
+     *
+     * A pale rounded square holding a thin outline icon is the single
+     * most repeated shape in machine-made interfaces, and the desktop
+     * had twenty of them before this. The glyph stands on its own,
+     * drawn larger and at full strength; the column it sits in still
+     * aligns the rows, so the container was doing nothing the layout
+     * was not already doing. */
     int d  = S(38);
     int tx = x + d + S(18);
     int tw = w - (tx - x);
-    fill_rr((float)x, (float)y, (float)d, (float)d, (float)S(12), tint, 0.14f);
     float cx = (float)x + (float)d * 0.5f, cy = (float)y + (float)d * 0.5f;
-    if (glyph == 0) glyph_check (cx, cy, (float)S(19), tint, 1.f);
-    if (glyph == 1) glyph_undo  (cx, cy, (float)S(21), tint, 1.f);
-    if (glyph == 2) glyph_search(cx, cy, (float)S(21), tint, 1.f);
+    if (glyph == 0) glyph_check (cx, cy, (float)S(24), tint, 1.f);
+    if (glyph == 1) glyph_undo  (cx, cy, (float)S(26), tint, 1.f);
+    if (glyph == 2) glyph_search(cx, cy, (float)S(26), tint, 1.f);
     int th = text_draw(title, g_f_bodyb, C_FG_HI, tx, y + S(2), tw, DT_WORDBREAK);
     int bh = text_draw(body, g_f_body, C_SUBTLE, tx, y + S(4) + th, tw, DT_WORDBREAK);
     int h  = th + bh + S(4);
