@@ -9,3 +9,6 @@
 *.iso
 *.tar.*
 *.log
+
+# Compiled helpers — rebuilt by the Makefile / forge in-chroot.
+/src/ferry/build/
