@@ -127,6 +127,15 @@ typedef struct shell_ctx_s {
      * because a build that pins the theme and the archetype has not
      * thereby said the owner must retype the wifi password. */
     int   allow_network;
+    /* After this many minutes with nobody touching it, the screen goes
+     * dark. 0 means never.
+     *
+     * A laptop whose panel never powers down is a laptop with an hour
+     * of battery -- the panel is most of what a 2013 machine spends
+     * its charge on -- and on a computer with no lock screen it is
+     * also the whole of privacy: a machine left on a kitchen table
+     * should not be showing her bank statement to the room. */
+    int   screen_off_min;
     /* allow_tty is not cosmetic. Masking getty units does not stop a
      * VT switch -- the kernel's VT layer handles the chord and needs no
      * cooperation from userspace -- so the shell has to refuse the

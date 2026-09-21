@@ -900,6 +900,14 @@ EOL
     allow_tty=$(yesno "${allow_tty:-yes}")
     allow_network_change=$(yesno "${allow_network_change:-yes}")
     kiosk_mode=$(yesno "${kiosk_mode:-no}")
+    # Minutes, not a yes/no, and clamped here as well as in the shell:
+    # a profile that says 100000 is a machine whose screen never goes
+    # off, which on a laptop is an hour of battery thrown away.
+    case "${screen_off_minutes:-10}" in
+        ''|*[!0-9]*) warn "screen_off_minutes='${screen_off_minutes:-}' is not a number; using 10"
+                     screen_off_minutes=10 ;;
+    esac
+    [ "${screen_off_minutes:-10}" -le 120 ] 2>/dev/null || screen_off_minutes=120
     auto_login=$(yesno "${auto_login:-no}")
 
     # A kiosk's network is the administrator's, not the user's, and the
@@ -925,6 +933,7 @@ allow_settings_change= $allow_settings_change
 allow_theme_change   = $allow_theme_change
 allow_network_change = $allow_network_change
 allow_tty            = $allow_tty
+screen_off_minutes   = ${screen_off_minutes:-10}
 auto_login           = $auto_login
 default_user         = $default_user
 enrollment_url       = ${enrollment_url:-}

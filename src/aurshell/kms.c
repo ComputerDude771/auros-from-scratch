@@ -264,6 +264,72 @@ surface *kms_back_surface(kms_display *d)
     return &s;
 }
 
+/* ── the screen, off ────────────────────────────────────────────────
+ *
+ * A laptop whose panel never powers down is a laptop with an hour of
+ * battery, and the panel is most of what a 2013 machine spends its
+ * charge on. It is also the whole of "privacy" on a computer with no
+ * lock screen: a machine left on a kitchen table should not be showing
+ * her bank statement to the room.
+ *
+ * DPMS is a property on the connector, so it is two ioctls: find the
+ * property called "DPMS" among the connector's, then set it. The id is
+ * found once and kept, because it cannot change for a connector that
+ * is already open.
+ *
+ * Not every driver has it -- simpledrm does not -- so a failure here
+ * is not a failure. The caller paints black instead, which is worth
+ * less (the backlight stays on) and is not nothing.
+ */
+static int dpms_prop(kms_display *d)
+{
+    if (d->dpms_prop) return (int)d->dpms_prop;
+    if (d->dpms_prop == 0 && d->dpms_looked) return 0;
+    d->dpms_looked = 1;
+
+    struct drm_mode_obj_get_properties q;
+    memset(&q, 0, sizeof q);
+    q.obj_id = d->connector_id;
+    q.obj_type = DRM_MODE_OBJECT_CONNECTOR;
+    if (ioctl(d->fd, DRM_IOCTL_MODE_OBJ_GETPROPERTIES, &q) < 0) return 0;
+    if (!q.count_props || q.count_props > 256) return 0;
+
+    uint32_t ids[256];
+    uint64_t vals[256];
+    q.props_ptr = (uint64_t)(uintptr_t)ids;
+    q.prop_values_ptr = (uint64_t)(uintptr_t)vals;
+    if (ioctl(d->fd, DRM_IOCTL_MODE_OBJ_GETPROPERTIES, &q) < 0) return 0;
+
+    for (uint32_t i = 0; i < q.count_props && i < 256; i++) {
+        struct drm_mode_get_property pr;
+        memset(&pr, 0, sizeof pr);
+        pr.prop_id = ids[i];
+        if (ioctl(d->fd, DRM_IOCTL_MODE_GETPROPERTY, &pr) < 0) continue;
+        /* The kernel does not promise this is NUL-terminated. */
+        char nm[DRM_PROP_NAME_LEN + 1];
+        memcpy(nm, pr.name, DRM_PROP_NAME_LEN);
+        nm[DRM_PROP_NAME_LEN] = 0;
+        if (!strcmp(nm, "DPMS")) { d->dpms_prop = ids[i]; return (int)ids[i]; }
+    }
+    return 0;
+}
+
+int kms_screen_off(kms_display *d, int off)
+{
+    if (!d) return -1;
+    int prop = dpms_prop(d);
+    if (!prop) return -1;
+
+    struct drm_mode_obj_set_property sp;
+    memset(&sp, 0, sizeof sp);
+    sp.value = off ? DRM_MODE_DPMS_OFF : DRM_MODE_DPMS_ON;
+    sp.prop_id = (uint32_t)prop;
+    sp.obj_id = d->connector_id;
+    sp.obj_type = DRM_MODE_OBJECT_CONNECTOR;
+    if (ioctl(d->fd, DRM_IOCTL_MODE_OBJ_SETPROPERTY, &sp) < 0) return -1;
+    return 0;
+}
+
 int kms_flip(kms_display *d)
 {
     int back = d->front ^ 1;

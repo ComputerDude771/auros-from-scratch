@@ -268,6 +268,20 @@ allow_theme_change="yes"
 # Kiosk builds never get the button regardless.
 allow_network_change="yes"
 allow_tty="yes"           # Ctrl-Alt-F2 to a console
+
+# After this many minutes with nobody touching it, the screen goes
+# dark. 0 means never; anything above 120 is clamped to it.
+#
+# The panel is most of what a 2013 laptop spends its charge on, so
+# this is the single biggest thing between this product and a machine
+# that lasts an afternoon. It is also the whole of privacy on a
+# computer with no lock screen: one left on a kitchen table should not
+# go on showing her bank statement to the room.
+#
+# Any key, any click, any touch brings it back, and that first press
+# does nothing else -- it must not type, and it must not press
+# whatever happens to be under a pointer she cannot see.
+screen_off_minutes="10"
 auto_login="no"
 default_user="auros"
 

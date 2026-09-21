@@ -34,6 +34,8 @@ typedef struct {
     } buf[2];
     int      front;
     void    *saved_mode;      /* drm_mode_modeinfo, restored on close */
+    uint32_t dpms_prop;       /* the connector's DPMS property, or 0  */
+    int      dpms_looked;     /* ...and whether we have been to look  */
 } kms_display;
 
 /* Opens the first connected output on the given card (NULL = try
@@ -47,6 +49,12 @@ surface     *kms_back_surface(kms_display *d);
 /* Present the back buffer. Blocks until the flip completes so the
  * caller cannot paint into a buffer still being scanned out. */
 int          kms_flip(kms_display *d);
+
+/* Power the panel down, and back up. Returns -1 on a driver with no
+ * DPMS property at all (simpledrm has none), in which case the caller
+ * should paint black instead -- worth less, since the backlight stays
+ * on, and not nothing. */
+int          kms_screen_off(kms_display *d, int off);
 
 /* Give the display up to another virtual terminal, and take it back.
  * Only one process is DRM master; a VT switch that skips these leaves

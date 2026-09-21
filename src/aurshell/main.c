@@ -490,6 +490,7 @@ static void load_policy(shell_ctx *c, const char *path)
     c->allow_install = c->allow_settings = c->allow_theme_change = 1;
     c->allow_tty = 1;
     c->allow_network = 1;
+    c->screen_off_min = 10;
     c->kiosk = 0;
     c->allowed_apps[0] = 0;
     c->blocked_apps[0] = 0;
@@ -506,6 +507,7 @@ static void load_policy(shell_ctx *c, const char *path)
             c->allow_tty = 0;
             c->allow_network = 0;
             c->kiosk = 1;
+            c->screen_off_min = 10;
             /* Failing closed has to include the applications, or a
              * machine whose policy file is corrupt keeps its lockdown
              * flags and loses the only thing that limited what can be
@@ -533,6 +535,13 @@ static void load_policy(shell_ctx *c, const char *path)
     c->allow_tty          = strcmp(theme_str(&p, "allow_tty",             "yes"), "no") != 0;
     c->allow_network      = strcmp(theme_str(&p, "allow_network_change",  "yes"), "no") != 0;
     c->kiosk              = strcmp(theme_str(&p, "kiosk_mode",            "no"),  "yes") == 0;
+    /* Clamped, not trusted. A profile that says 100000 is a machine
+     * whose screen never goes off; one that says -1 would have been an
+     * enormous unsigned wait. Two hours is longer than anybody means
+     * by "after a while" and still an answer. */
+    c->screen_off_min     = theme_int(&p, "screen_off_minutes", 10);
+    if (c->screen_off_min < 0)   c->screen_off_min = 0;
+    if (c->screen_off_min > 120) c->screen_off_min = 120;
     snprintf(c->allowed_apps, sizeof c->allowed_apps, "%s",
              theme_str(&p, "allowed_apps", ""));
     snprintf(c->blocked_apps, sizeof c->blocked_apps, "%s",
@@ -1074,6 +1083,24 @@ int main(int argc, char **argv)
      * inside this window stops it outright. */
     #define CLOSE_INSIST_MS 6000
     uint32_t close_asked_wid = 0, close_asked_ms = 0;
+    /* THE SCREEN GOES DARK WHEN NOBODY IS THERE.
+     *
+     * `screen_dark` is what the panel is doing, not what we asked it
+     * to do: kms_screen_off() fails on a driver with no DPMS property
+     * at all (simpledrm has none), and in that case the shell paints
+     * black instead -- worth less, since the backlight stays on, and
+     * not nothing. Either way nothing else is painted, which is most
+     * of the saving on a machine that composites on the CPU. */
+    int64_t  last_input_ms = now_ms();
+    int      screen_dark = 0, dark_is_dpms = 0;
+    /* Everything that arrives in this long after the screen comes back
+     * is thrown away. Not just the one event that woke it: a click is
+     * a press AND a release, a double-click is four, and a key held
+     * down at a dark screen repeats. Delivering the tail of that to a
+     * desktop she has not seen yet is how a wake-up press lands on
+     * whatever was under the pointer. */
+    #define WAKE_DEADTIME_MS 250
+    int64_t  woke_at_ms = 0;
 
     while (!want_quit) {
         if (want_reload || c.want_reload) {
@@ -1218,6 +1245,31 @@ int main(int argc, char **argv)
             set_open_last = c.settings_open;
             dirty = 1;
         }
+        /* Has she gone? The clock is monotonic and the comparison is
+         * against the last INPUT, not the last repaint: a video
+         * playing does not count as somebody being there, which is
+         * wrong for a film and right for a machine that was left
+         * showing one. (A player that wants to stop this asks for
+         * an idle inhibitor, which is a thing to add when something
+         * on this machine asks for one.) */
+        if (c.screen_off_min > 0 && !screen_dark) {
+            int64_t idle = now_ms() - last_input_ms;
+            if (idle > (int64_t)c.screen_off_min * 60000) {
+                screen_dark = 1;
+                dark_is_dpms = (kms_screen_off(disp, 1) == 0);
+                if (!dark_is_dpms) {
+                    surface *fb = kms_back_surface(disp);
+                    if (fb) {
+                        rect all = { 0, 0, fb->w, fb->h };
+                        draw_rect(fb, all, 0x000000, 1.f);
+                        kms_flip(disp);
+                    }
+                }
+                fprintf(stderr, "aurshell: screen off after %d minutes\n",
+                        c.screen_off_min);
+            }
+        }
+
         /* One session bus, not two: logind's, once it appears. See
          * run.c -- this cannot be an ordering dependency, because the
          * thing to be ordered after is created by this unit's own PAM
@@ -1613,7 +1665,8 @@ int main(int argc, char **argv)
         }
         /* With a client on screen the wait is short: it is drawing, and
          * the next thing to happen is its next buffer, not a keystroke. */
-        int wait_ms = (animating || osd_visible() || settings_dragging()) ? 8
+        int wait_ms = screen_dark ? 1000
+                    : (animating || osd_visible() || settings_dragging()) ? 8
                     : (c.n_wins > 0 ? 16 : 1000);
         if (np > (int)(sizeof pfd / sizeof pfd[0])) {
             /* Unreachable by construction; here because the thing it
@@ -1654,6 +1707,36 @@ int main(int argc, char **argv)
             struct input_event ev;
             ssize_t got;
             while ((got = read(in.fd[i], &ev, sizeof ev)) == (ssize_t)sizeof ev) {
+                /* ANY real event means somebody is here. SYN is not a
+                 * real event -- it is punctuation the kernel sends
+                 * after the others -- so counting it would mean a
+                 * device that syncs on a timer keeps the screen on
+                 * forever. */
+                if (ev.type != EV_SYN) {
+                    int64_t tnow = now_ms();
+                    last_input_ms = tnow;
+                    if (screen_dark) {
+                        /* THE PRESS THAT WAKES IT DOES NOTHING ELSE.
+                         *
+                         * A key pressed at a dark screen must not also
+                         * be typed, and a click must not also press
+                         * whatever happens to be under the pointer --
+                         * which on a desktop she cannot see is any
+                         * button on it, including Turn off. */
+                        screen_dark = 0;
+                        if (dark_is_dpms) kms_screen_off(disp, 0);
+                        dark_is_dpms = 0;
+                        woke_at_ms = tnow;
+                        dirty = 1;
+                        fprintf(stderr, "aurshell: screen on\n");
+                        continue;
+                    }
+                    /* ...and neither does the rest of what she did
+                     * while it was dark. */
+                    if (woke_at_ms &&
+                        tnow - woke_at_ms < WAKE_DEADTIME_MS) continue;
+                    woke_at_ms = 0;
+                }
                 if (ev.type == EV_SYN) {
                     /* The kernel dropped events because we were too slow
                      * painting. Anything we think is held down may not
