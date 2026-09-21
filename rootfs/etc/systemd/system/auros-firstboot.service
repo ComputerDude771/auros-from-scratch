@@ -1,0 +1,19 @@
+[Unit]
+Description=AurOS first-boot setup
+# Must complete before anything shows a desktop, but must never be able
+# to prevent the machine from booting.
+DefaultDependencies=no
+After=local-fs.target
+Before=display-manager.service aurshell.service multi-user.target
+ConditionPathExists=!/var/lib/auros/firstboot.done
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/auros/firstboot.sh
+RemainAfterExit=yes
+TimeoutStartSec=300
+# A failed migration scan must not become a failed boot.
+SuccessExitStatus=0 1 2
+
+[Install]
+WantedBy=multi-user.target

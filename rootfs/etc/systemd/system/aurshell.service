@@ -1,0 +1,25 @@
+[Unit]
+Description=AurOS desktop shell
+After=auros-firstboot.service systemd-user-sessions.service
+Conflicts=getty@tty1.service
+After=getty@tty1.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/aurshell
+# The shell owns the display and reads evdev directly, so it needs the
+# tty and the input group rather than a seat from a display manager.
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
+StandardInput=tty
+StandardOutput=journal
+StandardError=journal
+Restart=on-failure
+RestartSec=2
+# If the shell cannot start, fall back to a login prompt rather than
+# leaving the user with a black screen and no way in.
+OnFailure=getty@tty1.service
+
+[Install]
+WantedBy=graphical.target

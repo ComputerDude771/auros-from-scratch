@@ -199,9 +199,25 @@ stage_overlay() {
         gcc -O2 -std=gnu11 -Wall -Wextra -o /usr/lib/ferry/ferry-winattr  winattr.c" \
         || die "building Ferry's helpers inside the image failed"
 
+    # aurshell needs the kernel DRM headers and libm; it links nothing else.
+    inchroot "cd /usr/src/auros && \
+        gcc -O2 -std=gnu11 -o /usr/bin/aurshell \
+            aurshell/main.c aurshell/draw.c aurshell/kms.c \
+            common/theme.c common/wall.c common/font.c -lm 2>&1 | tail -3" \
+        && note 'aurshell built' \
+        || note 'aurshell NOT built (font.c missing or DRM headers absent) - TTY only'
+
+    inchroot "systemctl enable auros-firstboot.service >/dev/null 2>&1" || true
+    [ -x "$RFS/usr/bin/aurshell" ] && inchroot "systemctl enable aurshell.service >/dev/null 2>&1" || true
+
     inchroot "apt-get purge -y gcc libc6-dev make >/dev/null 2>&1; apt-get autoremove -y >/dev/null 2>&1" || true
     chroot_done
     rm -rf "$RFS/usr/src/auros"
+
+    # First-boot and shell units.
+    install -d "$RFS/etc/systemd/system"
+    cp "$ROOT/rootfs/etc/systemd/system"/*.service "$RFS/etc/systemd/system/" 2>/dev/null || true
+    install -Dm755 "$ROOT/rootfs/usr/lib/auros/firstboot.sh" "$RFS/usr/lib/auros/firstboot.sh"
 
     install -d "$RFS/etc/auros/services"
     cp "$ROOT/rootfs/etc/auros/services"/*.service "$RFS/etc/auros/services/" 2>/dev/null || true
