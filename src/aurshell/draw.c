@@ -268,10 +268,14 @@ static void box_blur_pass(uint32_t *src, uint32_t *dst, int w, int h, int stride
             /* Rounded integer division, then clamp defensively. */
             int32_t oa = (ra + win/2) / win, orr = (rr + win/2) / win;
             int32_t og = (rg + win/2) / win, ob  = (rb + win/2) / win;
-            if (oa < 0) oa = 0; if (oa > 255) oa = 255;
-            if (orr < 0) orr = 0; if (orr > 255) orr = 255;
-            if (og < 0) og = 0; if (og > 255) og = 255;
-            if (ob < 0) ob = 0; if (ob > 255) ob = 255;
+            if (oa  < 0) oa  = 0;
+            if (oa  > 255) oa  = 255;
+            if (orr < 0) orr = 0;
+            if (orr > 255) orr = 255;
+            if (og  < 0) og  = 0;
+            if (og  > 255) og  = 255;
+            if (ob  < 0) ob  = 0;
+            if (ob  > 255) ob  = 255;
             line_d[(size_t)i * step] = ((uint32_t)oa << 24) | ((uint32_t)orr << 16) |
                                        ((uint32_t)og  << 8) |  (uint32_t)ob;
 
