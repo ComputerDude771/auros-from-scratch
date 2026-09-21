@@ -8,6 +8,7 @@ exit non-zero when they fail.
 |---|---|
 | `recip_proof.c` | The blur's multiply-and-shift replacement for integer division is **exact** — checked over every (window, sum) pair a blur can produce, all 4.2 million of them, for radius 1..128. Not a spot check. |
 | `blur_equiv.c` | The rewritten blur matches the one it replaced pixel for pixel, on adversarial full-contrast noise across 9 radii × 8 region shapes including off-screen, 1×1 and 1-pixel-wide slivers. Also times both. |
+| `contrast.c` | Can the person this is for actually read it? WCAG relative-luminance contrast for every meaningful colour pair, in every theme. A floor, not a target: clearing it does not make a design good, failing it makes one unusable. |
 | `contactsheet.c` | All six archetypes for one theme, in one image, at a real panel size. A design decision is not judged one screen at a time — what separates a system from a look is whether it survives six different interaction models. |
 | `hittest.c` | Two things. **Clicks land where the archetype paints** — sweeps `click()` across four resolutions and checks each consumed click against a mask of what was actually drawn. **Nothing highlights that cannot be clicked** — wherever hovering changes the frame, clicking must change it further. |
 
@@ -19,6 +20,9 @@ cc -O2 -std=gnu11 -o /tmp/sheet tools/contactsheet.c src/aurshell/draw.c \
    src/common/theme.c src/common/wall.c src/common/font.c src/common/png.c -lm
 # the conf is a RESOLVED shell.conf, not a .theme -- see below
 /tmp/sheet /tmp/nocturne.conf /tmp/sheet.png
+
+cc -O2 -std=gnu11 -o /tmp/contrast tools/contrast.c src/common/theme.c -lm
+/tmp/contrast /tmp/*.conf            # add --strict if the design uses rules
 
 cc -O2 -std=gnu11 -o /tmp/hittest tools/hittest.c src/aurshell/draw.c \
    src/aurshell/shellcommon.c src/aurshell/anim.c src/aurshell/layouts/*.c \
@@ -79,3 +83,18 @@ tail -n +2 themes/templates/shell.conf.tpl | \
 only where you changed something. Without it a comparison picks up
 whatever minute each run happened to land in, which reads as a
 hundred-level regression in the top bar.
+
+`contrast` exists because the audience is someone whose ten-year-old
+laptop got too slow: an aging TN panel with a washed-out gamma curve,
+often at an angle, often in a bright room, often sixty-year-old eyes. A
+palette that reads beautifully on a designer's monitor can be genuinely
+unusable there, and no amount of taste makes up for it.
+
+It separates **required** from **advisory**, because the answer depends
+on the design. WCAG exempts a disabled control — looking unavailable is
+the point — and a divider between two regions that are already clearly
+separated is decoration. But that flips the moment a design replaces
+shadows with hairlines: then the rule *is* the structure, and an
+invisible rule is an invisible structure. Every current theme sits near
+**1.4:1** on `col_overlay`, so any direction built on rules has to raise
+it and prove it with `--strict`.
