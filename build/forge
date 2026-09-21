@@ -799,8 +799,19 @@ EOL
         # directory to 0750 root:polkitd on purpose, and install -d
         # applies its default 0755 to a directory that already exists.
         # The build was quietly widening a permission the distribution
-        # had deliberately narrowed, on every run.
+        # had deliberately narrowed, on every run -- and mkdir alone
+        # does not put back what an earlier build already widened, so
+        # the mode is restored explicitly, inside the image where the
+        # polkitd group number is the image's own.
         mkdir -p "$RFS/etc/polkit-1/rules.d"
+        inchroot "chown root:polkitd /etc/polkit-1/rules.d && \
+                  chmod 0750 /etc/polkit-1/rules.d" >/dev/null 2>&1 || true
+
+        # An older build of this same image left a rule file under a
+        # different name. A generated file that is not regenerated is a
+        # file that keeps saying what the build used to think, and this
+        # one grants permissions.
+        rm -f "$RFS/etc/polkit-1/rules.d/49-auros-network.rules"
 
         net_cases=""
         if [ "$allow_network_change" = "yes" ]; then
@@ -844,13 +855,23 @@ EOL
         fi
         # The rule is inert without the thing that reads it, and the
         # failure would be invisible: the button appears, presses, and
-        # refuses. Ask polkit whether it knows the action, rather than
-        # whether a file called pkaction exists.
-        if ! inchroot "pkaction --action-id org.freedesktop.login1.power-off \
-                       >/dev/null 2>&1"; then
-            warn "the permission service cannot be asked about its own"
-            warn "actions, so Turn off and the Internet button will refuse"
-            warn "everything. Check that polkitd is installed."
+        # refuses.
+        #
+        # Checked by looking, not by asking. `pkaction --action-id`
+        # talks to the running authority over D-Bus, and there is no
+        # authority running inside a chroot -- so that check failed on
+        # a correctly built image and printed a warning that was simply
+        # wrong. What can be established here is what is INSTALLED: the
+        # daemon, and the catalogue of actions the rule above names.
+        if [ ! -x "$RFS/usr/lib/polkit-1/polkitd" ] &&
+           [ ! -x "$RFS/usr/libexec/polkitd" ]; then
+            warn "polkitd is not in this image, so Turn off, mounting a USB"
+            warn "stick and the Internet button will all refuse. Add polkitd"
+            warn "to the profile's packages."
+        elif ! inchroot "grep -rqs org.freedesktop.login1.power-off \
+                         /usr/share/polkit-1/actions/"; then
+            warn "this image has no permission rules for turning the computer"
+            warn "off, so the band's Turn off button will do nothing."
         fi
     else
         rm -f "$RFS/etc/polkit-1/rules.d/49-auros.rules" \
