@@ -6,20 +6,75 @@
 #  successfully, no later phase is permitted to start.
 #
 #  What it captures, and why each item is here:
-#    parttable.bin   the GPT (primary AND backup) plus the protective
-#                    MBR, byte-for-byte. This is the thing that makes a
-#                    machine unbootable when it goes wrong, and it is
-#                    small enough that there is no excuse not to keep it.
-#    esp.tar         the ENTIRE EFI System Partition as found. OEM ESPs
+#    gpt-primary.bin the GPT (primary) plus the protective MBR, byte-for
+#                    -byte. This is the thing that makes a machine
+#                    unbootable when it goes wrong, and it is small
+#                    enough that there is no excuse not to keep it.
+#    gpt-backup.bin  the backup GPT from the last 34 sectors. Losing it
+#                    while keeping the primary leaves a disk many tools
+#                    refuse to touch.
+#    parts.tab       every partition's first sector, last sector, type
+#                    code and what its first sector says it holds. The
+#                    machine-readable copy of the layout: `gate` and
+#                    `restore` compare against it, and it is what proves
+#                    a partition has not been moved or resized.
+#    esp.img         the ENTIRE EFI System Partition as found. OEM ESPs
 #                    hold vendor boot files and firmware capsules, and
 #                    Windows will not start without \EFI\Microsoft\Boot.
 #    bcd.bin         the Windows Boot Configuration Data store.
+#    ntfs.tab        per NTFS volume: where it starts, how many sectors
+#                    the FILESYSTEM claimed, and where its backup boot
+#                    sector lived. The GPT records none of this, and the
+#                    moment a shrink succeeds the partition entry and the
+#                    filesystem inside it stop agreeing.
+#    ntfs-N-boot.bin $Boot: the first 16 sectors of volume N, which hold
+#                    the boot sector and the bootstrap code.
+#    ntfs-N-backup-boot.bin
+#                    the copy of the boot sector that NTFS keeps in the
+#                    volume's LAST sector — the one that MOVES when the
+#                    volume is resized, and the one chkdsk falls back to
+#                    when the head of the volume is damaged.
 #    machine.json    the full preflight snapshot, so support can see the
 #                    machine without having the machine.
 #    journal.json    which phase the install reached, so a resumed or
 #                    aborted run knows exactly where it stopped.
 #
-#  Everything is hashed. A backup nobody verified is a rumour.
+#  Everything is hashed. A backup nobody verified is a rumour. And every
+#  required artifact is listed in MANIFEST, because a capture can be
+#  perfectly intact and still be missing the one file that matters:
+#  SHA256SUMS proves the files that are here are undamaged, MANIFEST
+#  proves the ones that matter are here at all.
+#
+#  `journal.json` is the one file in DEST that legitimately changes after
+#  the capture (the installer records which phase it reached), so it is
+#  deliberately excluded from SHA256SUMS. Nothing in the restore path
+#  reads it.
+#
+#  HOW A CALLER USES THIS
+#    1. mkrecovery capture DISK DEST    once, before anything destructive.
+#                                       It self-verifies; if it exits
+#                                       non-zero there is no capture.
+#    2. mkrecovery gate DISK DEST       immediately before EVERY
+#                                       destructive phase, every time, no
+#                                       caching of an earlier result.
+#                                       Exit 0 means go. ANY non-zero
+#                                       exit means stop and do not write
+#                                       a byte — same 0=go / 1=refuse
+#                                       contract as `aurbridge preflight`.
+#    3. mkrecovery fve-check DISK LBA   before moving, truncating or
+#                                       resizing ANY partition entry.
+#                                       Exit 0 means that geometry may be
+#                                       changed; non-zero means it must
+#                                       not be, ever, for any reason.
+#    4. mkrecovery restore DISK DEST    the "Put Windows back" button.
+#
+#  THE MUST-NOT, enforced below and not merely written down: never move,
+#  truncate or resize a partition entry whose first sector begins with
+#  the BitLocker signature "-FVE-FS-" at offset 3. Shrinking the
+#  partition without shrinking the volume destroys the trailing FVE
+#  metadata copy and the ciphertext behind it. That is instant, total,
+#  unrecoverable loss of an encrypted volume, and it is a two-line
+#  mistake to make.
 # ═══════════════════════════════════════════════════════════════════
 set -eu
 
@@ -27,9 +82,15 @@ usage() {
     cat >&2 <<EOT
 mkrecovery — capture a machine's boot state before AurOS touches it
 
-  mkrecovery capture DISK DEST   capture from DISK (e.g. /dev/sda) into DEST
-  mkrecovery verify  DEST        re-check every hash in DEST
-  mkrecovery restore DISK DEST   put the captured boot state back
+  mkrecovery capture   DISK DEST   capture from DISK (e.g. /dev/sda) into DEST
+  mkrecovery verify    DEST        re-check every hash, and every required file
+  mkrecovery gate      DISK DEST   THE HARD GATE. Run immediately before every
+                                   destructive phase. Exit 0 = go; any non-zero
+                                   exit = stop, do not write a byte.
+  mkrecovery fve-check DISK LBA    refuse if the partition at LBA is BitLocker-
+                                   encrypted. Run before changing ANY partition
+                                   entry's first or last sector.
+  mkrecovery restore   DISK DEST   put the captured boot state back
 
 DEST is normally the mounted recovery partition.
 EOT
@@ -37,45 +98,265 @@ EOT
 }
 
 C_OK=$(printf '\033[38;2;125;211;192m'); C_ERR=$(printf '\033[38;2;242;120;141m')
-C_DIM=$(printf '\033[38;2;110;120;134m'); C_RST=$(printf '\033[0m')
+C_DIM=$(printf '\033[38;2;110;120;134m'); C_WRN=$(printf '\033[38;2;240;186;104m')
+C_RST=$(printf '\033[0m')
 say()  { printf '%s::%s %s\n' "$C_OK" "$C_RST" "$*"; }
 note() { printf '%s   %s%s\n' "$C_DIM" "$*" "$C_RST"; }
+warn() { printf '%s!!%s %s\n' "$C_WRN" "$C_RST" "$*" >&2; }
 die()  { printf '%s::%s %s\n' "$C_ERR" "$C_RST" "$*" >&2; exit 1; }
+
+# A missing tool is not a reason to carry on with less. Every caller of
+# this names the tool AND what is lost without it, because "command not
+# found" in a recovery log tells the next person nothing.
+need() {
+    command -v "$1" >/dev/null 2>&1 || die "$1 is not installed. $2"
+}
 
 # GPT layout: LBA0 protective MBR, LBA1 header, LBA2-33 the entry array.
 # 34 sectors covers all of it at 512b; read 2048 sectors (1 MiB) so the
 # capture also survives 4Kn disks and any alignment padding.
 HEAD_SECTORS=2048
+# NTFS keeps $Boot in the first 16 sectors of the volume. 16 sectors is
+# 8 KiB at 512b and more at 4Kn, so capturing 16 always covers it.
+BOOT_SECTORS=16
 
+# ── scratch space, and the two signatures we compare bytes against ─────
+#
+# Byte comparison, not string comparison: a sector read into a shell
+# variable loses NULs and trailing newlines, and "close enough" is not a
+# standard to apply to the test that decides whether a volume is
+# encrypted.
+TMP=""; LOOPDEV=""
+cleanup() {
+    if [ -n "$LOOPDEV" ]; then losetup -d "$LOOPDEV" >/dev/null 2>&1 || true; fi
+    if [ -n "$TMP" ]; then rm -rf "$TMP"; fi
+    return 0
+}
+trap cleanup EXIT HUP INT TERM
+scratch() {
+    if [ -n "$TMP" ]; then return 0; fi
+    need mktemp "mkrecovery needs a scratch directory to compare sectors in."
+    TMP=$(mktemp -d) || die "could not create a scratch directory"
+    printf '%s' '-FVE-FS-' > "$TMP/sig-fve"
+    printf '%s' 'NTFS    ' > "$TMP/sig-ntfs"
+}
+
+# ── raw sector reads ───────────────────────────────────────────────────
+#
+# Every read is checked for a SHORT read as well as for an error. dd
+# reports success for a truncated read, and a truncated capture that
+# passes a hash check is precisely the failure this tool exists to stop.
+fsize() { stat -c %s "$1" 2>/dev/null || wc -c < "$1"; }
+
+sec_read() {   # disk lba count sector-size outfile
+    dd if="$1" of="$5" bs="$4" skip="$2" count="$3" status=none 2>/dev/null \
+        || die "read failed at LBA $2 of $1 ($3 sectors). The disk may be failing (R5); do not continue."
+    sr_want=$(( $3 * $4 )); sr_got=$(fsize "$5")
+    [ "$sr_got" -eq "$sr_want" ] || \
+        die "short read at LBA $2 of $1: got $sr_got bytes, needed $sr_want. Either the disk ends before the partition table says it does, or it is failing. Refusing to record a truncated capture."
+}
+
+# Write sectors back, then read them off the disk again and compare. A
+# restore nobody verified is a rumour too, and R5 requires read-back
+# verification of every written block.
+sec_write() {  # srcfile disk lba sector-size
+    dd if="$1" of="$2" bs="$4" seek="$3" conv=notrunc status=none \
+        || die "write failed at LBA $3 of $2"
+    sync
+    sw_n=$(( $(fsize "$1") / $4 ))
+    if ! dd if="$2" bs="$4" skip="$3" count="$sw_n" status=none 2>/dev/null \
+         | cmp -s - "$1"; then
+        die "READ-BACK MISMATCH: $1 written to LBA $3 of $2 did not come back the same. The disk is not storing what it is given (R5). Stop now; do not restart the machine into Windows."
+    fi
+}
+
+# The 8 bytes at offset 3 of a boot sector: NTFS puts its OEM id there
+# and BitLocker overwrites it with its own signature.
+sig_is() {     # sectorfile referencefile
+    dd if="$1" bs=1 skip=3 count=8 status=none 2>/dev/null > "$TMP/oem" || return 1
+    cmp -s "$TMP/oem" "$2"
+}
+
+# NTFS on-disk integers are little-endian, and so is every machine that
+# boots UEFI Windows; od reads in host order, which here is the same
+# thing. Width is both the od type size and the byte count.
+le() {         # file offset width(1|2|8)
+    le_v=$(od -A n -t u"$3" -j "$2" -N "$3" "$1" 2>/dev/null | tr -d ' \n')
+    case "${le_v:-x}" in
+        *[!0-9]*) die "could not read the $3-byte field at offset $2 of $1" ;;
+    esac
+    printf '%s\n' "$le_v"
+}
+
+# ── the disk itself ────────────────────────────────────────────────────
+#
+# Guessing either of these numbers puts the backup GPT at the wrong LBA,
+# which is how a recovery tool destroys the disk it was asked to save.
+# The old code fell back to "512" when blockdev was missing; on a 4Kn
+# disk that is wrong by a factor of eight, silently, in the one file
+# nothing else can reconstruct.
+probe_disk() { # disk → sets DISK_BYTES, DISK_SS
+    [ -b "$1" ] || [ -f "$1" ] || die "not a disk or image: $1"
+    if [ -b "$1" ]; then
+        need blockdev "Without it the sector size of $1 can only be guessed, and a guessed sector size writes the backup GPT to the wrong place."
+        DISK_BYTES=$(blockdev --getsize64 "$1") || die "blockdev could not read the size of $1"
+        DISK_SS=$(blockdev --getss "$1")        || die "blockdev could not read the sector size of $1"
+    else
+        DISK_BYTES=$(stat -c %s "$1") || die "could not stat the image $1"
+        DISK_SS=512
+        note "image file: 512b sectors assumed (an image carries no sector size of its own)"
+    fi
+    case "${DISK_BYTES:-x}${DISK_SS:-x}" in
+        *[!0-9]*) die "nonsense geometry for $1: size='$DISK_BYTES' sector='$DISK_SS'" ;;
+    esac
+    [ "$DISK_SS" -ge 512 ] || die "impossible sector size for $1: $DISK_SS"
+    [ "$DISK_BYTES" -gt $(( DISK_SS * (HEAD_SECTORS + 34) )) ] || \
+        die "$1 is too small to hold a GPT and its backup ($DISK_BYTES bytes)"
+}
+
+# ── the partition table, as sgdisk sees it ─────────────────────────────
+#
+# One source of truth: every later comparison is against these four
+# columns. Matched on the partition TYPE CODE rather than by probing for
+# a filesystem, because an ESP can be unmounted, unformatted or empty and
+# still be the one the firmware boots from.
+part_table() { # disk → "num first last typecode" per line
+    need sgdisk "mkrecovery cannot read a partition table without it, and a capture that guesses the layout is worse than no capture at all: everything downstream trusts it. Install gptfdisk."
+    sgdisk -p "$1" > "$TMP/sgdisk-p" 2>"$TMP/sgdisk-err" \
+        || die "sgdisk could not read the partition table of $1: $(cat "$TMP/sgdisk-err")"
+    awk '$1 ~ /^[0-9]+$/ && NF >= 6 { print $1, $2, $3, $6 }' "$TMP/sgdisk-p" \
+        > "$TMP/parts.raw"
+    [ -s "$TMP/parts.raw" ] || \
+        die "sgdisk found no partitions on $1. Either the table is already gone or it is not GPT; either way there is nothing here that can be put back."
+    cat "$TMP/parts.raw"
+}
+
+# The same, but tolerant of a disk whose table is already gone. That is
+# the normal state of a machine when someone presses "Put Windows back",
+# and refusing to read an empty table there would refuse the one job this
+# tool exists for. Used only to see what is on the disk right now; every
+# check that has to be strict uses part_table above.
+part_table_soft() { # disk → the same columns, possibly none at all
+    need sgdisk "Without it nothing here can see what is currently on the disk."
+    sgdisk -p "$1" > "$TMP/sgdisk-p" 2>/dev/null || : > "$TMP/sgdisk-p"
+    awk '$1 ~ /^[0-9]+$/ && NF >= 6 { print $1, $2, $3, $6 }' "$TMP/sgdisk-p"
+}
+
+# What the first sector of a partition says it holds.
+part_kind() {  # disk lba sector-size → ntfs | bitlocker | other
+    sec_read "$1" "$2" 1 "$3" "$TMP/first-sector"
+    if   sig_is "$TMP/first-sector" "$TMP/sig-fve";  then printf 'bitlocker\n'
+    elif sig_is "$TMP/first-sector" "$TMP/sig-ntfs"; then printf 'ntfs\n'
+    else printf 'other\n'; fi
+}
+
+# ── THE MUST-NOT ───────────────────────────────────────────────────────
+#
+# Refuse if changing the geometry of the partition at LBA would touch a
+# BitLocker volume. Reads the disk; does not trust a recorded flag,
+# because the flag can be stale and the disk cannot.
+fve_refuse() { # disk lba sector-size context
+    sec_read "$1" "$2" 1 "$3" "$TMP/fve-probe"
+    if sig_is "$TMP/fve-probe" "$TMP/sig-fve"; then
+        die "REFUSING: the partition at LBA $2 of $1 begins with the BitLocker signature -FVE-FS-, and $4. Moving, truncating or resizing a BitLocker partition entry without first shrinking the volume destroys the FVE metadata copy at the end of the volume and the ciphertext behind it. That loss is total and unrecoverable — there is no chkdsk, no undelete and no recovery key that brings it back. This refusal has no override: decrypt the volume first, or have someone who holds the recovery key rebuild the entry by hand from layout.txt and sgdisk-backup.bin in the capture, which record exactly where it was."
+    fi
+}
+
+# Refuse if applying the captured table would move or resize any
+# partition that is on the disk RIGHT NOW and holds a BitLocker volume.
+# Restoring a table is itself a geometry change, so the restore path is
+# not exempt from the rule; it is the likeliest place to break it,
+# because "put it back" feels safe.
+fve_guard_table() { # disk dest sector-size
+    while read -r g_num g_first g_last g_code g_kind; do
+        case "$g_num" in ''|\#*) continue ;; esac
+        if ! awk -v n="$g_num" '$1==n{print; f=1} END{exit !f}' \
+             "$TMP/live.raw" > "$TMP/live.row"; then
+            continue   # not on the disk now; nothing live to protect
+        fi
+        read -r l_num l_first l_last l_code < "$TMP/live.row"
+        if [ "$l_first" = "$g_first" ] && [ "$l_last" = "$g_last" ]; then
+            continue   # identical entry: writing it changes no geometry
+        fi
+        fve_refuse "$1" "$l_first" "$3" \
+            "restoring the captured table would change partition $g_num from sectors $l_first-$l_last to $g_first-$g_last"
+    done < "$2/parts.tab"
+    # And anything currently on the disk that is encrypted but was never
+    # captured would be erased from the table outright.
+    while read -r l_num l_first l_last l_code; do
+        if awk -v n="$l_num" '$1==n{f=1} END{exit !f}' "$2/parts.tab"; then
+            continue
+        fi
+        fve_refuse "$1" "$l_first" "$3" \
+            "partition $l_num is not in the capture at all, so restoring the captured table would delete its entry"
+    done < "$TMP/live.raw"
+}
+
+# ── capture ────────────────────────────────────────────────────────────
 capture() {
     disk=$1 dest=$2
-    [ -b "$disk" ] || [ -f "$disk" ] || die "not a disk or image: $disk"
+    scratch
+    # Every tool this needs, named before a single byte is written, so a
+    # missing one is a refusal instead of a capture with a hole in it.
+    need sgdisk   "mkrecovery cannot read a partition table without it, and a capture that guesses the layout is worse than no capture at all: everything downstream trusts it. Install gptfdisk."
+    need dd       "There is nothing to read sectors with."
+    need sha256sum "An unhashed capture is a rumour."
+    need od       "Without it the NTFS filesystem size cannot be read, and there is nothing to resize back to after a shrink."
+    need cmp      "Without it a BitLocker signature cannot be checked byte-for-byte."
+    need find     "The capture could not be hashed."
+    need xargs    "The capture could not be hashed."
+    probe_disk "$disk"
+    sz=$DISK_BYTES ss=$DISK_SS
+
     mkdir -p "$dest"
+    # A capture written on top of another inherits the older capture's
+    # files, hashes them, and passes verify while describing a disk that
+    # no longer exists.
+    if [ -e "$dest/recovery.json" ] || [ -e "$dest/SHA256SUMS" ]; then
+        die "$dest already holds a capture. Refusing to write a second one over it: the leftovers of the first would be hashed along with the second and the result would verify while describing two different disks. Move it aside first."
+    fi
 
     say "capturing boot state of $disk"
-
-    # ── partition table, both copies
-    sz=$(blockdev --getsize64 "$disk" 2>/dev/null || stat -c %s "$disk")
-    ss=$(blockdev --getss "$disk" 2>/dev/null || echo 512)
     note "disk $((sz/1024/1024))MB, ${ss}b sectors"
 
-    dd if="$disk" of="$dest/gpt-primary.bin" bs="$ss" count="$HEAD_SECTORS" \
-       conv=notrunc status=none
-    # The backup GPT lives in the last 33 sectors. Losing it while
-    # keeping the primary leaves a disk many tools refuse to touch.
+    # ── partition table, both copies
+    sec_read "$disk" 0 "$HEAD_SECTORS" "$ss" "$dest/gpt-primary.bin"
     tail_sectors=34
     skip=$(( sz / ss - tail_sectors ))
-    dd if="$disk" of="$dest/gpt-backup.bin" bs="$ss" skip="$skip" count="$tail_sectors" \
-       conv=notrunc status=none
+    [ "$skip" -gt "$HEAD_SECTORS" ] || \
+        die "$disk is too small for a backup GPT at LBA $skip — refusing a capture that cannot be restored"
+    sec_read "$disk" "$skip" "$tail_sectors" "$ss" "$dest/gpt-backup.bin"
     printf '%s\n' "$skip" > "$dest/gpt-backup.lba"
     printf '%s\n' "$ss"   > "$dest/sector-size"
+    printf '%s\n' "$sz"   > "$dest/disk-bytes"
     note "partition table: $(du -h "$dest/gpt-primary.bin" | cut -f1) primary + backup at LBA $skip"
 
-    # ── human-readable copy, for a support call where nobody can run code
-    if command -v sgdisk >/dev/null 2>&1; then
-        sgdisk -p "$disk" > "$dest/layout.txt" 2>/dev/null || true
-        sgdisk --backup="$dest/sgdisk-backup.bin" "$disk" >/dev/null 2>&1 || true
-    fi
+    # ── human-readable copy, for a support call where nobody can run
+    #    code, and sgdisk's own backup as the second machine-readable
+    #    copy R6 asks for. Neither failure is survivable-and-ignorable:
+    #    losing the second copy silently is how you find out you had one
+    #    copy at the moment the first one is gone.
+    sgdisk -p "$disk" > "$dest/layout.txt" 2>/dev/null \
+        || die "sgdisk could not print the layout of $disk"
+    [ -s "$dest/layout.txt" ] || die "sgdisk printed an empty layout for $disk"
+    sgdisk --backup="$dest/sgdisk-backup.bin" "$disk" >/dev/null 2>&1 \
+        || die "sgdisk could not write its own backup of the partition table. R6 wants that table in two places; refusing a capture that has it in one."
+    [ -s "$dest/sgdisk-backup.bin" ] || die "sgdisk wrote an empty table backup"
+
+    # ── the layout, machine-readable, with what each partition holds
+    part_table "$disk" > "$TMP/parts.live"
+    printf '# num first_lba last_lba typecode kind\n' > "$dest/parts.tab"
+    npart=0
+    while read -r num first last code; do
+        kind=$(part_kind "$disk" "$first" "$ss")
+        printf '%s %s %s %s %s\n' "$num" "$first" "$last" "$code" "$kind" \
+            >> "$dest/parts.tab"
+        npart=$(( npart + 1 ))
+        if [ "$kind" = bitlocker ]; then
+            warn "partition $num is BitLocker-encrypted (-FVE-FS-). Its first and last sector must never change. mkrecovery will refuse any operation that would move, truncate or resize it."
+        fi
+    done < "$TMP/parts.live"
+    note "$npart partitions recorded"
 
     # ── ESP contents
     #
@@ -83,33 +364,103 @@ capture() {
     # device nodes do not exist in every environment (containers without
     # loop partition scanning, some recovery shells), and the ESP is far
     # too important to skip just because the kernel did not enumerate it.
-    esp_start=$(esp_start_sector "$disk")
-    if [ -n "$esp_start" ]; then
-        esp_count=$(esp_sector_count "$disk")
-        note "ESP at LBA $esp_start, $((esp_count * ss / 1024 / 1024))MB"
-        dd if="$disk" of="$dest/esp.img" bs="$ss" skip="$esp_start" count="$esp_count" \
-           status=none || die "could not read the ESP — refusing to continue without it"
-        printf '%s\n' "$esp_start" > "$dest/esp.lba"
-        printf '%s\n' "$esp_count" > "$dest/esp.sectors"
-        note "ESP captured raw ($(du -h "$dest/esp.img" | cut -f1))"
+    awk '$1 !~ /^#/ && $4 == "EF00" { print }' "$dest/parts.tab" > "$TMP/esps"
+    nesp=$(wc -l < "$TMP/esps")
+    [ "$nesp" -ge 1 ] || \
+        die "no EFI System Partition on $disk. AurOS installs on UEFI machines only (R8), and with no ESP there is no Windows boot path to put back. Refusing to record a capture that cannot restore this machine."
+    [ "$nesp" -le 1 ] || \
+        die "$nesp EFI System Partitions on $disk. Refusing to guess which one the firmware boots — capturing the wrong one produces a backup that restores a machine into a black screen."
+    read -r esp_num esp_start esp_last esp_rest < "$TMP/esps"
+    esp_count=$(( esp_last - esp_start + 1 ))
+    [ "$esp_count" -gt 0 ] || die "the ESP on $disk has a nonsense size ($esp_start-$esp_last)"
+    note "ESP is partition $esp_num at LBA $esp_start, $((esp_count * ss / 1024 / 1024))MB"
+    sec_read "$disk" "$esp_start" "$esp_count" "$ss" "$dest/esp.img"
+    printf '%s\n' "$esp_start" > "$dest/esp.lba"
+    printf '%s\n' "$esp_count" > "$dest/esp.sectors"
+    note "ESP captured raw ($(du -h "$dest/esp.img" | cut -f1))"
 
-        # A readable copy of the boot files too, where the tooling allows
-        # it. The raw image is what restores; this is what a human reads.
-        if command -v mdir >/dev/null 2>&1; then
-            MTOOLS_SKIP_CHECK=1 mdir -i "$dest/esp.img" ::/EFI 2>/dev/null \
-                > "$dest/esp-listing.txt" || true
-            MTOOLS_SKIP_CHECK=1 mcopy -i "$dest/esp.img" \
-                ::/EFI/Microsoft/Boot/BCD "$dest/bcd.bin" 2>/dev/null \
-                && note "BCD extracted" || true
-        fi
+    # A readable copy of the boot files too, where the tooling allows it.
+    # The raw image is what restores; this is what a human reads — and
+    # reading it back is also the only proof that the raw image is a
+    # filesystem and not 100MB of zeroes.
+    have_mtools=no
+    if command -v mdir >/dev/null 2>&1 && command -v mcopy >/dev/null 2>&1; then
+        have_mtools=yes
+        MTOOLS_SKIP_CHECK=1 mdir -i "$dest/esp.img" ::/EFI \
+            > "$dest/esp-listing.txt" 2>"$TMP/mdir-err" \
+            || die "the captured ESP image cannot be read back as a filesystem: $(tail -2 "$TMP/mdir-err"). A capture that cannot be read is not a backup."
+        MTOOLS_SKIP_CHECK=1 mcopy -i "$dest/esp.img" \
+            ::/EFI/Microsoft/Boot/BCD "$dest/bcd.bin" 2>/dev/null \
+            || die "\\EFI\\Microsoft\\Boot\\BCD is not in this ESP. Windows will not start without it, so there is nothing here to put Windows back with. Refusing."
+        note "BCD extracted"
     else
-        note "no ESP found (legacy BIOS layout?)"
+        warn "mtools is not installed: the raw ESP image was captured, but nothing here could confirm \\EFI\\Microsoft\\Boot\\BCD is inside it, or copy it out separately."
     fi
 
-    # ── hashes. A backup nobody verified is a rumour.
-    ( cd "$dest" && find . -type f ! -name SHA256SUMS -print0 \
-        | xargs -0 sha256sum > SHA256SUMS )
-    note "$(wc -l < "$dest/SHA256SUMS") files hashed"
+    # ── NTFS volume headers
+    #
+    # The GPT says where a partition starts and ends. It says nothing
+    # about how big the FILESYSTEM inside it is, and those two numbers
+    # stop agreeing the moment a shrink succeeds. Restore the original
+    # GPT over a shrunk volume and Windows gets a partition entry larger
+    # than its own filesystem, with nothing anywhere recording what the
+    # size used to be. So record the filesystem's own sector count, its
+    # $Boot, and the backup boot sector that lives in the volume's last
+    # sector and MOVES when the volume is resized.
+    printf '# num first_lba last_lba fs_sectors bytes_per_sector sectors_per_cluster backup_boot_lba\n' \
+        > "$dest/ntfs.tab"
+    nntfs=0
+    awk '$1 !~ /^#/ && $5 == "ntfs" { print $1, $2, $3 }' "$dest/parts.tab" \
+        > "$TMP/ntfs.live"
+    while read -r num first last; do
+        sec_read "$disk" "$first" 1 "$ss" "$TMP/boot"
+        bps=$(le "$TMP/boot" 11 2)
+        spc=$(le "$TMP/boot" 13 1)
+        tot=$(le "$TMP/boot" 40 8)
+        # 512e vs 4Kn: the filesystem counts in ITS sectors and every LBA
+        # here is in the DISK's. If they disagree every number below is
+        # wrong by a factor of eight, so stop rather than record it.
+        [ "$bps" -eq "$ss" ] || \
+            die "partition $num: NTFS says ${bps}-byte sectors, the disk says ${ss}. Refusing to record a filesystem size that cannot be converted to disk sectors without guessing (see the 512e/4Kn warning in docs/AURBRIDGE.md)."
+        [ "$tot" -gt 0 ] || die "partition $num: the NTFS boot sector claims zero sectors"
+        [ "$spc" -gt 0 ] || die "partition $num: the NTFS boot sector claims zero sectors per cluster"
+        # NTFS does not count its own backup boot sector, so the backup
+        # sits at first + total, which on an untouched volume is exactly
+        # the partition's last sector.
+        bak=$(( first + tot ))
+        [ "$bak" -le "$last" ] || \
+            die "partition $num: the NTFS filesystem claims $tot sectors but the partition holds only $(( last - first + 1 )). This volume is already inconsistent (R9); refusing to record a capture that cannot be trusted to restore it."
+        sec_read "$disk" "$first" "$BOOT_SECTORS" "$ss" "$dest/ntfs-$num-boot.bin"
+        sec_read "$disk" "$bak" 1 "$ss" "$dest/ntfs-$num-backup-boot.bin"
+        if ! sig_is "$dest/ntfs-$num-backup-boot.bin" "$TMP/sig-ntfs"; then
+            die "partition $num: the sector at LBA $bak should be the NTFS backup boot sector and is not. The volume is damaged before AurOS has touched anything (R9). Run chkdsk from Windows and try again; refusing to record a capture that cannot restore this volume."
+        fi
+        printf '%s %s %s %s %s %s %s\n' "$num" "$first" "$last" "$tot" "$bps" "$spc" "$bak" \
+            >> "$dest/ntfs.tab"
+        nntfs=$(( nntfs + 1 ))
+        note "NTFS on partition $num: filesystem $tot sectors ($(( tot / (1024 * 1024 / bps) ))MB), \$Boot + backup boot sector at LBA $bak captured"
+    done < "$TMP/ntfs.live"
+    if [ "$nntfs" -eq 0 ]; then
+        if awk '$1 !~ /^#/ && $5 == "bitlocker" { f=1 } END { exit !f }' "$dest/parts.tab"; then
+            die "every Windows volume on $disk is BitLocker-encrypted. Its size, its \$Boot and its backup boot sector are all ciphertext from here, so nothing readable can be recorded to resize it back afterwards. Suspend BitLocker (R1) and capture again."
+        fi
+        die "no NTFS volume on $disk — there is no Windows here to put back. Refusing a capture that would imply otherwise."
+    fi
+
+    # ── what a restore cannot do without. Finding 1 in one file: the
+    #    hash list proves the files present are undamaged; only this
+    #    proves the ones that matter are present at all.
+    {
+        printf '%s\n' gpt-primary.bin gpt-backup.bin gpt-backup.lba \
+                      sector-size disk-bytes layout.txt sgdisk-backup.bin \
+                      parts.tab esp.img esp.lba esp.sectors ntfs.tab \
+                      recovery.json
+        if [ "$have_mtools" = yes ]; then
+            printf '%s\n' bcd.bin esp-listing.txt
+        fi
+        awk '$1 !~ /^#/ { printf "ntfs-%s-boot.bin\nntfs-%s-backup-boot.bin\n", $1, $1 }' \
+            "$dest/ntfs.tab"
+    } > "$dest/MANIFEST"
 
     cat > "$dest/recovery.json" <<EOJ
 {
@@ -118,69 +469,331 @@ capture() {
   "disk_bytes": $sz,
   "sector_size": $ss,
   "gpt_backup_lba": $skip,
-  "esp_lba": "${esp_start:-}",
-  "tool": "mkrecovery/1"
+  "partitions": $npart,
+  "esp_partition": $esp_num,
+  "esp_lba": $esp_start,
+  "esp_sectors": $esp_count,
+  "ntfs_volumes": $nntfs,
+  "bitlocker": "$(awk '$1 !~ /^#/ && $5 == "bitlocker" { f=1 } END { print (f ? "yes" : "no") }' "$dest/parts.tab")",
+  "tool": "mkrecovery/2"
 }
 EOJ
-    say "capture complete: $dest"
+
+    # ── hashes. Written AFTER recovery.json, so the file that describes
+    #    the capture is inside the hash list rather than the one thing
+    #    nobody checks.
+    ( cd "$dest" && find . -type f ! -name SHA256SUMS ! -name journal.json -print0 \
+        | xargs -0 sha256sum > SHA256SUMS ) \
+        || die "could not hash the capture in $dest"
+    [ -s "$dest/SHA256SUMS" ] || die "the hash list came out empty"
+    note "$(wc -l < "$dest/SHA256SUMS") files hashed"
+    sync
+
+    # ── hash every file again, out of the destination, before claiming
+    #    the capture exists. "capture completed successfully" is the
+    #    sentence every later phase is allowed to start on, so it has to
+    #    mean something: this catches a destination that ran out of
+    #    space, a dd that landed somewhere else and a file that never
+    #    arrived. It cannot catch media that lies about persisting —
+    #    that is what the second copy on the recovery USB is for.
+    verify "$dest"
+    say "capture complete and verified: $dest"
 }
 
-# EF00 / the EFI System GUID. Matched on the partition TYPE CODE rather
-# than by probing for a filesystem, because an ESP can be unmounted,
-# unformatted or empty and still be the one the firmware boots from.
-esp_partnum() {
-    command -v sgdisk >/dev/null 2>&1 || return 0
-    sgdisk -p "$1" 2>/dev/null | awk '$6=="EF00"{print $1; exit}'
-}
-esp_start_sector() {
-    n=$(esp_partnum "$1"); [ -n "$n" ] || return 0
-    sgdisk -i "$n" "$1" 2>/dev/null | sed -n 's/^First sector: \([0-9]*\).*/\1/p'
-}
-esp_sector_count() {
-    n=$(esp_partnum "$1"); [ -n "$n" ] || return 0
-    first=$(sgdisk -i "$n" "$1" 2>/dev/null | sed -n 's/^First sector: \([0-9]*\).*/\1/p')
-    last=$(sgdisk  -i "$n" "$1" 2>/dev/null | sed -n 's/^Last sector: \([0-9]*\).*/\1/p')
-    [ -n "$first" ] && [ -n "$last" ] && echo $(( last - first + 1 ))
-}
-
+# ── verify ─────────────────────────────────────────────────────────────
 verify() {
     dest=$1
     [ -f "$dest/SHA256SUMS" ] || die "no SHA256SUMS in $dest — capture never completed"
+    [ -f "$dest/MANIFEST" ]   || \
+        die "no MANIFEST in $dest. Either this capture was made by a version that could not tell a complete capture from a partial one, or it never finished. Capture again; do not rely on it."
     say "verifying $dest"
-    ( cd "$dest" && sha256sum -c SHA256SUMS --quiet ) \
-        && say "all files intact" \
-        || die "RECOVERY DATA IS CORRUPT — do not rely on it"
+
+    # Completeness FIRST. A capture can be perfectly intact and still be
+    # missing the ESP, and an intact-but-partial backup that passes
+    # verification is worse than no backup at all, because everything
+    # downstream trusts it.
+    v_missing=""; v_unhashed=""; v_n=0
+    while read -r v_f; do
+        case "$v_f" in ''|\#*) continue ;; esac
+        v_n=$(( v_n + 1 ))
+        if [ ! -s "$dest/$v_f" ]; then
+            v_missing="$v_missing $v_f"
+        elif ! awk -v f="./$v_f" '$2 == f { g=1 } END { exit !g }' "$dest/SHA256SUMS"; then
+            v_unhashed="$v_unhashed $v_f"
+        fi
+    done < "$dest/MANIFEST"
+    if [ -n "$v_missing" ]; then
+        die "THIS CAPTURE IS INCOMPLETE. Missing or empty:$v_missing. It would pass a hash check and still fail to put Windows back. Do not rely on it; capture again."
+    fi
+    if [ -n "$v_unhashed" ]; then
+        die "THIS CAPTURE IS NOT FULLY HASHED. Present but absent from SHA256SUMS:$v_unhashed. Nothing would notice if these were corrupt. Capture again."
+    fi
+
+    if ( cd "$dest" && sha256sum -c SHA256SUMS --quiet ); then
+        say "all files intact ($v_n required, $(wc -l < "$dest/SHA256SUMS") hashed)"
+    else
+        die "RECOVERY DATA IS CORRUPT — do not rely on it"
+    fi
 }
 
+# ── the gate ───────────────────────────────────────────────────────────
+#
+# The header says this must run before the first destructive byte, so
+# this is the thing that makes that enforceable rather than aspirational.
+# Callers run it immediately before every destructive phase, every time:
+# exit 0 is the only permission to continue, and the refusal names what
+# changed. It is deliberately cheap enough to run before every phase.
+gate() {
+    disk=$1 dest=$2
+    scratch
+    need sgdisk "Without it nothing here can tell whether a partition has moved, and the gate would be a function that always says yes."
+    probe_disk "$disk"
+    verify "$dest"
+    say "gating $disk against the capture in $dest"
+
+    # 1. The capture must be OF THIS DISK. Restoring one disk's table
+    #    onto another is R11 with the safety tool holding the gun.
+    g_bytes=$(cat "$dest/disk-bytes"); g_ss=$(cat "$dest/sector-size")
+    [ "$g_bytes" = "$DISK_BYTES" ] || \
+        die "REFUSING: this capture is of a $g_bytes-byte disk and $disk is $DISK_BYTES bytes. It is not the same disk, or not the same state of it."
+    [ "$g_ss" = "$DISK_SS" ] || \
+        die "REFUSING: this capture recorded ${g_ss}-byte sectors and $disk reports ${DISK_SS}. Every LBA in the capture would land in the wrong place."
+
+    # 2. Nothing captured may have moved. Partitions ADDED since the
+    #    capture are fine — phase 2 adds the recovery partition — but an
+    #    existing entry that has moved, been resized or been deleted
+    #    means the install has already changed geometry it promised not
+    #    to, and the capture no longer describes the disk.
+    part_table "$disk" > "$TMP/live.raw"
+    g_checked=0
+    while read -r p_num p_first p_last p_code p_kind; do
+        case "$p_num" in ''|\#*) continue ;; esac
+        g_checked=$(( g_checked + 1 ))
+        if ! awk -v n="$p_num" '$1==n{print; f=1} END{exit !f}' \
+             "$TMP/live.raw" > "$TMP/live.row"; then
+            die "REFUSING: partition $p_num (sectors $p_first-$p_last, $p_code) was on this disk when the capture was made and is not on it now. Something has already changed the partition table. Do not start a destructive phase; run 'mkrecovery restore' instead."
+        fi
+        read -r l_num l_first l_last l_code < "$TMP/live.row"
+        if [ "$l_first" != "$p_first" ] || [ "$l_last" != "$p_last" ]; then
+            if [ "$p_kind" = bitlocker ]; then
+                die "REFUSING: partition $p_num is BitLocker-encrypted and its entry has ALREADY been changed, from sectors $p_first-$p_last to $l_first-$l_last. If the volume was not shrunk first, the FVE metadata copy at the end of the volume and the ciphertext behind it are already gone. Do not write another byte to this disk."
+            fi
+            die "REFUSING: partition $p_num has moved or been resized since the capture: sectors $p_first-$p_last became $l_first-$l_last. The capture no longer describes this disk."
+        fi
+        # 3. And it must still hold what it held. An NTFS volume whose
+        #    head is no longer NTFS means something has been written over
+        #    the start of C:, which is the worst thing this product can
+        #    do and the cheapest thing to check for.
+        l_kind=$(part_kind "$disk" "$l_first" "$DISK_SS")
+        if [ "$l_kind" != "$p_kind" ]; then
+            die "REFUSING: partition $p_num held '$p_kind' at capture time and now begins with '$l_kind'. Something has been written over the start of this volume. Do not continue; this is what the recovery path exists for."
+        fi
+    done < "$dest/parts.tab"
+
+    # 4. Report the shrink, if one has happened. Not a refusal: after
+    #    phase 4 the filesystem is legitimately smaller than its
+    #    partition, and this is the number the restore path grows back.
+    while read -r n_num n_first n_last n_tot n_bps n_spc n_bak; do
+        case "$n_num" in ''|\#*) continue ;; esac
+        sec_read "$disk" "$n_first" 1 "$DISK_SS" "$TMP/boot"
+        n_now=$(le "$TMP/boot" 40 8)
+        if [ "$n_now" -lt "$n_tot" ]; then
+            note "partition $n_num: filesystem is $n_now sectors, shrunk from $n_tot — restore will grow it back"
+        elif [ "$n_now" -gt "$n_tot" ]; then
+            die "REFUSING: the filesystem on partition $n_num claims $n_now sectors, MORE than the $n_tot recorded before the install. Nothing in AurOS grows a Windows volume, so this capture does not describe this filesystem."
+        fi
+    done < "$dest/ntfs.tab"
+
+    say "GATE PASS — $g_checked captured partitions all present and unmoved on $disk"
+}
+
+# ── fve-check ──────────────────────────────────────────────────────────
+#
+# The two-line mistake, given a one-line guard a caller can run.
+fve_check() {
+    disk=$1 lba=$2
+    scratch
+    probe_disk "$disk"
+    case "${lba:-x}" in *[!0-9]*) die "not a sector number: $lba" ;; esac
+    fve_refuse "$disk" "$lba" "$DISK_SS" \
+        "a caller asked whether its geometry may be changed"
+    say "LBA $lba of $disk is not a BitLocker volume — its partition entry may be changed"
+}
+
+# ── restore ────────────────────────────────────────────────────────────
 restore() {
     disk=$1 dest=$2
+    scratch
+    need sgdisk "Without it the restored table cannot be read back and checked, and an unchecked restore is a guess."
+    need dd  "There is nothing to write sectors with."
+    need cmp "Without it a restore cannot be read back and checked."
+    probe_disk "$disk"
     verify "$dest"
-    [ -f "$dest/gpt-primary.bin" ] || die "no partition table capture in $dest"
 
-    ss=$(cat "$dest/sector-size" 2>/dev/null || echo 512)
-    skip=$(cat "$dest/gpt-backup.lba" 2>/dev/null || echo 0)
+    ss=$(cat "$dest/sector-size"); skip=$(cat "$dest/gpt-backup.lba")
+    r_bytes=$(cat "$dest/disk-bytes")
+    case "${ss:-x}${skip:-x}" in *[!0-9]*) die "the capture's geometry files are unreadable" ;; esac
+    # R11 again, in the direction nobody thinks about: the recovery path
+    # is the one most likely to be pointed at the wrong disk, because by
+    # then the user is frightened and copying commands out of a forum.
+    [ "$r_bytes" = "$DISK_BYTES" ] || \
+        die "REFUSING: this capture is of a $r_bytes-byte disk; $disk is $DISK_BYTES bytes. Writing this partition table here would put the backup GPT in the wrong place and describe partitions that do not exist. This is not the disk this capture came from."
+    [ "$ss" = "$DISK_SS" ] || \
+        die "REFUSING: the capture recorded ${ss}-byte sectors; $disk reports ${DISK_SS}."
+    [ "$skip" -gt 0 ] || die "the capture records a backup GPT at LBA $skip, which cannot be right"
 
     say "restoring the original boot state to $disk"
     note "this overwrites the partition table with the one captured before install"
 
-    dd if="$dest/gpt-primary.bin" of="$disk" bs="$ss" conv=notrunc status=none
-    [ "$skip" -gt 0 ] && dd if="$dest/gpt-backup.bin" of="$disk" bs="$ss" seek="$skip" \
-        conv=notrunc status=none
+    # Writing a table back is itself a geometry change for every entry
+    # the installer moved. Check before the first write, not after — and
+    # read the live table softly, because the disk this runs on most
+    # often is one whose table has already been destroyed.
+    part_table_soft "$disk" > "$TMP/live.raw"
+    if [ -s "$TMP/live.raw" ]; then
+        fve_guard_table "$disk" "$dest" "$DISK_SS"
+    else
+        note "no readable partition table on $disk — restoring the captured one onto a blank table"
+    fi
+
+    sec_write "$dest/gpt-primary.bin" "$disk" 0 "$ss"
+    sec_write "$dest/gpt-backup.bin"  "$disk" "$skip" "$ss"
     sync
     note "partition table restored"
 
-    if [ -f "$dest/esp.img" ] && [ -f "$dest/esp.lba" ]; then
-        esp_start=$(cat "$dest/esp.lba")
-        dd if="$dest/esp.img" of="$disk" bs="$ss" seek="$esp_start" conv=notrunc status=none
-        note "ESP restored to LBA $esp_start"
-    fi
+    # Prove it took, against the table we recorded rather than against
+    # our own hopes.
+    part_table "$disk" > "$TMP/live.raw"
+    while read -r p_num p_first p_last p_code p_kind; do
+        case "$p_num" in ''|\#*) continue ;; esac
+        if ! awk -v n="$p_num" -v a="$p_first" -v b="$p_last" \
+             '$1==n && $2==a && $3==b { f=1 } END { exit !f }' "$TMP/live.raw"; then
+            die "the restored partition table does not contain partition $p_num at sectors $p_first-$p_last. The restore did not take; do not restart the machine."
+        fi
+    done < "$dest/parts.tab"
+    note "restored table matches the captured layout"
+
+    # ── the ESP, raw and whole
+    esp_start=$(cat "$dest/esp.lba")
+    sec_write "$dest/esp.img" "$disk" "$esp_start" "$ss"
+    note "ESP restored to LBA $esp_start ($(du -h "$dest/esp.img" | cut -f1), read back and checked)"
+
+    # ── and the filesystems inside the partitions
+    restore_ntfs "$disk" "$dest" "$ss"
+
     sync
     say "Windows boot state restored. Restart the computer."
 }
 
+# Put each NTFS volume back to the size the capture recorded.
+#
+# Order matters and is not obvious. The partition entry is restored
+# first, so the partition is already big enough; only then is the
+# filesystem grown into it. Growing is the direction ntfsresize documents
+# as restartable — the data does not move and the boot sector is written
+# last — so a power cut in the middle of this leaves a filesystem that is
+# still its old size and a restore that can simply be run again.
+# Shrinking has no such property, which is why nothing here ever shrinks.
+restore_ntfs() {
+    rn_disk=$1 rn_dest=$2 rn_ss=$3
+    while read -r num first last tot bps spc bak; do
+        case "$num" in ''|\#*) continue ;; esac
+        sec_read "$rn_disk" "$first" 1 "$rn_ss" "$TMP/live-boot"
+
+        # A volume that has become BitLocker since the capture is not a
+        # volume we may resize, whatever the capture says.
+        if sig_is "$TMP/live-boot" "$TMP/sig-fve"; then
+            die "REFUSING: partition $num now begins with the BitLocker signature -FVE-FS-, but the capture recorded a plain NTFS filesystem of $tot sectors there. Resizing an encrypted volume as though it were NTFS destroys it. Stop and get the recovery key."
+        fi
+
+        if ! sig_is "$TMP/live-boot" "$TMP/sig-ntfs"; then
+            # The head of the volume was overwritten. The captured $Boot
+            # and backup boot sector are the only copies left. They are
+            # the right answer when a failed install wrote over the start
+            # of the volume, and the wrong one if a shrink had already
+            # completed — nothing on the disk can tell those apart any
+            # more, so say so in plain language rather than pretending.
+            warn "partition $num no longer starts with an NTFS boot sector. Restoring the captured \$Boot ($tot sectors) verbatim — this is correct if something overwrote the start of the volume. If the filesystem had already been shrunk when that happened, Windows will need 'chkdsk /f' from Windows installation media before C: mounts."
+            sec_write "$rn_dest/ntfs-$num-boot.bin" "$rn_disk" "$first" "$rn_ss"
+            sec_write "$rn_dest/ntfs-$num-backup-boot.bin" "$rn_disk" "$bak" "$rn_ss"
+            note "partition $num: \$Boot and backup boot sector (LBA $bak) restored"
+            continue
+        fi
+
+        now=$(le "$TMP/live-boot" 40 8)
+        if [ "$now" -gt "$tot" ]; then
+            die "REFUSING: the filesystem on partition $num claims $now sectors, MORE than the $tot recorded before the install. Growing it back is safe; shrinking it is not, and this restore will never shrink a filesystem. Nothing has been written to this volume."
+        fi
+
+        if [ "$now" -eq "$tot" ]; then
+            note "partition $num: filesystem is already its original $tot sectors"
+            # The backup boot sector still has to be where NTFS expects
+            # it. Its absence is survivable until the day the head of the
+            # volume is damaged, which is the day it is the only copy.
+            sec_read "$rn_disk" "$bak" 1 "$rn_ss" "$TMP/live-bak"
+            if ! sig_is "$TMP/live-bak" "$TMP/sig-ntfs"; then
+                sec_write "$rn_dest/ntfs-$num-backup-boot.bin" "$rn_disk" "$bak" "$rn_ss"
+                note "partition $num: backup boot sector rewritten at LBA $bak"
+            fi
+            continue
+        fi
+
+        note "partition $num: filesystem was shrunk to $now sectors; growing back to $tot"
+        ntfs_grow "$rn_disk" "$first" "$last" "$tot" "$rn_ss" "$spc" "$num"
+    done < "$rn_dest/ntfs.tab"
+}
+
+ntfs_grow() {
+    e_disk=$1 e_first=$2 e_last=$3 e_tot=$4 e_ss=$5 e_spc=$6 e_num=$7
+    need ntfsresize "The filesystem on partition $e_num was shrunk during the install and cannot be grown back without it. The partition table and the ESP have already been put back, so Windows may boot with a smaller C: — install ntfsprogs (ntfs-3g) and run restore again to finish the job."
+    # By OFFSET, for the same reason the ESP is read by offset: the
+    # kernel may not have re-read the table we just wrote, so /dev/sda3
+    # may not exist or may still describe the old geometry.
+    need losetup "There is no way to hand ntfsresize just the volume without it."
+    e_off=$(( e_first * e_ss ))
+    e_len=$(( ( e_last - e_first + 1 ) * e_ss ))
+    e_bytes=$(( e_tot * e_ss ))
+    LOOPDEV=$(losetup --find --show --offset "$e_off" --sizelimit "$e_len" "$e_disk") \
+        || die "could not attach partition $e_num of $e_disk as a loop device"
+
+    # Ask first. A refusal from ntfsresize is information; finding out
+    # halfway through the real run is not. --force answers its own
+    # "are you sure" prompt, and the volume is dirty by construction
+    # after an interrupted install.
+    if ! printf 'y\n' | ntfsresize --force --no-action --size "$e_bytes" "$LOOPDEV" \
+         > "$TMP/nr" 2>&1; then
+        die "ntfsresize will not grow partition $e_num back to $e_tot sectors: $(tail -3 "$TMP/nr"). The partition table and the ESP have been restored; the filesystem is still its shrunken size. Run 'chkdsk /f' from Windows installation media, then run restore again."
+    fi
+    if ! printf 'y\n' | ntfsresize --force --size "$e_bytes" "$LOOPDEV" \
+         > "$TMP/nr" 2>&1; then
+        die "ntfsresize failed while growing partition $e_num: $(tail -3 "$TMP/nr"). Growing is restartable — run restore again."
+    fi
+    sync
+    losetup -d "$LOOPDEV"; LOOPDEV=""
+
+    # Read the answer off the disk, not out of ntfsresize's mouth.
+    sec_read "$e_disk" "$e_first" 1 "$e_ss" "$TMP/after"
+    e_now=$(le "$TMP/after" 40 8)
+    if [ "$e_now" -eq "$e_tot" ]; then
+        note "partition $e_num: filesystem grown back to its original $e_tot sectors"
+    elif [ "$e_now" -lt "$e_tot" ] && [ $(( e_tot - e_now )) -le "$e_spc" ]; then
+        warn "partition $e_num: grown to $e_now sectors, $(( e_tot - e_now )) short of the original $e_tot. That is less than one cluster — NTFS allocates in clusters and cannot land closer. Windows sees C: at its full size."
+    else
+        die "partition $e_num: after ntfsresize the filesystem claims $e_now sectors, not the $e_tot recorded before the install. Do not restart into Windows; the partition entry and the filesystem disagree."
+    fi
+    # NTFS writes its backup boot sector at first + total when it
+    # resizes, so after a correct grow it is back at the captured LBA.
+    sec_read "$e_disk" "$(( e_first + e_now ))" 1 "$e_ss" "$TMP/after-bak"
+    if ! sig_is "$TMP/after-bak" "$TMP/sig-ntfs"; then
+        die "partition $e_num: the filesystem was grown to $e_now sectors but there is no NTFS backup boot sector at LBA $(( e_first + e_now )). Do not restart into Windows."
+    fi
+}
+
 case "${1:-}" in
-    capture) shift; [ $# -eq 2 ] || usage; capture "$1" "$2" ;;
-    verify)  shift; [ $# -eq 1 ] || usage; verify  "$1" ;;
-    restore) shift; [ $# -eq 2 ] || usage; restore "$1" "$2" ;;
+    capture)   shift; [ $# -eq 2 ] || usage; capture "$1" "$2" ;;
+    verify)    shift; [ $# -eq 1 ] || usage; verify  "$1" ;;
+    gate)      shift; [ $# -eq 2 ] || usage; gate    "$1" "$2" ;;
+    fve-check) shift; [ $# -eq 2 ] || usage; fve_check "$1" "$2" ;;
+    restore)   shift; [ $# -eq 2 ] || usage; restore "$1" "$2" ;;
     *) usage ;;
 esac

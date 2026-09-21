@@ -4,6 +4,7 @@
  * written renderers cannot drift into six slightly different icon sets,
  * six clock formats and six ideas of where a text baseline sits. */
 #include "shell.h"
+#include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
 #include <math.h>
@@ -26,6 +27,21 @@ float shell_baseline(font *f, float y, float h)
 }
 void shell_clock(char *hm, size_t hm_n, char *date, size_t date_n)
 {
+    /* AURSHELL_CLOCK pins the clock so two renders are comparable.
+     * Without it, any pixel comparison between two builds picks up
+     * whatever minute each one happened to run in -- which reads as a
+     * rendering regression of a hundred levels in the top bar, and
+     * costs an hour before anyone notices it is the time. Screenshots
+     * for documentation want this too. */
+    const char *fake = getenv("AURSHELL_CLOCK");
+    if (fake && *fake) {
+        time_t t = (time_t)strtol(fake, NULL, 10);
+        struct tm tmv;
+        gmtime_r(&t, &tmv);
+        if (hm)   strftime(hm,   hm_n,   "%H:%M", &tmv);
+        if (date) strftime(date, date_n, "%a %d %b", &tmv);
+        return;
+    }
     time_t now = time(NULL);
     struct tm tmv;
     localtime_r(&now, &tmv);

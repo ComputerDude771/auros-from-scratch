@@ -1,5 +1,13 @@
 [Unit]
 Description=AurOS desktop shell
+# If the shell cannot start, fall back to a login prompt rather than
+# leaving the user with a black screen and no way in.
+#
+# This lives in [Unit]. It was in [Service], where systemd ignores it
+# with a warning nobody reads -- so the one thing standing between a
+# broken shell and a user with no way into their own computer silently
+# did not exist. Found by reading the journal of a booted image.
+OnFailure=getty@tty1.service
 After=auros-firstboot.service systemd-user-sessions.service
 Conflicts=getty@tty1.service
 After=getty@tty1.service
@@ -17,9 +25,6 @@ StandardOutput=journal
 StandardError=journal
 Restart=on-failure
 RestartSec=2
-# If the shell cannot start, fall back to a login prompt rather than
-# leaving the user with a black screen and no way in.
-OnFailure=getty@tty1.service
 
 [Install]
 WantedBy=graphical.target

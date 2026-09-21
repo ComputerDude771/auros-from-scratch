@@ -531,7 +531,8 @@ int main(int argc, char **argv)
     const char *shellf = "/etc/auros/shell/active.shell";
     const char *policy = "/etc/auros/policy.conf";
     const char *card = NULL, *png_out = NULL;
-    int png_w = 1600, png_h = 900, nopen = 0, once = 0;
+    int png_w = 1600, png_h = 900, nopen = 0, once = 0, frames = 1;
+    int mouse_x0 = -1, mouse_y0 = -1, input_test = 0;
 
     for (int i = 1; i < argc; i++) {
         if      (!strcmp(argv[i], "--conf")   && i+1 < argc) conf   = argv[++i];
@@ -541,10 +542,22 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--png")    && i+1 < argc) png_out = argv[++i];
         else if (!strcmp(argv[i], "--size")   && i+2 < argc) { png_w = atoi(argv[++i]); png_h = atoi(argv[++i]); }
         else if (!strcmp(argv[i], "--open")   && i+1 < argc) nopen = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--mouse")  && i+2 < argc) { mouse_x0 = atoi(argv[++i]); mouse_y0 = atoi(argv[++i]); }
+        else if (!strcmp(argv[i], "--frames") && i+1 < argc) frames = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--once")) once = 1;
+        else if (!strcmp(argv[i], "--input-test")) input_test = 1;
         else if (!strcmp(argv[i], "--help")) {
             fputs("aurshell [--shell FILE] [--conf FILE] [--policy FILE]\n"
-                  "         [--card /dev/dri/cardN] [--png OUT --size W H] [--once]\n", stderr);
+                  "         [--card /dev/dri/cardN] [--png OUT --size W H]\n"
+                  "         [--frames N] [--open N] [--once] [--input-test]\n"
+                  "  --input-test  print every input device this machine has,\n"
+                  "              how the shell classifies it, and every event\n"
+                  "              it produces, with the pointer position each\n"
+                  "              one results in. Run this first when someone\n"
+                  "              says the mouse does not work.\n"
+                  "  --frames N  with --png: paint N times and report the median\n"
+                  "              paint in ms, excluding startup and wallpaper.\n"
+                  "              This is the number that matters on old hardware.\n", stderr);
             return 0;
         }
     }
@@ -580,7 +593,8 @@ int main(int argc, char **argv)
         c.show_clock = 1;
     }
     seed_apps(&c);
-    c.mouse_x = c.mouse_y = -1;
+    c.mouse_x = mouse_x0;
+    c.mouse_y = mouse_y0;
     c.hover = -1;
     c.focus = -1;
 
@@ -612,7 +626,39 @@ int main(int argc, char **argv)
         build_wallpaper(&wall, png_w, png_h, &t);
         c.screen_w = png_w; c.screen_h = png_h;
         if (L->init) L->init(&c);
-        L->paint(&c, s, &f, wall);
+        if (L->motion && c.mouse_x >= 0) L->motion(&c, c.mouse_x, c.mouse_y);
+
+        /* Paint-only timing. The whole process also builds a wallpaper
+         * and loads fonts, which happen once at login and drown the
+         * number that actually decides whether the desktop feels alive. */
+        if (frames < 1) frames = 1;
+        double *ms = frames > 1 ? malloc((size_t)frames * sizeof *ms) : NULL;
+        for (int fr = 0; fr < frames; fr++) {
+            struct timespec a, b;
+            clock_gettime(CLOCK_MONOTONIC, &a);
+            L->paint(&c, s, &f, wall);
+            clock_gettime(CLOCK_MONOTONIC, &b);
+            if (ms) ms[fr] = (double)(b.tv_sec - a.tv_sec) * 1e3
+                           + (double)(b.tv_nsec - a.tv_nsec) / 1e6;
+        }
+        if (ms) {
+            for (int i = 1; i < frames; i++)      /* insertion sort: tiny n */
+                for (int j = i; j > 0 && ms[j] < ms[j-1]; j--) {
+                    double t = ms[j]; ms[j] = ms[j-1]; ms[j-1] = t;
+                }
+            fprintf(stderr, "aurshell: %s %dx%d  paint median %.1f ms  "
+                            "(min %.1f, max %.1f, n=%d)\n",
+                    L->id, png_w, png_h, ms[frames/2], ms[0], ms[frames-1], frames);
+            free(ms);
+        }
+        /* The cursor belongs in a screenshot too: it is part of the
+         * frame the user sees, and leaving it out once cost an hour of
+         * chasing a pointer bug that a screenshot would have shown. */
+        if (c.mouse_x >= 0 && c.mouse_y >= 0)
+            paint_cursor(s, c.mouse_x, c.mouse_y,
+                         theme_color(&t, "col_fg_hi", 0xF3F7FD),
+                         theme_color(&t, "col_bg",    0x0B0E14));
+
         uint32_t *o = malloc((size_t)png_w * png_h * sizeof *o);
         if (!o) { fprintf(stderr, "aurshell: out of memory\n");
                   surface_free(s); surface_free(wall); free_fonts(&f); return 1; }
@@ -623,6 +669,92 @@ int main(int argc, char **argv)
         free_fonts(&f);
         fprintf(stderr, "aurshell: wrote %s (%dx%d, %s)\n", png_out, png_w, png_h, L->id);
         return rc;
+    }
+
+    /* ── the diagnostic ─────────────────────────────────────────── */
+    if (input_test) {
+        /* Line-buffered: a diagnostic that shows nothing until it is
+         * killed is not a diagnostic, and this one is meant to be piped
+         * into a support ticket. */
+        setvbuf(stdout, NULL, _IOLBF, 0);
+        input_set in;
+        input_open_all(&in, 0);
+        printf("%d device%s the shell will listen to "
+               "(anything not listed was examined and ignored):\n\n",
+               in.n, in.n == 1 ? "" : "s");
+        for (int i = 0; i < in.n; i++) {
+            char nm[128] = "?";
+            ioctl(in.fd[i], EVIOCGNAME(sizeof nm), nm);
+            printf("  /dev/input/%-9s %-38s", in.name[i], nm);
+            int k = in.kind[i];
+            printf(" %s%s%s%s%s\n",
+                   (k & DEV_KBD)    ? "keyboard "    : "",
+                   (k & DEV_REL)    ? "mouse "       : "",
+                   (k & DEV_PAD)    ? "touchpad "    : "",
+                   (k & DEV_DIRECT) ? "touchscreen " :
+                   (k & DEV_ABS)    ? "tablet "      : "",
+                   k ? "" : "(ignored)");
+            if (k & (DEV_ABS | DEV_PAD))
+                printf("  %-9s   %-38s x %d..%d, y %d..%d\n", "",
+                       "", in.ax_lo[i], in.ax_hi[i], in.ay_lo[i], in.ay_hi[i]);
+        }
+        if (!in.n) printf("  none. Check that this user can read "
+                          "/dev/input/event* (the `input` group).\n");
+        printf("\nMove the pointer and press things. Ctrl-C to stop.\n"
+               "A pointer that does not change below is the bug.\n\n");
+
+        shell_ctx d;
+        memset(&d, 0, sizeof d);
+        d.mouse_x = 640; d.mouse_y = 400;
+        while (!want_quit) {
+            struct pollfd pfd[MAX_INPUT_DEV];
+            for (int i = 0; i < in.n; i++) { pfd[i].fd = in.fd[i]; pfd[i].events = POLLIN; }
+            if (poll(pfd, in.n, 1000) <= 0) continue;
+            for (int i = in.n - 1; i >= 0; i--) {
+                if (pfd[i].revents & (POLLERR | POLLHUP | POLLNVAL)) {
+                    printf("  %-9s WENT AWAY\n", in.name[i]);
+                    input_drop(&in, i); continue;
+                }
+                if (!(pfd[i].revents & POLLIN)) continue;
+                struct input_event ev;
+                while (read(in.fd[i], &ev, sizeof ev) == (ssize_t)sizeof ev) {
+                    const char *t = ev.type == EV_REL ? "REL" :
+                                    ev.type == EV_ABS ? "ABS" :
+                                    ev.type == EV_KEY ? "KEY" :
+                                    ev.type == EV_SYN ? "SYN" : "???";
+                    if (ev.type == EV_SYN) {
+                        if ((in.kind[i] & DEV_PAD) && ev.code == SYN_REPORT)
+                            pad_synced(&in.pad[i]);
+                        continue;
+                    }
+                    if (ev.type == EV_REL) {
+                        if (ev.code == REL_X) d.mouse_x += ev.value;
+                        if (ev.code == REL_Y) d.mouse_y += ev.value;
+                        clamp_pointer(&d, 1280, 800);
+                    } else if (ev.type == EV_ABS && (in.kind[i] & DEV_PAD)) {
+                        int axis = (ev.code == ABS_Y || ev.code == ABS_MT_POSITION_Y);
+                        int step = pad_delta(&in.pad[i], axis, ev.value);
+                        if (axis) d.mouse_y += step; else d.mouse_x += step;
+                        clamp_pointer(&d, 1280, 800);
+                    } else if (ev.type == EV_ABS && (in.kind[i] & DEV_ABS)) {
+                        if (ev.code == ABS_X && in.ax_hi[i] > in.ax_lo[i])
+                            d.mouse_x = (int)((int64_t)(ev.value - in.ax_lo[i]) * 1280
+                                              / (in.ax_hi[i] - in.ax_lo[i] + 1));
+                        if (ev.code == ABS_Y && in.ay_hi[i] > in.ay_lo[i])
+                            d.mouse_y = (int)((int64_t)(ev.value - in.ay_lo[i]) * 800
+                                              / (in.ay_hi[i] - in.ay_lo[i] + 1));
+                        clamp_pointer(&d, 1280, 800);
+                    }
+                    printf("  %-9s %s code %-4d value %-8d -> pointer %4d,%4d\n",
+                           in.name[i], t, ev.code, ev.value, d.mouse_x, d.mouse_y);
+                    fflush(stdout);
+                }
+            }
+        }
+        for (int i = 0; i < in.n; i++) close(in.fd[i]);
+        if (in.notify_fd >= 0) close(in.notify_fd);
+        free_fonts(&f);
+        return 0;
     }
 
     kms_display *disp = kms_open(card);

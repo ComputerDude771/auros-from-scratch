@@ -11,6 +11,8 @@
 #     @accent@              #7DD3C0
 #     @accent|hex@          7DD3C0
 #     @accent|0x@           0x7DD3C0
+#     @bg|lighten:12|0x@    operations chain left to right: derive a
+#                           colour, then format it
 #     @accent|rgb@          125,211,192
 #     @accent|rgba:0.4@     rgba(125,211,192,0.40)
 #     @accent|lighten:20@   lighter by 20%
@@ -106,9 +108,10 @@ function resolve(key,  v){
     return v
 }
 
-function apply(key, op, arg1, arg2,   v, other) {
-    v = resolve(key)
-    if (v == "") return "@@MISSING:" key "@@"
+# Applies ONE operation to a value. Split from key resolution so that
+# operations can be chained: the value that comes out of one is the
+# value that goes into the next.
+function apply(v, op, arg1, arg2,   other) {
     if (op == "")        return v
     if (op == "hex")     return hx(v)
     if (op == "lhex")    return tolower(hx(v))
@@ -131,17 +134,25 @@ function apply(key, op, arg1, arg2,   v, other) {
 {
     line = $0
     out  = ""
-    while (match(line, /@[a-z_][a-z0-9_]*(\|[a-z0-9]+(:[A-Za-z0-9_.]+)*)?@/)) {
+    # Note the trailing * -- operations CHAIN. Templates are full of
+    # things like @bg_alt|mix:bg:20|0x@: derive a colour, then format
+    # it. With `?` here instead, that token matched nothing at all and
+    # was copied through verbatim, so five keys in the generated theme
+    # were the literal text "@accent|lighten:18|0x@". The shell then
+    # read those as colours and got zero, and the bug was invisible
+    # unless you happened to look at the one panel that used them.
+    while (match(line, /@[a-z_][a-z0-9_]*(\|[a-z0-9]+(:[A-Za-z0-9_.]+)*)*@/)) {
         out = out substr(line, 1, RSTART-1)
         tok = substr(line, RSTART+1, RLENGTH-2)
         line = substr(line, RSTART+RLENGTH)
         n = split(tok, parts, "|")
-        key = parts[1]
-        if (n == 1) { out = out apply(key, "", "", "") }
-        else {
-            m = split(parts[2], a, ":")
-            out = out apply(key, a[1], (m>1?a[2]:""), (m>2?a[3]:""))
+        v = resolve(parts[1])
+        if (v == "") { out = out "@@MISSING:" parts[1] "@@"; continue }
+        for (i = 2; i <= n; i++) {
+            m = split(parts[i], a, ":")
+            v = apply(v, a[1], (m>1?a[2]:""), (m>2?a[3]:""))
         }
+        out = out v
     }
     print out line
 }'
