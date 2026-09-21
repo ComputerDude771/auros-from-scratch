@@ -25,6 +25,8 @@ cc -O2 -std=gnu11 -o /tmp/sheet tools/contactsheet.c src/aurshell/draw.c \
 cc -O2 -std=gnu11 -I src/common -o /tmp/kerning tools/kerning.c src/common/font.c -lm
 /tmp/kerning 36 /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf
 
+sh tools/plainwords.sh
+
 cc -O2 -std=gnu11 -o /tmp/kiosktest tools/kiosktest.c src/aurshell/apps.c \
    src/aurshell/shellcommon.c src/aurshell/draw.c src/aurshell/anim.c \
    src/aurshell/layouts/*.c src/common/theme.c src/common/font.c -lm && /tmp/kiosktest
@@ -224,3 +226,32 @@ The last check in it is that a FIFO and a symlink to `/dev/zero` in
 that directory do not hang the scan. Either one used to block forever,
 before the compositor starts and before the first frame — so the
 desktop never appeared, and on a kiosk there was no way back in.
+
+`plainwords.sh` enforces one rule from docs/EASY.md: every word the
+product puts on a screen is a word she uses. It reads the strings the
+shell paints, the sentences that describe each archetype at install
+time, what a build calls itself, and the Windows-side installer's own
+words -- and fails on any of the jargon listed in docs/EASY.md.
+
+It deliberately does not read `fprintf(stderr, ...)`. Developer output
+is allowed to say "compositor" and "stride", because the person reading
+it can act on it. Mixing the two lists is how a rule like this becomes
+unenforceable and then ignored.
+
+Its first version reported "ok" and **could not fail**: it looked only
+at the line containing the `shell_text` call, and almost every call in
+this codebase wraps, so the string sat on the next line and was never
+examined. It now reads every literal and filters down to prose. Check
+it can still fail before trusting it -- put "partition" in a label and
+confirm it is caught.
+
+Two exclusions are principled rather than convenient, and are worth
+knowing about. A literal containing a newline escape is skipped,
+because `shell_text()` paints one line and nothing it draws contains
+one -- that is also how a developer `--help` block is recognised, since
+the `stderr` that gives it away sits a dozen lines below the string.
+And bare "swap" was removed from the list: it is jargon only in "swap
+partition", which "partition" already catches, and on its own it is an
+ordinary English verb. Flagging workbench's "swap pane" would have
+taught people to ignore the check, which is the only way a check like
+this really dies.

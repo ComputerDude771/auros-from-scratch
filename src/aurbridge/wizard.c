@@ -855,7 +855,7 @@ CHK[] = {
       "smart-bad-sectors", "smart-predict-failure", "smart-reallocated",
       "mbr-four-primaries", "system-disk-unreadable", "removable-attached",
       "no-disks", NULL } },
-  { L"The Windows drive", L"Encryption, health and free space",
+  { L"The Windows drive", L"Whether it is locked, healthy, and has room",
     { "bitlocker-system", "bitlocker-other", "volume-dirty",
       "system-not-ntfs", "insufficient-space", NULL } },
   { L"How the drives are connected", L"Some setups hide drives from AurOS",
