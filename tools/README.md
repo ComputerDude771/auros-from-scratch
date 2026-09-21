@@ -36,6 +36,7 @@ cc -O2 -std=gnu11 -o /tmp/targets tools/targets.c src/aurshell/foot.c \
 sh tools/filetypes.sh      # needs packages_files installed on this machine
 sh tools/plainwords.sh
 sh tools/permissions.sh    # needs a rootfs a build has produced
+sudo sh tools/failtest.sh  # needs a built image, qemu and OVMF
 
 cc -O2 -std=gnu11 -o /tmp/kiosktest tools/kiosktest.c src/aurshell/apps.c \
    src/aurshell/shellcommon.c src/aurshell/draw.c src/aurshell/anim.c \
@@ -204,6 +205,29 @@ not text produce none; and the layout is read from
 already uses and `build/forge` already writes. Its last case feeds it a
 layout name that does not exist, because a typo in a profile must leave
 a keyboard in the wrong language rather than no keyboard at all.
+
+`failtest.sh` checks the one screen in this product that only appears
+when everything else has gone wrong, the only way it can be checked: by
+making everything else go wrong on a real machine and looking at the
+screen. It took three attempts to get that screen right, and not one of
+the three failures was visible in the unit file.
+
+The first was `OnFailure=getty@tty1.service` — a login prompt on a
+machine whose owner has never been told the account name or the
+password, and whose password the image expires on purpose. The second
+was a separate unit drawing a message, killed two seconds in by the
+shell's own `TTYVHangup=yes`. The third was adding `Conflicts=` to stop
+the shell restarting underneath it, which changed the signal from
+SIGHUP to SIGTERM and nothing else, because `Conflicts` is symmetric
+and something always starts the shell again. The answer was to stop
+having two units: the message is the shell's own `ExecStopPost`.
+
+It does not copy the image — they are several gigabytes. It adds a
+drop-in that makes the shell fail, boots with `-snapshot` so the guest
+writes nothing back, and removes the drop-in on the way out, including
+when interrupted. Checked by running it against an image built from the
+previous design: "aurshell.service never runs aursorry, so a failed
+desktop shows her nothing."
 
 `permissions.sh` exists because the same bug happened three times in
 one day. The product puts a control on the screen, the control runs
