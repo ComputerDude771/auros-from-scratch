@@ -161,6 +161,17 @@ typedef struct shell_ctx_s {
     int   mouse_x, mouse_y, mouse_down;
     int   hover;               /* layout-defined hot item, -1 none   */
 
+    /* ── the band that is always there (src/aurshell/foot.c) ────── */
+    /* Her chosen text size, as a multiplier over the theme's sizes.
+     * Lives in her own settings, not the system theme, so changing how
+     * big the words are needs nothing privileged. */
+    float text_scale;
+    int   text_changed;        /* she just changed it; reload the fonts */
+    int   help_open;
+    int   foot_hover;          /* which button, -1 for none             */
+    int   no_foot;             /* a profile turned the band off         */
+    int   want_power_off;      /* she pressed Turn off                  */
+
     /* ── the running system ─────────────────────────────────────── */
     /* The Wayland server applications connect to, or NULL. It is NULL
      * in the preview renderer, the contact sheet and the hit-test

@@ -29,6 +29,10 @@ cc -O2 -std=gnu11 -o /tmp/launchtest tools/launchtest.c src/aurshell/draw.c \
    src/aurshell/shellcommon.c src/aurshell/anim.c src/aurshell/layouts/*.c \
    src/common/theme.c src/common/font.c -lm && /tmp/launchtest
 
+cc -O2 -std=gnu11 -o /tmp/targets tools/targets.c src/aurshell/foot.c \
+   src/aurshell/draw.c src/aurshell/shellcommon.c src/aurshell/anim.c \
+   src/aurshell/layouts/*.c src/common/theme.c src/common/font.c -lm && /tmp/targets
+
 sh tools/plainwords.sh
 
 cc -O2 -std=gnu11 -o /tmp/kiosktest tools/kiosktest.c src/aurshell/apps.c \
@@ -288,3 +292,27 @@ already open, and at 1024x600, because an archetype that only launches
 from an empty desktop, or only once something is already there, or
 loses the control when the panel gets small, is broken in a way one
 sweep would miss.
+
+`targets` enforces docs/EASY.md rule 4: everything she has to press is
+at least 44 pixels on its shorter side **at 1024x600**, the bottom of
+the range, because that is where the old machines are. A target
+measured at 1920x1080 and allowed to shrink with the panel fails
+exactly where it matters.
+
+It caught the rule's own author within the hour. The always-present
+band at the bottom of the screen -- the one piece of furniture in this
+product that exists specifically for a person whose hands are not
+steady -- was sized at 46 pixels tall and then had padding taken out of
+it, leaving 27-pixel buttons. Nobody had to be careless: the two
+numbers were three lines apart.
+
+It measures across three resolutions and all four text sizes she can
+choose, because the band's height follows the type and a control that
+is fine at one size can be squeezed out of the rule at another. It also
+checks the buttons do not overlap and are on the screen, which are the
+other two ways a row of controls becomes unpressable.
+
+It only measures controls that publish their geometry -- today, the
+band. Archetype internals (dock cells, window buttons, rail rows) do
+not, so it says so in its own output rather than implying coverage it
+does not have.

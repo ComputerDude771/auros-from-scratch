@@ -510,6 +510,13 @@ void shell_fonts_load(shell_fonts *f, const shell_ctx *c)
     float lg   = (float)theme_int(&c->theme, "font_size_lg",
                                   (int)(base * 1.45f + 0.5f));
 
+    /* Her choice multiplies the theme's scale rather than replacing it,
+     * so the RELATIONSHIPS the theme set up -- how much bigger a heading
+     * is than a caption -- survive her making everything bigger. A
+     * design whose hierarchy collapses at 150% was not a hierarchy. */
+    float k = (c->text_scale > 0.1f) ? c->text_scale : 1.f;
+    base *= k; sm *= k; lg *= k;
+
     f->huge  = open_font(disp, lg * 2.25f);
     f->big   = open_font(disp, lg * 1.45f);
     f->dmid  = open_font(disp, lg * 0.95f);

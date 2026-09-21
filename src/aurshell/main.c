@@ -16,6 +16,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/reboot.h>
 #include <fcntl.h>
 #include <dirent.h>
 #include <errno.h>
@@ -31,6 +32,7 @@
 
 #include "shell.h"
 #include "session.h"
+#include "foot.h"
 #include "../aurwl/aurwl.h"
 #include "pad.h"
 #include "kms.h"
@@ -567,6 +569,14 @@ int main(int argc, char **argv)
      * is actually installed wins, because "install an application and
      * it appears" is a promise the shell cannot keep from a table
      * compiled into it. */
+    /* Her text size, from her own settings, before any font is opened. */
+    c.text_scale = foot_load_text_scale();
+    c.foot_hover = -1;
+    /* A kiosk that forbids both settings and shutdown has nothing to put
+     * in the band, and an empty band is furniture. Help alone still
+     * earns it everywhere else. */
+    c.no_foot = 0;
+
     shell_seed_apps(&c);
     int scanned = shell_scan_apps(&c);
     if (scanned > 0)
@@ -607,7 +617,8 @@ int main(int argc, char **argv)
         if (!s) { fprintf(stderr, "aurshell: out of memory\n");
                   free_fonts(&f); return 1; }
         build_wallpaper(&wall, png_w, png_h, &t);
-        c.screen_w = png_w; c.screen_h = png_h;
+        c.screen_w = png_w;
+        c.screen_h = png_h - foot_height(&c);
         if (L->init) L->init(&c);
 
         /* Offscreen, but with real applications in it. Everything below
@@ -658,7 +669,9 @@ int main(int argc, char **argv)
                  * clock tick. */
                 if (L->step) L->step(&c, 0.016f);
                 draw_track_reset();
-                L->paint(&c, s, &f, wall);
+                surface wbody = *s;
+                wbody.h = c.screen_h;
+                L->paint(&c, &wbody, &f, wall);
                 if (c.n_wins > 0 && !aurwl_focus(c.wl)) {
                     int n = aurwl_window_count(c.wl);
                     if (n) aurwl_set_focus(c.wl, aurwl_window_at(c.wl, 0));
@@ -682,8 +695,11 @@ int main(int argc, char **argv)
             struct timespec a, b;
             clock_gettime(CLOCK_MONOTONIC, &a);
             draw_track_reset();
-            L->paint(&c, s, &f, wall);
-            session_paint_popups(&c, s);
+            surface body = *s;
+            body.h = c.screen_h;
+            L->paint(&c, &body, &f, wall);
+            session_paint_popups(&c, &body);
+            foot_paint(&c, s, &f);
             clock_gettime(CLOCK_MONOTONIC, &b);
             if (ms) ms[fr] = (double)(b.tv_sec - a.tv_sec) * 1e3
                            + (double)(b.tv_nsec - a.tv_nsec) / 1e6;
@@ -818,7 +834,7 @@ int main(int argc, char **argv)
     console_take(&g_con, !c.allow_tty);
 
     c.screen_w = disp->width;
-    c.screen_h = disp->height;
+    c.screen_h = disp->height - foot_height(&c);
 
     /* A Wayland socket has to live somewhere a client can find it. The
      * shell is a system service, not a user session, so nothing has set
@@ -934,6 +950,32 @@ int main(int argc, char **argv)
             if (seq != last_damage || c.n_wins != before) { last_damage = seq; dirty = 1; }
         }
 
+        /* She changed the size of the words. Reopen every face at the
+         * new size and repaint -- the band's own height follows the
+         * type, so the screen re-lays-out around it in the same frame
+         * and she sees the result of the press immediately. */
+        if (c.text_changed) {
+            c.text_changed = 0;
+            free_fonts(&f);
+            load_fonts(&f, &c);
+            c.screen_h = disp->height - foot_height(&c);
+            dirty = 1;
+        }
+
+        /* She pressed Turn off. Ask systemd, and if that is not there,
+         * fall back to the kernel -- a machine that cannot be shut down
+         * is a machine she unplugs, and unplugging is how filesystems
+         * get corrupted. */
+        if (c.want_power_off) {
+            c.want_power_off = 0;
+            fprintf(stderr, "aurshell: shutting down at the user's request\n");
+            const char *argv_off[] = { "/usr/bin/systemctl", "poweroff", NULL };
+            if (!c.wl || aurwl_spawn(c.wl, argv_off) < 0) {
+                sync();
+                reboot(RB_POWER_OFF);
+            }
+        }
+
         int animating = L->step ? L->step(&c, dt) : 0;
         if (animating) dirty = 1;
 
@@ -951,8 +993,17 @@ int main(int argc, char **argv)
              * records are this frame's and input routes against what is
              * on screen rather than what was. */
             draw_track_reset();
-            L->paint(&c, fb, &f, wall);
-            session_paint_popups(&c, fb);
+            /* The archetype gets a surface that is SHORTER than the
+             * screen: same pixels, same stride, fewer rows. Every
+             * primitive in draw.c and font.c clips to s->h, so the band
+             * at the bottom is unreachable from a layout by
+             * construction rather than by agreement -- which is why no
+             * archetype needed editing to gain it. */
+            surface body = *fb;
+            body.h = c.screen_h;
+            L->paint(&c, &body, &f, wall);
+            session_paint_popups(&c, &body);
+            foot_paint(&c, fb, &f);
             paint_cursor(fb, c.mouse_x, c.mouse_y, cur_fill, cur_edge);
             /* A failed flip is not cosmetic: it means we no longer own
              * the display. Say so once rather than painting into the
@@ -1100,12 +1151,20 @@ int main(int argc, char **argv)
                          * up, so a release-dispatched click sets and
                          * cancels the drag in the same instant. Press
                          * is also what every other desktop does. */
+                        /* The band is tested before anything else. It
+                         * is the way out, and a way out that can be
+                         * covered by whatever is on screen is not one. */
+                        int taken = 0;
+                        if (ev.value) taken = foot_click(&c, c.mouse_x, c.mouse_y);
+                        else if (c.foot_hover >= 0 || c.help_open) taken = 1;
+
                         /* A click that lands on an application's own
                          * pixels is that application's. Letting the
                          * archetype also act on it is how a desktop
                          * ends up closing a window because the user
                          * pressed a button inside it. */
-                        int taken = session_button(&c, c.mouse_x, c.mouse_y,
+                        if (!taken)
+                            taken = session_button(&c, c.mouse_x, c.mouse_y,
                                                    BTN_LEFT, ev.value != 0);
                         if (!taken) {
                             if (ev.value && L->click) L->click(&c, c.mouse_x, c.mouse_y);
@@ -1145,6 +1204,7 @@ int main(int argc, char **argv)
                 input_drop(&in, i);
                 continue;
             }
+            foot_motion(&c, c.mouse_x, c.mouse_y);
             session_motion(&c, c.mouse_x, c.mouse_y);
             if (L->motion) L->motion(&c, c.mouse_x, c.mouse_y);
         }
