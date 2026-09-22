@@ -114,6 +114,10 @@ int loader_write_boot(wr_target *t, const image_src *img,
 
 /* Put AurOS in the firmware's menu and arm the one-shot.
  *
+ * Returns 0 when both happened, 1 when the ENTRY landed and only the
+ * one-shot did not -- a different thing to tell somebody, because the
+ * machine's menu now has AurOS in it -- and -1 when neither did.
+ *
  * Runs AFTER the commit, because the boot entry names the partition by
  * the unique GUID the commit has just given it. `nw` is the table that
  * was written, not the one that was read.

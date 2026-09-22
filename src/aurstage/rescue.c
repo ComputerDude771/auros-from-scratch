@@ -770,7 +770,9 @@ int rescue_mirror(wr_target *t, const rescue_area *area,
             snprintf(why, n,
                      "this computer did not keep the copy of the way back it "
                      "was given (at %llu MB into it).",
-                     (unsigned long long)(bad / (1024 * 1024)));
+                     /* INTO IT, which is what the sentence says --
+                      * wr_check reports an absolute device offset. */
+                     (unsigned long long)((bad - dst_off) / (1024 * 1024)));
             return -1;
         }
         at += chunk;

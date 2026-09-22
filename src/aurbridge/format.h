@@ -80,10 +80,33 @@ int fmt_gpt_build(uint64_t disk_bytes, uint32_t sector,
 /* "AURIMG01", then the image's length, the root extent inside it, the
  * image's own logical block size, the SHA-256 of that extent, and the
  * profile id. src/aurstage/image.c reads exactly this. */
+/* TWO EXTENTS AND TWO HASHES, and the second one is here because of a
+ * gap a review found: the installer copies the image's EFI partition
+ * onto the machine and nothing anywhere checked those bytes against a
+ * number the build produced. The read-back compared the disk with the
+ * stick -- the same bytes it had just copied -- so rot in the shim or
+ * in grub was copied faithfully, verified faithfully, and reported as
+ * success, and the machine then failed to start AurOS with no message
+ * or a Secure Boot violation.
+ *
+ *    0   8  "AURIMG01"
+ *    8   8  image length
+ *   16   8  root extent offset inside the image
+ *   24   8  root extent length
+ *   32   4  the image's own logical block size
+ *   36  32  SHA-256 of the root extent
+ *   68  64  profile id, NUL-padded
+ *  132   8  EFI partition offset inside the image
+ *  140   8  EFI partition length
+ *  148  32  SHA-256 of the EFI partition
+ *  180 ...  reserved, zero
+ */
 void fmt_manifest(uint8_t out[FMT_MANIFEST_BYTES],
                   uint64_t image_bytes, uint64_t root_off, uint64_t root_len,
                   uint32_t image_sector, const unsigned char root_sha[32],
-                  const char *profile);
+                  const char *profile,
+                  uint64_t esp_off, uint64_t esp_len,
+                  const unsigned char esp_sha[32]);
 
 /* Where the root partition is inside a whole-disk AurOS image, read out
  * of the image's OWN GPT. This is what makes the manifest describe the
@@ -91,6 +114,11 @@ void fmt_manifest(uint8_t out[FMT_MANIFEST_BYTES],
 int fmt_image_root_extent(const uint8_t *gpt_head, size_t head_len,
                           uint32_t sector, uint64_t *off, uint64_t *len,
                           char *why, size_t wn);
+/* The same, for the EFI System partition -- the signed boot chain the
+ * installer copies onto the machine. */
+int fmt_image_esp_extent(const uint8_t *gpt_head, size_t head_len,
+                         uint32_t sector, uint64_t *off, uint64_t *len,
+                         char *why, size_t wn);
 
 /* ── the journal the staging environment reads after the restart ─── */
 

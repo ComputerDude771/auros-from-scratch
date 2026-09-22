@@ -76,6 +76,22 @@ typedef struct {
     uint32_t image_sector;      /* the image's own logical block size */
     unsigned char root_sha[32]; /* of the root extent, from the build */
     int      have_sha;
+    /* THE PART THAT STARTS THE COMPUTER, and its own hash.
+     *
+     * This was missing, and the gap was the whole point of the file:
+     * loader.c copies this extent onto the machine and reads it back
+     * AGAINST THE STICK -- the same bytes it just wrote -- so a
+     * bit-flip in the shim or in grub was copied faithfully, verified
+     * faithfully, and reported as a successful install. The machine
+     * then failed to start AurOS with no message, or a Secure Boot
+     * violation. Nothing anywhere had a number to compare it against.
+     *
+     * Zero on a stick written by an older build, which is why every
+     * use is guarded rather than assumed. */
+    uint64_t esp_off;
+    uint64_t esp_len;
+    unsigned char esp_sha[32];
+    int      have_esp_sha;
 } image_src;
 
 /* Find it. Scans every disk's table for our type GUID, reads the
@@ -119,6 +135,12 @@ int image_write_root(wr_target *t, const image_src *s, uint64_t dst_off,
  * has to be copied is another, and inventing an offset for it in the
  * manifest would mean a wire format change across both halves of the
  * product to carry a number the image already states. */
+/* Where the EFI partition is. The manifest's numbers when it has
+ * them, cross-checked against the image's own table -- the same
+ * arrangement the root extent has, and for the same reason: the
+ * manifest is what the build says and the table is what the image is,
+ * and it is our own build publishing a disagreement that this
+ * catches. */
 int image_esp_extent(const image_src *s, uint64_t *off, uint64_t *len,
                      char *why, size_t n);
 

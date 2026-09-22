@@ -70,9 +70,10 @@ int loader_write_boot(wr_target *t, const image_src *img,
     }
     static unsigned char buf[CH];
     uint64_t base = image_base_off(img) + eoff;
-    int rc = -1, last = -1;
+    int rc = -1, last = -1, armed = 0;
 
     if (wr_arm(t, WR_RECOVERY, dst, dst + elen, why, n) != 0) goto out;
+    armed = 1;
 
     /* THE FIRST MEGABYTE LAST, the same way the root filesystem is
      * written. Until the end there is no BPB at the start of the
@@ -115,7 +116,12 @@ int loader_write_boot(wr_target *t, const image_src *img,
             snprintf(why, n,
                      "what was written to this computer's disk did not read "
                      "back the same, %llu MB in. The drive is failing.",
-                     (unsigned long long)(bad / (1024 * 1024)));
+                     /* INTO THE COPY, not into the disk. wr_check
+                      * reports an absolute device offset, and printing
+                      * that sends a support engineer to look 475 GB
+                      * into somebody's drive for a fault 12 MB into a
+                      * partition. */
+                     (unsigned long long)((bad - dst) / (1024 * 1024)));
             goto out;
         }
         at += take;
@@ -144,7 +150,10 @@ int loader_write_boot(wr_target *t, const image_src *img,
     }
     rc = 0;
 out:
-    wr_disarm(t, WR_RECOVERY);
+    /* ONLY IF THIS CALL ARMED IT. A failed arm that disarms anyway is
+     * a function that can shut somebody else's window, and WR_RECOVERY
+     * is no longer the only claim on this extent's neighbourhood. */
+    if (armed) wr_disarm(t, WR_RECOVERY);
     close(fd);
     return rc;
 }
@@ -178,7 +187,12 @@ int loader_register(const gpt_table *nw, const stage_layout *L,
     if (nvram_boot_set(LOADER_ENTRY_DESC, &hd, LOADER_PATH, NULL, &num,
                        why, n) != 0)
         return -1;
-    if (nvram_boot_next(num, why, n) != 0) return -1;
+    if (entry_out) *entry_out = num;
+    /* THE ENTRY IS DOWN. A one-shot that will not arm after that is
+     * worth a different sentence: the machine can be started into
+     * AurOS from its own boot menu, and telling somebody the install
+     * did not reach the menu sends them to do all of it again. */
+    if (nvram_boot_next(num, why, n) != 0) return 1;
 
     /* The entry the Windows half made to get here has done its job.
      * Leaving it means a boot menu with two AurOS lines in it, one of
@@ -187,7 +201,5 @@ int loader_register(const gpt_table *nw, const stage_layout *L,
      * it is not a failure of the install. */
     char ignored[200];
     nvram_boot_forget(LOADER_INSTALLER_DESC, ignored, sizeof ignored);
-
-    if (entry_out) *entry_out = num;
     return 0;
 }

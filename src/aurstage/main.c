@@ -29,6 +29,7 @@
 #include "fde.h"
 #include "health.h"
 #include "install.h"
+#include "rescue.h"
 #include "fault.h"
 
 /* What the kernel was told to do with us, out of /proc/cmdline. */
@@ -394,12 +395,39 @@ static void dry_run(const stage_machine *m)
      * product to free space nothing fits in. */
     uint64_t freeable = sp.current_bytes > sp.smallest_bytes
                       ? sp.current_bytes - sp.smallest_bytes : 0;
-    uint64_t need = needs_bytes();
+    /* AND THE ROOT IS NOT THE WHOLE OF WHAT HAS TO FIT.
+     *
+     * This asked only whether the 24 GB root floor fitted, while the
+     * install has to fit that PLUS the partition AurOS starts from
+     * (the image's own ESP, hundreds of megabytes) PLUS the saved copy
+     * of this machine's Windows startup (its ESP again, 100 MB on one
+     * laptop and a gigabyte on the next) -- all carved out of the same
+     * gap. So a machine a little over the floor was reported
+     * convertible here and refused by the install, which is precisely
+     * the two-halves-disagreeing failure install.c's own comment says
+     * was eliminated. Nothing is damaged by it -- the install refuses
+     * before the shrink -- but a hardware matrix built from the dry
+     * run has rows in it that are not true.
+     *
+     * The allowance is measured where it can be and generous where it
+     * cannot: rescue_size_needed asks this disk, and the boot area is
+     * bounded by loader.h's own ceiling rather than guessed, because
+     * the dry run has no stick in it to read an image from. */
+    uint64_t extra = 0;
+    {
+        uint64_t rsc = 0;
+        char rw[200];
+        if (rescue_size_needed(on, &rsc, rw, sizeof rw) == 0) extra += rsc;
+        else extra += 1024ull * 1024 * 1024;     /* the worst ESP seen  */
+        extra += 2ull * 1024 * 1024 * 1024;      /* loader.h's ceiling  */
+    }
+    uint64_t need = needs_bytes() + extra;
     if (freeable < need) {
         stage_warn("there is not enough room on this computer to install "
                    "alongside Windows.");
-        stage_say("         AurOS needs %llu GB free and this computer can "
-                  "spare %llu GB.",
+        stage_say("         AurOS needs %llu GB free -- itself, the part it "
+                  "starts from and a way back to Windows -- and this "
+                  "computer can spare %llu GB.",
                   (unsigned long long)(need / 1000000000ull),
                   (unsigned long long)(freeable / 1000000000ull));
         char c[64];

@@ -115,6 +115,16 @@ mkstick corrupt
 run "a damaged image on the stick: refused" \
     "aurstage.install aurstage.min_gb=1" "copy of AurOS on the memory stick is damaged" \
     "$STICK" unchanged
+# AND DAMAGE TO THE PART THAT STARTS A COMPUTER, which is a different
+# extent and used to be checked by nothing at all: the installer copied
+# it onto the machine and read it back against the stick -- the same
+# bytes it had just written -- so rot in the shim or in grub installed
+# cleanly, said so, and left a machine that starts nothing.
+mkstick corrupt-esp
+run "a damaged boot chain on the stick: refused" \
+    "aurstage.install aurstage.min_gb=1" \
+    "part of the memory stick that starts a computer is damaged" \
+    "$STICK" unchanged
 mkstick
 
 echo

@@ -30,7 +30,10 @@ const uint8_t IMAGE_TYPE_GUID[16] = {
  *  32   4   the image's own logical block size
  *  36  32   SHA-256 of the root extent
  *  68  64   profile id, NUL-padded
- * 132 ...   reserved, zero
+ * 132   8   EFI partition offset inside the image
+ * 140   8   EFI partition length
+ * 148  32   SHA-256 of the EFI partition
+ * 180 ...   reserved, zero
  *
  * It occupies the first 4096 bytes of the partition; the image starts
  * at 4096.
@@ -96,6 +99,17 @@ static int img_part_by_type(const image_src *s, const uint8_t type[16],
         snprintf(why, n, "the AurOS image's own table is not readable");
         goto out;
     }
+    /* THE BLOCK NUMBER CAME OFF THE STICK, so it is bounded before it
+     * is multiplied. Unbounded it wraps -- the offset casts negative
+     * and pread fails with the wrong sentence -- and merely LARGE it
+     * reads the entry array from somewhere else on the stick
+     * entirely, outside the image partition. */
+    if (!plba || plba > s->image_bytes / ss ||
+        (uint64_t)num * esz > s->image_bytes) {
+        snprintf(why, n, "the AurOS image's own table is not where it says "
+                         "it is");
+        goto out;
+    }
     uint8_t *arr = malloc((size_t)num * esz);
     if (!arr) { snprintf(why, n, "out of memory reading the AurOS image"); goto out; }
     if (read_at(fd, arr, (size_t)num * esz,
@@ -110,6 +124,10 @@ static int img_part_by_type(const image_src *s, const uint8_t type[16],
         if (memcmp(e, type, 16) != 0) continue;
         uint64_t first = rd64(e + 32), last = rd64(e + 40);
         if (!first || last < first) continue;
+        /* Bounded before the multiply, for the reason above. The sum
+         * is checked below as well; both are needed, because the sum
+         * check cannot see a product that has already wrapped. */
+        if (last >= s->image_bytes / ss) continue;
         o = first * ss;
         l = (last - first + 1) * ss;
         break;
@@ -166,13 +184,27 @@ uint64_t image_base_off(const image_src *s)
 int image_esp_extent(const image_src *s, uint64_t *off, uint64_t *len,
                      char *why, size_t n)
 {
+    uint64_t o = 0, l = 0;
     int missing = 0;
-    if (img_part_by_type(s, GPT_TYPE_ESP, off, len, &missing, why, n) != 0) {
+    if (img_part_by_type(s, GPT_TYPE_ESP, &o, &l, &missing, why, n) != 0) {
         if (missing)
             snprintf(why, n, "the copy of AurOS on the memory stick has "
                              "nothing in it to start the computer with");
         return -1;
     }
+    /* THE MANIFEST AND THE TABLE HAVE TO AGREE, exactly as they do for
+     * the root extent -- and for the same reason, which is that the
+     * hash below is of what the MANIFEST describes and the bytes
+     * copied are what the TABLE describes. Two numbers that are only
+     * checked separately are two numbers that can be different. */
+    if (s->have_esp_sha && (s->esp_off != o || s->esp_len != l)) {
+        snprintf(why, n,
+                 "the AurOS image and its description do not agree about "
+                 "the part that starts a computer");
+        return -1;
+    }
+    if (off) *off = o;
+    if (len) *len = l;
     return 0;
 }
 
@@ -223,10 +255,32 @@ int image_find(const stage_machine *m, const char *want_profile,
             c.image_sector = rd32(man + 32);
             memcpy(c.root_sha, man + 36, 32);
             c.have_sha = 1;
+            c.esp_off = rd64(man + 132);
+            c.esp_len = rd64(man + 140);
+            memcpy(c.esp_sha, man + 148, 32);
+            for (int q = 0; q < 32; q++)
+                if (c.esp_sha[q]) { c.have_esp_sha = 1; break; }
             memcpy(c.profile, man + 68, 63);
             c.profile[63] = 0;
 
-            if (!c.root_len || c.root_off + c.root_len > c.image_bytes) {
+            /* image_bytes came off the stick too, so it is not a
+             * bound until something makes it one. An image that claims
+             * to be larger than the partition holding it makes every
+             * check below it meaningless -- and every one of those
+             * checks is written as `a > b - a` rather than `a + b > c`
+             * for the same reason: the sum is the thing that wraps. */
+            uint64_t part_blocks = t.ent[k].last - t.ent[k].first + 1;
+            uint64_t part_bytes  = part_blocks * (uint64_t)t.sector;
+            if (part_blocks > UINT64_MAX / t.sector ||
+                part_bytes < MAN_BYTES ||
+                c.image_bytes > part_bytes - MAN_BYTES) {
+                snprintf(why, n,
+                         "the AurOS memory stick describes a copy of AurOS "
+                         "larger than the space it is in");
+                return -1;
+            }
+            if (!c.root_len || c.root_off > c.image_bytes ||
+                c.root_len > c.image_bytes - c.root_off) {
                 snprintf(why, n,
                          "the AurOS memory stick describes an image that does "
                          "not fit inside itself");
@@ -306,6 +360,44 @@ int image_verify(const image_src *s, void (*progress)(int), char *why, size_t n)
                  "need to be written again.");
         return -1;
     }
+
+    /* AND THE PART THAT STARTS THE COMPUTER, here, at the gate, where
+     * the refusal is free.
+     *
+     * loader.c copies that extent onto the machine and reads it back
+     * against the STICK -- the same bytes it just wrote -- so without
+     * this a bit-flip in the shim or in grub is copied faithfully,
+     * verified faithfully, and reported as a successful install, and
+     * the machine then fails to start AurOS with no message at all.
+     * It is not destructive (BootNext self-reverts to Windows) and it
+     * is a product that does not work while saying it does, on a
+     * computer whose Windows has already been shrunk.
+     *
+     * A stick from an older build carries no such hash. That is a
+     * refusal rather than a shrug: this is the one check standing
+     * between a damaged boot chain and a machine that will not start,
+     * and "the stick is old" is a thing the person can fix in ten
+     * minutes with the disk untouched. */
+    if (!s->have_esp_sha || !s->esp_len) {
+        snprintf(why, n,
+                 "this AurOS memory stick was made by an older version and "
+                 "does not say what the start-up files should look like. "
+                 "Make it again.");
+        return -1;
+    }
+    if (hash_region(s->dev, s->part_off + MAN_BYTES + s->esp_off,
+                    s->esp_len, got, NULL) != 0) {
+        snprintf(why, n,
+                 "the AurOS memory stick could not be read all the way "
+                 "through. It may be faulty, or it may have been unplugged.");
+        return -1;
+    }
+    if (memcmp(got, s->esp_sha, 32) != 0) {
+        snprintf(why, n,
+                 "the part of the memory stick that starts a computer is "
+                 "damaged. It will need to be written again.");
+        return -1;
+    }
     return 0;
 }
 
@@ -380,7 +472,11 @@ int image_write_root(wr_target *t, const image_src *s, uint64_t dst_off,
             snprintf(why, n,
                      "what was written to this computer's disk did not read "
                      "back the same, %llu MB in. The drive is failing.",
-                     (unsigned long long)(bad / (1024 * 1024)));
+                     /* INTO THE COPY. wr_check reports an absolute
+                      * device offset; printing that sends somebody to
+                      * look hundreds of gigabytes into a disk for a
+                      * fault a few megabytes into a partition. */
+                     (unsigned long long)((bad - dst_off) / (1024 * 1024)));
             goto out;
         }
         sha256_feed(&h, src, take);

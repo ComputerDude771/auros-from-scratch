@@ -303,13 +303,20 @@ mach_stick() {
     sgdisk -n 3:0:+180M    -t 3:7E1C3B90-4D2A-4F16-8B77-2C6E5A9D0E34 \
            -c 3:"AUROS-SAVED" "$STICK" >/dev/null 2>&1
     IS=$(sgdisk -i 1 "$STICK" | sed -n 's/^First sector: \([0-9]*\).*/\1/p')
-    python3 - "$STICK" "$AIMG" "$((IS*512))" "$ROFF" "$RLEN" "${1:-}" <<'EOPY'
+    # `mach_stick [corrupt|corrupt-esp]` -- the second damages the part
+    # that starts a computer rather than the root, which is a different
+    # refusal and was, for a while, no refusal at all.
+    python3 - "$STICK" "$AIMG" "$((IS*512))" "$ROFF" "$RLEN" "$EOFF" "$ELEN" \
+             "${1:-}" <<'EOPY'
 import sys, struct, hashlib
-stick, img, pstart, roff, rlen, corrupt = sys.argv[1:7]
+stick, img, pstart, roff, rlen, eoff, elen, corrupt = sys.argv[1:9]
 pstart, roff, rlen = int(pstart), int(roff), int(rlen)
+eoff, elen = int(eoff), int(elen)
 data = bytearray(open(img,'rb').read())
-sha = hashlib.sha256(bytes(data[roff:roff+rlen])).digest()
-if corrupt: data[roff + rlen//2] ^= 0xFF
+sha  = hashlib.sha256(bytes(data[roff:roff+rlen])).digest()
+esha = hashlib.sha256(bytes(data[eoff:eoff+elen])).digest()
+if corrupt == 'corrupt':     data[roff + rlen//2] ^= 0xFF
+if corrupt == 'corrupt-esp': data[eoff + elen//2] ^= 0xFF
 man = bytearray(4096)
 man[0:8] = b'AURIMG01'
 struct.pack_into('<Q', man, 8, len(data))
@@ -318,6 +325,9 @@ struct.pack_into('<Q', man, 24, rlen)
 struct.pack_into('<I', man, 32, 512)
 man[36:68] = sha
 man[68:75] = b'desktop'
+struct.pack_into('<Q', man, 132, eoff)
+struct.pack_into('<Q', man, 140, elen)
+man[148:180] = esha
 f = open(stick,'r+b'); f.seek(pstart); f.write(man)
 f.seek(pstart+4096); f.write(bytes(data)); f.close()
 EOPY

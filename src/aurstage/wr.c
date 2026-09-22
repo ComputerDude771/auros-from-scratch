@@ -14,10 +14,11 @@ static const char *kind_name(wr_kind k)
 {
     switch (k) {
     case WR_ROOT:        return "the AurOS area";
-    case WR_RECOVERY:    return "the way back";
+    case WR_RECOVERY:    return "the AurOS start-up area";
     case WR_GPT_PRIMARY: return "the partition table";
     case WR_GPT_BACKUP:  return "the spare partition table";
     case WR_LOG:         return "the installer's notes";
+    case WR_MIRROR:      return "the way back, on this computer";
     case WR_RESCUE:      return "the way back, on the memory stick";
     case WR_RESTORE:     return "putting a saved part of Windows back";
     case WR_N:           break;

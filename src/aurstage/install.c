@@ -25,19 +25,6 @@
 #include "loader.h"
 #include "fault.h"
 
-/* THE BOOT PARTITION IS AS BIG AS WHAT GOES IN IT, and that number
- * comes from the image rather than from here.
- *
- * It was a 600 MiB constant, chosen when this partition was going to
- * hold a rescue kernel, an initramfs and a copy of this machine's
- * Windows startup. Two of those moved: the captured copy has its own
- * partition (rescue.h says why a raw extent beats a file on a FAT
- * filesystem for it), and the rescue environment is a menu entry on
- * the AurOS root. What is left is exactly one thing -- the image's own
- * EFI partition, copied whole, see loader.h -- so the size to reserve
- * is the size of that, and a constant that disagrees with it is
- * either wasted gigabytes of somebody's Windows or an install that
- * fails after the shrink. */
 #define MIN_ROOT_DEFAULT (24ull * 1000 * 1000 * 1000)
 
 /* THE SAME NUMBER THE DRY RUN USES. It was hardcoded here while the
@@ -356,7 +343,16 @@ void install_run(const stage_machine *m)
 
     /* HOW MUCH ROOM THE THING THAT STARTS THE COMPUTER NEEDS, asked
      * here, before the plan, so that an image whose boot partition
-     * will not fit is refused with the disk untouched. */
+     * will not fit is refused with the disk untouched.
+     *
+     * AND IT COMES FROM THE IMAGE, NOT FROM A CONSTANT. It was 600 MiB
+     * in a #define, chosen when that partition was going to hold a
+     * rescue kernel and a copy of this machine's Windows startup as
+     * well; both of those moved elsewhere, and what is left is exactly
+     * one thing -- the image's own EFI partition, copied whole, see
+     * loader.h. A constant that disagrees with the thing being copied
+     * is either gigabytes of somebody's Windows taken for nothing or
+     * an install that fails after the shrink. */
     uint64_t boot_need = 0;
     if (loader_bytes_needed(&img, &boot_need, why, sizeof why) != 0)
         refuse(why, NULL, "no-boot-area");
@@ -551,10 +547,30 @@ void install_run(const stage_machine *m)
                why, sizeof why) != 0)
         give_up(why, NULL, "cannot-arm-table", 1);
 
+    /* THE PLAN, CHECKED AGAINST THE TABLE ONE LAST TIME. plan.h says
+     * this happens "before every step that acts on the layout"; it
+     * happened once, inside plan_compute, and then five steps acted on
+     * it. This is the cheapest and most valuable of the five: after it
+     * the table is committed and nothing can be taken back. */
+    if (plan_check(&old, &L, img.root_len, boot_need, rsc_need,
+                   min_root_bytes(), why, sizeof why) != 0)
+        give_up(why, "The Windows drive is smaller but still works.",
+                "plan-changed", 1);
+
     stage_say("%s", "");
     stage_say("Writing the new layout.");
     if (commit_table(&t, &nw, commit_note, NULL, why, sizeof why) != 0)
         give_up(why, NULL, "commit-failed", 1);
+    /* AND THE TWO MOST DANGEROUS WINDOWS IN THE PRODUCT ARE SHUT.
+     *
+     * wr.h: "Disarm one window, so that a phase which is finished
+     * cannot write again. Called as each phase completes." These two
+     * were armed and never disarmed, so the window containing LBA 1
+     * stayed open through the boot entry, through half a gigabyte of
+     * rescue mirror, until wr_close. Nothing reaches it today; the
+     * point of the file is that nothing can. */
+    wr_disarm(&t, WR_GPT_PRIMARY);
+    wr_disarm(&t, WR_GPT_BACKUP);
 
     /* ── phase 8c: the firmware's menu ─────────────────────────────
      *
@@ -570,7 +586,19 @@ void install_run(const stage_machine *m)
      * is missing is a line in a menu, and the sentence says how to
      * get there without it. */
     uint16_t boot_entry = 0;
-    if (loader_register(&nw, &L, &boot_entry, why, sizeof why) != 0) {
+    int reg = loader_register(&nw, &L, &boot_entry, why, sizeof why);
+    if (reg > 0) {
+        /* THE ENTRY IS THERE AND ONLY THE ONE-SHOT FAILED, which is a
+         * different sentence. Saying "could not add itself to the
+         * start-up menu" about a machine whose menu now has AurOS in
+         * it sends a person to do the whole install again. */
+        stage_warn("AurOS is in this computer's start-up menu, but this "
+                   "computer would not be asked to start it next time (%s).",
+                   why);
+        stage_say("         Hold the key your computer shows at start-up for "
+                  "a boot menu");
+        stage_say("         and choose AurOS from it.");
+    } else if (reg < 0) {
         stage_warn("AurOS is installed but could not add itself to this "
                    "computer's start-up menu (%s).", why);
         stage_say("         Hold the key your computer shows at start-up for "
@@ -596,7 +624,7 @@ void install_run(const stage_machine *m)
      * stick either way. */
     stage_say("Keeping a copy of the way back on this computer too.");
     rescue_payload rp;
-    if (wr_arm(&t, WR_RECOVERY, L.rsc_first * (uint64_t)ss,
+    if (wr_arm(&t, WR_MIRROR, L.rsc_first * (uint64_t)ss,
                (L.rsc_last + 1) * (uint64_t)ss, why, sizeof why) != 0 ||
         rescue_open(&rsc, &rp, why, sizeof why) != 0 ||
         rescue_mirror(&t, &rsc, &rp, L.rsc_first * (uint64_t)ss,
@@ -606,7 +634,7 @@ void install_run(const stage_machine *m)
                    "keep the stick.", why);
     else
         stage_say("saved    a second copy is on this computer");
-    wr_disarm(&t, WR_RECOVERY);
+    wr_disarm(&t, WR_MIRROR);
     wr_close(&t);
 
     /* From here Windows is still bootable -- its partition entry

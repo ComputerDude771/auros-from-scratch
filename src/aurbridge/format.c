@@ -302,7 +302,9 @@ int fmt_gpt_build(uint64_t disk_bytes, uint32_t sector,
 void fmt_manifest(uint8_t out[FMT_MANIFEST_BYTES],
                   uint64_t image_bytes, uint64_t root_off, uint64_t root_len,
                   uint32_t image_sector, const unsigned char root_sha[32],
-                  const char *profile)
+                  const char *profile,
+                  uint64_t esp_off, uint64_t esp_len,
+                  const unsigned char esp_sha[32])
 {
     memset(out, 0, FMT_MANIFEST_BYTES);
     memcpy(out, "AURIMG01", 8);
@@ -312,11 +314,16 @@ void fmt_manifest(uint8_t out[FMT_MANIFEST_BYTES],
     p32(out + 32, image_sector);
     memcpy(out + 36, root_sha, 32);
     snprintf((char *)out + 68, 63, "%s", profile ? profile : "");
+    p64(out + 132, esp_off);
+    p64(out + 140, esp_len);
+    if (esp_sha) memcpy(out + 148, esp_sha, 32);
 }
 
-int fmt_image_root_extent(const uint8_t *gpt_head, size_t head_len,
-                          uint32_t sector, uint64_t *off, uint64_t *len,
-                          char *why, size_t wn)
+/* The image's own table, validated once. `arr` comes back pointing at
+ * its entry array and `ne`/`es` describe it. */
+static int image_table(const uint8_t *gpt_head, size_t head_len,
+                       uint32_t sector, const uint8_t **arr,
+                       uint32_t *ne, uint32_t *es, char *why, size_t wn)
 {
     if (head_len < (size_t)(2 * sector) ||
         memcmp(gpt_head + sector, "EFI PART", 8) != 0) {
@@ -325,20 +332,32 @@ int fmt_image_root_extent(const uint8_t *gpt_head, size_t head_len,
     }
     const uint8_t *h = gpt_head + sector;
     uint64_t elba = g64(h + 72);
-    uint32_t ne = g32(h + 80), es = g32(h + 84);
-    if (!ne || ne > 4096 || es < 128 || es > 4096) {
+    uint32_t n = g32(h + 80), e = g32(h + 84);
+    if (!n || n > 4096 || e < 128 || e > 4096) {
         snprintf(why, wn, "the AurOS image file has an unreadable layout");
         return -1;
     }
-    uint64_t need64 = elba * (uint64_t)sector + (uint64_t)ne * es;
+    /* uint64 ALL THE WAY. This was a size_t, which is 32 bits in a
+     * mingw32 build, so a large PartitionEntryLBA truncated to
+     * something small, passed this bound, and was then used to index
+     * into the buffer. */
+    uint64_t need64 = elba * (uint64_t)sector + (uint64_t)n * e;
     if (need64 > head_len) {
-        /* uint64 ALL THE WAY. This was a size_t, which is 32 bits in
-         * a mingw32 build, so a large PartitionEntryLBA truncated to
-         * something small, passed this bound, and was then used to
-         * index into the buffer. */
         snprintf(why, wn, "the AurOS image file has an unreadable layout");
         return -1;
     }
+    *arr = gpt_head + elba * sector;
+    *ne = n; *es = e;
+    return 0;
+}
+
+int fmt_image_root_extent(const uint8_t *gpt_head, size_t head_len,
+                          uint32_t sector, uint64_t *off, uint64_t *len,
+                          char *why, size_t wn)
+{
+    const uint8_t *arr; uint32_t ne, es;
+    if (image_table(gpt_head, head_len, sector, &arr, &ne, &es, why, wn) != 0)
+        return -1;
     /* The LAST partition in the image is its root: mkimage puts the
      * ESP first and the root second, and the root is the one that
      * extends to the end. Chosen by EXTENT rather than by index so
@@ -347,7 +366,7 @@ int fmt_image_root_extent(const uint8_t *gpt_head, size_t head_len,
     uint64_t best_first = 0, best_last = 0;
     int found = 0;
     for (uint32_t i = 0; i < ne; i++) {
-        const uint8_t *e = gpt_head + elba * sector + (uint64_t)i * es;
+        const uint8_t *e = arr + (uint64_t)i * es;
         int used = 0;
         for (int q = 0; q < 16; q++) if (e[q]) { used = 1; break; }
         if (!used) continue;
@@ -368,6 +387,37 @@ int fmt_image_root_extent(const uint8_t *gpt_head, size_t head_len,
     *off = best_first * sector;
     *len = (best_last - best_first + 1) * sector;
     return 0;
+}
+
+/* EFI System, in GPT's mixed-endian order:
+ * C12A7328-F81F-11D2-BA4B-00A0C93EC93B. */
+static const uint8_t ESP_TYPE[16] = {
+    0x28,0x73,0x2A,0xC1, 0x1F,0xF8, 0xD2,0x11,
+    0xBA,0x4B, 0x00,0xA0,0xC9,0x3E,0xC9,0x3B };
+
+/* BY TYPE, not by position. The root is found by extent because it is
+ * the one that runs to the end of the image; the ESP is found by what
+ * it IS, because an image with a third partition one day must not turn
+ * the boot chain into whatever happened to be first. */
+int fmt_image_esp_extent(const uint8_t *gpt_head, size_t head_len,
+                         uint32_t sector, uint64_t *off, uint64_t *len,
+                         char *why, size_t wn)
+{
+    const uint8_t *arr; uint32_t ne, es;
+    if (image_table(gpt_head, head_len, sector, &arr, &ne, &es, why, wn) != 0)
+        return -1;
+    for (uint32_t i = 0; i < ne; i++) {
+        const uint8_t *e = arr + (uint64_t)i * es;
+        if (memcmp(e, ESP_TYPE, 16) != 0) continue;
+        uint64_t f = g64(e + 32), l = g64(e + 40);
+        if (!f || l < f) continue;
+        *off = f * sector;
+        *len = (l - f + 1) * sector;
+        return 0;
+    }
+    snprintf(why, wn, "the AurOS image file has nothing in it to start a "
+                      "computer with");
+    return -1;
 }
 
 /* ── the journal ─────────────────────────────────────────────────── */
@@ -700,8 +750,10 @@ int fmt_selftest(void)
         uint8_t man[FMT_MANIFEST_BYTES];
         unsigned char sha[32];
         for (int i = 0; i < 32; i++) sha[i] = (unsigned char)(i + 1);
+        unsigned char esha[32];
+        for (int i = 0; i < 32; i++) esha[i] = (unsigned char)(0x40 + i);
         fmt_manifest(man, 0x1122334455667788ull, 0x1000, 0x2000, 512,
-                     sha, "desktop");
+                     sha, "desktop", 0x100000, 0x2000000, esha);
         if (memcmp(man, "AURIMG01", 8) != 0) nope(&bad, "manifest magic");
         if (g64(man + 8) != 0x1122334455667788ull)
             nope(&bad, "the manifest's image length is at the wrong offset");
@@ -713,6 +765,10 @@ int fmt_selftest(void)
             nope(&bad, "the manifest's hash is at the wrong offset");
         if (strcmp((char *)man + 68, "desktop") != 0)
             nope(&bad, "the manifest's profile is at the wrong offset");
+        if (g64(man + 132) != 0x100000 || g64(man + 140) != 0x2000000)
+            nope(&bad, "the manifest's EFI extent is at the wrong offset");
+        if (memcmp(man + 148, esha, 32) != 0)
+            nope(&bad, "the manifest's EFI hash is at the wrong offset");
     }
 
     /* The journal. Checked for the exact field names aurstage's parser

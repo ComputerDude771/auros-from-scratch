@@ -95,9 +95,12 @@ int plan_compute(const gpt_table *t, int win_idx,
 
 /* Every bound, checked against the TABLE.
  *
- * Called again before every step that acts on the layout, not once at
- * the start: the thing it is guarding against is the plan being right
- * when it was made and wrong by the time it is used. */
+ * Called at the end of plan_compute, and again in install.c
+ * immediately before the commit -- which is the one place where being
+ * wrong stops being recoverable. It is NOT called before every step
+ * that touches the layout, and this comment used to say it was; the
+ * gap between those two sentences is the sort of thing a reader
+ * relies on and nobody checks. */
 int plan_check(const gpt_table *t, const stage_layout *L,
                uint64_t root_src_bytes, uint64_t rec_bytes,
                uint64_t rsc_bytes, uint64_t min_root_bytes,

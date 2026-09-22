@@ -44,6 +44,12 @@ sgdisk -n 2:0:0       -t 2:8304 -c 2:"AUROS-ROOT" "$IMG" >/dev/null 2>&1
 RS=$(sgdisk -i 2 "$IMG" | sed -n 's/^First sector: \([0-9]*\).*/\1/p')
 RE=$(sgdisk -i 2 "$IMG" | sed -n 's/^Last sector: \([0-9]*\).*/\1/p')
 ROFF=$((RS * 512)); RLEN=$(((RE - RS + 1) * 512))
+ES=$(sgdisk -i 1 "$IMG" | sed -n 's/^First sector: \([0-9]*\).*/\1/p')
+EE=$(sgdisk -i 1 "$IMG" | sed -n 's/^Last sector: \([0-9]*\).*/\1/p')
+EOFF=$((ES * 512)); ELEN=$(((EE - ES + 1) * 512))
+# Something recognisable in the EFI partition, so that "the boot chain
+# is checked" is a check about bytes rather than about zeroes.
+dd if=/dev/urandom of="$IMG" bs=512 seek=$ES count=64 conv=notrunc status=none
 dd if=/dev/zero of="$TMP/root.img" bs=1M count=$((RLEN / 1048576)) status=none
 mkfs.ext4 -q -L AUROS-ROOT "$TMP/root.img"
 mkdir -p "$TMP/m"
@@ -64,18 +70,22 @@ mkstick() { # out  profile  [corrupt-root] [lie-about-offsets]
            -c 1:"AUROS-IMAGE" "$S" >/dev/null 2>&1
     PS=$(sgdisk -i 1 "$S" | sed -n 's/^First sector: \([0-9]*\).*/\1/p')
     python3 - "$S" "$IMG" "$((PS * 512))" "$ROFF" "$RLEN" "$PROF" \
-                 "$CORRUPT" "$LIE" <<'EOPY'
+                 "$CORRUPT" "$LIE" "$EOFF" "$ELEN" <<'EOPY'
 import sys, struct, hashlib
-stick, img, pstart, roff, rlen, prof, corrupt, lie = sys.argv[1:9]
+stick, img, pstart, roff, rlen, prof, corrupt, lie, eoff, elen = sys.argv[1:11]
 pstart, roff, rlen = int(pstart), int(roff), int(rlen)
+eoff, elen = int(eoff), int(elen)
 data = bytearray(open(img, 'rb').read())
 # HASH FIRST, THEN CORRUPT. The first version corrupted the image and
 # then hashed it, so the manifest described the damage perfectly and
 # the check had nothing to catch -- a fixture that agreed with itself,
 # which is the same mistake this whole test exists to prevent in the
 # product.
-sha = hashlib.sha256(bytes(data[roff:roff + rlen])).digest()
-if corrupt:
+sha  = hashlib.sha256(bytes(data[roff:roff + rlen])).digest()
+esha = hashlib.sha256(bytes(data[eoff:eoff + elen])).digest()
+if corrupt == 'esp':
+    data[eoff + 16] ^= 0xFF
+elif corrupt:
     data[roff + rlen // 2] ^= 0xFF
 
 man = bytearray(4096)
@@ -86,6 +96,9 @@ struct.pack_into('<Q', man, 24, rlen)
 struct.pack_into('<I', man, 32, 512)
 man[36:68] = sha
 man[68:68+len(prof)] = prof.encode()
+struct.pack_into('<Q', man, 132, eoff)
+struct.pack_into('<Q', man, 140, elen)
+man[148:180] = esha
 
 f = open(stick, 'r+b')
 f.seek(pstart);            f.write(man)
@@ -222,6 +235,25 @@ case "$(printf '%s\n' "$OUT" | G why)" in
   *) bad "...and is called damaged, not missing" "it said: $(printf '%s\n' "$OUT" | G why)" ;;
 esac
 losetup -d "$L2"
+
+# AND A FLIP IN THE PART THAT STARTS A COMPUTER, which is a different
+# extent and used to be checked by nothing: the installer copies it
+# onto the machine and reads it back against the stick -- the same
+# bytes it just wrote -- so rot in the shim installed cleanly, said so,
+# and left a machine that starts nothing.
+mkstick "$TMP/badesp.img" "desktop" esp
+LE=$(attach "$TMP/badesp.img")
+NE=$(basename "$LE")
+OUT=$("$TMP/i" verify "$NE" "$TMP/badesp.img" desktop 2>/dev/null)
+[ "$(printf '%s\n' "$OUT" | G verify)" = "-1" ] \
+  && ok "a flipped byte in the boot chain is caught too" \
+  || bad "a flipped byte in the boot chain is caught too"
+case "$(printf '%s\n' "$OUT" | G why)" in
+  *"starts a computer"*) ok "...and is named as the start-up files" ;;
+  *) bad "...and is named as the start-up files" \
+         "it said: $(printf '%s\n' "$OUT" | G why)" ;;
+esac
+losetup -d "$LE"
 
 mkstick "$TMP/lie.img" "desktop" "" lie
 L3=$(attach "$TMP/lie.img"); N3=$(basename "$L3")

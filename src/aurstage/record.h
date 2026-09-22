@@ -69,9 +69,15 @@ typedef enum {
     REC_WRITE_END,      /* written AND read back AND hashed           */
     /* The boot partition, written into the gap while the OLD table is
      * still in force. Two steps rather than one because the thing
-     * between them is minutes long on a slow stick, and "it stopped
-     * somewhere in there" is the difference between a resume that can
-     * reason and one that cannot. */
+     * between them is minutes long on a slow stick, and a support
+     * engineer reading one of these wants to know whether the copy was
+     * running when the power went.
+     *
+     * NOT because the resume ladder reasons about it -- it does not,
+     * and an earlier version of this comment said it did. A machine
+     * cut anywhere in here has the old table in force and garbage in
+     * free space, which is the same state as a cut during the root
+     * write, and starting over is the right answer to all of it. */
     REC_BOOT_BEGIN,
     REC_BOOT_END,
     REC_PROBE_END,

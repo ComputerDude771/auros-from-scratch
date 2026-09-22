@@ -609,6 +609,24 @@ static int phase_prepare(const ab_choice *c, pf_report *r, ab_machine *m,
     if (fmt_image_root_extent(ihead, hneed, 512, &root_off, &root_len,
                               why, n) != 0)
         return -1;
+    /* AND THE PART THAT STARTS A COMPUTER, hashed for the same reason
+     * the root is. The installer copies this extent onto the machine
+     * and its read-back compares the disk with the STICK -- the same
+     * bytes it just wrote -- so rot anywhere in the shim or in grub
+     * was copied faithfully, verified faithfully, and reported as
+     * success, and the machine then started nothing. Nothing in the
+     * product had a number to compare those bytes against. */
+    uint64_t esp_off = 0, esp_len = 0;
+    if (fmt_image_esp_extent(ihead, hneed, 512, &esp_off, &esp_len,
+                             why, n) != 0)
+        return -1;
+    if (esp_off > image_bytes || esp_len > image_bytes - esp_off) {
+        snprintf(why, n,
+                 "the copy of AurOS on this computer is incomplete -- the "
+                 "part that starts a computer is not all there. Download it "
+                 "again.");
+        return -1;
+    }
     /* AND IT HAS TO BE INSIDE THE FILE.
      *
      * A half-downloaded auros-desktop.img -- 4.9 GB of 5.2, with the
@@ -668,8 +686,9 @@ static int phase_prepare(const ab_choice *c, pf_report *r, ab_machine *m,
 
     /* The image, streamed, hashing the root extent as it passes. */
     static uint8_t buf[1 << 20];
-    fmt_sha rs;
+    fmt_sha rs, es;
     fmt_sha_start(&rs);
+    fmt_sha_start(&es);
     uint64_t at = 0, dst = m->image_part_off + FMT_MANIFEST_BYTES;
     while (at < image_bytes) {
         size_t chunk = (size_t)(image_bytes - at);
@@ -678,16 +697,24 @@ static int phase_prepare(const ab_choice *c, pf_report *r, ab_machine *m,
             return -1;
         if (plat_write(m->stick_index, dst + at, buf, chunk, why, n) != 0)
             return -1;
-        /* The part of this megabyte that is inside the root extent. */
+        /* The part of this megabyte that is inside the root extent,
+         * and the part inside the EFI one. Two windows over one pass,
+         * because the image is five gigabytes and reading it twice to
+         * hash it twice is twenty minutes of somebody's afternoon. */
         uint64_t lo = at > root_off ? at : root_off;
         uint64_t hi = at + chunk;
         if (hi > root_off + root_len) hi = root_off + root_len;
         if (hi > lo) fmt_sha_feed(&rs, buf + (lo - at), (size_t)(hi - lo));
+        lo = at > esp_off ? at : esp_off;
+        hi = at + chunk;
+        if (hi > esp_off + esp_len) hi = esp_off + esp_len;
+        if (hi > lo) fmt_sha_feed(&es, buf + (lo - at), (size_t)(hi - lo));
         at += chunk;
         if (prog) prog((int)(90 * at / image_bytes), ud);
     }
-    unsigned char root_sha[32];
+    unsigned char root_sha[32], esp_sha[32];
     fmt_sha_done(&rs, root_sha);
+    fmt_sha_done(&es, esp_sha);
 
     /* The two areas that are read by magic number are zeroed, so that
      * whatever was on this stick last week cannot be believed. */
@@ -698,7 +725,7 @@ static int phase_prepare(const ab_choice *c, pf_report *r, ab_machine *m,
 
     uint8_t man[FMT_MANIFEST_BYTES];
     fmt_manifest(man, image_bytes, root_off, root_len, 512, root_sha,
-                 c->profile);
+                 c->profile, esp_off, esp_len, esp_sha);
     if (plat_write(m->stick_index, m->image_part_off, man, sizeof man,
                    why, n) != 0)
         return -1;

@@ -68,12 +68,12 @@ int plan_compute(const gpt_table *t, int win_idx,
      * recovery partition stays where the boot entry says it is. */
     uint64_t rec_blocks = align_up((rec_bytes + ss - 1) / ss, align);
     if (rec_blocks == 0) {
-        snprintf(why, n, "the recovery area was given no size");
+        snprintf(why, n, "the AurOS start-up area was given no size");
         return -1;
     }
     uint64_t rsc_blocks = align_up((rsc_bytes + ss - 1) / ss, align);
     if (rsc_blocks == 0) {
-        snprintf(why, n, "the copy of the way back was given no size");
+        snprintf(why, n, "the AurOS start-up area was given no size");
         return -1;
     }
     /* Carved from the far end inwards, so that the root -- the one
@@ -83,11 +83,21 @@ int plan_compute(const gpt_table *t, int win_idx,
      * both align_dn calls are the reason this cannot be written as one
      * subtraction: rounding each start down to a megabyte moves it,
      * and the next one down has to start from where it landed. */
+    /* THE SUBTRACTION FIRST, AND ITS UNDERFLOW IS A REFUSAL. With
+     * rec_blocks past gap_end this wrapped to an enormous number that
+     * passed both tests below, and the layout was only rejected three
+     * functions later as "the pieces of the new layout are out of
+     * order" -- which tells nobody anything. */
+    if (rec_blocks > gap_end || gap_end - rec_blocks < L->gap_first) {
+        snprintf(why, n,
+                 "there is not enough room for the part AurOS starts from.");
+        return -1;
+    }
     uint64_t rec_first = align_dn(gap_end - rec_blocks, align);
     if (rec_first < L->gap_first || rec_first < rsc_blocks) {
         snprintf(why, n,
-                 "there is not enough room on this computer for AurOS and a "
-                 "way back to Windows");
+                 "there is not enough room on this computer for AurOS, the "
+                 "part it starts from and a way back to Windows");
         return -1;
     }
     uint64_t rsc_first = align_dn(rec_first - rsc_blocks, align);
@@ -156,7 +166,7 @@ int plan_check(const gpt_table *t, const stage_layout *L,
     hit = gpt_overlaps(t, L->rec_first, L->rec_last, L->win_idx);
     if (hit >= 0) {
         snprintf(why, n,
-                 "the space the way back would use is already taken by "
+                 "the space AurOS would start from is already taken by "
                  "partition %d", hit + 1);
         return -1;
     }
@@ -197,7 +207,7 @@ int plan_check(const gpt_table *t, const stage_layout *L,
         return -1;
     }
     if (rec_have < rec_bytes) {
-        snprintf(why, n, "there is not enough room for a way back to Windows");
+        snprintf(why, n, "there is not enough room for the part AurOS starts from");
         return -1;
     }
 
@@ -225,5 +235,5 @@ void plan_say(const stage_layout *L)
     say_span("windows",  L->win_first,  L->win_last_new, L->sector);
     say_span("auros",    L->root_first, L->root_last,    L->sector);
     say_span("saved",    L->rsc_first,  L->rsc_last,     L->sector);
-    say_span("way back", L->rec_first,  L->rec_last,     L->sector);
+    say_span("startup", L->rec_first,  L->rec_last,     L->sector);
 }
