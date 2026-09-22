@@ -65,6 +65,35 @@ load_profile() {
     unset inherit 2>/dev/null || true
     PROFILE="$name"
     RFS="$WORK/$profile_id/rootfs"
+
+    # ── what the profile says, checked BEFORE anything acts on it ──
+    #
+    # default_user was validated in stage 4, two hundred lines after
+    # stage 4 had already used it to run `useradd`. A profile with an
+    # empty one -- which the office profile had, meaning "the person
+    # who installs it chooses" -- got as far as
+    #
+    #     usermod: user '' does not exist
+    #     :: could not put  in: sudo,audio,video,input,netdev,...
+    #
+    # after forty minutes of building, and the message names neither
+    # the profile nor the key. A check that runs after the thing it
+    # guards is not a check.
+    #
+    # And it is not deferrable: nothing on the first boot creates an
+    # account, so an image without one is an image nobody can log in
+    # to. A profile that wants the installer to choose the name has to
+    # wait for that to exist.
+    if [ "${kiosk_mode:-no}" != "yes" ]; then
+        case "${default_user:-}" in
+            '') die "profile '$profile_id' sets no default_user, and nothing
+     on the first boot creates an account -- the image would have
+     nobody to log in as. Name one." ;;
+            *[!a-z0-9_-]*)
+                die "profile '$profile_id': default_user '$default_user' is
+     not a plain account name." ;;
+        esac
+    fi
 }
 
 # Every chroot command runs with the API filesystems mounted and

@@ -64,7 +64,17 @@ allow_tty="yes"
 
 kiosk_mode="no"
 auto_login="no"
-default_user=""           # empty = the person who installs it says
+
+# A NAME, BECAUSE THE IMAGE NEEDS ONE.
+#
+# This said "" and meant "the person who installs it chooses". Nothing
+# on the first boot creates an account, so that image would have had
+# nobody to log in as -- and forge found out forty minutes into the
+# build, with `usermod: user '' does not exist`. The first boot forces
+# a password change; an administrator who wants a different name
+# renames it, or rebuilds this profile with one. Deferring the choice
+# to the installer is a real thing to want and is not built yet.
+default_user="auros"
 
 # ── fleet ──────────────────────────────────────────────────────────
 #
