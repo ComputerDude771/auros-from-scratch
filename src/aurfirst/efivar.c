@@ -63,7 +63,15 @@ int af_var_get(const char *name, uint8_t *out, size_t n)
     close(fd);
     if (k < 4) return -1;
     size_t len = (size_t)k - 4;
-    if (len > n) len = n;
+    /* TRUNCATION IS A REFUSAL, NOT A SHORTER ANSWER.
+     *
+     * It used to clip and report the clipped length as success. On a
+     * machine with a long BootOrder that meant af_confirm read 512
+     * entries of 600, wrote 512 back -- and the read-back compared the
+     * same 512 and agreed. The entries past the end, which on the
+     * machine a review built were Windows Boot Manager, were gone, and
+     * nothing anywhere said so. */
+    if (len > n) return -2;
     memcpy(out, buf + 4, len);
     return (int)len;
 }
@@ -92,7 +100,14 @@ int af_var_put(const char *name, const void *data, size_t len,
     memcpy(buf + 4, data, len);
 
     unlock(path);
-    int fd = open(path, O_WRONLY | O_CREAT, 0644);
+    /* O_TRUNC. Real efivarfs replaces the whole variable whatever the
+     * offset, so hardware forgives its absence -- and nothing else
+     * does. A BootOrder that gets SHORTER (firmware that lists our
+     * entry twice, which some OEMs do) left the old tail behind, the
+     * read-back correctly refused it, and confirm then failed
+     * permanently on that machine: every retry reproduced it and the
+     * person could never say yes. */
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
     if (fd < 0) {
         snprintf(why, n, "this computer would not let AurOS change its "
                          "start-up settings (%s)", strerror(errno));

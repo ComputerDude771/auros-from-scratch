@@ -114,7 +114,19 @@ static int put_var(const char *name, const void *data, size_t len,
 
     nvram_rw();
     unlock(path);
-    int fd = open(path, O_WRONLY | O_CREAT, 0644);
+    /* O_TRUNC, AND IT IS NOT DECORATION. On efivarfs each write(2) is
+     * one SetVariable and the inode size is reset, so on a real machine
+     * the filesystem saves us. Everywhere else -- including the unit
+     * test, which builds this file against an ordinary directory --
+     * replacing an entry with a SHORTER one leaves the tail of the old
+     * one behind, and what is left is a Boot#### that decodes to
+     * nonsense and will not start anything. A review reproduced
+     * exactly that: a 704-byte entry replaced by a shorter one stayed
+     * 704 bytes, the read-back correctly refused it, and the mangled
+     * entry was left in the menu under the name AurOS.
+     *
+     * O_CLOEXEC because commit.c execs later in this same process. */
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
     if (fd < 0) {
         snprintf(why, n, "this computer would not let AurOS write a start-up "
                          "entry (%s)", strerror(errno));
@@ -306,8 +318,35 @@ static int walk_boots(boot_fn fn, void *ud, uint8_t *used, size_t used_n)
     return 0;
 }
 
-typedef struct { const char *want; int found; unsigned num; } find_ctx;
+typedef struct { const char *want; const nvram_hd *on;
+                 int found; unsigned num; } find_ctx;
 
+/* The Hard Drive node's partition GUID, if this option has one. The
+ * layout is attributes(4), device path length(2), a NUL-terminated
+ * UTF-16LE description, then the device path -- so the node starts
+ * after the description and the GUID is 24 bytes into a 42-byte
+ * MEDIA/HARDDRIVE node. */
+static const uint8_t *hd_guid_of(const uint8_t *opt, int len)
+{
+    int i = 6;
+    while (i + 1 < len && (opt[i] || opt[i + 1])) i += 2;
+    i += 2;                                     /* past the NUL        */
+    if (i + 42 > len) return NULL;
+    if (opt[i] != 0x04 || opt[i + 1] != 0x01) return NULL;
+    if ((opt[i + 2] | (opt[i + 3] << 8)) != 42) return NULL;
+    return opt + i + 24;
+}
+
+/* OURS MEANS OURS, not "called the same thing".
+ *
+ * Reusing a slot on the description alone also reuses the entry of an
+ * AurOS on a SECOND DISK in the same machine, or one shim's fallback
+ * created from a BOOTX64.CSV. Overwriting that is somebody else's
+ * install disappearing, before this one has been confirmed -- against
+ * the rule that nothing is irreversible until AurOS has booted and the
+ * user has said it works. So the partition it names has to be the one
+ * this install just made. An entry with no Hard Drive node at all is
+ * not ours either: everything this file writes has one. */
 static int find_cb(unsigned num, const char *fname, const uint8_t *opt,
                    int len, void *ud)
 {
@@ -316,6 +355,8 @@ static int find_cb(unsigned num, const char *fname, const uint8_t *opt,
     char desc[256];
     desc_of(opt, len, desc, sizeof desc);
     if (strcmp(desc, c->want) != 0) return 0;
+    const uint8_t *g = hd_guid_of(opt, len);
+    if (!g || !c->on || memcmp(g, c->on->guid, 16) != 0) return 0;
     c->found = 1; c->num = num;
     return 1;
 }
@@ -339,7 +380,7 @@ int nvram_boot_set(const char *desc, const nvram_hd *on, const char *loader,
      * ours. */
     uint8_t used[0x2000 / 8];
     memset(used, 0, sizeof used);
-    find_ctx fc = { desc, 0, 0 };
+    find_ctx fc = { desc, on, 0, 0 };
     if (walk_boots(find_cb, &fc, used, sizeof used) != 0) {
         snprintf(why, n, "this computer's start-up menu could not be read.");
         return -1;
@@ -399,7 +440,16 @@ int nvram_boot_next(uint16_t num, char *why, size_t n)
     return 0;
 }
 
-typedef struct { const char *want; char names[8][64]; int n; } forget_ctx;
+/* SIXTY-FOUR, AND OVERFLOWING IT IS A REFUSAL RATHER THAN A NUMBER.
+ *
+ * It was eight, and the ninth match onwards was dropped on the floor
+ * while the function returned 8 -- indistinguishable from having
+ * removed them all, which is what nvram.h promises. A review planted
+ * twelve and got back "8" with four still in the firmware's menu. */
+#define FORGET_MAX 64
+
+typedef struct { const char *want; char names[FORGET_MAX][64];
+                 int n; int over; } forget_ctx;
 
 static int forget_cb(unsigned num, const char *fname, const uint8_t *opt,
                      int len, void *ud)
@@ -409,7 +459,8 @@ static int forget_cb(unsigned num, const char *fname, const uint8_t *opt,
     char desc[256];
     desc_of(opt, len, desc, sizeof desc);
     if (strcmp(desc, c->want) != 0) return 0;
-    if (c->n < 8) snprintf(c->names[c->n++], 64, "%s", fname);
+    if (c->n < FORGET_MAX) snprintf(c->names[c->n++], 64, "%s", fname);
+    else c->over = 1;
     return 0;                       /* every one of them, not the first */
 }
 
@@ -419,9 +470,14 @@ int nvram_boot_forget(const char *desc, char *why, size_t n)
         snprintf(why, n, "this computer's start-up settings are not readable.");
         return -1;
     }
-    forget_ctx fc; fc.want = desc; fc.n = 0;
+    forget_ctx fc; fc.want = desc; fc.n = 0; fc.over = 0;
     if (walk_boots(forget_cb, &fc, NULL, 0) != 0) {
         snprintf(why, n, "this computer's start-up menu could not be read.");
+        return -1;
+    }
+    if (fc.over) {
+        snprintf(why, n, "this computer's start-up menu has more old AurOS "
+                         "entries in it than AurOS will remove at once");
         return -1;
     }
     int gone = 0;
@@ -436,9 +492,13 @@ int nvram_boot_forget(const char *desc, char *why, size_t n)
     }
     nvram_ro();
     if (gone != fc.n) {
+        /* -1, NOT A COUNT. Returning the number removed on a partial
+         * failure means a caller testing `rc < 0` reads it as success,
+         * and the only caller today ignores the value entirely -- which
+         * is how it would have stayed wrong. */
         snprintf(why, n, "%d of this computer's old AurOS start-up entries "
                          "could not be removed", fc.n - gone);
-        return gone ? gone : -1;
+        return -1;
     }
     return gone;
 }

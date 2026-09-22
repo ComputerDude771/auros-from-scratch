@@ -40,7 +40,7 @@ echo
 
 gcc -O1 -std=gnu11 -Wall -Wextra \
     -DAF_DIR_EFIVARS="\"$VD\"" -DAF_DIR="\"$SD\"" \
-    -DAF_STATE_FILE="\"$TMP/first.state\"" \
+    -DAF_STATE_FILE="\"$TMP/first.state\"" -DAF_ALLOW_ENV_DIRS \
     -o "$TMP/af" src/aurfirst/*.c -Isrc/aurfirst 2>"$TMP/cc.log" \
     || { echo "  aurfirst did not build:"; sed -n '1,12p' "$TMP/cc.log"; exit 2; }
 AF="$TMP/af"
@@ -254,43 +254,150 @@ grep -q '^entry=0002$' "$TMP/first.state" 2>/dev/null \
 
 # ── the privilege boundary ──────────────────────────────────────────
 echo
-echo "  and the three words the desktop is allowed to ask for as root"
+echo "  and the boundary between the desktop and root"
 # answer.sh runs as root and is started by a file appearing in a
-# directory the desktop's own user owns. The only thing standing
-# between "that user" and "root" is which words it acts on, so every
-# shape of thing that is not one of those three is tried here.
-AR=$TMP/run
-ask() { # word...  -> the result file
-    mkdir -p "$AR"
-    printf '%s' "$1" > "$AR/answer"
-    AUROS_RUN="$AR" AUROS_STATE="$TMP/state2" AUROS_LOG="$TMP/answer.log"         sh rootfs/usr/lib/auros/answer.sh >/dev/null 2>&1
-    cat "$AR/answer.result" 2>/dev/null
+# directory the desktop's own user OWNS. The first version of it read
+# that file with `head -c` and wrote its answer, its log and its report
+# back through paths in the same directory -- as root, through names
+# she controls, with nothing to stop any of them being a symbolic link.
+# A review reproduced truncate-anything, append-anything and
+# chmod-anything from one request, and a read oracle for root-only
+# files from another. Everything below is one of those shapes.
+AR="$TMP/run"        # hers: mode 0700, she owns it
+AO="$TMP/answered"   # root's: nothing she writes goes here
+mkdir -p "$AR" "$AO"
+mkdir -p "$TMP/bin"
+# The test's own aurfirst, where answer.sh will look for it. Built
+# against the scratch efivarfs above, so `confirm` here is a real
+# confirm of a real (simulated) machine rather than a missing program.
+cp "$AF" "$TMP/bin/aurfirst"
+
+ask() { # word-or-nothing  -> the result file's contents
+    rm -f "$AO/result"
+    [ $# -gt 0 ] && printf '%s' "$1" > "$AR/answer"
+    AUROS_ANSWER_OUT="$AO" AUROS_STATE="$TMP/state2" \
+    AUROS_BIN="$TMP/bin" AUROS_LOG="$TMP/answer.log" \
+    AF_RUN_USER="$AR" \
+        sh rootfs/usr/lib/auros/answer.sh >/dev/null 2>&1
+    cat "$AO/result" 2>/dev/null
 }
-for w in 'reboot' 'CONFIRM' 'confirm; rm -rf /tmp/xx' '../../bin/sh' ''          'importx' 'ferry run'; do
+
+# A WORD THAT IS NOT ONE OF THE THREE MUST REACH THE DEFAULT ARM.
+# Accepting any refusal is not enough: `result=failed` means a named
+# branch RAN and errored, which is the opposite of what is being
+# claimed. The note is what tells them apart.
+before=$fail
+for w in 'reboot' 'CONFIRM' 'confirm; rm -rf /tmp/xx' '../../bin/sh' '' \
+         'importx' 'ferry run' 'confirmx'; do
     R=$(ask "$w")
     case "$R" in
-      *"result=refused"*|*"result=failed"*) : ;;
-      *) bad "'$w' is not acted on" "it answered: $(echo "$R" | tr '\n' ' ')" ;;
+      *"note=unknown request"*) : ;;
+      "") bad "'$w' is not acted on" "no answer was written at all" ;;
+      *)  bad "'$w' is not acted on" "$(echo "$R" | tr '\n' ' ')" ;;
     esac
 done
-ok "anything that is not one of the three words is refused"
-[ ! -f "$AR/answer" ] && ok "and the request is consumed either way"                       || bad "and the request is consumed either way"
-# WHAT THIS CHECKS AND WHAT IT DOES NOT. The gate itself -- whether
-# `aurfirst ferry` says yes -- is tested against a real aurfirst
-# further up. Here there is no /usr/sbin/aurfirst to ask, so what is
-# being proved is the other half of the same property: when the gate
-# does not say yes, for any reason at all, nothing is mounted and
-# nobody's files are read. A missing gate is a closed gate.
-R=$(ask 'import')
+[ "$fail" = "$before" ] \
+  && ok "anything that is not one of the three words reaches no branch" \
+  || true
+[ ! -f "$AR/answer" ] && ok "and the request is consumed either way" \
+                      || bad "and the request is consumed either way"
+
+# ── the shapes that were the escalation ─────────────────────────────
+echo
+echo "  and the shapes a directory she owns can hold"
+printf 'PRECIOUS\n' > "$TMP/victim"; chmod 600 "$TMP/victim"
+VB=$(md5sum "$TMP/victim" | cut -d' ' -f1)
+
+# 1. The ANSWER written through a symlink she planted. This is the one
+#    that was chmod-anything and truncate-anything as root.
+rm -f "$AO/result"
+ln -sf "$TMP/victim" "$AO/result" 2>/dev/null
+ask confirm >/dev/null
+# The root side owns $AO, so this cannot happen there any more -- but
+# the check stays, because the property is "nothing root writes lands
+# outside the directory root owns", and a future path that moved back
+# into hers would break it silently.
+[ "$(md5sum "$TMP/victim" | cut -d' ' -f1)" = "$VB" ] \
+  && [ "$(stat -c %a "$TMP/victim")" = "600" ] \
+  && ok "an answer written through a planted link changes nothing" \
+  || bad "an answer written through a planted link changes nothing" \
+         "$(ls -l "$TMP/victim")"
+rm -f "$AO/result"
+
+# 2. The REQUEST as a symlink to a file root can read and she cannot.
+#    It must not be read, and not one byte of it may come back.
+printf 'rootsecrethashvalue\n' > "$TMP/secret"; chmod 600 "$TMP/secret"
+rm -f "$AR/answer"; ln -s "$TMP/secret" "$AR/answer"
+R=$(ask)
 case "$R" in
-  *"result=refused"*) : ;;
-  *) bad "a gate that cannot be asked is a closed one" \
+  *rootsecret*) bad "a request that is a link is not read" "it echoed the target" ;;
+  *"note=unknown request"*) ok "a request that is a link is not read" ;;
+  *) bad "a request that is a link is not read" "$(echo "$R" | tr '\n' ' ')" ;;
+esac
+[ -e "$AR/answer" ] && bad "...and the link is removed" "it is still there" \
+                    || ok "...and the link is removed"
+[ -f "$TMP/secret" ] && ok "...and the file it pointed at is untouched" \
+                     || bad "...and the file it pointed at is untouched"
+
+# 3. A DIRECTORY named `answer`. It used to wedge the machine for ever:
+#    the guard returned before the removal, the path unit never edged
+#    again, and her O_EXCL create failed for ever -- so one mkdir took
+#    away her ability to say "No, go back to Windows".
+rm -f "$AR/answer"; mkdir -p "$AR/answer"
+ask >/dev/null
+[ ! -e "$AR/answer" ] && ok "a directory in its place is cleared, not fatal" \
+                      || bad "a directory in its place is cleared, not fatal"
+rm -rf "$AR/answer"
+
+# 4. A FIFO, which a read as root would block on for ever.
+rm -f "$AR/answer"
+if mkfifo "$AR/answer" 2>/dev/null; then
+    ( ask >/dev/null ) &
+    apid=$!
+    i=0
+    while [ $i -lt 50 ]; do kill -0 "$apid" 2>/dev/null || break; sleep 0.1; i=$((i+1)); done
+    if kill -0 "$apid" 2>/dev/null; then
+        kill -9 "$apid" 2>/dev/null
+        bad "a pipe in its place does not block root for ever" "it hung"
+    else
+        ok "a pipe in its place does not block root for ever"
+    fi
+    wait "$apid" 2>/dev/null
+    rm -f "$AR/answer"
+else
+    echo "    (no mkfifo here; the pipe case was not tried)"
+fi
+
+# 5. A HARD LINK to a root-only file -- the one shape O_NOFOLLOW does
+#    not catch, which is why the request is also fstat'ed for a link
+#    count of one on the descriptor it is read from.
+rm -f "$AR/answer"
+if ln "$TMP/secret" "$AR/answer" 2>/dev/null; then
+    R=$(ask)
+    case "$R" in
+      *rootsecret*) bad "a hard link to a root-only file is not read" \
+                        "it echoed the target" ;;
+      *)            ok "a hard link to a root-only file is not read" ;;
+    esac
+    rm -f "$AR/answer"
+else
+    echo "    (no hard link here; that case was not tried)"
+fi
+
+# ── the import gate ─────────────────────────────────────────────────
+echo
+echo "  and importing, which waits for the answer"
+rm -rf "$SD"; mkdir -p "$SD"        # nobody has confirmed anything
+rm -f "$AO/import.log"
+R=$(ask import)
+case "$R" in
+  *"note=AurOS has not been confirmed yet"*)
+    ok "importing is refused until AurOS has been confirmed" ;;
+  *) bad "importing is refused until AurOS has been confirmed" \
          "$(echo "$R" | tr '\n' ' ')" ;;
 esac
-[ ! -f "$AR/import.log" ] \
-  && ok "a gate that cannot be asked is a closed one, and nothing is read" \
-  || bad "a gate that cannot be asked is a closed one, and nothing is read" \
-         "it started importing anyway"
+[ ! -f "$AO/import.log" ] && ok "...and nothing was mounted or read" \
+                          || bad "...and nothing was mounted or read"
 
 echo
 if [ "$fail" -gt 0 ]; then

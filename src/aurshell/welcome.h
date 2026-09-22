@@ -33,8 +33,19 @@
  * word into aurshell's own runtime directory and waits for an answer,
  * and rootfs/usr/lib/auros/answer.sh -- started by a path unit, as
  * root -- is what acts on it. Three words are accepted and anything
- * else is refused, so the worst this panel can do if it is wrong is
- * ask for something that does not happen.
+ * else is refused.
+ *
+ * That is not the same as saying this panel is harmless if it is
+ * wrong, and an earlier version of this comment did say so. One of the
+ * three words is `confirm`, which rewrites what the computer starts.
+ * The bound is not "nothing happens", it is "nothing happens that she
+ * could not have asked for by pressing the button in front of her".
+ *
+ * IT READS THE ANSWER SOMEWHERE ELSE. The request goes into her own
+ * runtime directory; the answer, the import log and the report come
+ * out of /run/auros-answer, which belongs to root. That asymmetry is
+ * the whole of the privilege boundary: root never opens a path she
+ * owns. src/aurfirst/request.c has the escalation it closes.
  */
 #ifndef AUROS_WELCOME_H
 #define AUROS_WELCOME_H
@@ -45,6 +56,11 @@
  * tools/welcometest.c and for nothing else. */
 #ifndef WELCOME_RUN
 #define WELCOME_RUN   "/run/auros"
+#endif
+/* Where the root side answers. Root-owned and world-readable; nothing
+ * the desktop writes goes here. */
+#ifndef WELCOME_ANSWER
+#define WELCOME_ANSWER "/run/auros-answer"
 #endif
 /* Written by aurfirst on every run, read here. One small key=value
  * file rather than the shell spawning a program and parsing it: the

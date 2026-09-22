@@ -17,8 +17,9 @@
 static struct {
     int  page;
     int  can_import;
-    int  converted;         /* this machine came from a Windows      */
     int  asked;             /* a word is in flight                   */
+    char wanted[16];        /* WHICH word. See welcome_step.         */
+    int  partial;           /* the import finished with things left  */
     int  hover_act;
     int  sel;               /* which action the keyboard is on       */
     char note[NOTE_MAX];    /* what went wrong, in the answer's words */
@@ -85,21 +86,27 @@ static int windows_worth_importing(void)
 
 static int ask_for(const char *word)
 {
+    snprintf(W.wanted, sizeof W.wanted, "%s", word);
+    W.asked = 1;
+    W.note[0] = 0;
     char path[512];
-    snprintf(path, sizeof path, "%s/answer.result", WELCOME_RUN);
-    unlink(path);                       /* last time's answer is not this one */
     snprintf(path, sizeof path, "%s/answer", WELCOME_RUN);
     /* O_EXCL: two presses in the same second must not make two
      * requests, and a request already sitting there is one the root
-     * side has not picked up yet. */
+     * side has not picked up yet.
+     *
+     * AND `W.asked` IS SET EITHER WAY. It used to be set only on the
+     * path that created the file, so a leftover request -- from a
+     * previous session, or from an answering service that was killed
+     * -- made this return "in flight" while nothing ever polled for
+     * the answer. The panel then sat on "One moment" for ever, which
+     * is the one screen with no way out of it. */
     int fd = open(path, O_WRONLY | O_CREAT | O_EXCL, 0600);
-    if (fd < 0 && errno == EEXIST) return 0;    /* already asked */
-    if (fd < 0) return -1;
+    if (fd < 0 && errno == EEXIST) return 0;
+    if (fd < 0) { W.asked = 0; return -1; }
     ssize_t k = write(fd, word, strlen(word));
     close(fd);
-    if (k != (ssize_t)strlen(word)) return -1;
-    W.asked = 1;
-    W.note[0] = 0;
+    if (k != (ssize_t)strlen(word)) { W.asked = 0; return -1; }
     return 0;
 }
 
@@ -109,7 +116,7 @@ static int ask_for(const char *word)
 static int read_import_line(void)
 {
     char path[512];
-    snprintf(path, sizeof path, "%s/import.log", WELCOME_RUN);
+    snprintf(path, sizeof path, "%s/import.log", WELCOME_ANSWER);
     struct stat st;
     if (stat(path, &st) != 0) return 0;
     if (st.st_size == W.log_seen) return 0;
@@ -117,7 +124,10 @@ static int read_import_line(void)
     int fd = open(path, O_RDONLY | O_CLOEXEC);
     if (fd < 0) return 0;
     char tail[2048];
-    off_t from = st.st_size > (off_t)sizeof tail ? st.st_size - (off_t)sizeof tail : 0;
+    /* sizeof tail - 1, matching the read below: taking the last 2048
+     * bytes and then reading 2047 of them dropped the newest byte. */
+    off_t want = (off_t)(sizeof tail - 1);
+    off_t from = st.st_size > want ? st.st_size - want : 0;
     ssize_t k = pread(fd, tail, sizeof tail - 1, from);
     close(fd);
     if (k <= 0) return 0;
@@ -136,8 +146,6 @@ int welcome_init(shell_ctx *c)
 {
     char phase[32];
     read_state(phase, sizeof phase);
-    W.converted  = !strcmp(phase, "asking") || !strcmp(phase, "done") ||
-                   !strcmp(phase, "declined");
     W.can_import = windows_worth_importing();
     W.page = W_ASK;
     W.sel = 0;
@@ -159,7 +167,7 @@ int welcome_step(shell_ctx *c)
     if (!W.asked) return dirty;
 
     char path[512];
-    snprintf(path, sizeof path, "%s/answer.result", WELCOME_RUN);
+    snprintf(path, sizeof path, "%s/result", WELCOME_ANSWER);
     char blob[1024];
     if (slurp(path, blob, sizeof blob) < 0) return dirty;
 
@@ -172,16 +180,31 @@ int welcome_step(shell_ctx *c)
      * should not happen -- and "should not happen" is why it is
      * checked rather than assumed. */
     if (!res[0]) return dirty;
+    /* AND IT HAS TO BE AN ANSWER TO THE QUESTION THIS PANEL ASKED.
+     *
+     * The panel did not used to remember what it asked for, so an
+     * answer to something else -- a result left over from a previous
+     * session, or one a second request produced -- was acted on. A
+     * confirm whose outcome nobody knows would show "Your files are
+     * here. Open Files to see them." The file is left alone rather
+     * than consumed: it is not ours to remove. */
+    if (strcmp(req, W.wanted) != 0) return dirty;
 
     W.asked = 0;
+    W.partial = 0;
     snprintf(W.note, sizeof W.note, "%s", note);
-    unlink(path);
 
     if (!strcmp(res, "ok") || !strcmp(res, "partial")) {
+        W.partial = !strcmp(res, "partial");
         if (!strcmp(req, "confirm"))      W.page = W_CONFIRMED;
         else if (!strcmp(req, "decline")) W.page = W_DECLINED;
         else if (!strcmp(req, "import"))  W.page = W_IMPORTED;
+        else                              W.page = W_TROUBLE;
     } else {
+        /* refused, failed, or a word this panel does not know. All of
+         * them are "that did not work", and the note says which -- a
+         * result nothing recognised must not leave the page where it
+         * was, because W_WORKING has no way out. */
         W.page = W_TROUBLE;
     }
     W.sel = 0;
@@ -377,12 +400,18 @@ static const char *sub_of(int page)
     case W_DECLINED:
         return "Turn this computer off and on again to go back.";
     default:
-        return "Nothing has been changed.";
+        /* IT USED TO SAY "Nothing has been changed." It cannot know
+         * that: confirm can write BootOrder and then fail its own
+         * read-back, and a refused import has already mounted and
+         * unmounted a volume. The note under this line is what
+         * actually happened, and it comes from the thing that did it. */
+        return "AurOS could not finish that.";
     }
 }
 
 /* Three short lines, not a paragraph. docs/EASY.md. */
-static int body_of(int page, int can_import, const char *lines[4])
+static int body_of(int page, int can_import, int partial,
+                   const char *lines[4])
 {
     int n = 0;
     switch (page) {
@@ -402,6 +431,11 @@ static int body_of(int page, int can_import, const char *lines[4])
                          "from the menu when you switch on.";
         break;
     case W_IMPORTED:
+        /* "Partial" is ferry having run and some of it not having
+         * worked, which is a different sentence from "it all came
+         * across" and must not be the same one. */
+        if (partial)
+            lines[n++] = "Some things could not be brought across.";
         lines[n++] = "Anything that could not come across is written down "
                      "in the report.";
         break;
@@ -457,7 +491,7 @@ void welcome_paint(shell_ctx *c, surface *s, shell_fonts *f)
                           sub_of(W.page), c->fg, 0.9f);
 
     const char *lines[4];
-    int nl = body_of(W.page, W.can_import, lines);
+    int nl = body_of(W.page, W.can_import, W.partial, lines);
     int y = g.body_y;
     for (int i = 0; i < nl && tiny; i++) {
         if (y > g.body_max_y) break;    /* the answers took the room */

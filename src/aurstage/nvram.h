@@ -83,14 +83,17 @@ int nvram_boot_set(const char *desc, const nvram_hd *on, const char *loader,
                    const char *cmdline, uint16_t *num_out,
                    char *why, size_t n);
 
+/* Delete every entry whose description is exactly `desc`. Returns how
+ * many went, or -1 -- NEVER a partial count, because a caller testing
+ * `rc < 0` would read one as success. */
+
 /* Arm the one-shot. */
 int nvram_boot_next(uint16_t num, char *why, size_t n);
 
-/* Delete every entry whose description is exactly `desc`. Used for
- * one thing: the "AurOS Installer" entry the Windows half created,
- * once the install it existed for is finished. Returns how many went,
- * or -1. Never matches a prefix -- "AurOS Installer" and "AurOS" are
- * different entries and one of them is the one that boots. */
+/* Used for one thing: the "AurOS Installer" entry the Windows half
+ * created, once the install it existed for is finished. Never matches
+ * a prefix -- "AurOS Installer" and "AurOS" are different entries and
+ * one of them is the one that boots. */
 int nvram_boot_forget(const char *desc, char *why, size_t n);
 
 #endif

@@ -113,6 +113,10 @@ typedef struct {
     int      bootnext;      /* BootNext is armed at our entry         */
     int      confirmed;
     int      declined;
+    /* The stamps could not be looked at -- /var not mounted yet, or a
+     * stat that failed for a reason other than "not there". Neither
+     * answered nor unanswered, and the hold does nothing in it. */
+    int      unknown;
 } af_state;
 
 /* Look, and change nothing. */
@@ -141,12 +145,22 @@ int  af_confirm(const af_state *s, char *why, size_t n);
  * touched it -- and write the stamp so the hold stops re-arming. */
 int  af_decline(const af_state *s, char *why, size_t n);
 
+/* ── the one word the desktop is allowed to ask for ───────────────── */
+
+/* Take the request out of the desktop's runtime directory and remove
+ * it. `out` gets one of "confirm", "decline", "import", or the literal
+ * "unknown". Returns 0 for one of ours, 1 for unknown, -1 for nothing
+ * there. See request.c for why this is not three lines of shell. */
+int af_request_take(char *out, size_t n);
+
 /* ── the EFI variables, read and written from inside AurOS ────────── */
 
 #define AF_GLOBAL_GUID "8be4df61-93ca-11d2-aa0d-00e098032b8c"
 
 /* Read one global variable's data, attributes stripped. Returns the
- * length, or -1. */
+ * length, -1 if there is nothing to read, or -2 if it is LONGER than
+ * `n` -- which is a refusal and not a shorter answer, because a
+ * silently clipped BootOrder is a boot menu with entries missing. */
 int  af_var_get(const char *name, uint8_t *out, size_t n);
 /* Write one, attributes and data in a single write(2). */
 int  af_var_put(const char *name, const void *data, size_t len,

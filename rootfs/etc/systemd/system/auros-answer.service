@@ -4,7 +4,24 @@ Description=AurOS: carry out the answer to "does this work?"
 [Service]
 Type=oneshot
 ExecStart=/usr/lib/auros/answer.sh
+# THE DIRECTORY ROOT ANSWERS INTO, and the reason this unit has one.
+#
+# Everything this service writes goes here: root-owned, mode 0755,
+# world-readable, and the desktop cannot put anything in it. The
+# desktop's own runtime directory is mode 0700 and owned by HER, so a
+# root process that opens a path inside it is a root process opening
+# whatever she has decided that name is -- which is a local root
+# escalation and was one. See src/aurfirst/request.c.
+RuntimeDirectory=auros-answer
+RuntimeDirectoryMode=0755
+RuntimeDirectoryPreserve=yes
 TimeoutStartSec=3600
+# Defence in depth, not the fix -- the fix is the directory above.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/var/lib/auros /var/log /run/auros-answer /run/auros
 # Importing somebody's files can take a long time on a ten-year-old
 # disk and must never become a failed boot or a failed desktop.
 SuccessExitStatus=0 1 2 3

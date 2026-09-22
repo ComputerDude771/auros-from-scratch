@@ -54,6 +54,12 @@ typedef enum {
     WR_GPT_BACKUP,      /* backup entry array and header              */
     WR_LOG,             /* the preallocated journal/log extents       */
     WR_RESCUE,          /* the rescue capture area, ON THE STICK      */
+    WR_MIRROR,          /* the second copy of the way back, on the
+                         * machine's own disk. Its own kind and not
+                         * WR_RECOVERY's, because two extents behind
+                         * one name is "one window with two names"
+                         * inverted -- and the sentence a failure
+                         * prints comes from the name.               */
     WR_RESTORE,         /* captured bytes going back inside a
                          * partition: the ESP, or one volume's $Boot.
                          * Armed over exactly the extent being put

@@ -556,41 +556,71 @@ static int fetch_file_url(const char *url, const char *dest,
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
-int plat_fetch(const char *url, const char *dest,
-               int (*progress)(uint64_t got, uint64_t total, void *ud),
-               void *ud, char *why, size_t wn)
+/* One header's value, as a pointer into `head`, or NULL. Case-folded
+ * the way HTTP requires, and anchored to the start of a line -- so
+ * "X-Content-Length:" is not mistaken for "Content-Length:", which a
+ * plain strcasestr does. */
+static const char *hdr_of(const char *head, const char *name)
 {
-    if (!strncmp(url, "file://", 7))
-        return fetch_file_url(url, dest, progress, ud, why, wn);
-    if (strncmp(url, "http://", 7)) {
-        snprintf(why, wn, "that address is not one AurOS can use.");
-        return -1;
+    size_t nl = strlen(name);
+    const char *p = head;
+    /* Skip the status line. */
+    p = strchr(p, '\n');
+    while (p) {
+        p++;
+        if (!strncasecmp(p, name, nl) && p[nl] == ':') {
+            p += nl + 1;
+            while (*p == ' ' || *p == '\t') p++;
+            return p;
+        }
+        p = strchr(p, '\n');
     }
-    char host[256], port[8] = "80", path[1024];
-    const char *h = url + 7;
-    const char *slash = strchr(h, '/');
-    const char *colon = memchr(h, ':', slash ? (size_t)(slash - h) : strlen(h));
-    size_t hl = colon ? (size_t)(colon - h)
-                      : (slash ? (size_t)(slash - h) : strlen(h));
-    if (hl >= sizeof host) { snprintf(why, wn, "that address is too long.");
-                             return -1; }
-    memcpy(host, h, hl); host[hl] = 0;
-    if (colon) {
-        size_t pl = (slash ? (size_t)(slash - colon - 1) : strlen(colon + 1));
-        if (pl >= sizeof port) { snprintf(why, wn, "that address is not one "
-                                                   "AurOS can use."); return -1; }
-        memcpy(port, colon + 1, pl); port[pl] = 0;
-    }
-    snprintf(path, sizeof path, "%s", slash ? slash : "/");
+    return NULL;
+}
 
-    /* Where we got to last time. */
-    uint64_t have = 0;
-    {
-        FILE *e = fopen(dest, "rb");
-        if (e) { fseek(e, 0, SEEK_END); long v = ftell(e); fclose(e);
-                 if (v > 0) have = (uint64_t)v; }
-    }
+/* `bytes <first>-<last>/<total>`. Returns 0 and fills both, or -1.
+ *
+ * THE FIRST NUMBER IS THE ONE THAT MATTERS, and it was not being read
+ * at all: only the status code decided, and a proxy that answers 206
+ * with `bytes 0-N/N` whatever it was asked for then had its byte zero
+ * written at our offset. The comment above promised this was refused;
+ * an adversarial review reproduced a 5120-byte file where the image is
+ * 4096. Reading the total and not the start is the whole bug. */
+static int parse_range(const char *v, uint64_t *first, uint64_t *total)
+{
+    if (!v) return -1;
+    while (*v == ' ') v++;
+    if (strncasecmp(v, "bytes", 5) == 0) v += 5;
+    while (*v == ' ') v++;
+    char *e = NULL;
+    unsigned long long f = strtoull(v, &e, 10);
+    if (!e || e == v || *e != '-') return -1;
+    const char *sl = strchr(e, '/');
+    if (!sl) return -1;
+    unsigned long long t = strtoull(sl + 1, NULL, 10);
+    *first = (uint64_t)f;
+    *total = (uint64_t)t;
+    return 0;
+}
 
+static int read_all(int fd, void *buf, size_t n)
+{
+    ssize_t k;
+    do { k = read(fd, buf, n); } while (k < 0 && errno == EINTR);
+    return (int)k;
+}
+
+/* Everything one request does. `*have` is where to continue from and
+ * is updated; `*redirect` comes back non-empty when the caller should
+ * follow it. Returns 0 on a complete body, 1 on "ask again" (a
+ * redirect, or a range the server would not honour), -1 on a refusal. */
+static int fetch_once(const char *host, const char *port, const char *path,
+                      const char *dest, uint64_t *have, char *redirect,
+                      size_t rn,
+                      int (*progress)(uint64_t, uint64_t, void *), void *ud,
+                      char *why, size_t wn)
+{
+    redirect[0] = 0;
     struct addrinfo hints, *ai = NULL;
     memset(&hints, 0, sizeof hints);
     hints.ai_family = AF_UNSPEC; hints.ai_socktype = SOCK_STREAM;
@@ -607,31 +637,57 @@ int plat_fetch(const char *url, const char *dest,
         return -1;
     }
     freeaddrinfo(ai);
+    /* A STALLED SERVER MUST NOT BE FOREVER. Without this a connection
+     * that goes quiet halfway through five gigabytes leaves the wizard
+     * on the same percentage until somebody switches the machine off. */
+    {
+        struct timeval tv = { 120, 0 };
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
+    }
 
     char req[1600];
     int rl = snprintf(req, sizeof req,
                       "GET %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: AurBridge\r\n"
+                      "Accept-Encoding: identity\r\n"
                       "Range: bytes=%llu-\r\nConnection: close\r\n\r\n",
-                      path, host, (unsigned long long)have);
-    if (rl <= 0 || (size_t)rl >= sizeof req ||
-        write(fd, req, (size_t)rl) != rl) {
+                      path, host, (unsigned long long)*have);
+    if (rl <= 0 || (size_t)rl >= sizeof req) {
         close(fd);
-        snprintf(why, wn, "AurOS could not ask for the download.");
+        snprintf(why, wn, "that address is too long.");
         return -1;
     }
+    {
+        int at = 0;
+        while (at < rl) {
+            ssize_t k = write(fd, req + at, (size_t)(rl - at));
+            if (k < 0 && errno == EINTR) continue;
+            if (k <= 0) { close(fd);
+                          snprintf(why, wn, "AurOS could not ask for the "
+                                            "download."); return -1; }
+            at += (int)k;
+        }
+    }
 
-    /* The head of the response, one byte at a time until the blank
-     * line. Slow and exactly right: reading ahead means holding body
-     * bytes in a buffer this does not need to have. */
     char head[8192];
     size_t hn = 0;
+    int terminated = 0;
     while (hn + 1 < sizeof head) {
-        ssize_t k = read(fd, head + hn, 1);
+        int k = read_all(fd, head + hn, 1);
         if (k <= 0) break;
         hn++;
-        if (hn >= 4 && !memcmp(head + hn - 4, "\r\n\r\n", 4)) break;
+        if (hn >= 4 && !memcmp(head + hn - 4, "\r\n\r\n", 4)) { terminated = 1; break; }
     }
     head[hn] = 0;
+    /* A HEADER THAT NEVER ENDED IS NOT A HEADER. Without this the loop
+     * simply stopped, the status line still parsed, and the rest of the
+     * header text was written into the image as though it were body. */
+    if (!terminated) {
+        close(fd);
+        snprintf(why, wn, "the place AurOS downloads from did not answer "
+                          "properly.");
+        return -1;
+    }
     int status = 0;
     if (sscanf(head, "HTTP/1.%*d %d", &status) != 1) {
         close(fd);
@@ -639,37 +695,95 @@ int plat_fetch(const char *url, const char *dest,
                           "properly.");
         return -1;
     }
-    /* A 200 WHERE A 206 WAS ASKED FOR is a server that ignored the
-     * Range, and writing its first byte at our offset would put the
-     * front of the file four gigabytes in. Start again instead. */
-    if (status == 200 && have > 0) have = 0;
-    else if (status != 200 && status != 206) {
+
+    if (status >= 301 && status <= 308 && status != 304 && status != 305) {
+        const char *loc = hdr_of(head, "location");
+        close(fd);
+        if (!loc) {
+            snprintf(why, wn, "the place AurOS downloads from sent it "
+                              "somewhere and did not say where.");
+            return -1;
+        }
+        size_t i = 0;
+        while (loc[i] && loc[i] != '\r' && loc[i] != '\n' && i + 1 < rn) {
+            redirect[i] = loc[i]; i++;
+        }
+        redirect[i] = 0;
+        return redirect[0] ? 1 : -1;
+    }
+    /* 416: our offset is at or past the end of what the server has,
+     * which is what a file that is already complete -- and wrong --
+     * looks like. Starting again is the answer, and it is the case the
+     * retry in ensure_image exists for. */
+    if (status == 416) {
+        close(fd);
+        if (*have == 0) {
+            snprintf(why, wn, "the place AurOS downloads from has nothing "
+                              "there any more.");
+            return -1;
+        }
+        *have = 0;
+        return 1;
+    }
+    if (status != 200 && status != 206) {
         close(fd);
         snprintf(why, wn, "the place AurOS downloads from answered %d. Try "
                           "again later.", status);
         return -1;
     }
-    uint64_t total = 0;
+    /* Chunked bodies are not decoded here, and writing the chunk-size
+     * lines into somebody's operating system image is worse than
+     * saying so. Asking for identity above makes this rare. */
     {
-        const char *cr = strcasestr(head, "content-range:");
-        const char *cl = strcasestr(head, "content-length:");
-        if (cr && status == 206) {
-            const char *sl = strchr(cr, '/');
-            if (sl) total = strtoull(sl + 1, NULL, 10);
-        } else if (cl) {
-            total = have + strtoull(cl + 15, NULL, 10);
+        const char *te = hdr_of(head, "transfer-encoding");
+        if (te && strncasecmp(te, "identity", 8) != 0) {
+            close(fd);
+            snprintf(why, wn, "the place AurOS downloads from is sending it "
+                              "in a form AurOS cannot read. Try again later.");
+            return -1;
         }
     }
 
-    FILE *out = fopen(dest, have ? "r+b" : "wb");
+    uint64_t total = 0;
+    if (status == 206) {
+        uint64_t first = 0;
+        if (parse_range(hdr_of(head, "content-range"), &first, &total) != 0) {
+            close(fd);
+            snprintf(why, wn, "the place AurOS downloads from did not answer "
+                              "properly.");
+            return -1;
+        }
+        /* THE SERVER DECIDES WHERE ITS BYTES GO, not us. A start beyond
+         * where we are would leave a hole in the file; one before it
+         * merely rewrites bytes we already had, which is free. */
+        if (first > *have) {
+            close(fd);
+            snprintf(why, wn, "the place AurOS downloads from sent the wrong "
+                              "part of the file. Try again later.");
+            return -1;
+        }
+        *have = first;
+    } else {
+        /* 200 where a continuation was asked for: the server ignored
+         * the Range, so its first byte is byte zero of the file. */
+        *have = 0;
+        const char *cl = hdr_of(head, "content-length");
+        if (cl) total = strtoull(cl, NULL, 10);
+    }
+
+    FILE *out = fopen(dest, *have ? "r+b" : "wb");
     if (!out) { close(fd);
                 snprintf(why, wn, "AurOS could not write the file it is "
                                   "downloading."); return -1; }
-    if (have) fseek(out, (long)have, SEEK_SET);
+    if (*have && fseeko(out, (off_t)*have, SEEK_SET) != 0) {
+        fclose(out); close(fd);
+        snprintf(why, wn, "AurOS could not write the file it is downloading.");
+        return -1;
+    }
     static char buf[256 * 1024];
     int rc = 0;
     for (;;) {
-        ssize_t k = read(fd, buf, sizeof buf);
+        int k = read_all(fd, buf, sizeof buf);
         if (k < 0) { snprintf(why, wn, "the download stopped partway through. "
                                        "It will carry on from here if you try "
                                        "again."); rc = -1; break; }
@@ -678,12 +792,109 @@ int plat_fetch(const char *url, const char *dest,
             snprintf(why, wn, "this computer ran out of room for the "
                               "download."); rc = -1; break;
         }
-        have += (uint64_t)k;
-        if (progress && progress(have, total, ud)) {
+        *have += (uint64_t)k;
+        if (progress && progress(*have, total, ud)) {
             snprintf(why, wn, "the download was stopped."); rc = -1; break;
         }
     }
-    fclose(out); close(fd);
-    return rc;
+    /* A CLOSE THAT FAILS IS A WRITE THAT FAILED. A full disk is often
+     * only discovered at the flush, and reporting that download as
+     * finished is how the hash gets blamed for it. */
+    if (fclose(out) != 0 && rc == 0) {
+        snprintf(why, wn, "this computer ran out of room for the download.");
+        rc = -1;
+    }
+    close(fd);
+    if (rc != 0) return -1;
+    /* AND IT HAS TO HAVE ALL ARRIVED. Stopping on end-of-file and
+     * reporting success meant a connection cut at 100 bytes of 4096 was
+     * a completed download -- and the accusation the user eventually
+     * got was that the network had tampered with it. */
+    if (total && *have != total) {
+        snprintf(why, wn, "the download stopped partway through. It will carry "
+                          "on from here if you try again.");
+        return -1;
+    }
+    return 0;
+}
+
+int plat_fetch(const char *url, const char *dest,
+               int (*progress)(uint64_t got, uint64_t total, void *ud),
+               void *ud, char *why, size_t wn)
+{
+    char here[1200];
+    if (strlen(url) + 1 > sizeof here) {
+        snprintf(why, wn, "that address is too long.");
+        return -1;
+    }
+    snprintf(here, sizeof here, "%s", url);
+
+    uint64_t have = 0;
+    {
+        FILE *e = fopen(dest, "rb");
+        if (e) { if (fseeko(e, 0, SEEK_END) == 0) {
+                     off_t v = ftello(e);
+                     if (v > 0) have = (uint64_t)v; }
+                 fclose(e); }
+    }
+
+    /* Redirects and one restart, bounded. A mirror that redirects to a
+     * CDN is ordinary; a loop of them is not. */
+    for (int hop = 0; hop < 8; hop++) {
+        if (!strncmp(here, "file://", 7))
+            return fetch_file_url(here, dest, progress, ud, why, wn);
+        if (strncmp(here, "http://", 7)) {
+            snprintf(why, wn, "that address is not one AurOS can use.");
+            return -1;
+        }
+        char host[256], port[8] = "80", path[1024];
+        const char *h = here + 7;
+        const char *slash = strchr(h, '/');
+        const char *colon = memchr(h, ':', slash ? (size_t)(slash - h) : strlen(h));
+        size_t hl = colon ? (size_t)(colon - h)
+                          : (slash ? (size_t)(slash - h) : strlen(h));
+        if (hl == 0 || hl >= sizeof host) {
+            snprintf(why, wn, "that address is not one AurOS can use.");
+            return -1;
+        }
+        memcpy(host, h, hl); host[hl] = 0;
+        if (colon) {
+            size_t pl = (slash ? (size_t)(slash - colon - 1) : strlen(colon + 1));
+            if (pl == 0 || pl >= sizeof port) {
+                snprintf(why, wn, "that address is not one AurOS can use.");
+                return -1;
+            }
+            memcpy(port, colon + 1, pl); port[pl] = 0;
+        }
+        if ((size_t)snprintf(path, sizeof path, "%s", slash ? slash : "/")
+                >= sizeof path) {
+            snprintf(why, wn, "that address is too long.");
+            return -1;
+        }
+
+        char next[1200];
+        int rc = fetch_once(host, port, path, dest, &have, next, sizeof next,
+                            progress, ud, why, wn);
+        if (rc == 0) return 0;
+        if (rc < 0) return -1;
+        if (next[0]) {
+            if (!strncmp(next, "http://", 7) || !strncmp(next, "file://", 7)) {
+                snprintf(here, sizeof here, "%s", next);
+            } else if (next[0] == '/') {
+                snprintf(here, sizeof here, "http://%s%s%s%s", host,
+                         strcmp(port, "80") ? ":" : "",
+                         strcmp(port, "80") ? port : "", next);
+            } else {
+                snprintf(why, wn, "the place AurOS downloads from sent it "
+                                  "somewhere AurOS cannot follow.");
+                return -1;
+            }
+        }
+        /* rc == 1 with no redirect is the 416 restart: same address,
+         * from nothing. */
+    }
+    snprintf(why, wn, "the place AurOS downloads from keeps sending AurOS "
+                      "somewhere else.");
+    return -1;
 }
 #endif /* !_WIN32 */

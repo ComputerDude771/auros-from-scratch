@@ -2,52 +2,62 @@
 # ═══════════════════════════════════════════════════════════════════
 #  answer.sh — the three things the desktop may ask for as root
 #
-#  Started by auros-answer.path when a word appears in
-#  /run/auros/answer. That directory is aurshell.service's own
-#  RuntimeDirectory: mode 0700, owned by the person using the machine,
-#  so nothing else on it can ask.
+#  Started by auros-answer.path when a file appears in /run/auros,
+#  which is aurshell.service's own RuntimeDirectory: mode 0700, owned
+#  by the person using the machine.
 #
-#  THE WORD IS NOT A COMMAND. It is matched against a list of exactly
-#  three, and anything else is written down and ignored. A request file
-#  that could name a program would be a way for anything that can write
-#  one byte into that directory to run as root.
+#  ROOT DOES NOT OPEN A PATH SHE OWNS. That is the whole shape of this
+#  script and it is the second attempt at it. The first one read the
+#  request with `head -c 64 "$REQ"` and wrote its answer, its log and
+#  its report through `$RUN/...` -- as root, through names she
+#  controls, with nothing to stop any of them being a symbolic link. An
+#  adversarial review reproduced truncate-anything, append-anything and
+#  chmod-anything from one request, and a read oracle for root-only
+#  files from another. That is a local root escalation, on every built
+#  image, reachable by anything running as her.
 #
-#  The answer comes back in /run/auros/answer.result, one key=value per
-#  line, because the desktop has to be able to say what happened rather
-#  than spin for ever.
+#  So:
+#
+#    reading  the request is taken by `aurfirst request`, in C, with
+#             O_NOFOLLOW and an fstat on the descriptor it reads from
+#             -- not a stat on the name, which is a race she wins. See
+#             src/aurfirst/request.c.
+#    writing  everything goes into /run/auros-answer, which is THIS
+#             service's own RuntimeDirectory: root-owned, mode 0755,
+#             world-readable. The desktop reads from there and cannot
+#             put anything in it.
+#
+#  The word is still not a command. It is matched against a fixed list
+#  of three and anything else is written down as unknown.
 # ═══════════════════════════════════════════════════════════════════
 set -u
-# THE DIRECTORIES ARE OVERRIDABLE; THE PROGRAMS ARE NOT.
-#
-# tools/aurfirsttest.sh drives this script against a scratch directory
-# to check the one thing that is a privilege boundary: which words are
-# allowed through. The unit that really starts it sets none of these,
-# so on a machine they are the paths below.
-#
-# What is deliberately NOT configurable is any program this runs. An
-# environment that could name the binary would be the injection this
-# whole arrangement exists to avoid; the words are matched against a
-# fixed list and each branch names an absolute path.
-RUN=${AUROS_RUN:-/run/auros}
+# Overridable for tools/aurfirsttest.sh and for nothing else; the unit
+# sets neither.
+OUT=${AUROS_ANSWER_OUT:-/run/auros-answer}
 STATE=${AUROS_STATE:-/var/lib/auros}
-REQ="$RUN/answer"
-RES="$RUN/answer.result"
+BIN=${AUROS_BIN:-/usr/sbin}
 LOG=${AUROS_LOG:-/var/log/auros-answer.log}
+RES="$OUT/result"
 exec >>"$LOG" 2>&1
 echo "=== $(date -Is) ==="
 
-[ -f "$REQ" ] || exit 0
-# One word, letters only, at most sixteen of them. Everything else the
-# file might contain is discarded here rather than parsed later.
-word=$(head -c 64 "$REQ" 2>/dev/null | tr -dc 'a-z' | cut -c1-16)
-rm -f "$REQ"
+mkdir -p "$OUT" 2>/dev/null
+chmod 0755 "$OUT" 2>/dev/null
+
+# ONE WORD, TAKEN SAFELY AND CONSUMED. Exit 1 means there was nothing
+# there -- a spurious edge, or a request another run has already dealt
+# with -- and there is nothing to answer.
+word=$("$BIN/aurfirst" request 2>/dev/null)
+rc=$?
+[ "$rc" = 1 ] && { echo "nothing to answer"; exit 0; }
+
 say() { printf '%s\n' "$*" >> "$RES.new"; }
 : > "$RES.new"
 say "request=$word"
 
 case "$word" in
   confirm)
-    if /usr/sbin/aurfirst confirm 2>&1; then
+    if "$BIN/aurfirst" confirm 2>&1; then
         say "result=ok"
         say "note=AurOS is now what this computer starts"
     else
@@ -56,7 +66,7 @@ case "$word" in
     fi
     ;;
   decline)
-    if /usr/sbin/aurfirst decline 2>&1; then
+    if "$BIN/aurfirst" decline 2>&1; then
         say "result=ok"
         say "note=the next start will reach Windows"
     else
@@ -70,32 +80,40 @@ case "$word" in
     # so it waits until AurOS has been confirmed -- and that decision
     # lives in aurfirst, in one place, rather than being re-derived
     # here from a stamp file this script would have to know about.
-    if ! /usr/sbin/aurfirst ferry >/dev/null 2>&1; then
+    if ! "$BIN/aurfirst" ferry >/dev/null 2>&1; then
         say "result=refused"
         say "note=AurOS has not been confirmed yet"
     elif [ ! -x /usr/bin/ferry ]; then
         say "result=failed"
         say "note=this image has no way to import from Windows"
     else
-        : > "$RUN/import.log"
-        /usr/bin/ferry run --auto >>"$RUN/import.log" 2>&1
+        : > "$OUT/import.log"
+        chmod 0644 "$OUT/import.log" 2>/dev/null
+        /usr/bin/ferry run --auto >>"$OUT/import.log" 2>&1
         # CAPTURED BEFORE ANYTHING ELSE RUNS. `$?` inside an else
         # branch is the status of the last command executed, which
-        # after one line of reporting is the reporting. Ferry's own
-        # exit codes are meaningful -- 3 is a volume it refused to
-        # read, with a sentence saying why -- so losing them loses the
-        # only machine-readable thing it said.
-        rc=$?
-        if [ "$rc" = 0 ]; then
-            say "result=ok"
-        else
-            say "result=partial"
-            say "code=$rc"
-        fi
+        # after one line of reporting is the reporting.
+        frc=$?
         mkdir -p "$STATE"
         /usr/bin/ferry report > "$STATE/import-report.txt" 2>/dev/null
-        cp "$STATE/import-report.txt" "$RUN/import-report.txt" 2>/dev/null
-        chmod 0644 "$RUN/import-report.txt" 2>/dev/null
+        cp "$STATE/import-report.txt" "$OUT/import-report.txt" 2>/dev/null
+        chmod 0644 "$OUT/import-report.txt" 2>/dev/null
+        # FERRY'S 3 IS NOT A PARTIAL IMPORT. ferry-common.sh's refuse()
+        # exits 3 before any stage starts -- a hibernated or dirty
+        # volume, which Fast Startup makes the COMMON case -- and
+        # nothing was read at all. Reporting that as "partial" made the
+        # desktop say "Your files are here" on the most likely import
+        # failure there is.
+        if [ "$frc" = 0 ]; then
+            say "result=ok"
+        elif [ "$frc" = 3 ]; then
+            say "result=refused"
+            say "code=3"
+            say "note=the Windows drive was not shut down properly"
+        else
+            say "result=partial"
+            say "code=$frc"
+        fi
     fi
     ;;
   *)
@@ -106,7 +124,8 @@ esac
 
 # WRITTEN WHOLE, THEN MOVED. The desktop polls this file; one that is
 # half written is one it reads as an answer that is missing its result
-# line, and then acts on.
+# line, and then acts on. Both paths are inside a directory root owns,
+# so neither can be a link to somewhere else.
 chmod 0644 "$RES.new" 2>/dev/null
 mv -f "$RES.new" "$RES"
 echo "answered: $(cat "$RES")"

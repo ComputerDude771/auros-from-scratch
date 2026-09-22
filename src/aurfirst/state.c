@@ -11,10 +11,18 @@
 
 #define MAX_BOOTS 512
 
+/* 1 there, 0 not there, -1 cannot tell.
+ *
+ * "Cannot tell" is a real answer and it used to be folded into "not
+ * there". /var/lib/auros arriving later than the unit that reads it --
+ * a separate /var, a slow mount -- then looked exactly like nobody
+ * having answered, so the hold re-armed BootNext on every boot for
+ * ever on a machine whose owner had said no. */
 static int stamped(const char *path)
 {
     struct stat st;
-    return stat(path, &st) == 0;
+    if (stat(path, &st) == 0) return 1;
+    return errno == ENOENT ? 0 : -1;
 }
 
 static int stamp(const char *path, char *why, size_t n)
@@ -59,13 +67,18 @@ static int find_entry(uint16_t *out)
     return 0;
 }
 
+/* -1 means "there is no BootOrder"; -2 means "there is one and it is
+ * longer than this machine's code can represent", which is a refusal
+ * further up rather than a shorter list. The buffer is sized from
+ * MAX_BOOTS so the two bounds cannot drift apart. */
 static int read_order(uint16_t *out, int max)
 {
-    uint8_t buf[1024];
+    uint8_t buf[MAX_BOOTS * 2];
     int len = af_var_get("BootOrder", buf, sizeof buf);
+    if (len == -2) return -2;
     if (len < 2) return -1;
     int n = len / 2;
-    if (n > max) n = max;
+    if (n > max) return -2;
     for (int i = 0; i < n; i++)
         out[i] = (uint16_t)(buf[i * 2] | (buf[i * 2 + 1] << 8));
     return n;
@@ -74,8 +87,10 @@ static int read_order(uint16_t *out, int max)
 int af_look(af_state *s)
 {
     memset(s, 0, sizeof *s);
-    s->confirmed = stamped(AF_CONFIRMED);
-    s->declined  = stamped(AF_DECLINED);
+    int c = stamped(AF_CONFIRMED), d = stamped(AF_DECLINED);
+    s->unknown   = (c < 0 || d < 0);
+    s->confirmed = c > 0;
+    s->declined  = d > 0;
     s->efivars   = af_efivars_present();
     if (!s->efivars) return 0;
     s->writable  = af_efivars_writable();
@@ -138,6 +153,11 @@ void af_publish(const af_state *s)
 
 int af_hold(const af_state *s, char *why, size_t n)
 {
+    /* A machine that cannot say whether it was answered is a machine
+     * this leaves alone. Re-arming a one-shot every boot for ever is
+     * the failure mode, and doing nothing costs at most one boot that
+     * reaches Windows -- which is the safe direction. */
+    if (s->unknown) return 1;
     if (s->confirmed || s->declined) return 1;
     if (!s->have_entry) return 1;
     /* Already the default: there is nothing for a one-shot to add, and
@@ -160,6 +180,21 @@ int af_hold(const af_state *s, char *why, size_t n)
 /* ── the one function in this tree that writes BootOrder ───────────── */
 int af_confirm(const af_state *s, char *why, size_t n)
 {
+    /* "NO ENTRY" AND "COULD NOT LOOK" ARE NOT THE SAME ANSWER, and
+     * they used to be. have_entry is false when efivarfs is not
+     * mounted, when opendir fails, and when every read fails -- and
+     * every one of those stamped consent, returned success, and made
+     * the desktop say "AurOS starts from now on" about a machine
+     * whose BootOrder had never been touched. Worse, the stamp is
+     * permanent, so the hold stopped re-arming and the machine fell
+     * back to Windows for good while the desktop insisted otherwise
+     * and never asked again. */
+    if (!s->efivars) {
+        snprintf(why, n, "AurOS cannot reach this computer's start-up "
+                         "settings, so it cannot make itself what this "
+                         "computer starts.");
+        return -1;
+    }
     if (!s->have_entry) {
         /* Nothing to promote. This is not a failure: it is what a
          * machine AurOS was installed onto directly, rather than
@@ -176,6 +211,11 @@ int af_confirm(const af_state *s, char *why, size_t n)
 
     uint16_t order[MAX_BOOTS], nw[MAX_BOOTS];
     int have = read_order(order, MAX_BOOTS);
+    if (have == -2) {
+        snprintf(why, n, "this computer's start-up menu is longer than AurOS "
+                         "can safely rewrite, so it has been left alone.");
+        return -1;
+    }
     int k = 0;
     nw[k++] = s->entry;
     if (have > 0) {
@@ -208,8 +248,25 @@ int af_confirm(const af_state *s, char *why, size_t n)
     uint8_t back[MAX_BOOTS * 2];
     int got = af_var_get("BootOrder", back, sizeof back);
     if (got != k * 2 || memcmp(back, buf, (size_t)k * 2) != 0) {
+        /* PUT IT BACK. The write landed or it did not; either way the
+         * machine must not be left with a start-up order nobody chose
+         * while the screen says nothing has been changed. The old one
+         * is still in `order`, and if there was none there is nothing
+         * to restore -- deleting it is what "none" means. */
+        char ignored[200];
+        if (have > 0) {
+            uint8_t was[MAX_BOOTS * 2];
+            for (int i = 0; i < have; i++) {
+                was[i * 2]     = (uint8_t)(order[i] & 0xFF);
+                was[i * 2 + 1] = (uint8_t)(order[i] >> 8);
+            }
+            af_var_put("BootOrder", was, (size_t)have * 2, ignored,
+                       sizeof ignored);
+        } else {
+            af_var_del("BootOrder", ignored, sizeof ignored);
+        }
         snprintf(why, n, "this computer's firmware did not keep the new "
-                         "start-up order");
+                         "start-up order, so it has been put back as it was");
         return -1;
     }
 
@@ -230,9 +287,58 @@ int af_decline(const af_state *s, char *why, size_t n)
     /* CLEAR THE ONE-SHOT FIRST, then write the stamp. The other order
      * leaves a machine that has stopped re-arming and is still armed
      * once -- so the next start reaches AurOS after the person has
-     * just said it does not work. */
-    if (s->efivars && s->writable && af_var_del("BootNext", why, n) != 0)
+     * just said it does not work.
+     *
+     * AND A MACHINE WHERE IT CANNOT BE CLEARED IS A REFUSAL. The
+     * guard used to be `efivars && writable && del(...)`, so on a
+     * machine with efivarfs missing or read-only the whole clause
+     * short-circuited, the stamp was written anyway, and the sequence
+     * the paragraph above forbids is exactly what happened. */
+    if (!s->efivars || !s->writable) {
+        snprintf(why, n, "AurOS cannot reach this computer's start-up "
+                         "settings, so it cannot undo them.");
         return -1;
+    }
+    if (af_var_del("BootNext", why, n) != 0) return -1;
+
+    /* AND IF AUROS IS ALREADY THE DEFAULT, SAYING SO IS NOT ENOUGH.
+     *
+     * The screen this leads to says "Windows will start next time.
+     * Turn this computer off and on again to go back." On a machine
+     * where our entry is at the head of BootOrder -- a confirm that
+     * was undone, a second run -- that was simply false, and it is the
+     * one sentence the whole product rests on. Demote rather than
+     * remove: her entry order is hers. */
+    if (s->is_default && s->have_entry) {
+        uint16_t order[MAX_BOOTS];
+        int have = read_order(order, MAX_BOOTS);
+        if (have < 0) {
+            snprintf(why, n, "AurOS could not read this computer's start-up "
+                             "order, so it cannot promise Windows is next.");
+            return -1;
+        }
+        uint8_t buf[MAX_BOOTS * 2];
+        int k = 0;
+        for (int i = 0; i < have; i++)
+            if (order[i] != s->entry) {
+                buf[k * 2]     = (uint8_t)(order[i] & 0xFF);
+                buf[k * 2 + 1] = (uint8_t)(order[i] >> 8);
+                k++;
+            }
+        if (k == 0) {
+            /* Ours is the only thing in the menu. Demoting it would
+             * leave an empty BootOrder, which is a machine that starts
+             * nothing -- so this says what is true instead. */
+            snprintf(why, n, "AurOS is the only thing in this computer's "
+                             "start-up menu, so it cannot put Windows first.");
+            return -1;
+        }
+        buf[k * 2]     = (uint8_t)(s->entry & 0xFF);
+        buf[k * 2 + 1] = (uint8_t)(s->entry >> 8);
+        k++;
+        if (af_var_put("BootOrder", buf, (size_t)k * 2, why, n) != 0) return -1;
+    }
+
     if (stamp(AF_DECLINED, why, n) != 0) return -1;
     return 0;
 }

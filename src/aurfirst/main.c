@@ -24,6 +24,7 @@ static void usage(void)
       "  aurfirst confirm   \"this works\": make AurOS what it starts by default\n"
       "  aurfirst decline   \"it does not\": the next start reaches Windows\n"
       "  aurfirst ferry     whether importing from Windows may run yet\n"
+      "  aurfirst request   take the desktop's one word, safely\n"
       "\n"
       "Until confirm, switching this computer on still reaches Windows.\n"
       "That is deliberate: nothing about this machine is irreversible\n"
@@ -105,6 +106,17 @@ int main(int argc, char **argv)
         }
         fprintf(stderr, "aurfirst: the next start will reach Windows\n");
         return 0;
+    }
+
+    /* The desktop's request, read safely and consumed. Printed on
+     * stdout for the shell that orchestrates ferry; everything about
+     * WHY this is here rather than in that shell is in request.c. */
+    if (!strcmp(cmd, "request")) {
+        char word[32];
+        int rc = af_request_take(word, sizeof word);
+        if (rc < 0) return 1;
+        printf("%s\n", word);
+        return rc == 0 ? 0 : 2;
     }
 
     /* MAY FERRY RUN YET.

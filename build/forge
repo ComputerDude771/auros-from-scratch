@@ -152,6 +152,17 @@ EOL
 # ── stage 2: packages ──────────────────────────────────────────────
 stage_packages() {
     step "stage 2/7  packages"
+    # THIS RUN'S WARNINGS, NOT EVERY RUN'S.
+    #
+    # warn_note appends and nothing ever truncated, while stage 1 only
+    # wipes the rootfs on a first bootstrap -- so the file accumulated
+    # across every rebuild of a profile. The end-of-build refusals read
+    # it, so a tree that had once fallen back to Epiphany refused every
+    # later build for ever, INCLUDING ones that installed Firefox
+    # perfectly. A check that cannot be cleared by fixing the thing it
+    # is about is a check people turn off.
+    mkdir -p "$RFS/etc/auros"
+    : > "$RFS/etc/auros/build-warnings"
     chroot_prep
     local pkgs="$packages_hardware $packages_boot $packages_base $packages_desktop $packages_files $packages_apps $packages_extra"
     # The letters this image can draw in. Not decoration: a page in a
