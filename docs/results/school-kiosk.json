@@ -1,0 +1,11 @@
+{
+  "profile": "school-kiosk",
+  "profile_sha256": "fd62af9dbae72a14bfd0f724831c5e92d6af70ebd06deb3e98d393db6b9d9408",
+  "artifact": "auros-school-kiosk.img.zst",
+  "artifact_sha256": "a593e4cf80bfe16dc9ea249aa352e5d9f7a8654b8e7ae8ed12481544e2725db2",
+  "image_sha256": "38f72b5025216809348691868c25e0a6730d9b54e0e5604a959695cb6ebb3dc2",
+  "image_bytes": 5176819712,
+  "peak_mb": 7713,
+  "built_unix": 1790097112,
+  "built_by": "build/all"
+}

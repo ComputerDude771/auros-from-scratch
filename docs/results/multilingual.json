@@ -1,0 +1,11 @@
+{
+  "profile": "multilingual",
+  "profile_sha256": "8d7210fca6533e86b009c74cf0005f2a682e19058d19589dbbfc6115b3abbac3",
+  "artifact": "auros-multilingual.img.zst",
+  "artifact_sha256": "c88aab9ee68da1bf50a5ed1cdb30b7d80f3ba8b57849eef53079eb8b0d91c71b",
+  "image_sha256": "6d0dd3482e4a679eee4ff3ce7cce340bccae4f33dd5329238fdbfc464237ab89",
+  "image_bytes": 5495586816,
+  "peak_mb": 8480,
+  "built_unix": 1790102581,
+  "built_by": "build/all"
+}

@@ -1,0 +1,11 @@
+{
+  "profile": "office",
+  "profile_sha256": "edd351e4f0c6a905f2ef7362073cf8c1d4b397357b3e1912aaa2f32bbf8bdcaf",
+  "artifact": "auros-office.img.zst",
+  "artifact_sha256": "2b6adcf37b679016b084d21c840a7cbe0b1537e75b259e8770cdd6fa0035e83e",
+  "image_sha256": "f9c6b18d666aa313d4b830c6af5501439a8b3448dd8a84073de3432100b4e053",
+  "image_bytes": 5667553280,
+  "peak_mb": 8868,
+  "built_unix": 1790092382,
+  "built_by": "build/all"
+}

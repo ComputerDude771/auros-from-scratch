@@ -352,6 +352,12 @@ for id in "${WANT[@]}"; do
     if [ "$id" = "$KEEPWORK" ]; then
         note "keeping $id's work tree: build/staging and the end-to-end"
         note "tests take their tools and modules out of it"
+        # THE SQUASHFS STILL GOES. The first version of this branch
+        # returned early past the whole reclaim, so it kept the 1.6 GB
+        # intermediate as well as the work tree -- and nothing reads
+        # that file once mkimage has baked it into the image. It cost
+        # the last profile of the first five-profile run its headroom.
+        rm -f "$OUT/$id-"*.squashfs
         kept=0
         if [ -f "$OUT/$art" ]; then kept=$(du -sm "$OUT/$art" | cut -f1); fi
         total_kept=$(( total_kept + kept ))

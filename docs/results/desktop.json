@@ -1,0 +1,11 @@
+{
+  "profile": "desktop",
+  "profile_sha256": "c98a4c6bcbb359cfa0cabf924f3d4c072cec2f024071cdb33966be315937b777",
+  "artifact": "auros-desktop.img.zst",
+  "artifact_sha256": "eee88357aa8f28185558a439263519b6c8a3a69ca1bf78ab9d0a86e04e085b4e",
+  "image_sha256": "effbe2c687aaaa33049fc0145211747b634e41dd44e75d086ea1188a28df54f4",
+  "image_bytes": 5268045824,
+  "peak_mb": 7901,
+  "built_unix": 1790080165,
+  "built_by": "build/all"
+}

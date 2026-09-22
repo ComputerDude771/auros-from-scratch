@@ -9,6 +9,8 @@ see what "green" meant rather than take somebody's word for it.
 | `roundtrip.txt` | install AurOS on a synthetic machine, start it, put Windows back from the stick, put it back again from the copy on the computer with no stick, refuse a damaged copy. 32 checks. | `sudo sh tools/installtest.sh` |
 | `powercut.txt` | the power goes at each of fourteen named instants — nine during the install, five during the restore — and Windows comes back with every file byte-identical. 111 checks. | `sudo AURSTAGE_FAULT=1 ./build/staging && sudo sh tools/powercuttest.sh` |
 | `matrix.txt` | ten shapes of computer through the dry run, which writes nothing: 4Kn, an OEM gigabyte EFI partition, a first partition at LBA 34, MBR, BIOS, BitLocker, a hibernated Windows, two Windows volumes, no room. | `sudo sh tools/matrixtest.sh` |
+| `images.md`, `*.json` | the five profile images, their digests, and what each one cost to build. | `sudo ./build/all` |
+| `build-all.txt` | the transcript of the run that made them, interrupted twice by bugs it found in forge and resumed both times. | |
 
 ## What these do not prove
 

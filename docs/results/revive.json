@@ -1,0 +1,11 @@
+{
+  "profile": "revive",
+  "profile_sha256": "268eabfe5c9a040edab4e0f8a3f39c0c78210ca009a4bb88ba02d284dbcebfb3",
+  "artifact": "auros-revive.img.zst",
+  "artifact_sha256": "5e3a05d183a514768bc1ce4b46355da6fce09d115df03f2fb1a238c2c37ecfd5",
+  "image_sha256": "49ed7a238f72caf5b371ecd4c7a6f78d24d3f727ee1660c063e5e842811b36ad",
+  "image_bytes": 5088739328,
+  "peak_mb": 7435,
+  "built_unix": 1790085494,
+  "built_by": "build/all"
+}
