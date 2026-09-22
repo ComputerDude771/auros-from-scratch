@@ -6,6 +6,7 @@
 #include <string.h>
 #include <sys/mount.h>
 #include <sys/stat.h>
+#include <sys/ioctl.h>
 #include <sys/utsname.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -108,6 +109,92 @@ static void probe_modalias(const char *dir, int depth, int *loaded)
         if (S_ISDIR(st.st_mode)) probe_modalias(path, depth + 1, loaded);
     }
     closedir(dp);
+}
+
+/* ── a loop device, by hand ──────────────────────────────────────────
+ *
+ * losetup is not in this image and is not worth adding for four
+ * ioctls. The loop driver is (build/staging carries
+ * kernel/drivers/block), and this is the whole of what losetup does.
+ */
+struct loop_info64_ {
+    uint64_t lo_device, lo_inode, lo_rdevice, lo_offset, lo_sizelimit;
+    uint32_t lo_number, lo_encrypt_type, lo_encrypt_key_size, lo_flags;
+    uint8_t  lo_file_name[64], lo_crypt_name[64], lo_encrypt_key[32];
+    uint64_t lo_init[2];
+};
+#define LOOP_CTL_GET_FREE_ 0x4C82
+#define LOOP_SET_FD_       0x4C00
+#define LOOP_CLR_FD_       0x4C01
+#define LOOP_SET_STATUS64_ 0x4C04
+
+/* Returns the loop device number, or -1. `backing` stays open in the
+ * caller until the loop is cleared. */
+static int loop_attach(const char *disk, uint64_t off, char *dev, size_t n,
+                       int *backing_fd)
+{
+    *backing_fd = -1;
+    /* READ-ONLY, ALL OF IT. The first version opened these O_RDWR
+     * because that is what losetup does, and build/staging's write
+     * gate stopped the build -- correctly: only wr.c may open
+     * something writable. It turns out none of these ioctls needs it.
+     * LOOP_CTL_GET_FREE, LOOP_SET_FD and LOOP_SET_STATUS64 all work
+     * on a read-only descriptor, and the backing file is opened
+     * read-only with LO_FLAGS_READ_ONLY besides, so the loop cannot
+     * write to the disk even if something asked it to.
+     *
+     * The gate found that. It is the second time it has turned a
+     * "make the check allow this" into "the check was right". */
+    int ctl = open("/dev/loop-control", O_RDONLY | O_CLOEXEC);
+    if (ctl < 0) return -1;
+    int num = ioctl(ctl, LOOP_CTL_GET_FREE_);
+    close(ctl);
+    if (num < 0) return -1;
+    if ((size_t)snprintf(dev, n, "/dev/loop%d", num) >= n) return -1;
+
+    int lo = open(dev, O_RDONLY | O_CLOEXEC);
+    if (lo < 0) return -1;
+    int bf = open(disk, O_RDONLY | O_CLOEXEC);
+    if (bf < 0) { close(lo); return -1; }
+    if (ioctl(lo, LOOP_SET_FD_, bf) < 0) { close(bf); close(lo); return -1; }
+
+    struct loop_info64_ i;
+    memset(&i, 0, sizeof i);
+    i.lo_offset = off;
+    i.lo_flags = 1;                       /* LO_FLAGS_READ_ONLY */
+    snprintf((char *)i.lo_file_name, sizeof i.lo_file_name, "%s", disk);
+    if (ioctl(lo, LOOP_SET_STATUS64_, &i) < 0) {
+        ioctl(lo, LOOP_CLR_FD_, 0);
+        close(bf); close(lo);
+        return -1;
+    }
+    close(lo);
+    *backing_fd = bf;
+    return num;
+}
+
+static void loop_detach(const char *dev, int backing_fd)
+{
+    int lo = open(dev, O_RDONLY | O_CLOEXEC);
+    if (lo >= 0) { ioctl(lo, LOOP_CLR_FD_, 0); close(lo); }
+    if (backing_fd >= 0) close(backing_fd);
+}
+
+void probe_run_at(const char *disk_dev, uint64_t off, probe_result *out)
+{
+    memset(out, 0, sizeof *out);
+    char dev[64]; int bf = -1;
+    if (loop_attach(disk_dev, off, dev, sizeof dev, &bf) < 0) {
+        out->verdict = PROBE_UNMOUNTABLE;
+        snprintf(out->why, sizeof out->why,
+                 "AurOS could not open the system it just wrote.");
+        snprintf(out->remedy, sizeof out->remedy,
+                 "Nothing on this computer has been changed and Windows will "
+                 "start as usual.");
+        return;
+    }
+    probe_run(dev, out);
+    loop_detach(dev, bf);
 }
 
 void probe_run(const char *root_dev, probe_result *out)

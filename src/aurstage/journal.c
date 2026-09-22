@@ -113,6 +113,7 @@ int journal_read(const char *path, journal *j)
             STR("win_part",     win_part)
             STR("gpt_sha256",   gpt_sha256)
             STR("stage",        stage)
+            STR("boot_from",    boot_from)
             #undef STR
         } else {
             char *end = NULL;
@@ -124,6 +125,7 @@ int journal_read(const char *path, journal *j)
             else if (!strcmp(key, "win_sectors"))    j->win_sectors    = v;
             else if (!strcmp(key, "win_ntfs_serial")) j->win_ntfs_serial = v;
             else if (!strcmp(key, "written_unix"))   j->written_unix   = v;
+            else if (!strcmp(key, "run_id"))         j->run_id         = v;
             p = end;
         }
     }

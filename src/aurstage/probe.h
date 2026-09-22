@@ -39,6 +39,7 @@
 #define AUROS_PROBE_H
 
 #include <stddef.h>
+#include <stdint.h>
 
 typedef enum {
     PROBE_OK = 0,
@@ -64,6 +65,14 @@ typedef struct {
  * mount is MS_RDONLY with noload, because a read-only ext4 mount
  * still replays the journal without it. */
 void probe_run(const char *root_dev, probe_result *out);
+
+/* The same, for a filesystem that is not a partition yet.
+ *
+ * Phase 7 runs BEFORE the commit, so the root AurOS has just been
+ * written into has no partition entry and no device node -- that is
+ * the whole point of the ordering. A loop device over the extent is
+ * how it gets mounted without the table having changed. */
+void probe_run_at(const char *disk_dev, uint64_t off, probe_result *out);
 
 /* The two halves, separated so the second one can be driven from a
  * synthetic /sys.

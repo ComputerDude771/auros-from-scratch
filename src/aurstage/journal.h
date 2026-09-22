@@ -57,6 +57,14 @@ typedef struct {
 
     char     gpt_sha256[80];      /* of the primary GPT as found      */
     char     stage[JOURNAL_STR];  /* which phase it last completed    */
+    /* "esp" or "usb": which medium AurBridge pointed BootNext at.
+     * The staging environment cannot work this out for itself and it
+     * decides what a refusal should tell the person to do -- a machine
+     * that booted from the stick will boot the stick again if it is
+     * simply restarted, so the sentence has to be "take it out first"
+     * rather than "switch it on again". */
+    char     boot_from[JOURNAL_STR];
+    uint64_t run_id;              /* this install attempt             */
     uint64_t written_unix;        /* when Windows wrote this          */
 } journal;
 

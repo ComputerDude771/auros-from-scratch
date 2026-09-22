@@ -79,11 +79,23 @@ step "the staging init"
 # The two exceptions are named, not pattern-matched, because an
 # exception a regular expression grants is an exception nobody
 # reviewed: wr.c, and /dev/null in boot.c.
+# COMMENTS ARE NOT CODE, and the gate could not tell. It read the
+# whole file, so a comment EXPLAINING why something is opened
+# read-only -- which names the flag it is not using -- stopped the
+# build. The fix is not to write worse comments: it is to look at the
+# code. `gcc -fpreprocessed -dD -E` removes comments and leaves
+# everything else alone, without expanding a single #include.
 WRITER="wr.c"
 BAD=""
 for f in "$ROOT"/src/aurstage/*.c; do
     case "$(basename "$f")" in "$WRITER") continue ;; esac
-    hit=$(grep -nE 'O_RDWR|O_WRONLY|O_CREAT|O_TRUNC|O_APPEND' "$f" \
+    # NOT A PIPELINE INTO grep -q. Under `set -o pipefail`, grep -q
+    # closes its input as soon as it matches, gcc takes a SIGPIPE, and
+    # the pipeline "fails" on success -- which made this gate report
+    # that wr.c had stopped writing. Captured first, searched second.
+    code=$(gcc -fpreprocessed -dD -E "$f" 2>/dev/null || true)
+    hit=$(printf '%s\n' "$code" \
+          | grep -nE 'O_RDWR|O_WRONLY|O_CREAT|O_TRUNC|O_APPEND' \
           | grep -v '/dev/null' || true)
     [ -n "$hit" ] && BAD="$BAD
 $(basename "$f"): $hit"
@@ -96,8 +108,11 @@ fi
 # passes a tree in which somebody deleted it and moved the writes.
 [ -f "$ROOT/src/aurstage/$WRITER" ] \
     || die "$WRITER is missing; the write gate would pass anything"
-grep -q 'O_RDWR' "$ROOT/src/aurstage/$WRITER" \
-    || die "$WRITER no longer opens anything writable; where did the writes go?"
+wcode=$(gcc -fpreprocessed -dD -E "$ROOT/src/aurstage/$WRITER" 2>/dev/null || true)
+case "$wcode" in
+  *O_RDWR*) ;;
+  *) die "$WRITER no longer opens anything writable; where did the writes go?" ;;
+esac
 
 # Every .c in the directory, not a list that has to be remembered: a
 # stage B file left out of a hand-written list links and runs, and the

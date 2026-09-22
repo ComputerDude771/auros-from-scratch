@@ -28,6 +28,7 @@
 #include "journal.h"
 #include "fde.h"
 #include "health.h"
+#include "install.h"
 
 /* What the kernel was told to do with us, out of /proc/cmdline. */
 static int cmdline_has(const char *word)
@@ -571,6 +572,16 @@ int main(void)
      * without writing a byte. Ship it, run it on a thousand laptops,
      * and find out what the fleet looks like while the worst possible
      * outcome is a wasted restart. */
+    /* THE REAL RUN. Everything above this is the same in both modes:
+     * the dry run and the install look at the machine identically,
+     * and the only difference is whether anything is allowed to
+     * happen afterwards. */
+    if (cmdline_has("aurstage.install")) {
+        install_run(&m);
+        /* install_run never returns. */
+        stop_here("the installer stopped unexpectedly");
+    }
+
     if (dry) {
         dry_run(&m);
         stage_say("nothing on this computer has been changed");
