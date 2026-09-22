@@ -1,0 +1,64 @@
+# AurOS Theme — Ember.  Warm charcoal and banked firelight.
+#
+# Made for the Revive profile, and the choice is not decoration. That
+# profile's machine is a 2012 laptop with a TN panel that has been on
+# for nine years: the blues have gone grey, the gamma has drifted, and
+# whoever is looking at it is often doing so at an angle in a bright
+# room. Cool palettes are the ones that die on that screen -- a
+# desaturated blue at 40% luminance reads as grey on a panel whose blue
+# channel has faded, and the accent stops being findable.
+#
+# So: warm hues, which survive a drifted panel better, and everything
+# pushed further apart than the floor requires rather than sitting on
+# it. tools/contrast.c --strict is the check, not the goal.
+inherit="nocturne"
+
+theme_name="Ember"
+theme_variant="dark"
+theme_description="Warm charcoal and banked firelight, for a screen that has been on for nine years."
+
+bg="#12100E"      bg_alt="#191613"   surface="#211D19"
+surface_hi="#2C2721"  overlay="#7A6A59"
+
+muted="#8A7A68"   subtle="#B0A08C"   fg="#E6DED2"  fg_hi="#F7F2EA"
+
+accent="#E8A15C"  accent_alt="#C9BE8A"  accent_warm="#F0C089"
+ok="#A8C58A"      warn="#E8C06A"  err="#E28C84"  info="#9FBCC8"
+
+ansi0="#211D19"  ansi8="#6E6255"
+ansi1="#E28C84"  ansi9="#F0A9A2"
+ansi2="#A8C58A"  ansi10="#C2DCA6"
+ansi3="#E8C06A"  ansi11="#F2D68F"
+ansi4="#9FBCC8"  ansi12="#BCD4DE"
+ansi5="#C7A9C4"  ansi13="#DCC4D9"
+ansi6="#8FC4B8"  ansi14="#AEDCD1"
+ansi7="#E6DED2"  ansi15="#F7F2EA"
+
+# Squarer than the others, and cheaper to draw: on a 2012 Intel GPU the
+# rounding is done on the CPU often enough for it to show in a scroll.
+radius="12"  radius_sm="8"  gap="14"
+
+# The plainest wallpaper style there is -- a gradient, no mesh, no
+# grain. Whatever the Revive profile turns off in the compositor should
+# not be spent again on the picture behind it.
+wall_style="gradient"
+wall_c1="#0E0C0A"  wall_c2="#2A211A"  wall_c3="#E8A15C"  wall_c4="#C9BE8A"
+wall_intensity="0.32"  wall_grain="0.00"  wall_vignette="0.45"
+brand_glyph="✧"
+
+# ── the only effects knobs that are actually worth anything here ────
+#
+# Nocturne already has blur and shadows at zero -- this design replaced
+# them with hairlines, so there is nothing to turn off. What is left
+# that costs a 2012 Intel part real time per frame is TRANSLUCENCY,
+# which makes the compositor blend rather than copy, and animation,
+# which makes it do that sixty times a second instead of once.
+#
+# So: panels are opaque, and movement is short and linear. A spring
+# curve is nicer and needs more frames to land; on this hardware the
+# extra frames arrive late and the spring reads as a stutter, which is
+# worse than no animation at all.
+opacity_panel="1.00"
+opacity_inactive="1.00"
+animation_ms="90"
+animation_curve="linear"

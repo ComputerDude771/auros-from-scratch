@@ -1172,6 +1172,55 @@ EOL
         chmod 440 "$RFS/etc/sudoers.d/90-auros-lockdown"
     fi
 
+    # ── memory, on a machine that has very little of it ────────────
+    #
+    # Both of these are profile keys that used to be written in a
+    # profile and read by nothing, which is worse than not having them:
+    # the file says the machine gets compressed swap and an out-of-
+    # memory killer, and it does not, and the only way to find out is
+    # to watch a 2 GB laptop thrash.
+    #
+    # They are written only when the profile asks, and only when the
+    # package that reads them is actually installed -- a config file
+    # for a program that is not there is the same lie in a different
+    # place.
+    if [ -n "${zram_percent:-}" ]; then
+        if [ -f "$RFS/usr/sbin/zramswap" ] || [ -f "$RFS/usr/bin/zramswap" ] \
+           || [ -f "$RFS/lib/systemd/system/zramswap.service" ]; then
+            cat > "$RFS/etc/default/zramswap" <<EOZ
+# Written by forge from the profile. Compressed swap in RAM: on a
+# machine with two gigabytes this is the difference between "the
+# browser has four tabs open" and "the disk has been thrashing for a
+# minute", because the thing being avoided is the disk.
+ALGO=${zram_algorithm:-zstd}
+PERCENT=$zram_percent
+PRIORITY=100
+EOZ
+            inchroot "systemctl enable zramswap.service >/dev/null 2>&1" || true
+            note "zram: ${zram_percent}% of RAM, ${zram_algorithm:-zstd}"
+        else
+            warn "the profile asks for zram and zram-tools is not installed;
+     add it to packages_extra or remove zram_percent."
+        fi
+    fi
+    if [ -n "${earlyoom_min_free_percent:-}" ]; then
+        if [ -f "$RFS/usr/bin/earlyoom" ] || [ -f "$RFS/usr/sbin/earlyoom" ]; then
+            cat > "$RFS/etc/default/earlyoom" <<EOE
+# Written by forge from the profile. Kill the one runaway process while
+# the machine is still responding, rather than let the kernel's OOM
+# killer arrive twenty seconds after she has given up and held the
+# power button. -r 0 keeps it quiet in the log; --avoid protects the
+# things whose death would take the session with them.
+EARLYOOM_ARGS="-m $earlyoom_min_free_percent -r 0 --avoid '(^|/)(aurshell|systemd|Xwayland)$' --prefer '(^|/)(firefox|chrome|chromium|soffice)'"
+EOE
+            inchroot "systemctl enable earlyoom.service >/dev/null 2>&1" || true
+            note "earlyoom: steps in below ${earlyoom_min_free_percent}% free"
+        else
+            warn "the profile asks for earlyoom and it is not installed;
+     add it to packages_extra or remove earlyoom_min_free_percent."
+        fi
+    fi
+
     chroot_done
     note "identity: $brand_name $os_version ($os_codename), locale $locale, kiosk=$kiosk_mode"
 }

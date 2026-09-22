@@ -1,0 +1,41 @@
+# AurOS Theme — Slate.  Cool neutral grey, and almost no colour at all.
+#
+# Made for the Office profile. An organisation's build is looked at for
+# eight hours a day by somebody who did not choose it, which argues for
+# the opposite of a strong opinion: near-neutral surfaces, one accent,
+# and colour used only where it MEANS something -- an error, a warning,
+# a thing that succeeded.
+#
+# It is also the theme most likely to be the base an organisation
+# recolours, so the palette is arranged to survive having its accent
+# replaced by whatever is in somebody's brand guidelines: the accent
+# carries no structural load, and the interface is legible with it
+# removed entirely.
+inherit="nocturne"
+
+theme_name="Slate"
+theme_variant="dark"
+theme_description="Cool neutral grey, with colour kept for the things that mean something."
+
+bg="#0F1215"      bg_alt="#151920"   surface="#1C2128"
+surface_hi="#262D36"  overlay="#66737F"
+
+muted="#76828F"   subtle="#9BA7B4"   fg="#D5DCE4"  fg_hi="#F2F5F8"
+
+accent="#7FA8D4"  accent_alt="#9BB8C9"  accent_warm="#D9B78A"
+ok="#8FC49B"      warn="#DEBE7A"  err="#DE8D8D"  info="#8FB6D4"
+
+ansi0="#1C2128"  ansi8="#5A6672"
+ansi1="#DE8D8D"  ansi9="#EEAAAA"
+ansi2="#8FC49B"  ansi10="#AEDCB8"
+ansi3="#DEBE7A"  ansi11="#EDD59B"
+ansi4="#7FA8D4"  ansi12="#A5C5E4"
+ansi5="#B6A3CE"  ansi13="#CFC0E0"
+ansi6="#84C3C0"  ansi14="#A6DBD8"
+ansi7="#D5DCE4"  ansi15="#F2F5F8"
+
+radius="14"  radius_sm="8"  gap="14"
+wall_style="mesh"
+wall_c1="#0B0E11"  wall_c2="#1B2430"  wall_c3="#7FA8D4"  wall_c4="#9BB8C9"
+wall_intensity="0.30"  wall_grain="0.05"  wall_vignette="0.50"
+brand_glyph="◈"
