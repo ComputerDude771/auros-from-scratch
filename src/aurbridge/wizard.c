@@ -8,11 +8,15 @@
  *  the installer is a user who clicks through the disclosure without
  *  reading it. The look is load-bearing.
  *
- *  THIS BUILD PERFORMS NO DESTRUCTIVE ACTION.
- *  Phase execution is stubbed. Every stub is named stub_* and marked
- *  only logs what the real phase would do. There is no code in this
- *  file that opens a disk for writing, and none should be added here —
- *  the phase engine lands in its own file, with its own tests.
+ *  NOTHING IN THIS FILE OPENS A HANDLE, and none should ever be added.
+ *  The work is in phases.c, behind plat.h, on a worker thread. That is
+ *  not tidiness: this file's code runs on the UI thread, so anything
+ *  that blocks stops the window painting, and a wizard that appears to
+ *  have crashed in the middle of preparing somebody's disk is the
+ *  worst thing this program can do short of losing her files.
+ *
+ *  Before the restart, everything AurBridge has done is undoable, and
+ *  closing the window undoes it — see install_cancel().
  *
  *  Safety invariants enforced in code, not just in pixels:
  *    - nav_allowed() refuses every page from the backup gate onward
@@ -48,6 +52,7 @@
 #include <math.h>
 
 #include "preflight.h"
+#include "phases.h"
 
 /* ── Palette: themes/nocturne.theme, copied exactly ───────────────── */
 #define C_BG          0x0B0E14u   /* bg          */
@@ -283,7 +288,7 @@ static int   g_ready_confirm;
 static int   g_sel_lang = 0, g_sel_kbd = 0, g_sel_tz = 0, g_sel_theme = 0;
 /* The desktop archetype, alongside the other personalize answers. Its
  * SHELLS[].id is what a later phase writes as shell_archetype into the
- * image's profile — see stub_phase_write(). */
+ * image's profile — it travels in ab_choice.shell_archetype. */
 static int   g_sel_shell = SHELL_DEFAULT;
 
 /* detected-from-Windows defaults, filled in at startup */
@@ -969,12 +974,14 @@ static void goto_page(page_id p)
 }
 
 /* ═══════════════════════════════════════════════════════════════════
- *  Phase engine — ALL STUBBED.
+ *  The phases, as a person sees them.
  *
- *  Not one line below touches a partition table, a volume, a boot entry
- *  or a file. Each stub logs the work the real phase will do and returns
- *  success. The real implementations land in their own translation unit
- *  with their own tests, per AURBRIDGE.md ("Still to build").
+ *  Nine steps, of which four happen before the restart and five after.
+ *  The split used to be six and three, and it was wrong: "Make room"
+ *  and "Copy AurOS onto the drive" are stage C's work, done after the
+ *  restart from an environment where nothing is mounted, and telling
+ *  somebody that her Windows drive is about to be resized while she is
+ *  still in Windows is telling her something that is not true.
  * ═══════════════════════════════════════════════════════════════════ */
 typedef enum { PH_PENDING = 0, PH_RUNNING, PH_DONE, PH_LATER, PH_FAILED } ph_state;
 
@@ -988,13 +995,13 @@ static const struct {
  { L"Write down what you agreed to",
    L"Your answers, and a copy of this PC\u2019s unlock key if it has one.", 0 },
  { L"Build a way back",
-   L"A rescue USB stick, and a rescue area on the drive. Windows is untouched by this step.", 0 },
- { L"Make room",
-   L"The Windows drive is made smaller. Your Windows files stay where they are.", 0 },
- { L"Copy AurOS onto the drive",
-   L"AurOS is written into the new space, then read back and checked, byte for byte.", 0 },
+   L"The rescue USB stick, with a copy of AurOS on it and room to save this PC\u2019s start-up. Windows is untouched by this step.", 0 },
  { L"Add AurOS to the start-up menu",
    L"AurOS is offered once, at the next start. Windows stays the one that starts by default.", 0 },
+ { L"Make room",
+   L"After the restart: the Windows drive is made smaller. Your Windows files stay where they are.", 1 },
+ { L"Copy AurOS onto the drive",
+   L"AurOS is written into the new space, then read back and checked, byte for byte.", 1 },
  { L"Try it out on this PC",
    L"After the restart: Wi-Fi, screen brightness, sound and sleep are tested before anything is final.", 1 },
  { L"Your first look",
@@ -1013,123 +1020,191 @@ static int   g_install_running, g_install_finished;
 static wchar_t g_log[LOG_MAX][200];
 static int     g_log_n;
 
-static void stub_log(const wchar_t *fmt, ...)
+
+/* ═══════════════════════════════════════════════════════════════════
+ *  Driving the real thing
+ *
+ *  What used to be here was six functions that logged what a real
+ *  phase WOULD do and returned success, with install_tick() advancing
+ *  a fake progress bar over them on a timer. The engine is in phases.c
+ *  now, so this is what is left: a worker thread, two callbacks, and
+ *  a rule.
+ *
+ *  THE RULE: NOTHING IN THIS FILE OPENS A HANDLE. Not a disk, not a
+ *  file, not a firmware variable. Everything that touches the world is
+ *  behind plat.h, and the reason is not tidiness -- it is that the
+ *  window procedure runs on the UI thread and anything that blocks it
+ *  stops the window painting, so the temptation to "just read this one
+ *  thing here" produces a program that appears to have crashed in the
+ *  middle of preparing somebody's disk.
+ *
+ *  So: ab_run() on its own thread, and it reports back through say()
+ *  and progress(), which do nothing but copy into the log and set two
+ *  numbers under a lock. The UI reads them on its timer as before.
+ * ═══════════════════════════════════════════════════════════════════ */
+
+static CRITICAL_SECTION g_ab_lock;
+static int    g_ab_lock_ready;
+static HANDLE g_ab_thread;
+static ab_machine g_ab_machine;
+static ab_choice  g_ab_choice;
+static char   g_ab_why[400];
+static volatile LONG g_ab_state;   /* 0 idle, 1 running, 2 done, 3 failed */
+static int    g_ab_phase;          /* which ab_phase is running           */
+static int    g_ab_pct;
+
+static void ab_lock_init(void)
+{ if (!g_ab_lock_ready) { InitializeCriticalSection(&g_ab_lock); g_ab_lock_ready = 1; } }
+
+/* The engine talks in UTF-8 because it also builds for a host that is
+ * not Windows. The log is wide. This is the only place they meet. */
+static void ab_say_cb(const char *line, void *ud)
 {
-    wchar_t line[200];
-    va_list ap;
-    va_start(ap, fmt);
-    _vsnwprintf(line, 199, fmt, ap);
-    va_end(ap);
-    line[199] = 0;
-    if (g_log_n < LOG_MAX) {
-        wcscpy(g_log[g_log_n++], line);
-    } else {
+    (void)ud;
+    wchar_t w[400];
+    MultiByteToWideChar(CP_UTF8, 0, line, -1, w, 399);
+    w[399] = 0;
+    EnterCriticalSection(&g_ab_lock);
+    if (g_log_n < LOG_MAX) wcscpy(g_log[g_log_n++], w);
+    else {
         memmove(g_log[0], g_log[1], sizeof g_log - sizeof g_log[0]);
-        wcscpy(g_log[LOG_MAX - 1], line);
+        wcscpy(g_log[LOG_MAX - 1], w);
     }
-    OutputDebugStringW(L"aurbridge STUB: ");
-    OutputDebugStringW(line);
-    OutputDebugStringW(L"\n");
+    /* A line beginning with the box-drawing rule is the engine saying
+     * it has moved on to the next phase. Matching on that rather than
+     * counting lines: the number of lines a phase prints is not a
+     * contract and changing it should not silently desynchronise the
+     * tick marks from the work. */
+    if (line[0] == (char)0xE2)              /* the UTF-8 lead byte of ── */
+        g_ab_phase++;
+    LeaveCriticalSection(&g_ab_lock);
 }
 
-/* STUB — phase 0 INSPECT. The real one re-runs preflight and aborts on
- * any block. The wizard already does that before it gets here. */
-static int stub_phase_inspect(void)
+static void ab_prog_cb(int pct, void *ud)
+{ (void)ud; EnterCriticalSection(&g_ab_lock); g_ab_pct = pct;
+  LeaveCriticalSection(&g_ab_lock); }
+
+/* Where this program is, so that the image and the staging environment
+ * beside it can be named without asking the user where she put them. */
+static void beside_me(char *out, size_t n, const char *leaf)
 {
-    stub_log(L"WOULD re-run preflight and abort on any PF_BLOCK");
-    stub_log(L"WOULD record a machine.json snapshot for support");
-    return 1;
-}
-/* STUB — phase 1 CONSENT. Proof-of-possession of the BitLocker key
- * (R1) and the signed consent record. */
-static int stub_phase_consent(void)
-{
-    stub_log(L"WOULD ask for part of the 48-digit unlock key typed back (R1)");
-    stub_log(L"WOULD offer to save or print that key");
-    stub_log(L"WOULD suspend BitLocker with -RebootCount 0");
-    return 1;
-}
-/* STUB — phase 2 PREPARE. Recovery USB + recovery partition. Consumes
- * free space only; Windows is not modified. */
-static int stub_phase_prepare(void)
-{
-    stub_log(L"WOULD write the rescue USB stick (rescue kernel + tools)");
-    stub_log(L"WOULD create a 600 MB FAT32 rescue partition in free space");
-    stub_log(L"WOULD back up the GPT, the whole ESP and the Windows BCD into it");
-    stub_log(L"WOULD install the 'Put Windows back' entry in the start-up menu");
-    return 1;
-}
-/* STUB — phase 3 SHRINK. The one destructive step on the Windows side,
- * done offline from the staging environment with ntfsresize. */
-static int stub_phase_shrink(void)
-{
-    stub_log(L"WOULD read StorageAccessAlignmentProperty (512e vs 4Kn)");
-    stub_log(L"WOULD disable hibernation and the pagefile, and drop shadow copies");
-    stub_log(L"WOULD run chkdsk and refuse on any correction (R9)");
-    stub_log(L"WOULD shrink the NTFS volume with ntfsresize, offline");
-    stub_log(L"WOULD write the new partition table as one sector write (R6)");
-    return 1;
-}
-/* STUB — phase 4 WRITE. Raw image to the new partition, read back and
- * verified against its hash. */
-static int stub_phase_write(void)
-{
-    stub_log(L"WOULD write auros-desktop.img to the new partition");
-    stub_log(L"WOULD read every block back and compare it to the hash (R5)");
-    /* The personalize answers travel this far as indices; the profile is
-     * where they become text. The archetype is the one with a stable
-     * identifier of its own (shells/<id>.shell), so it is named here. */
-    stub_log(L"WOULD write shell_archetype=%hs into the image's profile",
-             SHELLS[g_sel_shell].id);
-    return 1;
-}
-/* STUB — phase 5 HANDOFF. Loader into the ESP, one-shot BootNext. */
-static int stub_phase_handoff(void)
-{
-    stub_log(L"WOULD copy the loader into the ESP, never reformatting it (R12)");
-    stub_log(L"WOULD set BootNext only - never BootOrder - so a failed boot");
-    stub_log(L"         comes back to Windows on its own (R4)");
-    return 1;
+    wchar_t w[MAX_PATH];
+    DWORD k = GetModuleFileNameW(NULL, w, MAX_PATH - 1);
+    if (!k) { out[0] = 0; return; }
+    w[k] = 0;
+    for (DWORD i = k; i > 0; i--)
+        if (w[i - 1] == L'\\' || w[i - 1] == L'/') { w[i] = 0; break; }
+    char dir[MAX_PATH * 2];
+    WideCharToMultiByte(CP_UTF8, 0, w, -1, dir, sizeof dir - 1, NULL, NULL);
+    dir[sizeof dir - 1] = 0;
+    _snprintf(out, n - 1, "%s%s", dir, leaf);
+    out[n - 1] = 0;
 }
 
-static int (*const PHASE_STUB[6])(void) = {
-    stub_phase_inspect, stub_phase_consent, stub_phase_prepare,
-    stub_phase_shrink,  stub_phase_write,   stub_phase_handoff
-};
+static DWORD WINAPI ab_worker(LPVOID p)
+{
+    (void)p;
+    int rc = ab_run(AB_HANDOFF, &g_ab_choice, &g_report, &g_ab_machine,
+                    ab_say_cb, ab_prog_cb, NULL, g_ab_why, sizeof g_ab_why);
+    InterlockedExchange(&g_ab_state, rc == 0 ? 2 : 3);
+    return 0;
+}
 
 static void install_begin(void)
 {
+    ab_lock_init();
     g_log_n = 0;
     for (int i = 0; i < N_PHASES; i++)
         g_ph[i] = PHASES[i].after_restart ? PH_LATER : PH_PENDING;
     g_ph_cur = 0;
     g_ph_prog = 0.f;
+    g_ab_phase = -1;
+    g_ab_pct = 0;
+    g_ab_why[0] = 0;
     g_install_running = 1;
     g_install_finished = 0;
-    stub_log(L"This build is a stub. Nothing on this PC is read for writing,");
-    stub_log(L"opened for writing, or changed in any way.");
+
+    memset(&g_ab_choice, 0, sizeof g_ab_choice);
+    /* The archetype is the one choice with a stable identifier of its
+     * own (shells/<id>.shell), so it is the one that travels as text. */
+    _snprintf(g_ab_choice.shell_archetype,
+              sizeof g_ab_choice.shell_archetype - 1, "%s",
+              SHELLS[g_sel_shell].id);
+    _snprintf(g_ab_choice.profile, sizeof g_ab_choice.profile - 1, "%s",
+              "desktop");
+    _snprintf(g_ab_choice.language, sizeof g_ab_choice.language - 1, "%s", "en");
+    _snprintf(g_ab_choice.stick_serial,
+              sizeof g_ab_choice.stick_serial - 1, "%s",
+              pf_recovery_stick() ? pf_recovery_stick() : "");
+    beside_me(g_ab_choice.image_path,  sizeof g_ab_choice.image_path,
+              "auros-desktop.img");
+    beside_me(g_ab_choice.kernel_path, sizeof g_ab_choice.kernel_path,
+              "auros-staging-vmlinuz");
+    beside_me(g_ab_choice.initrd_path, sizeof g_ab_choice.initrd_path,
+              "auros-staging.img");
+    /* SET BY A PERSON AND NOTHING ELSE. Reaching this function means
+     * she has read the page that says what happens and pressed the
+     * button on it; phases.c refuses without it, and that refusal is
+     * the last line of defence if this screen is ever reorganised. */
+    g_ab_choice.consent_given = 1;
+
+    InterlockedExchange(&g_ab_state, 1);
+    g_ab_thread = CreateThread(NULL, 0, ab_worker, NULL, 0, NULL);
+    if (!g_ab_thread) {
+        InterlockedExchange(&g_ab_state, 3);
+        _snprintf(g_ab_why, sizeof g_ab_why - 1,
+                  "this computer would not start the installer.");
+    }
     g_ph[0] = PH_RUNNING;
-    PHASE_STUB[0]();
 }
 
-/* Driven from WM_TIMER so the window keeps painting. */
+/* Driven from WM_TIMER so the window keeps painting. It reads what the
+ * worker has published and never waits for it. */
 static void install_tick(void)
 {
-    if (!g_install_running || g_ph_cur < 0) return;
-    g_ph_prog += 0.085f;
-    if (g_ph_prog < 1.f) return;
-    g_ph_prog = 0.f;
-    g_ph[g_ph_cur] = PH_DONE;
-    g_ph_cur++;
-    if (g_ph_cur >= 6) {          /* phases 6-8 happen after the restart */
+    if (!g_install_running) return;
+    LONG st = g_ab_state;
+    int phase, pct;
+    EnterCriticalSection(&g_ab_lock);
+    phase = g_ab_phase; pct = g_ab_pct;
+    LeaveCriticalSection(&g_ab_lock);
+
+    if (phase < 0) phase = 0;
+    if (phase >= AB_N) phase = AB_N - 1;
+    for (int i = 0; i < phase && i < N_PHASES; i++)
+        if (!PHASES[i].after_restart) g_ph[i] = PH_DONE;
+    if (phase < N_PHASES && !PHASES[phase].after_restart)
+        g_ph[phase] = PH_RUNNING;
+    g_ph_cur = phase;
+    g_ph_prog = pct / 100.f;
+
+    if (st == 2) {
+        for (int i = 0; i < N_PHASES; i++)
+            if (!PHASES[i].after_restart) g_ph[i] = PH_DONE;
         g_ph_cur = -1;
         g_install_running = 0;
         g_install_finished = 1;
-        stub_log(L"Stub run complete. A real run would restart into AurOS here.");
-        return;
+    } else if (st == 3) {
+        if (phase < N_PHASES) g_ph[phase] = PH_FAILED;
+        g_ph_cur = -1;
+        g_install_running = 0;
+        g_install_finished = 1;
+        wchar_t w[400];
+        MultiByteToWideChar(CP_UTF8, 0,
+                            g_ab_why[0] ? g_ab_why : "it stopped", -1, w, 399);
+        w[399] = 0;
+        EnterCriticalSection(&g_ab_lock);
+        if (g_log_n < LOG_MAX) wcscpy(g_log[g_log_n++], w);
+        LeaveCriticalSection(&g_ab_lock);
     }
-    g_ph[g_ph_cur] = PH_RUNNING;
-    PHASE_STUB[g_ph_cur]();
+}
+
+/* If the window is closed before the restart, everything that was done
+ * is undone -- which before the restart is all of it. */
+static void install_cancel(void)
+{
+    if (g_ab_state == 1) return;      /* a phase is mid-write; let it finish */
+    ab_abort(&g_ab_machine, ab_say_cb, NULL);
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -1328,7 +1403,7 @@ static void draw_rail(void)
     }
 
     text_draw(L"aurbridge 0.1.0", g_f_tiny, C_MUTED, x, g_ch - S(52), S(200), DT_LEFT);
-    text_draw(L"stub build — nothing is changed", g_f_tiny, C_MUTED,
+    text_draw(L"nothing is changed until you say so", g_f_tiny, C_MUTED,
               x, g_ch - S(36), S(220), DT_LEFT);
 }
 
@@ -2288,27 +2363,32 @@ static int page_ready(int x, int y, int w)
 }
 
 /* ═══════════════════════════════════════════════════════════════════
- * 10 · PROGRESS   (every phase below is a stub; see PHASE_STUB[])
+ * 10 · PROGRESS   (what the engine in phases.c is doing, read on a timer)
  * ═══════════════════════════════════════════════════════════════════ */
 static int page_progress(int x, int y, int w)
 {
     int y0 = y;
     int narrow = w > S(760) ? S(760) : w;
 
-    y += text_draw(g_install_finished ? L"That is as far as this build goes"
+    y += text_draw(g_install_finished ? L"Ready to restart"
                                       : L"Setting up AurOS",
                    g_f_title, C_FG_HI, x, y, w, DT_WORDBREAK) + S(12);
 
-    /* Honesty banner. This build cannot change anything, and the screen
-     * that looks the most like a real install is the one that must say so. */
+    /* The honesty banner, and it is not decoration. This is the screen
+     * that looks the most like a real install, so it is the one that
+     * has to say, in the plainest words available, exactly what is and
+     * is not being changed. Everything on it is true of what phases.c
+     * actually does: the stick is written to, two files go into a
+     * directory on the EFI partition, and BootNext is set once. */
     {
         int h = S(56);
         fill_rr((float)x, (float)y, (float)narrow, (float)h, (float)S(12), C_WARM, 0.12f);
         stroke_rr((float)x, (float)y, (float)narrow, (float)h, (float)S(12), 1.2f,
                   C_WARM, 0.35f);
         glyph_bang((float)(x + S(26)), (float)(y + h / 2), (float)S(15), C_WARM, 1.f);
-        text_draw(L"Stub build: every step below is simulated. Nothing on this PC is "
-                  L"opened for writing, and nothing is changed.",
+        text_draw(L"Nothing on this PC is changed by the steps below. The only "
+                  L"thing written to is the USB stick, and the only thing "
+                  L"changed is which system starts next time \u2014 once.",
                   g_f_small, C_WARM, x + S(48), y + S(11), narrow - S(70), DT_WORDBREAK);
         y += h + S(22);
     }
@@ -2439,7 +2519,8 @@ static const wchar_t *footer_hint(void)
     case PAGE_READY:
         return L"Last chance to stop without anything having happened.";
     case PAGE_PROGRESS:
-        return L"Stub build — nothing on this PC has been changed.";
+        return L"Nothing on this PC has been changed. Closing this window "
+               L"puts everything back.";
     default: return L"";
     }
 }
@@ -3090,6 +3171,11 @@ static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM wp, LPARAM lp)
 
     case WM_DESTROY:
         KillTimer(h, 1);
+        /* Take back the one-shot start-up setting, if it was set. A
+         * window closed after phase 3 and before the restart must not
+         * leave a computer that starts the installer once and then
+         * cannot say why. */
+        install_cancel();
         PostQuitMessage(0);
         return 0;
 
@@ -3102,7 +3188,7 @@ static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM wp, LPARAM lp)
  *  Dev harness — screenshots.
  *
  *  Rendering only: no window is shown, no input is accepted, no phase
- *  stub is reached that the interactive path would not reach, and
+ *  is started that the interactive path would not start, and
  *  nav_allowed() is untouched. It exists so the pages can be reviewed
  *  as images on a machine that is not running Windows.
  * ═══════════════════════════════════════════════════════════════════ */

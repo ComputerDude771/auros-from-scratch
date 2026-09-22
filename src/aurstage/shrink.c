@@ -227,7 +227,12 @@ void shrink_ask(const char *dev, shrink_plan *out)
  * Windows on it this runs for forty minutes and the person is
  * watching a screen that says the one thing that cannot be undone is
  * happening. A progress bar is not decoration there. */
+/* The one irreversible step, and it never forces. See shrink.h. */
 void shrink_do(const char *dev, uint64_t target_bytes,
+               void (*progress)(int percent), shrink_result *out)
+{ resize_do(dev, target_bytes, 0, progress, out); }
+
+void resize_do(const char *dev, uint64_t target_bytes, int allow_force,
                void (*progress)(int percent), shrink_result *out)
 {
     memset(out, 0, sizeof *out);
@@ -235,8 +240,14 @@ void shrink_do(const char *dev, uint64_t target_bytes,
     char size[32];
     snprintf(size, sizeof size, "%llu", (unsigned long long)target_bytes);
 
-    /* FIXED, AS ABOVE, AND WITHOUT --force. See shrink.h. */
-    const char *argv[] = { NTFSRESIZE_PATH, "--size", size, dev, NULL };
+    /* FIXED, AS ABOVE. --force appears in this product exactly once,
+     * here, and only when the caller has already established -- by
+     * reading the volume itself -- that the only thing wrong with it
+     * is the dirty bit our own shrink set. shrink_do() above passes 0. */
+    const char *argv_plain[] = { NTFSRESIZE_PATH, "--size", size, dev, NULL };
+    const char *argv_force[] = { NTFSRESIZE_PATH, "--force", "--size", size,
+                                 dev, NULL };
+    const char **argv = allow_force ? argv_force : argv_plain;
 
     int in[2], outp[2];
     if (pipe(in) < 0) {
@@ -342,8 +353,16 @@ void shrink_do(const char *dev, uint64_t target_bytes,
         return;
     }
     out->ok = 1;
-    snprintf(out->why, sizeof out->why, "the Windows drive is now %.1f GiB",
-             (double)out->achieved_bytes / (1024.0*1024.0*1024.0));
+    /* MB below a gigabyte. "%.1f GiB" on a volume of a few megabytes
+     * prints "0.0 GiB", which reads as "the Windows drive is now
+     * nothing" -- on the line immediately after the only step in the
+     * product that cannot be undone. */
+    if (out->achieved_bytes < 1024ull * 1024 * 1024)
+        snprintf(out->why, sizeof out->why, "the Windows drive is now %llu MB",
+                 (unsigned long long)(out->achieved_bytes / (1024 * 1024)));
+    else
+        snprintf(out->why, sizeof out->why, "the Windows drive is now %.1f GiB",
+                 (double)out->achieved_bytes / (1024.0*1024.0*1024.0));
 }
 
 /* ── the surface test ────────────────────────────────────────────── */

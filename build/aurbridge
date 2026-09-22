@@ -36,14 +36,30 @@ mkdir -p "$OUT"
 # file left out of a hand-written list still links, and the checks it
 # was written to perform simply do not happen -- the staging build
 # learned that the expensive way.
-LIB=""
+# THE RULE IS IN THE FILE NAMES, so a new source file lands in the
+# right binary without anybody remembering to edit this:
+#
+#   main.c, wizard.c   have a main() of their own
+#   *_win.c            Windows only
+#   *_sim.c, simmain.c the host-side simulation only, never shipped
+#
+# Everything else is shared. A hand-written list is how a file gets
+# left out and the checks in it simply do not happen; a rule is at
+# least wrong in a way somebody can see.
+LIB=""; WINONLY=""; SIMONLY=""
 for f in "$SRC"/*.c; do
-    case "$(basename "$f")" in
-      main.c|wizard.c) continue ;;
+    b=$(basename "$f")
+    case "$b" in
+      main.c|wizard.c)   continue ;;
+      simmain.c|*_sim.c) SIMONLY="$SIMONLY $f"; continue ;;
+      *_win.c)           WINONLY="$WINONLY $f"; continue ;;
     esac
     LIB="$LIB $f"
 done
 note "shared:$(echo "$LIB" | sed "s|$SRC/||g")"
+note "windows:$(echo "$WINONLY" | sed "s|$SRC/||g")"
+note "simulated:$(echo "$SIMONLY" | sed "s|$SRC/||g")"
+LIB="$LIB $WINONLY"
 
 # -municode is NOT used: main.c is a plain main() and the wizard has
 # its own WinMain. Unicode comes from the W-suffixed APIs, which is
@@ -63,6 +79,37 @@ $CC -O2 $WARN -mwindows -o "$OUT/aurbridge-wizard.exe" "$SRC/wizard.c" $LIB \
     || die "the wizard did not build"
 note "$(du -h "$OUT/aurbridge-wizard.exe" | cut -f1)"
 
+# ── the host-side simulation ───────────────────────────────────────
+#
+# out/aurbridge-sim runs the SAME phase engine against a computer made
+# of files, so that the memory stick and the journal the installer is
+# tested with are the ones AurBridge produces rather than ones a test
+# wrote to match. It is built with the host compiler and is never
+# shipped -- and the build refuses to put a simulated platform into a
+# Windows binary, which is the one way this could go badly wrong.
+step "aurbridge-sim (not shipped)"
+HOSTCC="${HOSTCC:-cc}"
+if command -v "$HOSTCC" >/dev/null 2>&1; then
+    SIMLIB=""
+    for f in "$SRC"/format.c "$SRC"/phases.c; do SIMLIB="$SIMLIB $f"; done
+    # shellcheck disable=SC2086
+    $HOSTCC -O2 $WARN -o "$OUT/aurbridge-sim" $SIMLIB $SIMONLY \
+        || die "the simulation did not build"
+    note "$(du -h "$OUT/aurbridge-sim" | cut -f1)"
+else
+    note "no host compiler; skipped"
+fi
+
+# And the gate: no simulated platform may be inside anything shipped.
+for exe in "$OUT/aurbridge.exe" "$OUT/aurbridge-wizard.exe"; do
+    if strings "$exe" 2>/dev/null | grep -q 'a simulated computer made of files'; then
+        die "$(basename "$exe") contains the simulated platform. A shipped
+     binary that can pretend to write to a disk is the worst thing in
+     this tree; refusing to publish it."
+    fi
+done
+note "neither shipped binary contains the simulation"
+
 if [ "${1:-}" = "test" ]; then
     step "self-test"
     # WHAT WINE CAN AND CANNOT SAY. It has no real disks, no BitLocker,
@@ -78,6 +125,9 @@ if [ "${1:-}" = "test" ]; then
     else
         note "no wine here; skipped"
     fi
+    # The part that does not need a machine at all, and is where the
+    # bytes both halves depend on are actually checked.
+    sh "$ROOT/tools/bridgetest.sh" || die "the two halves disagree"
 fi
 
 printf '\n%s::%s %s\n' "$C_OK" "$C_RST" "$OUT/aurbridge.exe, $OUT/aurbridge-wizard.exe"

@@ -103,15 +103,16 @@ ESPMD5=$(dd if="$DISK" bs=512 skip=$P1S count=$((P1E-P1S+1)) status=none | md5su
 # smaller C: than it had, which is exactly the thing "put Windows back"
 # promises not to do. total_sectors lives at offset 0x28 of the boot
 # sector and is the number the filesystem itself claims.
-ntfs_total() { # image  first_sector
+ntfs_total() { # image  first_sector  ->  "total_sectors sectors_per_cluster"
     python3 - "$1" "$2" <<'EOPY'
 import sys, struct
 f = open(sys.argv[1], 'rb'); f.seek(int(sys.argv[2]) * 512)
 b = f.read(512); f.close()
-print(struct.unpack_from('<Q', b, 0x28)[0])
+print(struct.unpack_from('<Q', b, 0x28)[0], b[0x0d])
 EOPY
 }
-NTFSTOT=$(ntfs_total "$DISK" $P2S)
+NTFSTOT=$(ntfs_total "$DISK" $P2S | cut -d' ' -f1)
+NTFSSPC=$(ntfs_total "$DISK" $P2S | cut -d' ' -f2)
 echo "  a 3 GiB machine: ESP, a 1 GiB Windows with $WINFILES files, WinRE at the end"
 
 # ── a small AurOS image ─────────────────────────────────────────────
@@ -359,11 +360,32 @@ check_back() { # label
         md5sum | cut -d' ' -f1)
     [ "$M" = "$ESPMD5" ] && ok "$1: the EFI partition is byte-for-byte what it was" \
                          || bad "$1: the EFI partition is byte-for-byte what it was"
-    T2=$(ntfs_total "$TMP/run.img" "$S")
-    [ "$T2" = "$NTFSTOT" ] \
-        && ok "$1: the Windows FILESYSTEM is its full size again" \
-        || bad "$1: the Windows FILESYSTEM is its full size again" \
-               "it claims $T2 sectors, it had $NTFSTOT"
+    # WITHIN ONE CLUSTER, and not exactly.
+    #
+    # mkntfs sets total_sectors to one less than the partition, which
+    # is not a multiple of the cluster size; ntfsresize can only land
+    # on (floor(size/cluster) - 1) x sectors_per_cluster. So the
+    # original number is not reachable by any resize at all, and the
+    # best a correct restore can do is come back up to one cluster
+    # short. Windows shows C: at its full size either way. Demanding
+    # equality here would report every correct restore as broken --
+    # and accepting anything looser would have hidden the real bug
+    # this check was added for, which left the filesystem at 16408
+    # sectors out of 2097151.
+    T2=$(ntfs_total "$TMP/run.img" "$S" | cut -d' ' -f1)
+    D=$((NTFSTOT - T2))
+    if [ "$D" -ge 0 ] && [ "$D" -le "$NTFSSPC" ]; then
+        ok "$1: the Windows FILESYSTEM is its full size again"
+    else
+        bad "$1: the Windows FILESYSTEM is its full size again" \
+            "it claims $T2 sectors, it had $NTFSTOT (one cluster is $NTFSSPC)"
+    fi
+    if grep -aq "verdict=restored .*grown=1 small=0" "$TMP/out.txt"; then
+        ok "$1: and the installer says so itself"
+    else
+        bad "$1: and the installer says so itself" \
+            "$(grep -a 'aurstage-report' "$TMP/out.txt" | tail -1)"
+    fi
     L=$(losetup --find --show -o $((P2S*512)) \
         --sizelimit $(((P2E-P2S+1)*512)) "$TMP/run.img" 2>/dev/null)
     if [ -n "$L" ] && nt ntfs-3g "$L" "$TMP/m" >/dev/null 2>&1; then

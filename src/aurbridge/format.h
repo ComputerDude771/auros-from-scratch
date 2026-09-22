@@ -95,8 +95,11 @@ int fmt_image_root_extent(const uint8_t *gpt_head, size_t head_len,
 /* ── the journal the staging environment reads after the restart ─── */
 
 typedef struct {
-    char     disk_serial[80];
-    char     disk_model[64];
+    /* 128, because src/aurstage/journal.h's JOURNAL_STR is 128 and a
+     * field that is narrower on one side than the other truncates
+     * silently in whichever direction happens to be narrower. */
+    char     disk_serial[128];
+    char     disk_model[128];
     uint64_t disk_bytes;
     uint32_t logical_sector;
     char     win_part[8];

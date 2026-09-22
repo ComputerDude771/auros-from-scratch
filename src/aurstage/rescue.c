@@ -1130,13 +1130,40 @@ int rescue_restore(const char *disk_dev, const rescue_area *area,
             continue;
         }
 
-        /* Never with --force. --force silences the one refusal that
-         * stands between this and a volume whose metadata cannot be
-         * trusted, and the "run chkdsk and try again" outcome below is
-         * only reachable when the tool is allowed to refuse. */
+        /* WHETHER THIS VOLUME MAY BE GROWN, decided here rather than
+         * by the tool, because the tool's answer is both too coarse
+         * and, on the one volume this always meets, wrong.
+         *
+         * ntfsresize marks a volume dirty after every successful
+         * resize, so that Windows checks it at the next start -- and
+         * then refuses to touch a dirty volume without --force. So the
+         * volume our own installer shrank is by construction one that
+         * cannot be grown back unless somebody decides the dirty bit
+         * is ours. Nothing but this can decide that, because only this
+         * has the capture.
+         *
+         * The conditions, all of them, all checked:
+         *   - the only thing wrong is the dirty bit;
+         *   - the log is clean and there is no hibernated session, and
+         *     neither is merely UNSURE -- an unreadable answer is a
+         *     refusal, never a pass;
+         *   - the volume's NTFS serial number is the one recorded in
+         *     the capture, so this is the same filesystem and not one
+         *     somebody has reformatted in the meantime;
+         *   - and it is smaller than the capture recorded, which is
+         *     what a shrink leaves and nothing else does.
+         *
+         * Anything else, including a dirty bit on a volume whose serial
+         * has changed, gets the refusal and the chkdsk sentence. */
         ntfs_state ns;
         ntfs_read_state(dev, &ns);
-        if (ns.verdict != NTFS_OK) {
+        uint64_t cap_serial = rd64(cap_boot + 0x48);
+        int only_dirty = ns.verdict == NTFS_DIRTY &&
+                         ns.dirty == NTFS_YES &&
+                         ns.log_dirty == NTFS_NO &&
+                         ns.hibernated == NTFS_NO &&
+                         ns.serial == cap_serial;
+        if (ns.verdict != NTFS_OK && !only_dirty) {
             talk(say, ud, "drive %u cannot be made its full size again yet: "
                           "%s", idx, ns.why);
             talk(say, ud, "%s", ns.remedy);
@@ -1149,17 +1176,28 @@ int rescue_restore(const char *disk_dev, const rescue_area *area,
         talk(say, ud, "making drive %u its full size again", idx);
         fault_maybe("restore-grow");
         shrink_result sr;
-        shrink_do(dev, want_bytes, NULL, &sr);
+        resize_do(dev, want_bytes, only_dirty, NULL, &sr);
         uint64_t after = 0;
         if (ntfs_volume_bytes(dev, &after) != 0) after = 0;
         if (after == want_bytes) {
             out->volumes_grown++;
             talk(say, ud, "drive %u is its full size again", idx);
         } else if (after > now_bytes) {
-            /* NTFS allocates in clusters, so it can land a little
-             * short. Anything more than that is not a rounding. */
+            /* NTFS ALLOCATES IN CLUSTERS AND GIVES ONE BACK, so an
+             * exact match is not reachable and never was. Measured:
+             * ntfsresize sets total_sectors to
+             * (floor(size / cluster) - 1) * sectors_per_cluster, and
+             * mkntfs sets it to one less than the partition -- which
+             * is not a multiple of the cluster size, so the original
+             * number cannot be reproduced by any --size at all. The
+             * volume comes back up to one cluster short of where it
+             * was, Windows shows C: at its full size, and treating
+             * that as a failure would report every correct restore as
+             * a broken one. */
             uint64_t shortfall = want_bytes - after;
-            if (shortfall <= 1024 * 1024) {
+            uint64_t cluster = ns.bytes_per_cluster ? ns.bytes_per_cluster
+                                                    : 65536;
+            if (shortfall <= cluster) {
                 out->volumes_grown++;
                 talk(say, ud, "drive %u is back to within a hair of its "
                               "original size", idx);

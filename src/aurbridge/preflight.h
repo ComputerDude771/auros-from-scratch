@@ -20,7 +20,16 @@
 #ifndef AURBRIDGE_PREFLIGHT_H
 #define AURBRIDGE_PREFLIGHT_H
 
-#include <windows.h>
+/* Nothing in this header needs a Windows type -- the structures below
+ * are plain C -- and src/aurbridge/phases.c has to build for Linux as
+ * well, so that the phase engine can be run against the simulated
+ * machine in plat_sim.c. The include stays for every Windows
+ * translation unit that includes this and then calls the API, and is
+ * simply not there on a host that has no windows.h. */
+#ifdef _WIN32
+#  include <windows.h>
+#endif
+#include <stddef.h>
 #include <stdint.h>
 
 #define PF_MAX_RESULTS 64

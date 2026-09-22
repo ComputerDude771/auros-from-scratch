@@ -62,6 +62,41 @@ typedef struct {
 void shrink_do(const char *dev, uint64_t target_bytes,
                void (*progress)(int percent), shrink_result *out);
 
+/* THE SAME TOOL, THE OTHER WAY, AND THE ONE PLACE --force IS ALLOWED.
+ *
+ * Growing a volume back is what src/aurstage/rescue.c does to put
+ * Windows back, and it cannot be done without --force. The reason is
+ * not an oversight anywhere; it is a fact about the tool and it was
+ * measured rather than assumed:
+ *
+ *   ntfsresize marks a volume DIRTY after every successful resize, so
+ *   that Windows runs chkdsk at the next start. That is correct and
+ *   wanted. But ntfsresize also REFUSES to touch a dirty volume --
+ *   "Volume is scheduled for check. Run chkdsk /f and please try
+ *   again, or see option -f." So the volume our own installer shrank
+ *   is, by construction, one that cannot be grown back without -f.
+ *   Without this the restore puts the partition entry back to its full
+ *   size and leaves the filesystem inside it small, for ever, on every
+ *   machine.
+ *
+ * The review that removed --force from the shrink was right, and this
+ * does not undo it. Its objection was that --force blanket-suppresses
+ * the refusal that is the only guard against R9 -- a volume whose
+ * metadata cannot be trusted. So the guard is not removed, it is moved
+ * somewhere it can be made narrower than ntfsresize's own: rescue.c
+ * reads the volume's state ITSELF, with ntfs_read_state, and passes 1
+ * here only when the single thing wrong with the volume is the dirty
+ * bit, the log is clean, it is not hibernated, none of the three is
+ * UNSURE, and its NTFS serial number is the one the capture recorded.
+ * Under those conditions the dirty bit is provably the one our own
+ * shrink set. Every other verdict is still a hard refusal, and the
+ * user still gets "run chkdsk from Windows and try again".
+ *
+ * shrink_do() passes 0 and always will. That is the invariant: the one
+ * irreversible step in the product never forces anything. */
+void resize_do(const char *dev, uint64_t target_bytes, int allow_force,
+               void (*progress)(int percent), shrink_result *out);
+
 /* Read every sector of a region and report the first one that will
  * not come back.
  *
