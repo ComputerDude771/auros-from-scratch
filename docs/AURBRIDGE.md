@@ -431,16 +431,33 @@ engine belongs in its own translation unit with its own tests.
 Build order, and nothing from a later stage before an earlier one:
 
 **A — make the staging environment exist and boot. No disk writes at
-all.** Kernel config first: it currently has no `CONFIG_VMD` (Intel RST
-machines cannot see their own disk), no `CONFIG_EFIVAR_FS` (boot entries
-cannot be touched from Linux without it), no device-mapper, and **no
-wireless stack whatsoever**, which makes the phase-7 probe impossible
-today. Then a minimal init — not systemd, because a generator or an
-automount that mounts NTFS behind our back is the one thing this
-environment must never do. Then `aurshell` as the staging UI, with a
-progress model that survives a forty-minute resize on a 5400 rpm disk
-without looking hung. Prove `BootNext` → staging → `switch_root` into an
-already-installed AurOS, with zero disk modification.
+all.** ✅ **Done**, except the staging UI. `src/aurstage/`,
+`build/staging`, `tools/stagetest.sh`.
+
+> **Correction.** This paragraph used to open by listing kernel-config
+> gaps — no `CONFIG_VMD`, no `CONFIG_EFIVAR_FS`, no device-mapper, no
+> wireless — as the first blocker. **Every one of them is already
+> satisfied.** The project builds on Ubuntu's `linux-image-generic`,
+> where `CONFIG_VMD=m`, `CONFIG_EFIVAR_FS=y`, `CONFIG_BLK_DEV_DM=y`,
+> `CONFIG_CFG80211=m` and `CONFIG_MAC80211=m`. That list was written
+> against a custom kernel this project no longer builds, and following
+> it would have meant a kernel build nobody needed before the first
+> line of the thing that was actually missing.
+
+A minimal init — not systemd, because a generator or an automount that
+mounts NTFS behind our back is the one thing this environment must
+never do. It loads drivers by walking `/sys` for `modalias` and handing
+each to `modprobe`, which is the whole of what udev's coldplug does for
+us and needs no udev. 12 MB against an ~80 MB budget.
+
+`switch_root` into an already-installed AurOS is proven, in the same
+boot, with the whole disk hashed before and after: **byte for byte
+unchanged**, in every case including both abort paths.
+
+Still to do in A: `aurshell` as the staging UI, with a progress model
+that survives a forty-minute resize on a 5400 rpm disk without looking
+hung; and `BootNext` → staging end to end, which needs the Windows side
+to arm it.
 
 **B — read-only verification, still no writes.** Journal reader
 (serial, GPT hash, NTFS geometry, free-extent map) that aborts on any

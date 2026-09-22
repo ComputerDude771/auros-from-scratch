@@ -1,0 +1,191 @@
+#!/bin/bash
+# ═══════════════════════════════════════════════════════════════════
+#  staging — build the AurOS staging initramfs.
+#
+#  The one restart in this product lands here. This is the environment
+#  that does every destructive step, because it is the only place on
+#  the machine where recovery code can run while the disk is being
+#  rearranged. See docs/AURBRIDGE.md, and src/aurstage/aurstage.h for
+#  what it does and, more importantly, what it must never do.
+#
+#    ./build/staging [PROFILE]        -> out/auros-staging.img
+#
+#  WHY THIS IS NOT `update-initramfs`
+#
+#  initramfs-tools produces an environment whose whole purpose is to
+#  find a root filesystem and get out of the way, using udev and a
+#  pile of shell. This one has to stay up for forty minutes on a 5400
+#  rpm disk, talk to a person while it does, and above all never mount
+#  the Windows volume -- which an automount rule or a helpful udev rule
+#  will do for you without being asked. ntfsresize refuses a mounted
+#  volume, and a volume mounted read-write for an instant is a volume
+#  whose journal has changed.
+#
+#  WHAT GOES IN, AND WHY IT IS THIS SMALL
+#
+#  No firmware. linux-firmware is 700 MB to 1.5 GB and even a WiFi-only
+#  subset is 150-400 MB, against an OEM ESP that is commonly 100 MB and
+#  nearly full. The hardware probe happens in phase 7 instead, from the
+#  root filesystem we have just written and verified, using ITS modules
+#  and ITS firmware. That is strictly better than carrying firmware,
+#  not a compromise: docs/AURBRIDGE.md sets it out.
+# ═══════════════════════════════════════════════════════════════════
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PROFILE="${1:-desktop}"
+RFS="$ROOT/work/forge/$PROFILE/rootfs"
+OUT="$ROOT/out"
+WORK="$ROOT/work/staging"
+
+C_OK=$'\033[38;2;125;211;192m'; C_ERR=$'\033[38;2;242;120;141m'
+C_DIM=$'\033[38;2;110;120;134m'; C_RST=$'\033[0m'
+step() { printf '\n%s▸%s %s\n' "$C_OK" "$C_RST" "$*"; }
+note() { printf '%s   %s%s\n' "$C_DIM" "$*" "$C_RST"; }
+die()  { printf '%s::%s %s\n' "$C_ERR" "$C_RST" "$*" >&2; exit 1; }
+
+[ -d "$RFS" ] || die "no rootfs at $RFS — run ./build/forge build $PROFILE first"
+KVER=$(ls "$RFS/lib/modules" 2>/dev/null | head -1)
+[ -n "$KVER" ] || die "no kernel modules in $RFS"
+
+rm -rf "$WORK"; mkdir -p "$WORK" "$OUT"
+cd "$WORK"
+
+step "laying out the initramfs"
+mkdir -p proc sys dev run tmp newroot sbin bin lib lib64 usr/lib etc \
+         "lib/modules/$KVER"
+
+# /dev/console and /dev/null have to exist BEFORE devtmpfs is mounted,
+# or PID 1 has nowhere to say anything and no /dev/null to send a
+# child's noise to. Everything else arrives with devtmpfs.
+mknod -m 600 dev/console c 5 1 2>/dev/null || true
+mknod -m 666 dev/null    c 1 3 2>/dev/null || true
+
+step "the staging init"
+gcc -O2 -std=gnu11 -Wall -Wextra -o init \
+    "$ROOT/src/aurstage/main.c" "$ROOT/src/aurstage/boot.c" \
+    "$ROOT/src/aurstage/disks.c" -I "$ROOT/src/aurstage" \
+    || die "aurstage did not build"
+note "init $(du -h init | cut -f1)"
+
+# ── the programs it shells out to ──────────────────────────────────
+#
+# Three, and each is here because writing our own would be worse:
+#
+#   modprobe    the kernel's own module loader. Asking it for a
+#               modalias is the whole of what udev coldplug does for
+#               us; reimplementing dependency resolution is not worth
+#               a line.
+#   ntfsresize  docs/AURBRIDGE.md: "We do not write our own NTFS
+#               resizer. That is how a few unreadable files become an
+#               unmountable volume." Stage B calls it with
+#               --no-action; stage C for the real thing.
+#   ntfsinfo    the on-disk NTFS state -- volume flags, the $LogFile
+#               restart area, hiberfil.sys -- which is what decides
+#               whether we are allowed to proceed at all. Windows
+#               saying it shut down cleanly is not the authority here.
+step "the three programs it shells out to"
+copy_prog() {
+    local src="$RFS$1" dst="$2"
+    [ -f "$src" ] || die "$1 is not in the image; the staging environment needs it"
+    install -D -m 755 "$src" "$dst"
+    note "$(basename "$1")"
+}
+copy_prog /usr/sbin/modprobe   sbin/modprobe
+copy_prog /usr/sbin/ntfsresize sbin/ntfsresize
+copy_prog /usr/bin/ntfsinfo    sbin/ntfsinfo
+
+# ── the libraries those programs need, worked out rather than listed ─
+#
+# A hand-written library list is a list that goes stale the first time
+# the base image updates, and goes stale silently: the binary is
+# present, the initramfs builds, and the machine stops at a loader
+# error in front of somebody whose photos are on the disk. So the
+# closure is computed, from the image's own loader, every build.
+step "their libraries"
+LDSO=$(cd "$RFS" && ls lib64/ld-linux-x86-64.so.2 lib/x86_64-linux-gnu/ld-linux-x86-64.so.2 2>/dev/null | head -1)
+[ -n "$LDSO" ] || die "no dynamic loader in the image"
+install -D -m 755 "$RFS/$LDSO" "$LDSO"
+ln -sf "/$LDSO" lib64/ld-linux-x86-64.so.2 2>/dev/null || true
+
+libs_of() {
+    # The image's own loader, asked about the image's own binary, from
+    # outside the image. --list is read-only and does not run anything.
+    "$RFS/$LDSO" --list "$1" 2>/dev/null | awk '{ for (i=1;i<=NF;i++) if ($i ~ /^\//) print $i }'
+}
+n_lib=0
+for prog in sbin/modprobe sbin/ntfsresize sbin/ntfsinfo; do
+    for lib in $(libs_of "$WORK/$prog"); do
+        [ -f "$RFS$lib" ] || continue
+        [ -f ".$lib" ] && continue
+        install -D -m 755 "$RFS$lib" ".$lib"
+        n_lib=$((n_lib + 1))
+    done
+done
+note "$n_lib libraries"
+
+# ── modules ────────────────────────────────────────────────────────
+#
+# Enough to SEE a disk on the machines this product exists for, and
+# nothing else. 155 MB of modules ship in the image; what is needed to
+# find a block device is a small fraction of that, and the budget is
+# an ESP that is commonly 100 MB and nearly full.
+#
+# VMD is in this list for a specific reason: on Intel RST machines the
+# disk is invisible without it, and "this computer has no disk" is the
+# worst possible thing to tell somebody about a computer they are
+# looking at.
+step "modules"
+MOD_DIRS="
+kernel/drivers/ata
+kernel/drivers/nvme
+kernel/drivers/scsi
+kernel/drivers/usb/storage
+kernel/drivers/usb/host
+kernel/drivers/usb/common
+kernel/drivers/block
+kernel/drivers/pci/controller
+kernel/drivers/virtio
+kernel/fs/ext4
+kernel/fs/fat
+kernel/fs/nls
+kernel/lib
+kernel/crypto
+"
+for d in $MOD_DIRS; do
+    [ -d "$RFS/lib/modules/$KVER/$d" ] || continue
+    mkdir -p "lib/modules/$KVER/$(dirname "$d")"
+    cp -a "$RFS/lib/modules/$KVER/$d" "lib/modules/$KVER/$d"
+done
+# modules.dep and friends, so modprobe can resolve what it is given.
+for f in modules.builtin modules.builtin.modinfo modules.order; do
+    [ -f "$RFS/lib/modules/$KVER/$f" ] && cp -a "$RFS/lib/modules/$KVER/$f" "lib/modules/$KVER/$f"
+done
+# THE IMAGE'S depmod, NOT THE BUILD HOST'S.
+#
+# The build host may not have one at all -- this one does not -- and
+# if it did, it would be a different kmod reading modules built by a
+# different kernel. Running the image's own binary through the image's
+# own loader needs no chroot and no root, and it is the version that
+# will be reading these modules on the machine.
+"$RFS/$LDSO" --library-path "$RFS/lib/x86_64-linux-gnu:$RFS/lib64:$RFS/usr/lib/x86_64-linux-gnu" \
+    "$RFS/usr/sbin/depmod" -b "$WORK" "$KVER" \
+    || die "depmod failed; modprobe would find nothing and no disk would appear"
+note "$(find lib/modules -name '*.ko*' | wc -l) modules, $(du -sh lib/modules | cut -f1)"
+
+# ── the archive ────────────────────────────────────────────────────
+step "packing"
+find . -print0 | cpio --null -o --format=newc --quiet | gzip -9 > "$OUT/auros-staging.img"
+SZ=$(du -h "$OUT/auros-staging.img" | cut -f1)
+
+# The kernel that goes with it. They are a pair: modules built for one
+# kernel do not load into another, and shipping them separately is how
+# that gets discovered on somebody's laptop.
+cp -a "$RFS/boot/vmlinuz-$KVER" "$OUT/auros-staging-vmlinuz"
+
+printf '\n%s::%s %s  (%s, kernel %s)\n' "$C_OK" "$C_RST" \
+       "$OUT/auros-staging.img" "$SZ" "$KVER"
+printf '%s   %s%s\n' "$C_DIM" \
+  "boot it with: aurstage.dry   (look and change nothing)" "$C_RST"
+printf '%s   %s%s\n' "$C_DIM" \
+  "         or:  aurstage.root=/dev/vda3   (hand over to that system)" "$C_RST"

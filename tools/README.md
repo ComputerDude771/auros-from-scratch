@@ -15,6 +15,7 @@ exit non-zero when they fail.
 | `notifytest.c` | The notification server, driven over a **real session bus started by the test** with real clients — `gdbus` for well-formed calls, and **raw libdbus for malformed ones, because `gdbus` introspects first and refuses to send them** (the check that used to use it would have passed against a server with no type checking at all). It asserts the **text on the card**, not just the count: `Saved <report 2024>.pdf` must survive, `<b>` must not, a long line in a non-Latin script must never be cut through a character. It proves what a sending program may decide (that its message looks urgent) and may not (that it never goes away, that it pushes the battery warning off the screen, that it takes an id already in use, that it puts up a card too small a screen cannot draw). Every malformed call must be **answered** — one that is silently dropped hangs the caller for libdbus's 25-second default. |
 | `bttest.c` | What `bluetoothctl` prints becomes what she reads. The "Connected" and "Used before" tags come from two flags **nothing in the program ever set** — the function that reads them was written and called from nowhere. Also: a device that has never announced a name prints its address twice, and a list of six rows reading `FC-58-FA-21-03-9C` is a list she cannot choose from. |
 | `wlhostile.c` | Fifteen clients that misbehave on purpose, each the shortest sequence that used to break something, against a real compositor. It **measures** as well as survives: a case fails if one dispatch takes over 300ms or peak memory grows by more than 64MB, because a compositor frozen for nine seconds used to pass the old "is it still serving?" question — the freeze was over by the time it was asked. Two cases invert the assertion: the point of *copying to the clipboard twice* is that the CLIENT must live, and the harness focuses the window first, because an offer only ever reaches the focused client and without that the case tested nothing. |
+| `stagetest.sh` | The staging environment — where the one restart lands and where every destructive step will happen. Builds a synthetic machine (ESP + a **real NTFS filesystem**, made by the image's own `mkntfs` + an ext4 root), boots the initramfs in QEMU, and **hashes the whole disk before and after every case**, including both abort paths. `docs/AURBRIDGE.md` says an abort must leave the machine bootable into Windows, "tested, not a goal" — the hash is what makes that a fact rather than an intention. |
 | `hittest.c` | Two things. **Clicks land where the archetype paints** — sweeps `click()` across four resolutions and checks each consumed click against a mask of what was actually drawn. **Nothing highlights that cannot be clicked** — wherever hovering changes the frame, clicking must change it further. |
 
 ```sh
@@ -55,6 +56,8 @@ cc -O2 -std=gnu11 -o /tmp/bttest tools/bttest.c src/aurshell/bt.c \
    src/aurshell/draw.c src/aurshell/shellcommon.c src/aurshell/anim.c \
    src/aurshell/foot.c src/aurshell/layouts/*.c src/common/theme.c \
    src/common/font.c -I src/aurshell -I src/common -lm && /tmp/bttest
+
+./build/staging desktop && sudo sh tools/stagetest.sh   # needs qemu + losetup
 
 sh tools/filetypes.sh      # needs packages_files installed on this machine
 sh tools/plainwords.sh
