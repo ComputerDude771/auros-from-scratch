@@ -1,0 +1,10 @@
+[Unit]
+Description=AurOS: carry out the answer to "does this work?"
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/auros/answer.sh
+TimeoutStartSec=3600
+# Importing somebody's files can take a long time on a ten-year-old
+# disk and must never become a failed boot or a failed desktop.
+SuccessExitStatus=0 1 2 3

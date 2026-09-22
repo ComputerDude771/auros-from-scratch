@@ -1,0 +1,32 @@
+[Unit]
+Description=AurOS: keep the next start coming back to AurOS until somebody says it works
+Documentation=man:aurfirst(8)
+# THIS RUNS ON EVERY BOOT, and that is the point.
+#
+# The installer arms BootNext and the firmware eats it. So a person who
+# uses AurOS, shuts down, starts up (BootNext fires), shuts down and
+# starts up again reaches Windows on the second start -- with AurOS
+# still installed, still working, and no longer reachable without the
+# firmware's boot menu. Re-arming it here means the machine keeps
+# coming back while AurOS works, and the moment it does not the
+# firmware falls through to BootOrder, which still says Windows, and
+# nobody has to do anything.
+#
+# It stops by itself: aurfirst does nothing once the question has been
+# answered either way, or on a machine that was not converted.
+DefaultDependencies=no
+After=local-fs.target sys-firmware-efi-efivars.mount
+Before=display-manager.service aurshell.service multi-user.target
+ConditionPathExists=/sys/firmware/efi/efivars
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/aurfirst hold
+RemainAfterExit=no
+TimeoutStartSec=30
+# A machine whose firmware will not take a boot variable must still
+# boot. It comes up in AurOS either way -- this boot already did.
+SuccessExitStatus=0 1
+
+[Install]
+WantedBy=multi-user.target

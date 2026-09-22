@@ -1,0 +1,22 @@
+[Unit]
+Description=AurOS: watch for the answer to "does this work?"
+# WHY A FILE AND NOT A POLKIT RULE.
+#
+# Three things have to happen as root and are otherwise the desktop's
+# to ask for: writing BootOrder, clearing BootNext, and mounting the
+# old Windows volume read-only to copy files out of it. The shell runs
+# as the person using the machine.
+#
+# A setuid binary would mean anything that can run a program on this
+# machine can rewrite what it starts. A polkit rule means writing an
+# action, a policy and an agent for three verbs. This is one directory
+# that only the desktop's own user can write to -- aurshell.service's
+# RuntimeDirectory, mode 0700 -- and exactly three words that may
+# appear in it, each of which is something the person sitting at the
+# keyboard is entitled to do.
+
+[Path]
+PathExists=/run/auros/answer
+
+[Install]
+WantedBy=multi-user.target

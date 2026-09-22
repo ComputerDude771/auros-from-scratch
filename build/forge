@@ -447,7 +447,8 @@ stage_overlay() {
     # they link the same way every other package on the system does.
     install -d "$RFS/usr/src/auros"
     cp -r "$ROOT/src/common" "$ROOT/src/aurinit" "$ROOT/src/aurwall" "$ROOT/src/aurshell" \
-          "$ROOT/src/aurfetch" "$ROOT/src/ferry" "$ROOT/src/aurwl" "$RFS/usr/src/auros/" 2>/dev/null || true
+          "$ROOT/src/aurfetch" "$ROOT/src/ferry" "$ROOT/src/aurwl" "$ROOT/src/aurfirst" \
+          "$RFS/usr/src/auros/" 2>/dev/null || true
 
     chroot_prep
     # The compositor needs libwayland-server and xkbcommon, and their
@@ -464,7 +465,8 @@ stage_overlay() {
         gcc -O2 -std=gnu11 -o /usr/bin/aurctl  aurinit/aurctl.c && \
         gcc -O2 -std=gnu11 -o /usr/bin/aurwall aurwall/main.c common/theme.c common/wall.c common/png.c -lm && \
         gcc -O2 -std=gnu11 -o /usr/bin/aursorry aurshell/sorry.c aurshell/kms.c \
-            aurshell/draw.c common/font.c common/png.c -lm" \
+            aurshell/draw.c common/font.c common/png.c -lm && \
+        gcc -O2 -std=gnu11 -Wall -Wextra -o /usr/sbin/aurfirst aurfirst/*.c -I aurfirst" \
         || die "building the AurOS stack inside the image failed"
 
     # Ferry — first-boot migration. The shell tools and data tables
@@ -572,6 +574,10 @@ stage_overlay() {
     fi
 
     inchroot "systemctl enable auros-firstboot.service >/dev/null 2>&1" || true
+    # Phases 9 and 10. The hold runs on every boot until somebody has
+    # answered; the path unit is how the desktop asks for the three
+    # things that have to happen as root. See src/aurfirst/aurfirst.h.
+    inchroot "systemctl enable auros-hold.service auros-answer.path >/dev/null 2>&1" || true
     [ -x "$RFS/usr/bin/aurshell" ] && inchroot "systemctl enable aurshell.service >/dev/null 2>&1" || true
 
     # Headers and the code generator go; the shared libraries the shell
@@ -713,7 +719,7 @@ stage_overlay() {
 
     install -d "$RFS/etc/auros/services"
     cp "$ROOT/rootfs/etc/auros/services"/*.service "$RFS/etc/auros/services/" 2>/dev/null || true
-    note "aurinit, aurctl, aurwall, aurora, ferry installed"
+    note "aurinit, aurctl, aurwall, aurora, aurfirst, ferry installed"
 }
 
 # ── stage 4: identity, locale, users, policy ───────────────────────

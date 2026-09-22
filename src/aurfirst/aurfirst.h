@@ -1,0 +1,142 @@
+/* aurfirst.h — phases 9 and 10: the machine stops being on loan.
+ *
+ * WHERE THIS SITS
+ *
+ * docs/AURBRIDGE.md's phase model ends with two phases nothing
+ * implemented:
+ *
+ *    9  FIRSTBOOT   desktop; user confirms "this works"
+ *   10  IMPORT      Ferry imports files; optionally make AurOS default
+ *
+ * Everything before them is written and tested. The installer leaves a
+ * machine that has AurOS on it, has a signed boot chain in a partition
+ * of its own, has a Boot#### entry pointing at that partition, and has
+ * BootNext armed at it -- and has BootOrder untouched, so switching it
+ * on still reaches Windows. That is rule 3: nothing irreversible until
+ * AurOS has booted and the user has said it works.
+ *
+ * This is the program that lets her say it.
+ *
+ * THE HOLD, AND WHY IT IS NOT A ONE-OFF
+ *
+ * BootNext is consumed by the firmware as it is used. The installer
+ * arms it at the end of the install and then hands over to AurOS in the
+ * SAME boot, so it is still armed when the machine is next switched
+ * off -- but exactly once. If somebody uses AurOS, shuts down, starts
+ * up (BootNext fires, AurOS), shuts down and starts up again, the
+ * second start has nothing armed and reaches Windows.
+ *
+ * So `aurfirst hold` re-arms it on every boot until the question is
+ * answered. The machine keeps coming back to AurOS while AurOS works,
+ * and the moment it does not the firmware falls through to BootOrder,
+ * which still says Windows, and nobody has to do anything. That
+ * property is the whole of R4's answer and it is worth paying one
+ * NVRAM write per boot for.
+ *
+ * THE ONLY PLACE THAT WRITES BootOrder
+ *
+ * src/aurstage/nvram.h says, at length, that the staging environment
+ * may not write BootOrder and that there is deliberately no function
+ * there that does -- because the way a rule like that gets broken is
+ * somebody finding a function that already does the thing. The rule was
+ * never "this product may not write BootOrder"; it was "not until the
+ * user has seen AurOS work and said so". This program is what "and said
+ * so" means, and `aurfirst confirm` is the one function in the tree
+ * that writes it.
+ *
+ * It is a separate program with a separate copy of about a hundred
+ * lines of efivarfs plumbing, and that duplication is deliberate rather
+ * than an oversight. The alternative is one shared writer that both can
+ * call, which is precisely the function the staging environment must
+ * not have. Two programs with different rules about what they may write
+ * do not share the thing the rules are about. tools/aurfirsttest.sh
+ * pins the one thing they DO share -- the on-disk shape of an efivarfs
+ * variable -- against the other implementation's bytes.
+ *
+ * NOTHING HERE IMPORTS ANYTHING. Ferry is a complete set of tools
+ * already, installed at /usr/lib/ferry, and it mounts Windows
+ * read-only and refuses a dirty volume out loud. This program decides
+ * WHEN it is allowed to run -- which is after the answer, never before
+ * -- and gets out of the way.
+ */
+#ifndef AUROS_AURFIRST_H
+#define AUROS_AURFIRST_H
+
+#include <stddef.h>
+#include <stdint.h>
+
+/* Where the answer is remembered. On the root filesystem, not in
+ * NVRAM: NVRAM is what the firmware reads and this is what AurOS
+ * reads, and a machine whose CMOS battery has died should not be asked
+ * the question again on every boot for the rest of its life. */
+/* Overridable at compile time, by the test and by nothing else --
+ * there is no environment variable that moves where the answer is
+ * remembered, because a machine in the field that can be told to
+ * remember it somewhere else is a machine that can be told to forget
+ * it. src/aurstage/nvram.c is arranged the same way and says so. */
+#ifndef AF_DIR
+#define AF_DIR        "/var/lib/auros"
+#endif
+#define AF_CONFIRMED  AF_DIR "/converted.confirmed"
+#define AF_DECLINED   AF_DIR "/converted.declined"
+
+/* The description the installer gave its entry. One string, in one
+ * place, because the two halves finding each other by it is the whole
+ * mechanism. It matches src/aurstage/loader.h's LOADER_ENTRY_DESC and
+ * tools/aurfirsttest.sh checks that it still does. */
+#define AF_ENTRY_DESC "AurOS"
+
+typedef struct {
+    int      efivars;       /* there is an efivarfs to read           */
+    int      writable;      /* and we could write to it               */
+    int      have_entry;    /* a Boot#### whose description is ours   */
+    uint16_t entry;
+    int      in_order;      /* it appears in BootOrder                */
+    int      is_default;    /* it is FIRST in BootOrder               */
+    int      have_order;    /* BootOrder exists at all                */
+    int      bootnext;      /* BootNext is armed at our entry         */
+    int      confirmed;
+    int      declined;
+} af_state;
+
+/* Look, and change nothing. */
+int  af_look(af_state *s);
+
+/* Arm BootNext at our entry, so the next start reaches AurOS once.
+ * Does nothing at all once the question has been answered either way.
+ * Returns 0 armed, 1 nothing to do, -1 with a sentence. */
+int  af_hold(const af_state *s, char *why, size_t n);
+
+/* "This works." Put our entry at the head of BootOrder, clear
+ * BootNext, and write the stamp. The one function in this tree that
+ * writes BootOrder. */
+int  af_confirm(const af_state *s, char *why, size_t n);
+
+/* "It does not." Clear BootNext so the next start reaches whatever
+ * BootOrder says -- which is still Windows, because nothing here has
+ * touched it -- and write the stamp so the hold stops re-arming. */
+int  af_decline(const af_state *s, char *why, size_t n);
+
+/* ── the EFI variables, read and written from inside AurOS ────────── */
+
+#define AF_GLOBAL_GUID "8be4df61-93ca-11d2-aa0d-00e098032b8c"
+
+/* Read one global variable's data, attributes stripped. Returns the
+ * length, or -1. */
+int  af_var_get(const char *name, uint8_t *out, size_t n);
+/* Write one, attributes and data in a single write(2). */
+int  af_var_put(const char *name, const void *data, size_t len,
+                char *why, size_t n);
+/* Delete one. A zero-length write is not a delete on every kernel;
+ * unlink is. */
+int  af_var_del(const char *name, char *why, size_t n);
+
+int  af_efivars_present(void);
+int  af_efivars_writable(void);
+
+/* Every global Boot#### that exists, ascending. Returns how many. */
+int  af_boot_numbers(uint16_t *out, int max);
+/* The ASCII description of a load option. */
+void af_desc_of(const uint8_t *opt, int len, char *out, size_t n);
+
+#endif
