@@ -459,14 +459,96 @@ that survives a forty-minute resize on a 5400 rpm disk without looking
 hung; and `BootNext` → staging end to end, which needs the Windows side
 to arm it.
 
-**B — read-only verification, still no writes.** Journal reader
-(serial, GPT hash, NTFS geometry, free-extent map) that aborts on any
-mismatch. NTFS state reader that refuses dirty, hibernated or
-`-FVE-FS-`. `ntfsresize --no-action`. Surface test. Storage-controller
-visibility check. Then a `--dry-run` that runs all of it and reboots
-back to Windows having changed nothing. **That is the first shippable
-artifact**, and it is worth shipping on its own to build a hardware
-matrix before anyone's disk is at risk.
+**B — read-only verification, still no writes.** ✅ **Done.**
+`src/aurstage/{journal,ntfs,shrink,fde,sha256}.{h,c}`, the `dry_run()`
+in `main.c`, `tools/ntfstest.sh` and the stage B half of
+`tools/stagetest.sh`.
+
+Boot it with `aurstage.dry` on the kernel command line: it looks at
+the machine, says what it would and would not do, prints one
+machine-readable line, and powers off having changed nothing. The
+whole disk is hashed before and after every test case and is
+**byte for byte unchanged** in all of them, including every refusal.
+
+What it checks, in order, and what stops it:
+
+| | | |
+|---|---|---|
+| the record | disk serial, Windows start and length, **SHA-256 of the whole partition table**, the disk's sector size, age | wrong disk, moved, resized, table changed, sector size changed, older than three days, or a clock set *before* the record was written |
+| third-party encryption | product names in the disk's first megabyte and in the ESP; a first sector that is statistically random | any hit — unconditional, as above |
+| which partition | the record names it; without a record, exactly one candidate is required | more than one Windows volume and nothing to choose by |
+| the machine | a GPT disk and EFI variables; a sector size the disk will state | MBR, BIOS boot, or a disk that will not say |
+| the volume | `-FVE-FS-` first and always, then the `$Volume` dirty flag, then `hiberfil.sys`, then the `$LogFile` restart area | BitLocker, dirty, hibernated, unclean log |
+| the size | `ntfsresize --info --no-action`, against a floor (24 GB, `aurstage.min_gb=` to change it) | it refuses, will not give a number, or there is not enough room |
+| the disk | every sector of the region that would be reclaimed | one that will not read, or a drive too slow to finish in four hours |
+| the controller | what is on the PCI bus, when no disk appeared at all | — |
+
+**"More than one Windows volume" is the normal case, not a corner.**
+Every OEM laptop has a WinRE recovery partition, and it is NTFS. Picking
+the first NTFS partition the kernel happens to list — which is hash
+order, not disk order — means measuring a 500 MB recovery partition and
+reporting the machine convertible. So the record chooses, and when there
+is no record and more than one candidate, nothing chooses.
+
+**Three states, not two.** Each of the volume questions can also come
+back *don't know* — an `$ATTRIBUTE_LIST`, a compressed attribute, a
+record torn by a power cut. Stage B may go on with that, because
+`ntfsresize` is the backstop; **stage C may not**, so the report line
+carries `sure=yes` or `sure=no` and only `yes` is a machine stage C will
+touch.
+
+**Hibernation is the one that matters.** Fast Startup is the default
+on Windows 10 and 11, and "shut down" on such a machine hibernates the
+kernel session rather than closing it — **without setting the dirty
+bit**. A tool that stops at the dirty bit, which is where most stop,
+sees a clean volume and resizes a filesystem whose real metadata is in
+RAM waiting to be written back over ours at the next resume. So the
+reader follows `hiberfil.sys` properly: root directory index,
+runlists, the 4 KB header, and `initialized_size` — because the file
+is allocated in full when hibernation is switched on and its clusters
+hold whatever the disk held before, so reading them raw would report a
+machine that has never hibernated as one that has.
+
+**The `--force` rule holds by construction.** The argument vector is a
+fixed array in `shrink.c` with no parameter a caller could add to.
+`build/staging` refuses to build an image if anything in
+`src/aurstage/` opens a device writably — read-only is checked now,
+not remembered.
+
+Two gaps, written down rather than quietly skipped: R5 asks for a
+surface test of the region NTFS will relocate *into* as well, which
+needs `$Bitmap` and is not done; and the report line goes to the
+console and nowhere else, because stage B has nowhere to write it.
+
+**What three adversarial reviews found, after it all passed.** Worth
+recording, because every one of these was invisible to a test that only
+checked the answer:
+
+- The dirty-flag check had **never run** — `$VOLUME_INFORMATION` is
+  twelve bytes with its flags at offset 10, and the guard asked for 14.
+- It then had no *don't know*: a `$Volume` record torn by a power cut —
+  exactly what the fixup check exists to detect — turned correct
+  detection of corruption into the sentence "shut down cleanly".
+- A heap overflow and a stack overflow, both reproduced under
+  AddressSanitizer, from an attribute record too short to hold its own
+  header. `tools/ntfstest.sh` now builds with `-fsanitize=address,undefined`.
+- `stage_part.is_esp` was **never assigned by anything**, so the half of
+  the encryption scan that looks in the ESP — the half that matters on a
+  UEFI machine — was handed NULL every time.
+- The disk serial was read only from `device/serial` and `serial`, which
+  NVMe and virtio publish and **SATA does not**. The check could not
+  identify an ordinary laptop disk; the test machine is virtio, so
+  nothing said so.
+- `mount(..., MS_RDONLY)` on ext4 still replays the journal, so the
+  handover wrote to the disk on any unclean root. `noload` now. The
+  grep gate cannot see a `mount(2)` — that is written down too.
+- `ntfsresize`'s answer is printed *after* its progress bars, and the
+  capture buffer filled from the front, so a large fragmented volume —
+  the intended population — was refused for a buffer size.
+- `init` was dynamically linked against the **build host's** glibc.
+
+**That is the first shippable artifact**, and it is worth shipping on
+its own to build a hardware matrix before anyone's disk is at risk.
 
 **C — destructive, one step at a time, each with its own kill-the-power
 test.** Filesystem-only shrink. Write by offset. Read-back verify.

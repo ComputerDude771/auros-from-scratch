@@ -47,6 +47,7 @@ void shrink_ask(const char *dev, shrink_plan *out);
  * Returns 0 if every sector read, -1 otherwise, and fills `first_bad`
  * with the byte offset that failed. `progress` may be NULL. */
 int  surface_test(const char *dev, uint64_t from, uint64_t to,
+                  uint32_t sector,
                   uint64_t *first_bad,
                   void (*progress)(uint64_t done, uint64_t total));
 

@@ -39,6 +39,7 @@ int main(int argc, char **argv)
     ntfs_state st;
     ntfs_read_state(argv[1], &st);
     printf("verdict=%s\n",     verdict(st.verdict));
+    printf("dirty=%s\n",       tri(st.dirty));
     printf("hibernated=%s\n",  tri(st.hibernated));
     printf("log_dirty=%s\n",   tri(st.log_dirty));
     printf("cluster=%u\n",     st.bytes_per_cluster);

@@ -73,11 +73,25 @@ typedef struct {
      * at a call site. See ntfs_tri above for what UNSURE permits. */
     ntfs_tri hibernated;      /* hiberfil.sys holds a live session     */
     ntfs_tri log_dirty;       /* $LogFile has outstanding transactions */
+    /* THE DIRTY FLAG NEEDS AN UNSURE TOO, and not having one was the
+     * worst thing in this file. The check sat inside a chain of five
+     * conditions with no else, so an unreadable or TORN $Volume record
+     * -- which is exactly what a power cut leaves, and exactly what
+     * apply_fixups() exists to detect -- skipped it in silence, and
+     * the volume came back "healthy and was shut down cleanly".
+     * Correct detection of corruption was being turned into
+     * confidence. Two independent reviews found it; no test would
+     * have, because a torn record is not a state any tool produces. */
+    ntfs_tri dirty;           /* Windows has asked for a chkdsk        */
 } ntfs_state;
 
 /* Read the state of the NTFS volume on `dev`. Opens it read-only,
  * mounts nothing, writes nothing. Always fills `out`. */
 void ntfs_read_state(const char *dev, ntfs_state *out);
+
+/* A short, stable name for a verdict -- for logs and for the one
+ * machine-readable line the dry run prints. Never translated. */
+const char *ntfs_verdict_name(ntfs_verdict v);
 
 /* The one check that must happen at EVERY site that touches partition
  * geometry, not just here -- see the MUST NOT in ntfs.c. 1 if the

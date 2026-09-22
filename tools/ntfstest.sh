@@ -47,8 +47,18 @@ echo
 echo "Does the NTFS reader see what is actually on the volume?"
 echo
 
-gcc -O2 -std=gnu11 -Wall -Wextra -o "$TMP/ntfsread" \
-    tools/ntfsread.c src/aurstage/ntfs.c -I src/aurstage \
+# BUILT WITH THE SANITIZERS, and that is the point of this file as
+# much as the verdicts are.
+#
+# This parser's input is a volume a stranger may have crafted, read by
+# a program running as root as PID 1, where a segfault is a kernel
+# panic on somebody's laptop. An adversarial review found a heap
+# overflow and a stack overflow here that every behavioural check in
+# this file sailed past, because the wrong answer they produced was
+# still an answer. Under ASan the same fixtures fail loudly instead.
+gcc -O1 -g -std=gnu11 -Wall -Wextra -fsanitize=address,undefined \
+    -fno-sanitize-recover=all -o "$TMP/ntfsread" \
+    tools/ntfsread.c src/aurstage/ntfs.c src/aurstage/fde.c -I src/aurstage \
     || { echo "  ntfsread did not build"; exit 2; }
 
 # ── a real volume, made by the mkntfs this product ships ────────────
@@ -94,6 +104,24 @@ echo "  and the ones that are simply not ready"
 N="$TMP/notntfs.img"; fresh "$N"
 dd if=/dev/zero of="$N" bs=512 count=1 conv=notrunc status=none
 expect "$N" verdict not-ntfs "a volume with no NTFS on it is refused"
+case "$(field "$N" remedy)" in
+  *"wrong disk"*) ok "...as a partition with nothing on it" ;;
+  *) bad "...as a partition with nothing on it" "it said something else" ;;
+esac
+
+# The same refusal, different sentence. A first sector that is
+# statistically random is ciphertext, and under an encryption filter
+# we do not control there is no safe shrink -- so the message has to
+# send her somewhere useful rather than suggesting she picked the
+# wrong disk.
+E="$TMP/encrypted.img"; fresh "$E"
+dd if=/dev/urandom of="$E" bs=512 count=1 conv=notrunc status=none
+expect "$E" verdict not-ntfs "a volume full of ciphertext is refused"
+case "$(field "$E" why)" in
+  *"encryption software"*) ok "...and named as encryption, not as a mistake" ;;
+  *) bad "...and named as encryption, not as a mistake" \
+         "it said: $(field "$E" why)" ;;
+esac
 
 # THE DIRTY FLAG IS SET BY HAND, and it was not the first choice.
 # `ntfsfix` used to set it -- it is how you ask Windows to run chkdsk
@@ -299,6 +327,85 @@ if [ "$rc" -le 1 ] && [ -n "$out" ]; then
     ok "a scribbled-on MFT gives an answer rather than a crash"
 else
     bad "a scribbled-on MFT gives an answer rather than a crash" "exit $rc"
+fi
+
+echo
+echo "  and a record that was half-written when the power went"
+# A TORN $Volume RECORD MUST NOT READ AS HEALTHY. Every sector of an
+# MFT record ends in an update sequence number, and a record whose
+# last sector never landed fails that check -- which is the scheme
+# working. What must not happen is for that correct detection to turn
+# into silence: the dirty flag then goes unexamined, and the volume
+# is described as "shut down cleanly" on no evidence at all.
+TORN="$TMP/torn.img"; fresh "$TORN"
+python3 - "$TORN" <<'EOPY'
+import sys, struct
+d = bytearray(open(sys.argv[1], 'rb').read())
+bps = struct.unpack_from('<H', d, 0x0B)[0]; spc = d[0x0D]
+mft = struct.unpack_from('<Q', d, 0x30)[0] * bps * spc
+cpr = struct.unpack_from('<b', d, 0x40)[0]
+rsz = cpr * bps * spc if cpr >= 0 else 1 << -cpr
+at = mft + 3 * rsz                      # $Volume
+uo, uc = struct.unpack_from('<HH', d, at + 0x04)
+# Break the LAST sector's sequence number: the signature of a write
+# that did not finish.
+struct.pack_into('<H', d, at + (uc - 1) * (rsz // (uc - 1)) - 2, 0xDEAD)
+open(sys.argv[1], 'wb').write(bytes(d))
+EOPY
+case "$(field "$TORN" why)" in
+  *"shut down cleanly"*)
+    bad "a torn \$Volume record is not called clean" \
+        "it said: $(field "$TORN" why)" ;;
+  *) ok "a torn \$Volume record is not called clean" ;;
+esac
+expect "$TORN" dirty unsure "...and the dirty flag is reported unknown"
+
+echo
+echo "  and the hash the journal is checked with"
+# A wrong SHA-256 would not fail loudly. It would agree with itself
+# and disagree with AurBridge, and every machine in the field would
+# refuse with "the way this disk is divided up has changed" on a disk
+# nobody had touched. So it is checked against the published vectors
+# AND against a different implementation.
+cat > "$TMP/sha.c" <<'EOC'
+#include <stdio.h>
+#include <string.h>
+#include "sha256.h"
+int main(int argc, char **argv)
+{
+    sha256 s; unsigned char d[32]; char hex[65];
+    sha256_start(&s);
+    if (argc == 2) {
+        FILE *f = fopen(argv[1], "rb");
+        if (!f) return 2;
+        char b[65536]; size_t k;
+        while ((k = fread(b, 1, sizeof b, f)) > 0) sha256_feed(&s, b, k);
+        fclose(f);
+    } else if (argc == 3) {
+        sha256_feed(&s, argv[2], strlen(argv[2]));
+    }
+    sha256_done(&s, d); sha256_hex(d, hex, sizeof hex);
+    printf("%s\n", hex);
+    return 0;
+}
+EOC
+gcc -O2 -std=gnu11 -Wall -Wextra -o "$TMP/sha" "$TMP/sha.c" \
+    src/aurstage/sha256.c -I src/aurstage 2>/dev/null || {
+      bad "the hash builds" "it did not"; }
+if [ -x "$TMP/sha" ]; then
+    vec() { got=$("$TMP/sha" - "$1"); if [ "$got" = "$2" ]; then ok "$3"
+            else bad "$3" "got $got"; fi; }
+    vec "" e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 \
+        "the empty string hashes to what FIPS 180-4 says"
+    vec abc ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad \
+        "and so does \"abc\""
+    # A megabyte and three bytes: past the block size, past the buffer,
+    # and not a multiple of either, which is where a padding mistake
+    # lives.
+    head -c 1000003 /dev/urandom > "$TMP/r.bin"
+    a=$("$TMP/sha" "$TMP/r.bin"); b=$(sha256sum "$TMP/r.bin" | cut -d' ' -f1)
+    if [ "$a" = "$b" ]; then ok "and a megabyte of random data agrees with sha256sum"
+    else bad "and a megabyte of random data agrees with sha256sum" "$a" "$b"; fi
 fi
 
 echo

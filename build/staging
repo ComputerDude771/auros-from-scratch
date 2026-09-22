@@ -62,12 +62,46 @@ mknod -m 600 dev/console c 5 1 2>/dev/null || true
 mknod -m 666 dev/null    c 1 3 2>/dev/null || true
 
 step "the staging init"
+# THE READ-ONLY GATE.
+#
+# aurstage.h says stages A and B write nothing, and until stage B it
+# was true because one function opened block devices and opened them
+# O_RDONLY. That is no longer how it is true: ntfs.c, fde.c, shrink.c
+# and disks.c all open devices now, each of them read-only, and "each
+# of them, read-only" is a property that holds until somebody adds a
+# fifth file in a hurry.
+#
+# So it is checked instead of remembered. /dev/null is the one
+# exception and it is named, not pattern-matched, because an exception
+# a regular expression grants is an exception nobody reviewed.
+BAD=$(grep -nE 'O_RDWR|O_WRONLY|O_CREAT|O_TRUNC|O_APPEND' "$ROOT"/src/aurstage/*.c \
+      | grep -v '/dev/null' || true)
+if [ -n "$BAD" ]; then
+    printf '%s\n' "$BAD" >&2
+    die "stage B opened something writable. Nothing in it may."
+fi
+
 # Every .c in the directory, not a list that has to be remembered: a
 # stage B file left out of a hand-written list links and runs, and the
 # check it was written to perform simply does not happen.
-gcc -O2 -std=gnu11 -Wall -Wextra -o init \
+# STATICALLY LINKED, AND THAT IS NOT A PREFERENCE.
+#
+# The three helper programs get the image's own loader, its own
+# --library-path, and an assertion that their closure is not empty.
+# `init` got none of that: it was compiled on the BUILD HOST, linked
+# dynamically, and then run against whatever libc happened to be in
+# the image because ntfsresize needed one. Build on Ubuntu 24.04
+# (glibc 2.39) against a 22.04 rootfs (glibc 2.35) and PID 1 dies with
+# "GLIBC_2.38 not found" -- which in PID 1 is a kernel panic, the
+# exact screen of hexadecimal main.c's own header says must never
+# happen. Nothing in the build would have noticed.
+#
+# Linking it statically removes the question rather than answering it.
+gcc -O2 -std=gnu11 -Wall -Wextra -static -o init \
     "$ROOT"/src/aurstage/*.c -I "$ROOT/src/aurstage" \
     || die "aurstage did not build"
+file init 2>/dev/null | grep -q "statically linked" \
+    || die "init is not statically linked; PID 1 would depend on the build host"
 note "init $(du -h init | cut -f1)"
 
 # ── the programs it shells out to ──────────────────────────────────
@@ -78,6 +112,12 @@ note "init $(du -h init | cut -f1)"
 #               modalias is the whole of what udev coldplug does for
 #               us; reimplementing dependency resolution is not worth
 #               a line.
+#   ntfsinfo    NOT used by src/aurstage, which reads the volume
+#               itself -- it is here for a person on the end of a
+#               telephone to run when a machine comes back with a
+#               refusal nobody expected. (This comment used to claim
+#               it was "what decides whether we are allowed to proceed
+#               at all", which was never true of this program.)
 #   ntfsresize  docs/AURBRIDGE.md: "We do not write our own NTFS
 #               resizer. That is how a few unreadable files become an
 #               unmountable volume." Stage B calls it with
@@ -108,21 +148,62 @@ step "their libraries"
 LDSO=$(cd "$RFS" && ls lib64/ld-linux-x86-64.so.2 lib/x86_64-linux-gnu/ld-linux-x86-64.so.2 2>/dev/null | head -1)
 [ -n "$LDSO" ] || die "no dynamic loader in the image"
 install -D -m 755 "$RFS/$LDSO" "$LDSO"
-ln -sf "/$LDSO" lib64/ld-linux-x86-64.so.2 2>/dev/null || true
+# The kernel and every ELF interpreter path expect the loader at
+# /lib64/ld-linux-x86-64.so.2. If that IS where it already went, do not
+# "helpfully" replace it with a link to itself -- ln -sf will, and the
+# result is an image in which nothing dynamically linked can start,
+# with the `|| true` swallowing the only clue.
+if [ "$LDSO" != "lib64/ld-linux-x86-64.so.2" ]; then
+    ln -sf "/$LDSO" lib64/ld-linux-x86-64.so.2 2>/dev/null || true
+fi
 
+# --library-path IS NOT OPTIONAL HERE, and leaving it out is how this
+# shipped broken once. The image's loader run from the build host
+# resolves DT_NEEDED against the HOST's paths, so ntfsresize -- which
+# needs libntfs-3g.so.89, a library the host does not have -- failed
+# to resolve, --list printed an error instead of a list, and the loop
+# below quietly added nothing. The image built, packed and booted.
+# The failure only appeared at the point ntfsresize was first actually
+# run, inside QEMU, in tools/stagetest.sh: "error while loading shared
+# libraries". Everything up to there had said it was fine.
+LIBPATH="$RFS/lib/x86_64-linux-gnu:$RFS/lib64:$RFS/usr/lib/x86_64-linux-gnu"
 libs_of() {
-    # The image's own loader, asked about the image's own binary, from
-    # outside the image. --list is read-only and does not run anything.
-    "$RFS/$LDSO" --list "$1" 2>/dev/null | awk '{ for (i=1;i<=NF;i++) if ($i ~ /^\//) print $i }'
+    # The image's own loader, asked about the image's own binary,
+    # searching the image's own directories. --list is read-only and
+    # does not run anything. Paths come back host-absolute, so the
+    # image prefix is taken back off.
+    "$RFS/$LDSO" --library-path "$LIBPATH" --list "$1" 2>/dev/null \
+        | awk '{ for (i=1;i<=NF;i++) if ($i ~ /^\//) print $i }' \
+        | sed "s|^$RFS||"
+}
+# AND SEPARATELY: DID ANY OF THEM NOT RESOLVE?
+#
+# The awk above keeps fields beginning with "/". An unresolved library
+# prints "libfoo.so.1 => not found", which has none -- so it is
+# silently dropped while its siblings resolve, the count comes out
+# non-zero, and the "closure is empty" guard below passes. The fix
+# that added --library-path caught ALL libraries missing and not ONE,
+# which is the commoner shape of the same bug.
+unresolved() {
+    "$RFS/$LDSO" --library-path "$LIBPATH" --list "$1" 2>/dev/null \
+        | grep -c "not found" || true
 }
 n_lib=0
 for prog in sbin/modprobe sbin/ntfsresize sbin/ntfsinfo; do
+    got=0
     for lib in $(libs_of "$WORK/$prog"); do
         [ -f "$RFS$lib" ] || continue
+        got=$((got + 1))
         [ -f ".$lib" ] && continue
         install -D -m 755 "$RFS$lib" ".$lib"
         n_lib=$((n_lib + 1))
     done
+    # AND IT IS A FAILURE IF A PROGRAM RESOLVES TO NOTHING. Every one
+    # of these is dynamically linked; a closure of zero means the
+    # question was not answered, not that the answer was "none".
+    [ "$got" -gt 0 ] || die "could not work out what $prog needs to run"
+    miss=$(unresolved "$WORK/$prog")
+    [ "$miss" = "0" ] || die "$prog needs $miss librar(y/ies) the image does not have"
 done
 note "$n_lib libraries"
 

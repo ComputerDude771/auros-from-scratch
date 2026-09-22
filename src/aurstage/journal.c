@@ -68,7 +68,11 @@ int journal_read(const char *path, journal *j)
     memset(j, 0, sizeof *j);
 
     int fd = open(path, O_RDONLY | O_CLOEXEC);
-    if (fd < 0) return 0;
+    if (fd < 0) return 0;                  /* not there: not a record */
+    /* From here on the file EXISTS, so every failure below sets
+     * `corrupt`. See the header: "there is one and it is wrong" and
+     * "there is none" are different machines. */
+    j->corrupt = 1;
     char buf[16384];
     ssize_t k = read(fd, buf, sizeof buf - 1);
     close(fd);
@@ -129,7 +133,26 @@ int journal_read(const char *path, journal *j)
     if (!j->disk_serial[0] || !j->win_start_lba || !j->win_sectors)
         return 0;
     j->present = 1;
+    j->corrupt = 0;
     return 1;
+}
+
+const char *journal_verdict_name(journal_verdict v)
+{
+    switch (v) {
+    case JOURNAL_MATCH:         return "match";
+    case JOURNAL_NONE:          return "none";
+    case JOURNAL_UNREADABLE:    return "unreadable";
+    case JOURNAL_WRONG_DISK:    return "wrong-disk";
+    case JOURNAL_MOVED:         return "moved";
+    case JOURNAL_RESIZED:       return "resized";
+    case JOURNAL_STALE:         return "stale";
+    case JOURNAL_TABLE_CHANGED: return "table-changed";
+    case JOURNAL_CORRUPT:       return "corrupt";
+    case JOURNAL_CLOCK:         return "clock-behind";
+    case JOURNAL_SECTORS:       return "sector-size-changed";
+    }
+    return "unknown";
 }
 
 /* ── does the machine still match? ───────────────────────────────── */
@@ -166,29 +189,21 @@ journal_verdict journal_check(const journal *j, const stage_machine *m,
      * how a machine with an SSD and a spinning disk gets the wrong
      * one, and the enumeration order of two controllers is not a
      * promise the kernel makes. */
+    /* The survey already asked every place a disk publishes its
+     * identity -- see the note in disks.c about SATA, which publishes
+     * it in none of the obvious ones. Asking again here, differently,
+     * is how two answers to the same question appear. */
     const stage_disk *d = NULL;
-    char serial[256] = {0};
-    for (int i = 0; i < m->n_disks && !d; i++) {
-        char s[256] = {0};
-        if (read_sys(m->disk[i].name, "device/serial", s, sizeof s) != 0 &&
-            read_sys(m->disk[i].name, "serial", s, sizeof s) != 0)
-            continue;
-        if (s[0] && !strcmp(s, j->disk_serial)) {
+    for (int i = 0; i < m->n_disks && !d; i++)
+        if (m->disk[i].serial[0] && !strcmp(m->disk[i].serial, j->disk_serial))
             d = &m->disk[i];
-            snprintf(serial, sizeof serial, "%s", s);
-        }
-    }
     if (!d) {
         /* Say whether we found NO serial at all, or found serials that
          * simply are not this one: they are different problems and
          * lead to different support calls. */
         int any = 0;
-        for (int i = 0; i < m->n_disks; i++) {
-            char s[256] = {0};
-            if (read_sys(m->disk[i].name, "device/serial", s, sizeof s) == 0 ||
-                read_sys(m->disk[i].name, "serial", s, sizeof s) == 0)
-                if (s[0]) any = 1;
-        }
+        for (int i = 0; i < m->n_disks; i++)
+            if (m->disk[i].serial[0]) any = 1;
         if (!any) {
             snprintf(why, n,
                      "This computer's disk will not say which one it is.");
@@ -223,10 +238,79 @@ journal_verdict journal_check(const journal *j, const stage_machine *m,
         return JOURNAL_RESIZED;
     }
 
+    /* AND THE WHOLE TABLE, not just the Windows entry.
+     *
+     * The two checks above catch a Windows partition that has moved
+     * or changed size. They cannot see a partition ADDED after it, or
+     * one removed, or a type changed, or a recovery tool having
+     * rewritten the table with the same Windows entry in it -- and
+     * every one of those changes where stage C is allowed to write.
+     * The hash is one number and covers all of them.
+     *
+     * Only checked if the journal carries one. A journal from an
+     * older AurBridge that does not is not a journal that failed;
+     * inventing a comparison against an empty string would refuse
+     * every machine. */
+    /* NO HASH IS NOT A PASS. A record without one simply cannot make
+     * this check, and the caller is told so through the verdict name
+     * rather than being handed a plain "match" that hides it. */
+    if (!j->gpt_sha256[0]) {
+        snprintf(why, n, "This is the computer the installer was prepared "
+                         "for, though its record does not say how the disk "
+                         "was divided up.");
+    }
+    if (j->gpt_sha256[0]) {
+        char now[65];
+        if (stage_gpt_sha256(d, now, sizeof now) != 0) {
+            snprintf(why, n,
+                     "This computer's partition table could not be read "
+                     "back to check it.");
+            return JOURNAL_UNREADABLE;
+        }
+        int same = 1;
+        for (int i = 0; i < 64 && same; i++) {
+            char a = now[i], b = j->gpt_sha256[i];
+            if (b >= 'A' && b <= 'F') b = (char)(b + 32);
+            if (a != b) same = 0;
+        }
+        if (!same || j->gpt_sha256[64]) {
+            snprintf(why, n,
+                     "The way this disk is divided up has changed since "
+                     "the installer looked at it.");
+            return JOURNAL_TABLE_CHANGED;
+        }
+    }
+
+    /* THE SECTOR SIZE, if the record states one. A disk whose
+     * emulation mode has changed between the arming and the boot
+     * reports every offset differently, and the shrink is about to be
+     * given numbers measured under the old one. */
+    if (j->logical_sector && d->sector_known &&
+        (int)j->logical_sector != d->logical_sector) {
+        snprintf(why, n,
+                 "This disk is reporting itself differently than it did "
+                 "when the installer looked at it.");
+        return JOURNAL_SECTORS;
+    }
+
     if (j->written_unix) {
         time_t now = time(NULL);
-        if (now > 0 && (uint64_t)now > j->written_unix &&
-            (uint64_t)now - j->written_unix > JOURNAL_MAX_AGE_S) {
+        if (now > 0 && (uint64_t)now < j->written_unix) {
+            /* THE CLOCK IS BEHIND THE RECORD, which cannot happen on a
+             * machine that is telling the truth about the time. A dead
+             * CMOS battery puts a laptop in 2010, and there is no
+             * network here and no NTP to correct it -- so the staleness
+             * check below, the thing that catches a BootNext consumed
+             * three weeks late, silently could not fire. Falling
+             * through to MATCH was the old behaviour and it was the
+             * wrong way to be wrong. */
+            snprintf(why, n,
+                     "This computer's clock is set earlier than when the "
+                     "installer prepared it, so AurOS cannot tell how "
+                     "long ago that was.");
+            return JOURNAL_CLOCK;
+        }
+        if (now > 0 && (uint64_t)now - j->written_unix > JOURNAL_MAX_AGE_S) {
             snprintf(why, n,
                      "This was prepared more than three days ago. Windows "
                      "has had time to change the disk since.");

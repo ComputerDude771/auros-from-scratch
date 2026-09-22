@@ -26,6 +26,8 @@
 #include <sys/stat.h>
 
 #include "aurstage.h"
+#include "ntfs.h"
+#include "sha256.h"
 
 /* ── /sys, read as text ──────────────────────────────────────────── */
 
@@ -89,6 +91,26 @@ static void identify(int fd, stage_part *p)
     unsigned char b[4096];
     if (read_at(fd, b, sizeof b, 0) < 0) return;
 
+    /* BITLOCKER FIRST, AND IT IS NOT A DETAIL.
+     *
+     * An encrypted volume has no "NTFS" in its first sector, so this
+     * used to fall through every branch below and come out as fstype
+     * "" -- and the dry run, looking for a partition marked "ntfs",
+     * told the owner of a perfectly ordinary encrypted laptop that
+     * this computer has no Windows on it. That is both wrong and
+     * useless: BitLocker is one of the commonest things this product
+     * will meet, and the person can clear it in five minutes if
+     * somebody tells her what it is.
+     *
+     * tools/stagetest.sh found this by planting the signature on a
+     * real volume and insisting the machine say the word. The reading
+     * of the partition never lied; the survey simply had no name for
+     * what it was looking at. */
+    if (ntfs_is_bitlocker(b)) {
+        snprintf(p->fstype, sizeof p->fstype, "bitlocker");
+        return;
+    }
+
     /* NTFS: "NTFS    " at offset 3 of the boot sector, and a 0xAA55
      * signature. Both, because the OEM field alone appears in the wild
      * on things that are not NTFS. */
@@ -126,6 +148,9 @@ static void identify(int fd, stage_part *p)
     }
 }
 
+static uint32_t le32_at(const unsigned char *p);
+static uint64_t le64_at(const unsigned char *p);
+
 /* ── the survey ──────────────────────────────────────────────────── */
 
 /* A name too long for the fields below is REFUSED, not truncated.
@@ -150,6 +175,61 @@ static int is_whole_disk(const char *name)
     }
     snprintf(dir, sizeof dir, "/sys/class/block/%s/partition", name);
     return stat(dir, &st) != 0;
+}
+
+/* The EFI System partition's type GUID, C12A7328-F81F-11D2-BA4B-
+ * 00A0C93EC93B, in the mixed-endian order GPT stores it: first three
+ * fields little-endian, last two as written. */
+static const unsigned char ESP_GUID[16] = {
+    0x28,0x73,0x2A,0xC1, 0x1F,0xF8, 0xD2,0x11,
+    0xBA,0x4B, 0x00,0xA0,0xC9,0x3E,0xC9,0x3B
+};
+
+/* Read the disk's GPT and mark the partitions it names.
+ *
+ * WHY THIS HAD TO BE WRITTEN. stage_part carried an `is_esp` field
+ * that NOTHING EVER SET. One place read it -- the third-party
+ * encryption scan, to find the ESP a UEFI VeraCrypt install hides its
+ * loader in -- so that scan was handed NULL every time and the half
+ * of it that matters on a modern machine never ran. A field nobody
+ * assigns is worse than a field that does not exist: the code that
+ * reads it looks finished. An adversarial review found it; nothing
+ * about the program's behaviour would have. */
+static void mark_from_gpt(stage_disk *d)
+{
+    int fd = open_ro(d->name);
+    if (fd < 0) return;
+    uint32_t ss = (uint32_t)(d->logical_sector > 0 ? d->logical_sector : 512);
+    if (ss < 512 || ss > 4096 || (ss & (ss - 1))) { close(fd); return; }
+
+    unsigned char h[4096];
+    if (pread(fd, h, ss, (off_t)ss) != (ssize_t)ss ||
+        memcmp(h, "EFI PART", 8) != 0) { close(fd); return; }
+    d->gpt = 1;
+
+    uint64_t plba = le64_at(h + 72);
+    uint32_t num  = le32_at(h + 80);
+    uint32_t esz  = le32_at(h + 84);
+    if (esz < 128 || esz > 4096 || num == 0 || num > 4096 || plba < 2)
+    { close(fd); return; }
+
+    unsigned char ent[4096];
+    for (uint32_t i = 0; i < num && i < STAGE_MAX_PART * 4; i++) {
+        uint64_t at = plba * ss + (uint64_t)i * esz;
+        if (at / ss < plba) break;                      /* wrapped */
+        if (pread(fd, ent, esz, (off_t)at) != (ssize_t)esz) break;
+        uint64_t first = le64_at(ent + 32);
+        if (!first) continue;                           /* unused entry */
+        /* GPT entries are in DISK order and partition numbers follow
+         * the entry index, which is what lets an entry be matched to
+         * the /sys partition the kernel made from it. */
+        for (int k = 0; k < d->n_parts; k++) {
+            if (d->part[k].start_lba * 512ull != first * ss) continue;
+            d->part[k].is_gpt = 1;
+            if (!memcmp(ent, ESP_GUID, 16)) d->part[k].is_esp = 1;
+        }
+    }
+    close(fd);
 }
 
 static void survey_parts(stage_disk *d)
@@ -211,19 +291,197 @@ int stage_survey(stage_machine *m)
 
         char qdir[96 + STAGE_NAME];
         snprintf(qdir, sizeof qdir, "%s/queue", dir);
-        d->logical_sector  = (int)slurp_ll(qdir, "logical_block_size", 512);
-        d->physical_sector = (int)slurp_ll(qdir, "physical_block_size", 512);
+        long long ls = slurp_ll(qdir, "logical_block_size", 0);
+        d->sector_known    = ls > 0;
+        d->logical_sector  = (int)(ls > 0 ? ls : 512);
+        d->physical_sector = (int)slurp_ll(qdir, "physical_block_size",
+                                           d->logical_sector);
 
         char ddir[96 + STAGE_NAME];
         snprintf(ddir, sizeof ddir, "%s/device", dir);
         if (slurp(ddir, "model", d->model, sizeof d->model) < 0)
             slurp(dir, "device/model", d->model, sizeof d->model);
 
+        /* WHICH DISK IS THIS, and it is harder than it looks.
+         *
+         * NVMe publishes device/serial. virtio-blk publishes serial.
+         * SATA -- which is most of the fleet this product exists for --
+         * publishes NEITHER: the serial reaches udev through an ATA
+         * IDENTIFY ioctl, and what /sys offers instead is the SCSI
+         * inquiry data in device/vpd_pg80 and the identifier in
+         * device/wwid. A check that only looked at the first two
+         * therefore could not identify any ordinary laptop disk, which
+         * an adversarial review noticed and no test would have: the
+         * test machine is virtio. */
+        static const char *const WHERE[] = {
+            "device/serial", "serial", "device/wwid", "wwid",
+            "device/vpd_pg80", "device/unique_id",
+        };
+        for (size_t w = 0; w < sizeof WHERE / sizeof WHERE[0]; w++) {
+            char raw[160] = {0};
+            /* slurp returns the LENGTH, and testing it against 0
+             * skipped every attribute that was read successfully.
+             * The whole identity check then reported "this computer's
+             * disk will not say which one it is" on a machine that
+             * says so plainly. */
+            if (slurp(dir, WHERE[w], raw, sizeof raw) < 0) continue;
+            /* vpd_pg80 is binary: a four-byte header then the ASCII
+             * serial. Everything printable from it, trimmed. */
+            const char *b = raw;
+            if (!strcmp(WHERE[w], "device/vpd_pg80")) b = raw + 4;
+            char clean[80]; size_t ci = 0;
+            for (const char *q = b; *q && ci + 1 < sizeof clean; q++)
+                if (*q > ' ' && (unsigned char)*q < 127) clean[ci++] = *q;
+            clean[ci] = 0;
+            if (ci >= 4) { snprintf(d->serial, sizeof d->serial, "%s", clean);
+                           break; }
+        }
+
         survey_parts(d);
+        mark_from_gpt(d);
         m->n_disks++;
     }
     closedir(dp);
     return m->n_disks;
+}
+
+/* ── the shape of the partition table, in one number ─────────────── */
+
+uint32_t le32_at(const unsigned char *p)
+{ return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
+         ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24); }
+uint64_t le64_at(const unsigned char *p)
+{ return (uint64_t)le32_at(p) | ((uint64_t)le32_at(p + 4) << 32); }
+
+int stage_gpt_sha256(const stage_disk *d, char *hex, size_t n)
+{
+    if (!d || !hex || n < 65) return -1;
+    hex[0] = 0;
+    uint32_t ss = (uint32_t)(d->logical_sector > 0 ? d->logical_sector : 512);
+    if (ss < 512 || ss > 4096 || (ss & (ss - 1))) return -1;
+
+    int fd = open_ro(d->name);
+    if (fd < 0) return -1;
+
+    unsigned char lba1[4096];
+    if (pread(fd, lba1, ss, (off_t)ss) != (ssize_t)ss) { close(fd); return -1; }
+    if (memcmp(lba1, "EFI PART", 8) != 0) { close(fd); return -1; }
+
+    uint32_t hsize = le32_at(lba1 + 12);
+    uint64_t plba  = le64_at(lba1 + 72);
+    uint32_t num   = le32_at(lba1 + 80);
+    uint32_t esz   = le32_at(lba1 + 84);
+    /* Every one of these came off the disk, so every one is checked
+     * before it becomes a length. A crafted header claiming four
+     * billion entries is a read of sixteen terabytes. */
+    if (hsize < 92 || hsize > ss) { close(fd); return -1; }
+    if (esz < 128 || esz > 4096 || num == 0 || num > 4096)
+    { close(fd); return -1; }
+    uint64_t bytes = (uint64_t)num * esz;
+    /* plba WAS THE ONE FIELD NOT CHECKED, and the comment above
+     * claimed all of them were. plba * ss wraps for plba near 2^55 on
+     * a 512-byte disk, `at` comes out 0, and the function then hashes
+     * the protective MBR as if it were the entry array -- and returns
+     * SUCCESS with a wrong, self-consistent digest. The result is a
+     * refusal rather than a corruption, but a refusal nobody can
+     * explain is its own kind of failure. */
+    if (plba < 2 || plba > UINT64_MAX / ss) { close(fd); return -1; }
+    uint64_t at0 = plba * ss;
+    if (bytes > (16u << 20) || at0 > UINT64_MAX - bytes)
+    { close(fd); return -1; }
+    if (d->bytes && at0 + bytes > d->bytes) { close(fd); return -1; }
+
+    sha256 h;
+    sha256_start(&h);
+    sha256_feed(&h, lba1, hsize);
+
+    unsigned char buf[65536];
+    uint64_t at = at0, left = bytes;
+    while (left) {
+        size_t want = left < sizeof buf ? (size_t)left : sizeof buf;
+        if (pread(fd, buf, want, (off_t)at) != (ssize_t)want) { close(fd); return -1; }
+        sha256_feed(&h, buf, want);
+        at += want; left -= want;
+    }
+    close(fd);
+
+    unsigned char dig[32];
+    sha256_done(&h, dig);
+    sha256_hex(dig, hex, n);
+    return 0;
+}
+
+/* ── when nothing turned up ──────────────────────────────────────────
+ *
+ * "This computer has no disk" is never true, and it is the worst
+ * possible thing to tell somebody who is looking at the computer. The
+ * useful thing is what IS on the bus: a machine with no storage
+ * controller at all is a different problem from one with a RAID
+ * controller that has nothing behind it, and the two lead to
+ * different support calls.
+ *
+ * DELIBERATELY NOT A BIOS INSTRUCTION. The commonest cause of this is
+ * Intel RST, and the obvious advice -- "change the disk mode to AHCI
+ * in your computer's setup screen" -- stops Windows booting at all
+ * until somebody does the safe-mode dance afterwards. Handing that
+ * sentence to a person on their own is how this product breaks the
+ * one thing it promised to preserve. So this states the facts and
+ * leaves the instruction to somebody who can stay on the phone.
+ *
+ * (The VMD driver ships in this image for exactly this reason; see
+ * build/staging. This is the message for when it was not enough.)
+ */
+void stage_report_controllers(void)
+{
+    DIR *dp = opendir("/sys/bus/pci/devices");
+    if (!dp) return;
+    struct dirent *e;
+    int found = 0;
+    while ((e = readdir(dp))) {
+        if (e->d_name[0] == '.') continue;
+        char dir[320];
+        if ((size_t)snprintf(dir, sizeof dir, "/sys/bus/pci/devices/%s",
+                             e->d_name) >= sizeof dir)
+            continue;
+
+        char cls[32] = {0};
+        if (slurp(dir, "class", cls, sizeof cls) < 0) continue;
+        /* 0x01 is mass storage. The subclass is the byte below it and
+         * is what says whether this is a plain SATA controller or the
+         * RAID mode that hides the disk behind it. */
+        if (strncmp(cls, "0x01", 4) != 0) continue;
+        unsigned sub = 0;
+        if (sscanf(cls + 4, "%2x", &sub) != 1) sub = 0xFF;
+        const char *kind =
+            sub == 0x01 ? "IDE"   : sub == 0x04 ? "RAID (Intel RST or VMD)" :
+            sub == 0x06 ? "SATA"  : sub == 0x08 ? "NVMe" :
+            sub == 0x00 ? "SCSI"  : "storage";
+
+        char ven[16] = {0}, dev[16] = {0}, drv[128] = {0};
+        slurp(dir, "vendor", ven, sizeof ven);
+        slurp(dir, "device", dev, sizeof dev);
+        /* Which driver claimed it, if any. "No driver" and "a driver
+         * that found nothing" are different failures. */
+        char link[320 + 16];
+        snprintf(link, sizeof link, "%s/driver", dir);
+        ssize_t k = readlink(link, drv, sizeof drv - 1);
+        if (k > 0) {
+            drv[k] = 0;
+            char *slash = strrchr(drv, '/');
+            memmove(drv, slash ? slash + 1 : drv, strlen(slash ? slash + 1 : drv) + 1);
+        } else {
+            snprintf(drv, sizeof drv, "no driver");
+        }
+
+        if (!found++) stage_say("what this computer has instead:");
+        stage_say("  %s  %s %s  %s", e->d_name, ven, dev, kind);
+        stage_say("      %s", drv);
+    }
+    closedir(dp);
+    if (!found)
+        stage_say("this computer reports no storage controller at all, "
+                  "which usually means the disk is behind something "
+                  "the kernel did not enumerate");
 }
 
 static const char *human(uint64_t b, char *out, size_t n)

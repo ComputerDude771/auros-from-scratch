@@ -9,6 +9,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/wait.h>
+#include <time.h>
 
 #include "shrink.h"
 #include "aurstage.h"
@@ -36,21 +37,97 @@ static int capture(const char *const argv[], char *out, size_t n, int timeout_s)
         _exit(127);
     }
     close(p[1]);
+
+    /* TWO WAYS THIS USED TO HANG, both of them PID 1 sitting silent on
+     * somebody's laptop for ever, which is the worst failure this
+     * program has.
+     *
+     * The first: it stopped reading once `out` was full and then
+     * waited for the child. A child with more to say blocks writing
+     * into a full pipe, and neither side ever moves again. So the
+     * pipe is now drained to the end whatever happens -- past the
+     * buffer the extra is read and thrown away, which is the only
+     * thing that lets the child finish.
+     *
+     * The second: the timeout was per-poll, so every byte reset it.
+     * `ntfsresize --info` prints a running percentage, which means it
+     * dribbles, which means the bound was not 300 seconds but 300
+     * seconds per chunk -- unbounded in practice. It is a deadline
+     * measured from the start now. (run.c carries the same note about
+     * the same mistake; this is the second time I have made it.) */
+    struct timespec t0;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    long budget = (long)timeout_s * 1000;
     size_t got = 0;
-    int deadline = timeout_s * 1000;
-    while (got + 1 < n) {
+    int killed = 0;
+    char tail[4096];
+    uint64_t nseen = 0;          /* bytes ever put in the ring */
+    for (;;) {
+        struct timespec tn;
+        clock_gettime(CLOCK_MONOTONIC, &tn);
+        long spent = (tn.tv_sec - t0.tv_sec) * 1000L
+                   + (tn.tv_nsec - t0.tv_nsec) / 1000000L;
+        long left = budget - spent;
+        if (!killed && left <= 0) { kill(pid, SIGKILL); killed = 1; }
+
         struct pollfd pf = { p[0], POLLIN, 0 };
-        int r = poll(&pf, 1, deadline > 0 ? 1000 : 0);
-        if (r == 0) { if ((deadline -= 1000) <= 0) { kill(pid, SIGKILL); break; } continue; }
+        int r = poll(&pf, 1, killed ? 200 : (int)(left > 1000 ? 1000 : left));
+        if (r == 0) { if (killed) break; continue; }
         if (r < 0) { if (errno == EINTR) continue; break; }
-        ssize_t k = read(p[0], out + got, n - 1 - got);
-        if (k <= 0) break;
-        got += (size_t)k;
+
+        char bin[4096];
+        char  *dst = bin;
+        size_t room = sizeof bin;
+        if (out && got + 1 < n) { dst = out + got; room = n - 1 - got; }
+        ssize_t k = read(p[0], dst, room);
+        if (k <= 0) break;                 /* it closed: it is finished */
+        if (dst != bin) { got += (size_t)k; continue; }
+
+        /* THE ANSWER IS AT THE END, AND THE BUFFER FILLS FROM THE
+         * FRONT. Once `out` was full this threw the rest away, and
+         * "You might resize at" -- the number the whole call exists to
+         * get -- is printed AFTER ntfsresize's progress bars, each of
+         * which emits a hundred carriage-returned percentage lines. On
+         * a large fragmented volume, which is the population this
+         * product is for, the head filled with progress and the answer
+         * fell off the end, and the machine was refused with "could be
+         * read but not measured" for a buffer size.
+         *
+         * So the overflow is kept too: the last TAIL bytes are held in
+         * a ring and stitched on at the end. Head and tail together
+         * hold the volume line, which comes first, and the resize
+         * line, which comes last, whatever runs between them. */
+        for (ssize_t i = 0; i < k; i++) {
+            tail[nseen % sizeof tail] = bin[i];
+            nseen++;
+        }
     }
-    out[got] = 0;
+    if (out && n) {
+        out[got] = 0;
+        if (nseen) {
+            /* Unroll the ring, then append as much as still fits --
+             * from the END of the tail, which is where the answer is. */
+            char flat[sizeof tail + 1];
+            size_t have = nseen < sizeof tail ? (size_t)nseen : sizeof tail;
+            for (size_t i = 0; i < have; i++)
+                flat[i] = tail[(size_t)(nseen - have + i) % sizeof tail];
+            flat[have] = 0;
+            size_t room2 = n - 1 - got;
+            size_t take = have < room2 ? have : room2;
+            memcpy(out + got, flat + (have - take), take);
+            out[got + take] = 0;
+        }
+    }
     close(p[0]);
+
+    /* Unconditional, so waitpid cannot wait on something still alive.
+     * A process that has already exited is a zombie and has not been
+     * reaped yet, so its pid is still ours and the signal is simply
+     * discarded. */
+    kill(pid, SIGKILL);
     int st = 0;
     if (waitpid(pid, &st, 0) != pid) return -1;
+    if (killed) return -1;                 /* out of time: no answer */
     return WIFEXITED(st) ? WEXITSTATUS(st) : -1;
 }
 
@@ -81,8 +158,14 @@ void shrink_ask(const char *dev, shrink_plan *out)
     const char *argv[] = { "/sbin/ntfsresize", "--info", "--no-action",
                            dev, NULL };
 
+    /* HALF AN HOUR, not five minutes. `--info` reads $Bitmap and walks
+     * the MFT, and on the machines this product is for -- a ten-year-old
+     * 5400 rpm terabyte drive with a large, fragmented MFT -- that is
+     * minutes, not seconds. A deadline shorter than the honest worst
+     * case turns a slow machine into a refused one. It is a real
+     * deadline now (see capture), so it bounds the whole call. */
     char buf[8192];
-    int rc = capture(argv, buf, sizeof buf, 300);
+    int rc = capture(argv, buf, sizeof buf, 1800);
     if (rc < 0) {
         snprintf(out->why, sizeof out->why,
                  "The tool that measures the Windows drive could not be run.");
@@ -126,11 +209,25 @@ void shrink_ask(const char *dev, shrink_plan *out)
 /* ── the surface test ────────────────────────────────────────────── */
 
 int surface_test(const char *dev, uint64_t from, uint64_t to,
+                 uint32_t sector,
                  uint64_t *first_bad,
                  void (*progress)(uint64_t done, uint64_t total))
 {
     if (first_bad) *first_bad = 0;
     if (to <= from) return 0;
+
+    /* A DEADLINE, because this is the one long step that had none.
+     * A drive that is failing does not usually return an error -- it
+     * retries, resets its link and returns the sector thirty seconds
+     * later. Reading a 400 GB region on such a drive can take days,
+     * with a progress dot every ten per cent, and there is nothing a
+     * person can do but hold the power button. Four hours is far
+     * beyond any healthy disk (a 5400 rpm drive reads 400 GB in about
+     * two) and far short of forever. Running out of time is reported
+     * as the drive being too slow to trust, which is what it is. */
+    struct timespec t0;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    const long BUDGET_S = 4 * 60 * 60;
 
     int fd = open(dev, O_RDONLY | O_CLOEXEC);
     if (fd < 0) { if (first_bad) *first_bad = from; return -1; }
@@ -145,14 +242,30 @@ int surface_test(const char *dev, uint64_t from, uint64_t to,
     for (uint64_t off = from; off < to; ) {
         size_t want = (size_t)((to - off) < CHUNK ? (to - off) : CHUNK);
         ssize_t k = pread(fd, buf, want, (off_t)off);
-        if (k <= 0) {
+        if (k == 0) {
+            /* END OF THE DEVICE, not a bad sector. The region came
+             * from ntfsresize's idea of the volume size and the device
+             * is the partition, so these should agree -- and when they
+             * do not, "the drive is failing" is the wrong thing to say
+             * about a drive that is fine. */
+            if (first_bad) *first_bad = off;
+            close(fd);
+            return -1;
+        }
+        if (k < 0) {
             /* Narrow it to the sector, so the report names a place and
              * not a megabyte. A disk that fails a whole chunk still
              * fails one sector first, and which one matters to whoever
              * looks at the drive afterwards. */
-            for (uint64_t s = off; s < off + want; s += 512) {
-                unsigned char one[512];
-                if (pread(fd, one, sizeof one, (off_t)s) == (ssize_t)sizeof one)
+            /* THE DRIVE'S OWN SECTOR, not 512. On a 4Kn disk a
+             * 512-byte read is not a thing the device can do, so the
+             * narrowing loop reported the start of the chunk and the
+             * message named a place a megabyte away from the fault. */
+            uint32_t ssz = sector >= 512 && sector <= 4096 &&
+                           !(sector & (sector - 1)) ? sector : 512;
+            for (uint64_t s = off; s < off + want; s += ssz) {
+                unsigned char one[4096];
+                if (pread(fd, one, ssz, (off_t)s) == (ssize_t)ssz)
                     continue;
                 if (first_bad) *first_bad = s;
                 close(fd);
@@ -165,6 +278,14 @@ int surface_test(const char *dev, uint64_t from, uint64_t to,
         off  += (uint64_t)k;
         done += (uint64_t)k;
         if (progress) progress(done, total);
+
+        struct timespec tn;
+        clock_gettime(CLOCK_MONOTONIC, &tn);
+        if (tn.tv_sec - t0.tv_sec > BUDGET_S) {
+            if (first_bad) *first_bad = off;
+            close(fd);
+            return -1;
+        }
     }
     close(fd);
     return 0;

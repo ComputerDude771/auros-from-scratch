@@ -39,16 +39,23 @@
  * boots Windows. That cannot be judged until the thing doing the
  * aborting is known to work.
  *
- * READ-ONLY IS STRUCTURAL HERE, NOT A HABIT
+ * READ-ONLY IS CHECKED HERE, NOT REMEMBERED
  *
- * Every block device this file opens, it opens O_RDONLY, through one
- * function, which is the only place in the program that opens one. A
- * stage that must not write is not made safe by everyone remembering;
- * it is made safe by there being nothing to remember with.
+ * Every block device this directory opens, it opens O_RDONLY. That
+ * used to be true because disks.c was the only file that opened one;
+ * it is not any more -- ntfs.c, fde.c and shrink.c read devices too,
+ * which is what stage B is -- so the property is enforced instead of
+ * arranged. build/staging greps for a writable open anywhere in this
+ * directory and refuses to build the image if it finds one.
+ *
+ * A stage that must not write is not made safe by everyone
+ * remembering. It is made safe by something that fails loudly when
+ * somebody forgets.
  */
 #ifndef AUROS_AURSTAGE_H
 #define AUROS_AURSTAGE_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 /* ── what the machine looks like ─────────────────────────────────── */
@@ -64,7 +71,8 @@ typedef struct {
     char     fstype[16];            /* "ntfs", "ext4", "vfat", ""     */
     char     label[40];
     char     uuid[40];
-    int      is_esp;
+    int      is_esp;                /* GPT type GUID says EFI System   */
+    int      is_gpt;                /* the disk it is on has a GPT     */
 } stage_part;
 
 typedef struct {
@@ -78,7 +86,14 @@ typedef struct {
                                      * the partition eight times too
                                      * small. */
     int         physical_sector;
+    /* 0 if the kernel would not say. docs/AURBRIDGE.md: "Always read
+     * StorageAccessAlignmentProperty, and block if it cannot be read."
+     * Defaulting to 512 is how a 4Kn disk gets a partition eight times
+     * too small, so the unknown is carried rather than papered over. */
+    int         sector_known;
     int         removable;
+    int         gpt;                /* a valid primary GPT was found   */
+    char        serial[80];         /* "" if the disk will not say     */
     int         n_parts;
     stage_part  part[STAGE_MAX_PART];
 } stage_disk;
@@ -105,6 +120,49 @@ int  stage_load_modules(void);
 /* Wait until at least one whole disk with at least one partition has
  * appeared, or the deadline passes. Returns 1 if something turned up. */
 int  stage_wait_for_disks(int timeout_ms);
+
+/* Say what storage hardware this machine actually has, when none of
+ * it produced a disk. Not a diagnosis and deliberately not a BIOS
+ * instruction -- see the comment on the definition. */
+void stage_report_controllers(void);
+
+/* The hash of this disk's partition table, as 64 lowercase hex
+ * characters. `hex` needs 65. Returns 0 if it could be computed.
+ *
+ * WHAT EXACTLY IS HASHED, because AurBridge has to compute the same
+ * thing on the other side of a restart, in another language, and "a
+ * hash of the GPT" is not a specification:
+ *
+ *   Let S be the disk's LOGICAL BLOCK SIZE in bytes, as the disk
+ *   reports it -- 512 on an ordinary drive, 4096 on a 4Kn one. An LBA
+ *   below means a multiple of S, per UEFI.
+ *
+ *   SHA-256 over, in order,
+ *     1. the first HeaderSize bytes at byte offset S (LBA 1, the
+ *        primary GPT header), HeaderSize being the little-endian
+ *        uint32 at offset 12 of that header, and
+ *     2. NumberOfPartitionEntries x SizeOfPartitionEntry bytes
+ *        starting at byte offset PartitionEntryLBA x S.
+ *
+ * S IS SPELLED OUT BECAUSE IT IS THE WHOLE TRAP. Linux reports a
+ * partition's start and size in /sys in 512-byte units on every disk
+ * including a 4Kn one, so "LBA" means one thing three lines above
+ * this in stage_part and another thing here. An implementation that
+ * assumed 512 would hash the wrong bytes on every 4Kn machine and
+ * refuse all of them with "the way this disk is divided up has
+ * changed", on disks nobody had touched.
+ *
+ * Not the whole of LBA 1, because the bytes past HeaderSize are
+ * padding no firmware promises anything about. Not the backup table,
+ * which is a separate question.
+ *
+ * THE BOUNDS ARE PART OF THE DEFINITION, not an implementation
+ * detail: a table outside them is answered "cannot be read", which is
+ * a refusal, so a second implementation that accepts more than this
+ * disagrees about which machines are usable. HeaderSize in [92, S];
+ * SizeOfPartitionEntry in [128, 4096]; NumberOfPartitionEntries in
+ * [1, 4096]; the array at most 16 MiB and wholly inside the disk. */
+int  stage_gpt_sha256(const stage_disk *d, char *hex, size_t n);
 
 /* Hand over to the installed system, in this same boot. `root_dev` is
  * a block device path. Never returns on success. */

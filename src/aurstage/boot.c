@@ -39,9 +39,21 @@ static int log_fd = -1;
 static void say_v(const char *tag, const char *fmt, va_list ap)
 {
     char line[512];
+    /* snprintf RETURNS WHAT IT WOULD HAVE WRITTEN, not what it wrote.
+     * Adding the two up and handing the total to write() meant that a
+     * message longer than this buffer printed however many bytes of
+     * the stack followed it, straight to the console. Nothing reaches
+     * 512 characters today; the longest sentence in the program is
+     * about 200. That is not a reason, it is luck, and it is one long
+     * format string from ending. */
     int n = snprintf(line, sizeof line, "aurstage: %s", tag);
-    n += vsnprintf(line + n, sizeof line - (size_t)n, fmt, ap);
-    if (n < (int)sizeof line - 1) { line[n++] = '\n'; line[n] = 0; }
+    if (n < 0 || n >= (int)sizeof line) n = (int)sizeof line - 1;
+    int k = vsnprintf(line + n, sizeof line - (size_t)n, fmt, ap);
+    if (k < 0) k = 0;
+    n += k;
+    if (n >= (int)sizeof line) n = (int)sizeof line - 1;
+    if (n < (int)sizeof line - 1) { line[n++] = '\n'; }
+    line[n] = 0;
     /* The console first and always: if the log cannot be opened, or
      * the machine dies before it is, the screen is what is left. */
     ssize_t ignored = write(2, line, (size_t)n); (void)ignored;
@@ -225,13 +237,27 @@ int stage_switch_root(const char *root_dev)
     const char *NEW = "/newroot";
     mkdir(NEW, 0755);
 
-    /* READ-ONLY, in stage A. The installed system's own init will
-     * remount it writable when it is ready to. Mounting it writable
-     * here would mean this environment had written to a disk, which
-     * for stage A is the one thing it must not do -- and a read-only
-     * mount that fails is a louder, earlier failure than a writable
-     * one that succeeds and replays a journal. */
-    if (mount(root_dev, NEW, "ext4", MS_RDONLY, NULL) != 0) {
+    /* READ-ONLY *AND* noload, AND THE SECOND HALF IS THE POINT.
+     *
+     * MS_RDONLY does not stop ext4 replaying its journal. A read-only
+     * mount of an unclean filesystem recovers it -- the kernel writes
+     * to the device -- and `noload` is the option that says do not.
+     * So the old comment here was exactly backwards: it claimed a
+     * read-only mount was safer than a writable one that "succeeds and
+     * replays a journal", when a read-only mount replays it too.
+     *
+     * This matters beyond tidiness. build/staging's grep gate looks
+     * for writable open() flags, and a mount(2) is invisible to it, so
+     * nothing would have caught this. And the claim stagetest.sh makes
+     * on every case -- the whole disk, byte for byte unchanged -- was
+     * only true because the test's root filesystem is always clean.
+     * The first power-pull test in stage C would have produced an
+     * unclean one and quietly falsified it.
+     *
+     * An unclean root that we refuse to recover will fail to mount, and
+     * that is the right outcome: the installed system's own init
+     * recovers it, on purpose, when it is allowed to write. */
+    if (mount(root_dev, NEW, "ext4", MS_RDONLY, "noload") != 0) {
         stage_warn("cannot mount %s as the new root (%s)",
                    root_dev, strerror(errno));
         return -1;
