@@ -733,12 +733,70 @@ stage_overlay() {
         die "aurshell did not build - the image would boot to a console"
     fi
 
-    inchroot "systemctl enable auros-firstboot.service >/dev/null 2>&1" || true
+    # ── THE WHOLE rootfs/ TREE, not a list of files from it ────────
+    #
+    # BEFORE THE `systemctl enable`s BELOW, AND THAT IS THE POINT.
+    # This block used to sit eighty lines further down, after
+    # chroot_done -- so every `systemctl enable` ran against an image
+    # in which the unit file being enabled did not exist yet. Each of
+    # them ended `|| true`, so each failed in silence.
+    #
+    # It worked anyway, on this machine, for the worst possible
+    # reason: work/forge/<profile>/rootfs is reused between builds, so
+    # the FIRST build laid the units down after failing to enable them
+    # and the SECOND build enabled the ones the first had left behind.
+    # A clean build of a profile enabled nothing at all, and a unit
+    # added since the last build of a profile -- auros-hold.service
+    # and auros-answer.path, which are the whole of phases 9 and 10 --
+    # would have been enabled by no build ever.
+    #
+    # rootfs/ in this repository is an overlay: whatever is under it
+    # lands at the same path in the image. It used to be copied as two
+    # named things -- the .service files and firstboot.sh -- which
+    # meant that adding a third file to the tree and forgetting to add
+    # a line here produced a file that exists in the repository, is
+    # reviewed, is committed, and is not on the machine.
+    #
+    # It happened the same day that comment was written: the PAM stack
+    # that gives the desktop a logind session, without which the Turn
+    # off button and mounting a USB stick are both refused by polkit,
+    # was written to rootfs/etc/pam.d/aurshell and would never have
+    # been copied anywhere.
+    #
+    # cp -a preserves modes, so an executable in the tree arrives
+    # executable; the explicit chmod below is for the one file whose
+    # mode matters enough to state twice.
+    if [ -d "$ROOT/rootfs" ]; then
+        cp -a "$ROOT/rootfs/." "$RFS/" || die "could not lay down rootfs/"
+        note "rootfs overlay: $(cd "$ROOT/rootfs" && find . -type f | wc -l) files"
+    fi
+    chmod 755 "$RFS/usr/lib/auros/firstboot.sh" 2>/dev/null || true
+
+    # AND THEY MUST WORK. `|| true` on all three is what let the
+    # ordering bug above live: an image that boots to a console and an
+    # image that never asks whether AurOS works both build cleanly and
+    # say nothing. systemctl enable exits non-zero for a unit it cannot
+    # find, so the exit status is the check -- and the enable symlink
+    # is looked for afterwards, because `systemctl enable` on a unit
+    # with no [Install] section succeeds and does nothing.
+    enable_unit() { # unit  wants-dir
+        inchroot "systemctl enable $1 >/dev/null 2>&1" \
+            || die "systemctl enable $1 failed. The image would boot without it."
+        [ -e "$RFS/etc/systemd/system/$2.wants/$1" ] \
+            || die "$1 was enabled and no $2 want appeared. The image would
+     boot without it."
+    }
+    enable_unit auros-firstboot.service multi-user.target
     # Phases 9 and 10. The hold runs on every boot until somebody has
     # answered; the path unit is how the desktop asks for the three
     # things that have to happen as root. See src/aurfirst/aurfirst.h.
-    inchroot "systemctl enable auros-hold.service auros-answer.path >/dev/null 2>&1" || true
-    [ -x "$RFS/usr/bin/aurshell" ] && inchroot "systemctl enable aurshell.service >/dev/null 2>&1" || true
+    enable_unit auros-hold.service  multi-user.target
+    enable_unit auros-answer.path   multi-user.target
+    # Not `[ -x ... ] && enable_unit ...`: under `set -e` a false test
+    # at the end of a list ends the build with no message at all.
+    if [ -x "$RFS/usr/bin/aurshell" ]; then
+        enable_unit aurshell.service graphical.target
+    fi
 
     # Headers and the code generator go; the shared libraries the shell
     # now links against must not, so they are marked manual first --
@@ -754,30 +812,6 @@ stage_overlay() {
     rm -rf "$RFS/usr/src/auros/aurwl/gen"
     chroot_done
     rm -rf "$RFS/usr/src/auros"
-
-    # ── THE WHOLE rootfs/ TREE, not a list of files from it ────────
-    #
-    # rootfs/ in this repository is an overlay: whatever is under it
-    # lands at the same path in the image. It used to be copied as two
-    # named things -- the .service files and firstboot.sh -- which
-    # meant that adding a third file to the tree and forgetting to add
-    # a line here produced a file that exists in the repository, is
-    # reviewed, is committed, and is not on the machine.
-    #
-    # It happened the same day this comment was written: the PAM stack
-    # that gives the desktop a logind session, without which the Turn
-    # off button and mounting a USB stick are both refused by polkit,
-    # was written to rootfs/etc/pam.d/aurshell and would never have
-    # been copied anywhere.
-    #
-    # cp -a preserves modes, so an executable in the tree arrives
-    # executable; the explicit chmod below is for the one file whose
-    # mode matters enough to state twice.
-    if [ -d "$ROOT/rootfs" ]; then
-        cp -a "$ROOT/rootfs/." "$RFS/" || die "could not lay down rootfs/"
-        note "rootfs overlay: $(cd "$ROOT/rootfs" && find . -type f | wc -l) files"
-    fi
-    chmod 755 "$RFS/usr/lib/auros/firstboot.sh" 2>/dev/null || true
 
     # ── Resolve the theme's named fonts to files the rasterizer can
     # actually read. Our engine renders TrueType `glyf` outlines; many
