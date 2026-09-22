@@ -330,8 +330,12 @@ int fmt_image_root_extent(const uint8_t *gpt_head, size_t head_len,
         snprintf(why, wn, "the AurOS image file has an unreadable layout");
         return -1;
     }
-    size_t need = (size_t)(elba * sector + (uint64_t)ne * es);
-    if (need > head_len) {
+    uint64_t need64 = elba * (uint64_t)sector + (uint64_t)ne * es;
+    if (need64 > head_len) {
+        /* uint64 ALL THE WAY. This was a size_t, which is 32 bits in
+         * a mingw32 build, so a large PartitionEntryLBA truncated to
+         * something small, passed this bound, and was then used to
+         * index into the buffer. */
         snprintf(why, wn, "the AurOS image file has an unreadable layout");
         return -1;
     }
@@ -341,15 +345,23 @@ int fmt_image_root_extent(const uint8_t *gpt_head, size_t head_len,
      * that an image built with a third partition one day does not
      * silently select the wrong one. */
     uint64_t best_first = 0, best_last = 0;
+    int found = 0;
     for (uint32_t i = 0; i < ne; i++) {
         const uint8_t *e = gpt_head + elba * sector + (uint64_t)i * es;
         int used = 0;
         for (int q = 0; q < 16; q++) if (e[q]) { used = 1; break; }
         if (!used) continue;
         uint64_t f = g64(e + 32), l = g64(e + 40);
-        if (l > best_last) { best_first = f; best_last = l; }
+        /* AN ENTRY WHOSE END IS BEFORE ITS START IS NOT AN ENTRY.
+         * Without this, first=2 last=1 won the `l > best_last`
+         * comparison on an empty table, *len came out 0, and both
+         * sides of the read-back hash were SHA-256 of nothing -- so
+         * the stick was declared "ready and has been checked" with no
+         * root filesystem on it at all. A failure treated as success. */
+        if (l < f) continue;
+        if (!found || l > best_last) { best_first = f; best_last = l; found = 1; }
     }
-    if (!best_last) {
+    if (!found || !best_last) {
         snprintf(why, wn, "the AurOS image file has no partitions in it");
         return -1;
     }
@@ -360,8 +372,41 @@ int fmt_image_root_extent(const uint8_t *gpt_head, size_t head_len,
 
 /* ── the journal ─────────────────────────────────────────────────── */
 
+/* ESCAPED, BECAUSE THIS IS JSON AND THE OTHER SIDE IS STRICT.
+ *
+ * disk_model is built from the drive's SCSI INQUIRY vendor and product
+ * strings -- arbitrary vendor bytes -- and disk_serial likewise. A `"`
+ * or a `\` in either used to go straight into the file, and
+ * src/aurstage/journal.c's reader accepts only \\ \" \/ \n \t and
+ * returns NULL on anything else. The result is `corrupt = 1`, which
+ * journal.h is explicit is NOT the same as "no journal": the staging
+ * environment refuses -- after the user has already sat through the
+ * reboot, which is the one outcome the whole design is arranged to
+ * prevent. Anything that is not printable ASCII is replaced rather
+ * than escaped, because a control character in a disk model is not
+ * information anybody needs and \u.... is not in the reader's
+ * vocabulary either. */
+static void esc(char *out, size_t n, const char *in)
+{
+    size_t o = 0;
+    for (const unsigned char *p = (const unsigned char *)in; *p && o + 2 < n; p++) {
+        if (*p == '"' || *p == '\\') { out[o++] = '\\'; out[o++] = (char)*p; }
+        else if (*p < 0x20 || *p > 0x7E) out[o++] = ' ';
+        else out[o++] = (char)*p;
+    }
+    out[o] = 0;
+}
+
 size_t fmt_journal_json(const fmt_journal *j, char *out, size_t n)
 {
+    char e_serial[300], e_model[300], e_part[32], e_gpt[160];
+    char e_stage[64], e_boot[64];
+    esc(e_serial, sizeof e_serial, j->disk_serial);
+    esc(e_model,  sizeof e_model,  j->disk_model);
+    esc(e_part,   sizeof e_part,   j->win_part);
+    esc(e_gpt,    sizeof e_gpt,    j->gpt_sha256);
+    esc(e_stage,  sizeof e_stage,  j->stage);
+    esc(e_boot,   sizeof e_boot,   j->boot_from);
     int k = snprintf(out, n,
         "{\"disk_serial\":\"%s\",\"disk_model\":\"%s\","
         "\"disk_bytes\":%llu,\"logical_sector\":%u,"
@@ -369,12 +414,12 @@ size_t fmt_journal_json(const fmt_journal *j, char *out, size_t n)
         "\"win_ntfs_serial\":%llu,\"gpt_sha256\":\"%s\",\"stage\":\"%s\","
         "\"boot_from\":\"%s\",\"run_id\":%llu,"
         "\"written_unix\":%llu}\n",
-        j->disk_serial, j->disk_model,
+        e_serial, e_model,
         (unsigned long long)j->disk_bytes, (unsigned)j->logical_sector,
-        j->win_part, (unsigned long long)j->win_start_lba,
+        e_part, (unsigned long long)j->win_start_lba,
         (unsigned long long)j->win_sectors,
         (unsigned long long)j->win_ntfs_serial,
-        j->gpt_sha256, j->stage, j->boot_from,
+        e_gpt, e_stage, e_boot,
         (unsigned long long)j->run_id,
         (unsigned long long)j->written_unix);
     if (k < 0 || (size_t)k >= n) return 0;

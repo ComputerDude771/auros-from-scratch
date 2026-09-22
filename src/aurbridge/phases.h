@@ -34,6 +34,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include "preflight.h"
+#include "plat.h"
 
 typedef enum {
     AB_INSPECT = 0,
@@ -87,6 +88,8 @@ typedef struct {
     uint64_t win_ntfs_serial;
 
     uint64_t esp_offset, esp_length;
+    /* The EFI partition, as the boot entry has to name it. */
+    plat_partition esp;
     char     gpt_sha256[65];
     uint64_t run_id;
 
@@ -98,6 +101,10 @@ typedef struct {
 
     uint16_t boot_entry;           /* the Boot#### we made            */
     int      bootnext_set;
+    /* Phase 1 suspended BitLocker and nothing else has turned it back
+     * on. ab_abort() is what turns it back on, and this is how it
+     * knows it has to. */
+    int      bitlocker_suspended;
 } ab_machine;
 
 /* Every phase says what it is doing, because a person is watching a

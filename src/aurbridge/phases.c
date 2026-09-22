@@ -13,6 +13,11 @@
 
 #define MIB (1024ull * 1024)
 
+/* EFI System, in GPT's mixed-endian order. */
+static const uint8_t ESP_TYPE_GUID[16] = {
+    0x28,0x73,0x2A,0xC1, 0x1F,0xF8, 0xD2,0x11,
+    0xBA,0x4B, 0x00,0xA0,0xC9,0x3E,0xC9,0x3B };
+
 const char *ab_phase_name(ab_phase p)
 {
     switch (p) {
@@ -130,6 +135,11 @@ static int rd_disk(void *ud, uint64_t off, void *buf, size_t n)
     return plat_read(c->disk, off, buf, n, why, sizeof why);
 }
 
+/* Defined with phase 2, where the questions belong, and called from
+ * phase 0, where the answers are free. */
+static int prepare_possible(const ab_choice *c, ab_machine *m,
+                            char *why, size_t n);
+
 /* ── phase 0: look, and refuse ───────────────────────────────────── */
 
 static int phase_inspect(const ab_choice *c, pf_report *r, ab_machine *m,
@@ -216,7 +226,7 @@ static int phase_inspect(const ab_choice *c, pf_report *r, ab_machine *m,
             return -1;
         }
         int found = 0;
-        for (uint32_t k = 0; k < ne && !found; k++) {
+        for (uint32_t k = 0; k < ne; k++) {
             uint8_t e[4096];
             if (rd_disk(&rc0, elba * ss + (uint64_t)k * es, e, es) != 0) break;
             int used = 0;
@@ -225,6 +235,12 @@ static int phase_inspect(const ab_choice *c, pf_report *r, ab_machine *m,
             uint64_t first = 0, last = 0;
             for (int i = 7; i >= 0; i--) first = (first << 8) | e[32 + i];
             for (int i = 7; i >= 0; i--) last  = (last  << 8) | e[40 + i];
+            if (memcmp(e, ESP_TYPE_GUID, 16) == 0) {
+                m->esp.number    = k + 1;
+                m->esp.first_lba = first;
+                m->esp.blocks    = last - first + 1;
+                memcpy(m->esp.guid, e + 16, 16);
+            }
             if (first * ss != r->system_offset) continue;
             /* IN 512-BYTE UNITS, ALWAYS. journal.h says so at length:
              * Linux reports a partition's start and length in /sys in
@@ -234,6 +250,20 @@ static int phase_inspect(const ab_choice *c, pf_report *r, ab_machine *m,
             m->win_start_lba = first * ss / 512;
             m->win_sectors   = (last - first + 1) * ss / 512;
             snprintf(m->win_part, sizeof m->win_part, "%u", (unsigned)(k + 1));
+            /* THE VOLUME'S OWN SERIAL NUMBER, out of its boot sector.
+             * journal.h calls the re-verification of these fields the
+             * thing that makes a one-shot boot safe to arm at all, and
+             * this one was hard-coded to zero with no comment -- a
+             * field that presents as a safety check and is not one. */
+            {
+                uint8_t b[4096];
+                if (ss <= sizeof b && rd_disk(&rc0, first * ss, b, ss) == 0 &&
+                    memcmp(b + 3, "NTFS    ", 8) == 0) {
+                    uint64_t v = 0;
+                    for (int q = 7; q >= 0; q--) v = (v << 8) | b[0x48 + q];
+                    m->win_ntfs_serial = v;
+                }
+            }
             found = 1;
         }
         if (!found) {
@@ -243,7 +273,12 @@ static int phase_inspect(const ab_choice *c, pf_report *r, ab_machine *m,
                      "not touch a computer it does not understand.");
             return -1;
         }
-        m->win_ntfs_serial = 0;
+    }
+    if (!m->esp.blocks) {
+        snprintf(why, n,
+                 "AurOS could not find this computer's EFI partition in its "
+                 "partition table.");
+        return -1;
     }
 
     rd_ctx rc = { m->disk_index };
@@ -259,7 +294,10 @@ static int phase_inspect(const ab_choice *c, pf_report *r, ab_machine *m,
     talk(say, ud, "Windows starts at block %llu and is %llu GB",
          (unsigned long long)m->win_start_lba,
          (unsigned long long)(m->win_sectors * 512 / 1000000000ull));
-    (void)c;
+
+    /* Asked here, where a refusal costs nothing. See the note on
+     * prepare_possible(). */
+    if (prepare_possible(c, m, why, n) != 0) return -1;
     return 0;
 }
 
@@ -273,7 +311,6 @@ static int phase_inspect(const ab_choice *c, pf_report *r, ab_machine *m,
 static int phase_consent(const ab_choice *c, pf_report *r, ab_machine *m,
                          ab_say say, void *ud, char *why, size_t n)
 {
-    (void)m;
     if (!c->consent_given) {
         snprintf(why, n, "nobody has agreed to this yet.");
         return -1;
@@ -316,6 +353,7 @@ static int phase_consent(const ab_choice *c, pf_report *r, ab_machine *m,
                      "Nothing has been changed.", tail);
             return -1;
         }
+        m->bitlocker_suspended = 1;
         talk(say, ud, "BitLocker is paused; it goes back on by itself");
     }
     talk(say, ud, "agreed: AurOS will be installed alongside Windows");
@@ -338,13 +376,49 @@ static int find_stick(const ab_choice *c, ab_machine *m, char *why, size_t n)
         }
         m->stick_index  = d[i].index;
         m->stick_bytes  = d[i].size_bytes;
-        m->stick_sector = d[i].logical_sector ? d[i].logical_sector : 512;
+        m->stick_sector = d[i].logical_sector;   /* 0 is a refusal above */
         return 0;
     }
     snprintf(why, n,
              "the memory stick you chose is not plugged in any more. Plug it "
              "back in and try again.");
     return -1;
+}
+
+/* EVERYTHING PHASE 2 CAN REFUSE FOR, ASKED IN PHASE 0.
+ *
+ * Phase 1 suspends BitLocker, and every refusal below it used to be
+ * reachable afterwards: the stick unplugged, the image file missing,
+ * the stick too small. A machine refused for any of those was left
+ * with its encryption key in the clear while the screen said nothing
+ * had been changed. None of these questions needs consent to have been
+ * given, so none of them is asked after it. */
+static int prepare_possible(const ab_choice *c, ab_machine *m,
+                            char *why, size_t n)
+{
+    if (find_stick(c, m, why, n) != 0) return -1;
+    if (!m->stick_sector) {
+        /* The same refusal the system disk gets, for the same reason.
+         * A guessed 512 on a 4Kn USB device -- a USB-to-SATA enclosure,
+         * a large USB SSD -- makes every partition on the stick eight
+         * times wrong, and the failure surfaces twenty minutes later
+         * as "the memory stick stopped accepting what was written to
+         * it", after the whole image has been copied. */
+        snprintf(why, n,
+                 "the memory stick you chose will not say how large its "
+                 "blocks are, and AurOS will not guess. Try a different "
+                 "stick.");
+        return -1;
+    }
+    uint64_t image_bytes = 0;
+    if (plat_file_size(c->image_path, &image_bytes) != 0 || !image_bytes) {
+        snprintf(why, n, "the copy of AurOS to install could not be found.");
+        return -1;
+    }
+    uint64_t if_, il, rf, rl, sf, sl;
+    return ab_stick_layout(m->stick_bytes, m->stick_sector, image_bytes,
+                           m->esp_length, &if_, &il, &rf, &rl, &sf, &sl,
+                           why, n);
 }
 
 static int phase_prepare(const ab_choice *c, pf_report *r, ab_machine *m,
@@ -360,6 +434,11 @@ static int phase_prepare(const ab_choice *c, pf_report *r, ab_machine *m,
         return -1;
     }
     uint32_t ss = m->stick_sector;
+    if (!ss) {
+        snprintf(why, n,
+                 "the memory stick will not say how large its blocks are.");
+        return -1;
+    }
     uint64_t if_, il, rf, rl, sf, sl;
     if (ab_stick_layout(m->stick_bytes, ss, image_bytes, m->esp_length,
                         &if_, &il, &rf, &rl, &sf, &sl, why, n) != 0)
@@ -377,6 +456,24 @@ static int phase_prepare(const ab_choice *c, pf_report *r, ab_machine *m,
     if (fmt_image_root_extent(ihead, hneed, 512, &root_off, &root_len,
                               why, n) != 0)
         return -1;
+    /* AND IT HAS TO BE INSIDE THE FILE.
+     *
+     * A half-downloaded auros-desktop.img -- 4.9 GB of 5.2, with the
+     * partition table at the front intact -- passed everything: the
+     * streaming loop wrote only what existed and hashed only what it
+     * wrote, and the read-back read the full root_len including the
+     * tail that was never written. The hashes differed, and the user
+     * was told her memory stick was faulty. She would have replaced
+     * the stick until she gave up. */
+    if (!root_len || root_off > image_bytes ||
+        root_len > image_bytes - root_off) {
+        snprintf(why, n,
+                 "the copy of AurOS on this computer is incomplete -- it is "
+                 "%llu MB and describes %llu MB of itself. Download it again.",
+                 (unsigned long long)(image_bytes / MIB),
+                 (unsigned long long)((root_off + root_len) / MIB));
+        return -1;
+    }
 
     talk(say, ud, "preparing the memory stick (everything on it is erased)");
 
@@ -490,6 +587,7 @@ static int phase_prepare(const ab_choice *c, pf_report *r, ab_machine *m,
         return -1;
     }
     talk(say, ud, "the memory stick is ready and has been checked");
+    plat_release();
     return 0;
 }
 
@@ -589,7 +687,8 @@ static int phase_handoff(const ab_choice *c, pf_report *r, ab_machine *m,
     snprintf(cmdline, sizeof cmdline,
              "initrd=\\EFI\\AurOS\\staging.img aurstage.install "
              "aurstage.profile=%s console=tty0", c->profile);
-    if (plat_boot_make("AurOS Installer", "\\EFI\\AurOS\\staging.efi",
+    if (plat_boot_make("AurOS Installer", &m->esp,
+                       "\\EFI\\AurOS\\staging.efi",
                        cmdline, &m->boot_entry, why, n) != 0)
         return -1;
 
@@ -640,6 +739,34 @@ int ab_run(ab_phase upto, const ab_choice *c, pf_report *r, ab_machine *m,
 void ab_abort(ab_machine *m, ab_say say, void *ud)
 {
     if (!m) return;
+    /* THE STICK IS LET GO OF FIRST. An aborted phase 2 used to leave
+     * it locked and dismounted for the life of the process -- gone
+     * from Explorer, and with the next write still pointed at the dead
+     * handle, so a user who swapped sticks wrote to the old one. */
+    plat_release();
+
+    /* AND BITLOCKER GOES BACK ON.
+     *
+     * Phase 1 suspends it with -RebootCount 0, which means "until
+     * somebody turns it back on" -- and nothing ever did. Every phase-2
+     * refusal is downstream of the suspension, including the one whose
+     * message says in as many words that nothing on this computer has
+     * been changed, and each of them left the machine with its key in
+     * the clear on disk, permanently. It is also, flatly, a write to
+     * the computer's own disk, which phases.h says these phases never
+     * make. */
+    if (m->bitlocker_suspended) {
+        char tail[512];
+        if (plat_run("manage-bde -protectors -enable C:", tail, sizeof tail) == 0) {
+            m->bitlocker_suspended = 0;
+            talk(say, ud, "BitLocker is switched back on");
+        } else {
+            talk(say, ud, "BitLocker could NOT be switched back on (%s). Open "
+                          "Windows, search for BitLocker, and choose Resume "
+                          "protection -- until you do, this computer's drive "
+                          "is not encrypted.", tail);
+        }
+    }
     if (m->bootnext_set) {
         char why[PLAT_WHY];
         if (plat_boot_next_clear(why, sizeof why) == 0) {

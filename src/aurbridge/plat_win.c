@@ -48,15 +48,18 @@ static void why_of(char *why, size_t n, const char *what, DWORD e)
 
 /* ── disks ───────────────────────────────────────────────────────── */
 
-static HANDLE open_disk(int index, int writable)
+static HANDLE open_disk_flags(int index, int writable, DWORD flags)
 {
     wchar_t path[64];
     _snwprintf(path, 63, L"\\\\.\\PhysicalDrive%d", index);
     path[63] = 0;
     return CreateFileW(path,
         GENERIC_READ | (writable ? GENERIC_WRITE : 0),
-        FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL);
+        FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, flags, NULL);
 }
+
+static HANDLE open_disk(int index, int writable)
+{ return open_disk_flags(index, writable, 0); }
 
 static uint32_t disk_sector(HANDLE h)
 {
@@ -85,7 +88,13 @@ static void disk_names(HANDLE h, char *serial, size_t sn,
     memset(&q, 0, sizeof q);
     q.PropertyId = StorageDeviceProperty;
     q.QueryType  = PropertyStandardQuery;
-    static unsigned char buf[4096];
+    /* ZEROED, AND ON THE STACK. It was a shared static reused across
+     * every disk, so a descriptor whose serial was not NUL-terminated
+     * within `got` picked up the PREVIOUS disk's bytes -- and the
+     * serial is what decides which computer the installer was prepared
+     * for. Four kilobytes of stack is cheaper than that. */
+    unsigned char buf[4096];
+    memset(buf, 0, sizeof buf);
     DWORD got = 0;
     if (!DeviceIoControl(h, IOCTL_STORAGE_QUERY_PROPERTY, &q, sizeof q,
                          buf, sizeof buf, &got, NULL))
@@ -148,9 +157,23 @@ void plat_allow_write(int index) { g_allowed = index; }
 /* Lock and dismount every volume the stick has, and keep the handles.
  * Windows throws away writes to a raw disk handle whose volumes are
  * still mounted, silently, on some versions. */
+static void give_stick(void);
+
+static int g_stick_index = -1;
+
 static int take_stick(int index, char *why, size_t wn)
 {
-    if (g_stick != INVALID_HANDLE_VALUE) return 0;
+    /* THE INDEX IS CHECKED, and it was not. `if (g_stick != INVALID)
+     * return 0;` meant that once any disk was open for writing, every
+     * later write went to THAT disk whatever it was asked for -- so
+     * plat_write's per-disk guard, which plat.h presents as the whole
+     * safety property of this file, held only for the first stick
+     * written in the process. A user whose first stick failed and who
+     * plugged in a second got writes to the first one. */
+    if (g_stick != INVALID_HANDLE_VALUE) {
+        if (g_stick_index == index) return 0;
+        give_stick();
+    }
     g_nvol = 0;
     wchar_t drives[512];
     DWORD dn = GetLogicalDriveStringsW(511, drives);
@@ -163,7 +186,7 @@ static int take_stick(int index, char *why, size_t wn)
                                OPEN_EXISTING, 0, NULL);
         if (v == INVALID_HANDLE_VALUE) continue;
         /* Is this volume on the disk we are about to write to? */
-        static unsigned char ext[1024];
+        unsigned char ext[1024];
         DWORD got = 0;
         int mine = 0;
         if (DeviceIoControl(v, IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS, NULL, 0,
@@ -173,15 +196,48 @@ static int take_stick(int index, char *why, size_t wn)
                 if ((int)e->Extents[k].DiskNumber == index) mine = 1;
         }
         if (!mine || g_nvol >= MAX_VOL) { CloseHandle(v); continue; }
-        DeviceIoControl(v, FSCTL_LOCK_VOLUME, NULL, 0, NULL, 0, &got, NULL);
-        DeviceIoControl(v, FSCTL_DISMOUNT_VOLUME, NULL, 0, NULL, 0, &got, NULL);
+        /* BOTH RESULTS ARE READ. They used to be thrown away, so a
+         * stick with an Explorer window open on it failed the raw
+         * write afterwards and the user was told "the memory stick
+         * stopped accepting what was written to it. Try a different
+         * one" -- the hardware blamed for a condition this code had
+         * already detected, with the correct remedy sitting in another
+         * message forty lines below. */
+        int locked = DeviceIoControl(v, FSCTL_LOCK_VOLUME, NULL, 0,
+                                     NULL, 0, &got, NULL) ? 1 : 0;
+        int dismounted = DeviceIoControl(v, FSCTL_DISMOUNT_VOLUME, NULL, 0,
+                                         NULL, 0, &got, NULL) ? 1 : 0;
+        if (!locked && !dismounted) {
+            DWORD e = GetLastError();
+            CloseHandle(v);
+            for (int i = 0; i < g_nvol; i++) CloseHandle(g_vol[i]);
+            g_nvol = 0;
+            why_of(why, wn,
+                   "Windows will not let go of the memory stick. Close any "
+                   "Explorer window showing it, stop any antivirus scan of "
+                   "it, and try again", e);
+            return -1;
+        }
         g_vol[g_nvol++] = v;
     }
-    g_stick = open_disk(index, 1);
+    /* FILE_FLAG_NO_BUFFERING, deliberately.
+     *
+     * Everything here is whole sectors at sector offsets through
+     * page-aligned VirtualAlloc buffers, so the flag costs nothing --
+     * and without it the read-back that phase 2 does to catch a
+     * counterfeit stick is served out of the cache manager's copy of
+     * what we just wrote. A stick that acknowledges writes it does not
+     * commit is exactly the population that check names, and it would
+     * have passed. WRITE_THROUGH so a flush means the device, not the
+     * cache. */
+    g_stick = open_disk_flags(index, 1,
+                              FILE_FLAG_NO_BUFFERING | FILE_FLAG_WRITE_THROUGH);
+    g_stick_index = index;
     if (g_stick == INVALID_HANDLE_VALUE) {
         DWORD e = GetLastError();
         for (int i = 0; i < g_nvol; i++) CloseHandle(g_vol[i]);
         g_nvol = 0;
+        g_stick_index = -1;
         why_of(why, wn,
                "the memory stick could not be opened for writing. Close any "
                "Explorer window showing it and try again", e);
@@ -194,9 +250,12 @@ static void give_stick(void)
 {
     if (g_stick != INVALID_HANDLE_VALUE) { CloseHandle(g_stick); }
     g_stick = INVALID_HANDLE_VALUE;
+    g_stick_index = -1;
     for (int i = 0; i < g_nvol; i++) CloseHandle(g_vol[i]);
     g_nvol = 0;
 }
+
+void plat_release(void) { give_stick(); }
 
 static int seek_to(HANDLE h, uint64_t off)
 {
@@ -208,15 +267,35 @@ static int seek_to(HANDLE h, uint64_t off)
 int plat_read(int index, uint64_t off, void *buf, size_t n,
               char *why, size_t wn)
 {
+    /* UNBUFFERED, ALWAYS.
+     *
+     * The read-back that phase 2 does to catch a stick which
+     * acknowledges writes it does not commit has to come from the
+     * device, not from the cache manager's copy of what we just wrote
+     * -- and by the time it runs, plat_reread() has already closed the
+     * unbuffered handle, so this is where it matters. Everything here
+     * is whole sectors at sector offsets through a page-aligned
+     * VirtualAlloc buffer, which is exactly what the flag requires. */
     HANDLE h = (index == g_allowed && g_stick != INVALID_HANDLE_VALUE)
-             ? g_stick : open_disk(index, 0);
+             ? g_stick
+             : open_disk_flags(index, 0, FILE_FLAG_NO_BUFFERING);
     if (h == INVALID_HANDLE_VALUE) {
         why_of(why, wn, "a disk in this computer could not be read",
                GetLastError());
         return -1;
     }
     uint32_t ss = disk_sector(h);
-    if (!ss) ss = 512;
+    if (!ss) {
+        /* NOT 512. docs/AURBRIDGE.md blocks on a disk that will not
+         * state its block size for the system disk; a stick is no
+         * different, and a guessed 512 on a 4Kn device makes every
+         * offset here eight times wrong. */
+        if (h != g_stick) CloseHandle(h);
+        snprintf(why, wn,
+                 "this drive will not say how large its blocks are, and "
+                 "AurOS will not guess.");
+        return -1;
+    }
     int rc = 0;
     /* Whole sectors, at sector offsets, always -- the handle will not
      * do anything else. An unaligned request is served by reading the
@@ -268,7 +347,12 @@ int plat_write(int index, uint64_t off, const void *buf, size_t n,
     }
     if (take_stick(index, why, wn) != 0) return -1;
     uint32_t ss = disk_sector(g_stick);
-    if (!ss) ss = 512;
+    if (!ss) {
+        snprintf(why, wn,
+                 "the memory stick will not say how large its blocks are, "
+                 "and AurOS will not guess.");
+        return -1;
+    }
 
     uint64_t lo = off - (off % ss);
     uint64_t hi = ((off + n + ss - 1) / ss) * ss;
@@ -336,11 +420,23 @@ int plat_reread(int index, char *why, size_t wn)
 
 /* ── ordinary files ──────────────────────────────────────────────── */
 
+/* MultiByteToWideChar returns 0 and leaves the destination PARTLY
+ * WRITTEN when the input does not fit or is not valid UTF-8, and every
+ * caller here then NUL-terminated the end of an uninitialised buffer
+ * and handed it to CreateFileW -- or, in one case, wrote it into
+ * NVRAM. Not reachable with the wizard's own inputs today, and nothing
+ * enforced that. */
+static int to_wide(const char *in, wchar_t *out, int cap)
+{
+    int k = MultiByteToWideChar(CP_UTF8, 0, in, -1, out, cap);
+    if (k <= 0 || k > cap) { out[0] = 0; return -1; }
+    return 0;
+}
+
 static HANDLE open_file(const char *path, int writing)
 {
     wchar_t w[1024];
-    MultiByteToWideChar(CP_UTF8, 0, path, -1, w, 1023);
-    w[1023] = 0;
+    if (to_wide(path, w, 1024) != 0) return INVALID_HANDLE_VALUE;
     return CreateFileW(w, writing ? GENERIC_WRITE : GENERIC_READ,
                        FILE_SHARE_READ, NULL,
                        writing ? CREATE_ALWAYS : OPEN_EXISTING,
@@ -390,8 +486,7 @@ out:
 static void make_dirs(const char *path)
 {
     wchar_t w[1024];
-    MultiByteToWideChar(CP_UTF8, 0, path, -1, w, 1023);
-    w[1023] = 0;
+    if (to_wide(path, w, 1024) != 0) return;
     for (wchar_t *p = w + 1; *p; p++) {
         if (*p != L'\\' && *p != L'/') continue;
         wchar_t c = *p; *p = 0;
@@ -430,8 +525,10 @@ int plat_file_copy(const char *from, const char *to, char *why, size_t wn)
 {
     make_dirs(to);
     wchar_t wf[1024], wt[1024];
-    MultiByteToWideChar(CP_UTF8, 0, from, -1, wf, 1023); wf[1023] = 0;
-    MultiByteToWideChar(CP_UTF8, 0, to,   -1, wt, 1023); wt[1023] = 0;
+    if (to_wide(from, wf, 1024) != 0 || to_wide(to, wt, 1024) != 0) {
+        snprintf(why, wn, "a file path on this computer could not be read");
+        return -1;
+    }
     if (!CopyFileW(wf, wt, FALSE)) {
         why_of(why, wn, "a file could not be copied onto the start-up "
                         "partition", GetLastError());
@@ -450,8 +547,21 @@ int plat_file_copy(const char *from, const char *to, char *why, size_t wn)
  */
 static char g_esp_letter;
 
+/* AND IT COMES BACK EVEN IF NOBODY ASKS.
+ *
+ * Every return inside phase_handoff pairs open with close -- but the
+ * wizard's cancel path deliberately returns early while a phase is
+ * mid-write, so a window closed during the 13 MB copy left the EFI
+ * System Partition mounted, writable, in Explorer, across reboots,
+ * until somebody ran `mountvol /D` by hand. plat.h says this is given
+ * back; atexit is what makes that true when the program does not get
+ * to say so itself. */
+static void esp_atexit(void) { plat_esp_close(); }
+
 int plat_esp_open(char *root, size_t n, char *why, size_t wn)
 {
+    static int armed;
+    if (!armed) { atexit(esp_atexit); armed = 1; }
     for (char c = 'Z'; c >= 'E'; c--) {
         wchar_t path[8];
         _snwprintf(path, 7, L"%c:\\", c); path[7] = 0;
@@ -522,14 +632,14 @@ static int set_var(const wchar_t *name, const void *buf, DWORD n)
  * NUL-terminated UTF-16 description, the device path, then the
  * optional data. The description is what plat_boot_find matches on. */
 static size_t load_option(unsigned char *out, size_t n,
-                          const char *desc, const char *loader,
-                          const char *cmdline);
+                          const char *desc, const plat_partition *on,
+                          const char *loader, const char *cmdline);
 
 int plat_boot_find(const char *desc, uint16_t *num_out, char *why, size_t wn)
 {
     (void)why; (void)wn;
     wchar_t wdesc[128];
-    MultiByteToWideChar(CP_UTF8, 0, desc, -1, wdesc, 127); wdesc[127] = 0;
+    if (to_wide(desc, wdesc, 128) != 0) return -1;
     size_t dl = wcslen(wdesc);
     for (int i = 0; i < 0x2000; i++) {
         wchar_t name[16];
@@ -552,9 +662,17 @@ int plat_boot_find(const char *desc, uint16_t *num_out, char *why, size_t wn)
     return -1;
 }
 
-int plat_boot_make(const char *desc, const char *loader, const char *cmdline,
+int plat_boot_make(const char *desc, const plat_partition *on,
+                   const char *loader, const char *cmdline,
                    uint16_t *num_out, char *why, size_t wn)
 {
+    if (!on || !on->number || !on->blocks) {
+        snprintf(why, wn,
+                 "AurOS could not work out which part of this disk its "
+                 "start-up files are on, and will not write a start-up entry "
+                 "that names no partition.");
+        return -1;
+    }
     if (enable_env_privilege() != 0) {
         snprintf(why, wn,
                  "this computer would not let AurBridge change its start-up "
@@ -568,17 +686,39 @@ int plat_boot_make(const char *desc, const char *loader, const char *cmdline,
          * NEVER "the first number we do not recognise": that also
          * selects the Fedora somebody installed last month and the
          * vendor diagnostics entry that was never in BootOrder. A slot
-         * is free only when reading it fails. */
+         * is free only when reading it fails BECAUSE THERE IS NOTHING
+         * THERE.
+         *
+         * That last clause is the whole of this paragraph's history.
+         * The scan used a 16-byte buffer, and
+         * GetFirmwareEnvironmentVariableW returns 0 on ANY failure,
+         * including ERROR_INSUFFICIENT_BUFFER. A real load option is
+         * 150-250 bytes -- "Windows Boot Manager" alone is more than
+         * 16 -- so on the first run on every UEFI machine Boot0000 was
+         * declared free and then OVERWRITTEN. On a machine whose
+         * BootOrder is {0000}, which is the common OEM shape, aborting
+         * afterwards left no Windows Boot Manager and no AurOS: "no
+         * bootable device". ab_abort() clears BootNext and nothing
+         * else, so there was no way back from it either.
+         *
+         * The buffer is now the size of a real entry, and the error
+         * code is read rather than assumed. */
         num = 0xFFFF;
+        static unsigned char probe[4096];
         for (int i = 0; i < 0x2000; i++) {
             wchar_t name[16];
             _snwprintf(name, 15, L"Boot%04X", i); name[15] = 0;
-            unsigned char tmp[16];
-            DWORD got = 0;
-            if (get_var(name, tmp, sizeof tmp, &got) != 0) {
-                num = (uint16_t)i;
-                break;
-            }
+            SetLastError(ERROR_SUCCESS);
+            DWORD got = GetFirmwareEnvironmentVariableW(name, EFI_GLOBAL,
+                                                        probe, sizeof probe);
+            if (got > 0) continue;                   /* occupied       */
+            DWORD e = GetLastError();
+            if (e != ERROR_ENVVAR_NOT_FOUND && e != ERROR_NOT_FOUND &&
+                e != ERROR_FILE_NOT_FOUND)
+                continue;      /* something is there and we could not
+                                * read it; it is not ours to take      */
+            num = (uint16_t)i;
+            break;
         }
         if (num == 0xFFFF) {
             snprintf(why, wn,
@@ -587,7 +727,7 @@ int plat_boot_make(const char *desc, const char *loader, const char *cmdline,
         }
     }
     static unsigned char opt[2048];
-    size_t k = load_option(opt, sizeof opt, desc, loader, cmdline);
+    size_t k = load_option(opt, sizeof opt, desc, on, loader, cmdline);
     if (!k) {
         snprintf(why, wn, "the AurOS start-up entry could not be built.");
         return -1;
@@ -640,29 +780,39 @@ int plat_boot_next_clear(char *why, size_t wn)
 
 /* ── the EFI device path, built by hand ──────────────────────────── */
 /*
- * A loader on the ESP is a FILE PATH MEDIA device node followed by the
- * end-of-path node. Windows resolves the partition itself when the
- * path has no hardware node in front of it, which is what is wanted:
- * naming the partition by GUID here would mean naming a partition that
- * the staging environment is about to change the table of.
+ * SHORT-FORM HARD DRIVE, THEN FILE, THEN END, which is what
+ * efibootmgr writes and what the specification requires.
+ *
+ * The first version of this emitted File() and End and nothing else,
+ * reasoning that naming the partition would name one the staging
+ * environment is about to change the table of. Both halves of that
+ * were wrong. UEFI 2.10 s10.3.5 defines exactly two short forms the
+ * boot manager must expand, and a bare MEDIA_FILEPATH_DP is neither:
+ * LoadImage resolves the path with LocateDevicePath, which with no
+ * device node has no handle to anchor to and returns EFI_NOT_FOUND. So
+ * every machine would have consumed its one-shot BootNext, loaded
+ * nothing, and come back to Windows -- which is at least the safe
+ * direction, and is also a product that never installs. And the
+ * install never touches the EFI partition's entry: plan.c carves
+ * everything out of the gap the shrink makes, so the HD() node stays
+ * true.
  */
 static size_t load_option(unsigned char *out, size_t n,
-                          const char *desc, const char *loader,
-                          const char *cmdline)
+                          const char *desc, const plat_partition *on,
+                          const char *loader, const char *cmdline)
 {
     wchar_t wdesc[128], wload[512], wcmd[512];
-    MultiByteToWideChar(CP_UTF8, 0, desc, -1, wdesc, 127); wdesc[127] = 0;
-    MultiByteToWideChar(CP_UTF8, 0, loader, -1, wload, 511); wload[511] = 0;
+    if (to_wide(desc, wdesc, 128) != 0) return 0;
+    if (to_wide(loader, wload, 512) != 0) return 0;
     wcmd[0] = 0;
-    if (cmdline && *cmdline)
-        MultiByteToWideChar(CP_UTF8, 0, cmdline, -1, wcmd, 511);
-    wcmd[511] = 0;
+    if (cmdline && *cmdline && to_wide(cmdline, wcmd, 512) != 0) return 0;
 
     size_t dl = (wcslen(wdesc) + 1) * 2;
     size_t fl = (wcslen(wload) + 1) * 2;
+    size_t hd_node   = 42;              /* UEFI 2.10 Table 10-13        */
     size_t file_node = 4 + fl;          /* type, subtype, length, path  */
     size_t end_node  = 4;
-    size_t dp = file_node + end_node;
+    size_t dp = hd_node + file_node + end_node;
     size_t cl = wcmd[0] ? (wcslen(wcmd) + 1) * 2 : 0;
     size_t total = 6 + dl + dp + cl;
     if (total > n) return 0;
@@ -674,6 +824,20 @@ static size_t load_option(unsigned char *out, size_t n,
     p[5] = (unsigned char)(dp >> 8);
     p += 6;
     memcpy(p, wdesc, dl); p += dl;
+
+    /* MEDIA_DEVICE_PATH(0x04) / MEDIA_HARDDRIVE_DP(0x01), length 42 */
+    memset(p, 0, hd_node);
+    p[0] = 0x04; p[1] = 0x01;
+    p[2] = (unsigned char)(hd_node & 0xFF);
+    p[3] = (unsigned char)(hd_node >> 8);
+    for (int i = 0; i < 4; i++) p[4 + i]  = (unsigned char)(on->number >> (8 * i));
+    for (int i = 0; i < 8; i++) p[8 + i]  = (unsigned char)(on->first_lba >> (8 * i));
+    for (int i = 0; i < 8; i++) p[16 + i] = (unsigned char)(on->blocks >> (8 * i));
+    memcpy(p + 24, on->guid, 16);       /* as it lies on the disk       */
+    p[40] = 0x02;                       /* PartitionFormat: GPT         */
+    p[41] = 0x02;                       /* SignatureType: GUID          */
+    p += hd_node;
+
     /* MEDIA_DEVICE_PATH(4) / MEDIA_FILEPATH_DP(4) */
     p[0] = 4; p[1] = 4;
     p[2] = (unsigned char)(file_node & 0xFF);
@@ -693,8 +857,10 @@ int plat_run(const char *cmdline, char *tail, size_t n)
 {
     if (tail && n) tail[0] = 0;
     wchar_t w[1024];
-    MultiByteToWideChar(CP_UTF8, 0, cmdline, -1, w, 1023);
-    w[1023] = 0;
+    if (to_wide(cmdline, w, 1024) != 0) {
+        if (tail && n) snprintf(tail, n, "the command could not be read");
+        return -1;
+    }
 
     SECURITY_ATTRIBUTES sa;
     memset(&sa, 0, sizeof sa);

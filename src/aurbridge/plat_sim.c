@@ -207,6 +207,8 @@ int plat_flush(int index, char *why, size_t wn)
 int plat_reread(int index, char *why, size_t wn)
 { (void)index; (void)why; (void)wn; return 0; }
 
+void plat_release(void) { g_allowed = -1; }
+
 /* ── ordinary files ──────────────────────────────────────────────── */
 
 int plat_file_size(const char *path, uint64_t *out)
@@ -368,23 +370,43 @@ int plat_boot_find(const char *desc, uint16_t *num_out, char *why, size_t wn)
     return -1;
 }
 
-int plat_boot_make(const char *desc, const char *loader, const char *cmdline,
+int plat_boot_make(const char *desc, const plat_partition *on,
+                   const char *loader, const char *cmdline,
                    uint16_t *num_out, char *why, size_t wn)
 {
+    if (!on || !on->number || !on->blocks) {
+        snprintf(why, wn, "no partition was named for the start-up entry");
+        return -1;
+    }
     uint16_t num;
     if (plat_boot_find(desc, &num, why, wn) != 0) {
         /* The first free number, searched upward. Reusing a number an
-         * entry already has is how somebody's Fedora disappears. */
-        num = 0;
+         * entry already has is how somebody's Fedora disappears.
+         *
+         * 0xFFFF as the sentinel, not 0: starting from 0 meant that a
+         * machine with every slot taken silently targeted Boot0000
+         * instead of refusing. The real implementation got this right
+         * and this one did not, which is the wrong way round for the
+         * one that is exercised on every test run. */
+        num = 0xFFFF;
         for (int i = 0; i < 0x2000; i++) {
             char name[16], val[700];
             snprintf(name, sizeof name, "Boot%04X", i);
             if (var_get(name, val, sizeof val) != 0) { num = (uint16_t)i; break; }
         }
+        if (num == 0xFFFF) {
+            snprintf(why, wn, "no room left in the start-up menu");
+            return -1;
+        }
     }
     char name[16], val[900];
     snprintf(name, sizeof name, "Boot%04X", num);
-    snprintf(val, sizeof val, "%s|%s|%s", desc, loader, cmdline ? cmdline : "");
+    /* The partition is in the stored line too, so that the end-to-end
+     * test can see the real one rather than a placeholder. */
+    snprintf(val, sizeof val, "%s|%s|%s|HD(%u,GPT,%llu,%llu)",
+             desc, loader, cmdline ? cmdline : "",
+             (unsigned)on->number, (unsigned long long)on->first_lba,
+             (unsigned long long)on->blocks);
     if (var_set(name, val) != 0) {
         snprintf(why, wn, "this simulated computer would not take a boot entry");
         return -1;

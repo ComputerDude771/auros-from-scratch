@@ -105,11 +105,44 @@ void plat_esp_close(void);
 int plat_boot_find(const char *desc, uint16_t *num_out,
                    char *why, size_t wn);
 
-/* Create (or replace) a boot entry pointing at `loader` on the ESP,
- * with `cmdline` as its optional data. Returns the Boot#### number. */
-int plat_boot_make(const char *desc, const char *loader,
-                   const char *cmdline, uint16_t *num_out,
-                   char *why, size_t wn);
+/* WHICH PARTITION THE LOADER IS ON, which a boot entry cannot do
+ * without.
+ *
+ * The first version of plat_boot_make() built a device path containing
+ * only File(\EFI\AurOS\staging.efi) and an end node, on the reasoning
+ * that naming the partition would mean naming one the staging
+ * environment is about to change the table of. A review pointed out
+ * two things: the firmware has nothing to resolve a bare file path
+ * against -- LoadImage calls LocateDevicePath, which needs a device
+ * node, so every machine would have consumed BootNext and loaded
+ * nothing -- and the reasoning was wrong anyway, because the install
+ * only ever carves partitions out of the gap the shrink makes and
+ * leaves the EFI partition's entry exactly as it found it.
+ *
+ * So the short-form Hard Drive path is built, as efibootmgr does:
+ * HD(number, GPT, partition-GUID, start, size) / File(...) / End. */
+typedef struct {
+    uint32_t number;        /* 1-based partition number               */
+    uint64_t first_lba;
+    uint64_t blocks;
+    uint8_t  guid[16];      /* the PARTITION's unique GUID, as on disk */
+} plat_partition;
+
+/* Create (or replace) a boot entry pointing at `loader` on the
+ * partition `on`, with `cmdline` as its optional data. Returns the
+ * Boot#### number. */
+int plat_boot_make(const char *desc, const plat_partition *on,
+                   const char *loader, const char *cmdline,
+                   uint16_t *num_out, char *why, size_t wn);
+
+/* Let go of the memory stick: close the raw handle and unlock the
+ * volumes that were dismounted to get it. Safe at any time, including
+ * twice, including when nothing was ever taken.
+ *
+ * It exists because an aborted phase 2 used to leave the stick locked
+ * and dismounted -- invisible in Explorer -- for the life of the
+ * process, and left the next write pointed at the dead handle. */
+void plat_release(void);
 
 /* Set BootNext, which is one-shot: the firmware clears it as it uses
  * it, so a machine that fails to start AurOS comes back to Windows by
