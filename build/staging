@@ -139,7 +139,7 @@ note "init $(du -h init | cut -f1)"
 
 # ── the programs it shells out to ──────────────────────────────────
 #
-# Three, and each is here because writing our own would be worse:
+# Each is here because writing our own would be worse:
 #
 #   modprobe    the kernel's own module loader. Asking it for a
 #               modalias is the whole of what udev coldplug does for
@@ -159,7 +159,7 @@ note "init $(du -h init | cut -f1)"
 #               restart area, hiberfil.sys -- which is what decides
 #               whether we are allowed to proceed at all. Windows
 #               saying it shut down cleanly is not the authority here.
-step "the three programs it shells out to"
+step "the programs it shells out to"
 copy_prog() {
     local src="$RFS$1" dst="$2"
     [ -f "$src" ] || die "$1 is not in the image; the staging environment needs it"
@@ -169,6 +169,20 @@ copy_prog() {
 copy_prog /usr/sbin/modprobe   sbin/modprobe
 copy_prog /usr/sbin/ntfsresize sbin/ntfsresize
 copy_prog /usr/bin/ntfsinfo    sbin/ntfsinfo
+#   e2fsck      resize2fs REFUSES outright with "Please run 'e2fsck -f'
+#               first" whenever s_lastcheck is older than s_mtime, and
+#               that is true of every image build/mkimage produces --
+#               it makes the filesystem and then mounts it to fill it.
+#               Without this the AurOS root never grows, silently, on
+#               every single install.
+#   resize2fs   grows the root into the partition the person chose.
+#
+# Both come from the PROFILE'S ROOTFS, like everything else here, so
+# the checker, the resizer and the filesystem all come from one place.
+# A build host with newer e2fsprogs writes features the rootfs's tools
+# do not know, and that failure lands after the commit.
+copy_prog /usr/sbin/e2fsck     sbin/e2fsck
+copy_prog /usr/sbin/resize2fs  sbin/resize2fs
 
 # ── the libraries those programs need, worked out rather than listed ─
 #
@@ -222,7 +236,8 @@ unresolved() {
         | grep -c "not found" || true
 }
 n_lib=0
-for prog in sbin/modprobe sbin/ntfsresize sbin/ntfsinfo; do
+for prog in sbin/modprobe sbin/ntfsresize sbin/ntfsinfo \
+            sbin/e2fsck sbin/resize2fs; do
     got=0
     for lib in $(libs_of "$WORK/$prog"); do
         [ -f "$RFS$lib" ] || continue

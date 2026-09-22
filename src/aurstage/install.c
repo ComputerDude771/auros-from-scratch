@@ -27,6 +27,21 @@
 #define RECOVERY_BYTES   (600ull * 1024 * 1024)
 #define MIN_ROOT_DEFAULT (24ull * 1000 * 1000 * 1000)
 
+/* THE SAME NUMBER THE DRY RUN USES. It was hardcoded here while the
+ * dry run read aurstage.min_gb= from the command line, so a machine
+ * the dry run called convertible was refused by the install -- the
+ * two halves disagreeing about the same question, which makes every
+ * row in a hardware matrix a guess. */
+static uint64_t min_root_bytes(void)
+{
+    char v[32];
+    if (stage_cmdline_value("aurstage.min_gb=", v, sizeof v) == 0) {
+        unsigned long long g = strtoull(v, NULL, 10);
+        if (g >= 1 && g <= 4096) return g * 1000ull * 1000 * 1000;
+    }
+    return MIN_ROOT_DEFAULT;
+}
+
 /* ── saying things ───────────────────────────────────────────────── */
 
 static rec_target g_rec;
@@ -323,7 +338,7 @@ void install_run(const stage_machine *m)
     /* A layout that fits, checked against the table. */
     stage_layout L;
     if (plan_compute(&old, wi, sp.smallest_bytes, img.root_len,
-                     RECOVERY_BYTES, MIN_ROOT_DEFAULT, &L,
+                     RECOVERY_BYTES, min_root_bytes(), &L,
                      why, sizeof why) != 0)
         refuse(why, NULL, "no-room");
     plan_say(&L);
@@ -357,7 +372,7 @@ void install_run(const stage_machine *m)
      * boundary, and a partition entry that ends below its filesystem
      * is a filesystem whose last blocks are outside its partition. */
     if (plan_compute(&old, wi, sr.achieved_bytes, img.root_len,
-                     RECOVERY_BYTES, MIN_ROOT_DEFAULT, &L,
+                     RECOVERY_BYTES, min_root_bytes(), &L,
                      why, sizeof why) != 0)
         give_up(why, "The Windows drive is smaller but nothing else has "
                      "changed.", "no-room-after-shrink", 1);

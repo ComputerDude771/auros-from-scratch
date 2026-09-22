@@ -32,6 +32,39 @@
 
 #include "aurstage.h"
 
+/* ── the kernel command line ─────────────────────────────────────── */
+
+static int cmdline_slurp(char *buf, size_t n)
+{
+    int fd = open("/proc/cmdline", O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return -1;
+    ssize_t k = read(fd, buf, n - 1);
+    close(fd);
+    if (k <= 0) return -1;
+    buf[k] = 0;
+    return 0;
+}
+
+int stage_cmdline_has(const char *word)
+{
+    char buf[4096];
+    if (cmdline_slurp(buf, sizeof buf) != 0) return 0;
+    return strstr(buf, word) != NULL;
+}
+
+int stage_cmdline_value(const char *key, char *out, size_t n)
+{
+    char buf[4096];
+    if (cmdline_slurp(buf, sizeof buf) != 0) return -1;
+    char *p = strstr(buf, key);
+    if (!p) return -1;
+    p += strlen(key);
+    size_t i = 0;
+    while (*p && *p != ' ' && *p != '\n' && i + 1 < n) out[i++] = *p++;
+    out[i] = 0;
+    return i ? 0 : -1;
+}
+
 /* ── saying things ───────────────────────────────────────────────── */
 
 static int log_fd = -1;

@@ -4,6 +4,8 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/ioctl.h>
+#include <sys/stat.h>
 
 #include "fde.h"
 
@@ -90,6 +92,25 @@ static fde_verdict sweep(const char *dev, uint64_t limit,
 {
     int fd = open(dev, O_RDONLY | O_CLOEXEC);
     if (fd < 0) return FDE_UNSURE;
+
+    /* THE LIMIT IS "UP TO", NOT "AT LEAST". An ESP is commonly 100 MB
+     * and the sweep is bounded at 512 MB, so the read runs off the end
+     * of the partition long before the limit -- and the first version
+     * called that a read failure and refused the whole install with
+     * "AurOS could not check whether this drive is encrypted by other
+     * software". Every machine with a normal-sized ESP. The
+     * end-to-end test found it on the first run; nothing smaller
+     * would have, because every unit test pointed at a file big
+     * enough. */
+    uint64_t have = 0;
+    struct stat st;
+    if (fstat(fd, &st) == 0 && S_ISREG(st.st_mode)) {
+        have = (uint64_t)st.st_size;
+    } else {
+        unsigned long long b = 0;
+        if (ioctl(fd, _IOR(0x12, 114, size_t), &b) == 0) have = b;  /* BLKGETSIZE64 */
+    }
+    if (have && limit > have) limit = have;
 
     /* Overlapping windows, so a name that straddles a read boundary
      * is still found. The overlap is one name longer than the longest

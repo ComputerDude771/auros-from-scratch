@@ -188,6 +188,18 @@ int commit_settle(const char *disk_dev, const char *root_dev,
     int rc = run_fixed(fsck, tail, sizeof tail);
     /* 0 = clean, 1 = fixed something. Anything else is a filesystem we
      * should not be growing. */
+    if (rc == 127) {
+        /* THE PROGRAM IS NOT THERE. Not a filesystem problem, and
+         * saying it is sends a support engineer looking at the disk
+         * instead of at our build. This exact thing happened: e2fsck
+         * was not in the staging image at all, and the install
+         * reported that the filesystem it had just written and
+         * hash-verified had failed its own check. */
+        snprintf(why, n,
+                 "AurOS could not run the tool that checks its own "
+                 "filesystem. This is a fault in the AurOS memory stick.");
+        return -1;
+    }
     if (rc != 0 && rc != 1) {
         snprintf(why, n,
                  "the new AurOS filesystem did not pass its own check, so it "

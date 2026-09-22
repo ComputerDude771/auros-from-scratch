@@ -6,7 +6,11 @@
 #include <string.h>
 #include <sys/mount.h>
 #include <sys/stat.h>
+#include <net/if.h>
 #include <sys/ioctl.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <time.h>
 #include <sys/utsname.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -54,6 +58,35 @@ static int read_first_line(const char *path, char *out, size_t n)
     return 0;
 }
 
+/* Bring an interface up.
+ *
+ * WITHOUT THIS THE WHOLE CHECK IS A LIE. Linux returns EINVAL for
+ * /sys/class/net/<if>/carrier while the device is down -- the kernel
+ * genuinely does not know, because nothing has powered the link up --
+ * and this environment has no network manager, no dhcp client and no
+ * udev to do it. So the probe reported "no network cable" on a
+ * machine with a cable in it, which is the exact wrong answer for the
+ * one abort this phase exists for.
+ *
+ * This is a write, but not to a disk: it sets IFF_UP on an interface,
+ * which is what testing whether the machine can get online requires. */
+static void link_up(const char *ifname)
+{
+    int s = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+    if (s < 0) return;
+    struct ifreq r;
+    memset(&r, 0, sizeof r);
+    /* Refused rather than truncated: a truncated interface name is a
+     * valid name for a different interface. */
+    if (strlen(ifname) >= IFNAMSIZ) { close(s); return; }
+    memcpy(r.ifr_name, ifname, strlen(ifname) + 1);
+    if (ioctl(s, SIOCGIFFLAGS, &r) == 0 && !(r.ifr_flags & IFF_UP)) {
+        r.ifr_flags |= IFF_UP;
+        ioctl(s, SIOCSIFFLAGS, &r);
+    }
+    close(s);
+}
+
 /* Any wired interface with a carrier. */
 static int wired_carrier(const char *sysroot)
 {
@@ -70,10 +103,38 @@ static int wired_carrier(const char *sysroot)
         snprintf(p, sizeof p, "%s/%s/wireless", nd, e->d_name);
         struct stat st;
         if (stat(p, &st) == 0) continue;
+        /* Only for the real thing: a synthetic /sys in a test has no
+         * interface to bring up, and asking the kernel about one
+         * would be asking about the machine running the test. */
+        if (!strcmp(nd, "/sys/class/net")) link_up(e->d_name);
         snprintf(p, sizeof p, "%s/%s/carrier", nd, e->d_name);
         if (read_first_line(p, v, sizeof v) == 0 && v[0] == '1') up = 1;
     }
     closedir(dp);
+    if (!up && !strcmp(nd, "/sys/class/net")) {
+        /* A link that has just been brought up takes a moment to
+         * settle -- autonegotiation on real copper is a second or
+         * two. Asking once and concluding "no cable" would fail every
+         * machine with a gigabit port. */
+        for (int tries = 0; tries < 30 && !up; tries++) {
+            struct timespec ts = { 0, 200 * 1000 * 1000 };
+            nanosleep(&ts, NULL);
+            DIR *d2 = opendir(nd);
+            if (!d2) break;
+            struct dirent *e2;
+            while ((e2 = readdir(d2)) && !up) {
+                if (e2->d_name[0] == '.' || !strcmp(e2->d_name, "lo")) continue;
+                char p2[640], v2[32];
+                snprintf(p2, sizeof p2, "%s/%s/wireless", nd, e2->d_name);
+                struct stat st2;
+                if (stat(p2, &st2) == 0) continue;
+                snprintf(p2, sizeof p2, "%s/%s/carrier", nd, e2->d_name);
+                if (read_first_line(p2, v2, sizeof v2) == 0 && v2[0] == '1')
+                    up = 1;
+            }
+            closedir(d2);
+        }
+    }
     return up;
 }
 

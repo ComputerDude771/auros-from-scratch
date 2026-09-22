@@ -168,6 +168,13 @@ int  stage_gpt_sha256(const stage_disk *d, char *hex, size_t n);
  * a block device path. Never returns on success. */
 int  stage_switch_root(const char *root_dev);
 
+/* What the kernel was told to do with us, out of /proc/cmdline.
+ * Shared, because the dry run and the real run must agree about every
+ * one of these -- a flag that changes the dry run's answer and not
+ * the install's makes the hardware matrix a lie. */
+int  stage_cmdline_has(const char *word);
+int  stage_cmdline_value(const char *key, char *out, size_t n);
+
 /* ── saying things ───────────────────────────────────────────────── */
 
 /* Everything this environment says goes through here: to the console

@@ -31,35 +31,7 @@
 #include "install.h"
 
 /* What the kernel was told to do with us, out of /proc/cmdline. */
-static int cmdline_has(const char *word)
-{
-    int fd = open("/proc/cmdline", O_RDONLY | O_CLOEXEC);
-    if (fd < 0) return 0;
-    char buf[4096];
-    ssize_t k = read(fd, buf, sizeof buf - 1);
-    close(fd);
-    if (k <= 0) return 0;
-    buf[k] = 0;
-    return strstr(buf, word) != NULL;
-}
 
-static int cmdline_value(const char *key, char *out, size_t n)
-{
-    int fd = open("/proc/cmdline", O_RDONLY | O_CLOEXEC);
-    if (fd < 0) return -1;
-    char buf[4096];
-    ssize_t k = read(fd, buf, sizeof buf - 1);
-    close(fd);
-    if (k <= 0) return -1;
-    buf[k] = 0;
-    char *p = strstr(buf, key);
-    if (!p) return -1;
-    p += strlen(key);
-    size_t i = 0;
-    while (*p && *p != ' ' && *p != '\n' && i + 1 < n) out[i++] = *p++;
-    out[i] = 0;
-    return i ? 0 : -1;
-}
 
 /* WHAT AurOS ACTUALLY NEEDS, with somewhere to put things afterwards.
  * Decimal gigabytes, because that is the unit a disk is sold in and
@@ -79,7 +51,7 @@ static int cmdline_value(const char *key, char *out, size_t n)
 static uint64_t needs_bytes(void)
 {
     char v[32];
-    if (cmdline_value("aurstage.min_gb=", v, sizeof v) == 0) {
+    if (stage_cmdline_value("aurstage.min_gb=", v, sizeof v) == 0) {
         unsigned long long g = strtoull(v, NULL, 10);
         if (g >= 1 && g <= 4096) return g * 1000ull * 1000 * 1000;
     }
@@ -532,7 +504,7 @@ int main(void)
      * It is still read here, well before the first thing that can
      * fail, because the paths that fail are the ones a dry run most
      * needs to report on. */
-    int dry = cmdline_has("aurstage.dry");
+    int dry = stage_cmdline_has("aurstage.dry");
 
     int n = stage_load_modules();
     stage_say("%d drivers loaded", n);
@@ -576,7 +548,7 @@ int main(void)
      * the dry run and the install look at the machine identically,
      * and the only difference is whether anything is allowed to
      * happen afterwards. */
-    if (cmdline_has("aurstage.install")) {
+    if (stage_cmdline_has("aurstage.install")) {
         install_run(&m);
         /* install_run never returns. */
         stop_here("the installer stopped unexpectedly");
@@ -591,7 +563,7 @@ int main(void)
     }
 
     char root[128];
-    if (cmdline_value("aurstage.root=", root, sizeof root) != 0) {
+    if (stage_cmdline_value("aurstage.root=", root, sizeof root) != 0) {
         /* Nobody said which. Stage A does not guess: choosing a root
          * by looking for "the ext4 one that has an init in it" is
          * exactly the sort of helpfulness that picks the wrong disk on
