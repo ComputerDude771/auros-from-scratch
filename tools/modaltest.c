@@ -51,6 +51,11 @@ static void ok(const char *what, int good)
 
 /* Every flag SHELL_PANEL_OPEN is supposed to cover, by name and by
  * address, so the two can be checked against each other. */
+/* THE ONES THE BAND OPENS. The mutual-exclusion sweep below drives
+ * foot_open_only(), so it can only ask about panels that have a button
+ * -- and the welcome question deliberately does not: it opens itself,
+ * once per session, until it has been answered. It is in flag_any()
+ * instead, because SHELL_PANEL_OPEN must still cover it. */
 static int *flag_of(shell_ctx *c, int i)
 {
     switch (i) {
@@ -62,9 +67,19 @@ static int *flag_of(shell_ctx *c, int i)
     }
     return NULL;
 }
-static const char *NAMES[5] = { "help", "wifi", "settings",
-                                "headphones", "the power question" };
-#define N_PANELS 5
+
+/* Every flag that covers the desktop, whoever opens it. */
+static int *flag_any(shell_ctx *c, int i)
+{
+    if (i < 5) return flag_of(c, i);
+    if (i == 5) return &c->welcome_open;
+    return NULL;
+}
+static const char *NAMES[6] = { "help", "wifi", "settings",
+                                "headphones", "the power question",
+                                "the welcome question" };
+#define N_PANELS 5        /* the ones the band opens */
+#define N_FLAGS  6        /* every one that covers the desktop */
 
 static void fresh(shell_ctx *c)
 {
@@ -281,9 +296,9 @@ static void nothing_behind(void)
     /* And the macro itself covers every flag there is. A sixth panel
      * added to shell_ctx and forgotten here is the next drift. */
     shell_ctx c;
-    for (int i = 0; i < N_PANELS; i++) {
+    for (int i = 0; i < N_FLAGS; i++) {
         fresh(&c);
-        *flag_of(&c, i) = 1;
+        *flag_any(&c, i) = 1;
         char w[96];
         snprintf(w, sizeof w, "SHELL_PANEL_OPEN covers %s", NAMES[i]);
         ok(w, SHELL_PANEL_OPEN(&c) != 0);

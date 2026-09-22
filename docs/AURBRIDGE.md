@@ -56,8 +56,11 @@
                  saved copy of Windows, switch_root.
 
  AUROS
- 9  FIRSTBOOT    desktop; user confirms "this works"
-10  IMPORT       Ferry imports files; optionally make AurOS default
+ 9  FIRSTBOOT    the desktop asks, once per session until answered.
+                 Every boot re-arms BootNext so the machine keeps
+                 coming back while AurOS works.
+10  IMPORT       "yes" rewrites BootOrder -- the one place that does --
+                 and only then may Ferry read the old Windows volume.
 ```
 
 **Abort at any phase ≤7 leaves the machine bootable into Windows.** That
@@ -490,6 +493,81 @@ corruption-bug factory. Per the signing research, **no kernel-mode
 driver is required** — Rufus performs partition-table rewrites, volume
 lock/dismount and raw sector writes from an elevated user-mode process,
 which keeps attestation signing off the critical path.
+
+## Phases 9 and 10: the machine stops being on loan
+
+The installer finishes and hands over to AurOS in the same boot. At
+that moment the machine has AurOS on it, has a signed boot chain in a
+partition of its own, has a `Boot####` entry pointing at it, and has
+`BootNext` armed — and switching it on still reaches Windows. That is
+rule 3, and it held for a long time with nothing anywhere that let the
+person change it.
+
+### The hold
+
+`BootNext` is consumed by the firmware as it is used. The installer
+arms it and then hands over in the same boot, so it is still armed when
+the machine is next switched off — exactly once. Use AurOS, shut down,
+start (BootNext fires), shut down, start again: the second start
+reaches Windows, with AurOS installed, working, and unreachable without
+the firmware's boot menu.
+
+So `aurfirst hold` re-arms it on **every** boot until the question is
+answered, from a systemd unit that runs before the desktop. The machine
+keeps coming back to AurOS while AurOS works, and the moment it does
+not the firmware falls through to `BootOrder`, which still says
+Windows, and nobody has to do anything. One NVRAM write per boot is a
+fair price for that.
+
+### The question
+
+`src/aurshell/welcome.c` is the only thing in the product that asks
+whether AurOS works, and the only place a person can say no. It opens
+by itself on the first frame of every session until it is answered — a
+notification would be wrong twice, because it goes away and the one
+thing that must not go away is the only route to the decision. "Let me
+look first" closes it for this session and it is back tomorrow, and the
+panel says so in those words: somebody who does not know it will come
+back is somebody who answers it to make it go away.
+
+It never writes NVRAM, mounts anything or runs Ferry. It writes one
+word into `aurshell`'s own runtime directory — mode 0700, owned by the
+person using the machine — and a systemd path unit runs
+`rootfs/usr/lib/auros/answer.sh` as root. **The word is not a command.**
+It is matched against a fixed list of three, each of which is something
+the person at the keyboard is entitled to do, and anything else is
+written down and ignored. A setuid binary would mean anything that can
+run a program here can rewrite what the machine starts; a polkit rule
+means an action, a policy and an agent for three verbs.
+
+### The only place that writes `BootOrder`
+
+`src/aurstage/nvram.h` says at length that the staging environment may
+not write `BootOrder` and that there is deliberately no function there
+that does, because the way a rule like that gets broken is somebody
+finding a function that already does the thing. `aurfirst confirm` is
+that function, in a different program, after the answer.
+
+It **promotes**. It never removes anybody else's entry, and on firmware
+that ships with no `BootOrder` at all it builds one containing every
+`Boot####` there is, ours first — writing just our number would be a
+boot menu with one thing in it and Windows gone, which is the one thing
+this whole design has spent its budget not doing.
+
+`aurfirst decline` clears the one-shot **before** it records the answer.
+The other order leaves an instant where the machine has stopped
+re-arming and is still armed once, so the next start reaches AurOS just
+after she said it does not work.
+
+### And then Ferry
+
+Importing somebody's documents is the first thing this product does
+that restarting cannot undo, so it waits for the answer. `aurfirst
+ferry` is the gate and it lives in one place, so `answer.sh` does not
+re-derive it from a stamp file it would have to know about. Ferry
+itself is unchanged: it mounts the old Windows volume read-only,
+refuses a hibernated or dirty one out loud, and reports what could not
+come across.
 
 ## Power loss, step by step
 

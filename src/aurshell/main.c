@@ -1837,13 +1837,19 @@ int main(int argc, char **argv)
                          * to be underneath it. */
                         c.mouse_down = 1;
                         int pad_taken = foot_click(&c, c.mouse_x, c.mouse_y);
+                        /* THE WELCOME QUESTION IS ASKED FIRST, because
+                         * it is painted last. Click order and paint
+                         * order have to be each other's mirror or a
+                         * press lands on something she cannot see. The
+                         * band stays ahead of it: the way out of
+                         * everything is always the band. */
+                        if (!pad_taken)
+                            pad_taken = welcome_click(&c, c.mouse_x, c.mouse_y);
                         if (!pad_taken) pad_taken = net_click(&c, c.mouse_x, c.mouse_y);
                         if (!pad_taken)
                             pad_taken = settings_click(&c, c.mouse_x, c.mouse_y);
                         if (!pad_taken)
                             pad_taken = bt_click(&c, c.mouse_x, c.mouse_y);
-                        if (!pad_taken)
-                            pad_taken = welcome_click(&c, c.mouse_x, c.mouse_y);
                         if (!pad_taken)
                             pad_taken = session_button(&c, c.mouse_x, c.mouse_y,
                                                        BTN_LEFT, 1);
@@ -1892,13 +1898,15 @@ int main(int argc, char **argv)
                         if (!taken && ev.value && !SHELL_PANEL_OPEN(&c))
                             taken = notify_click(&c, c.mouse_x, c.mouse_y);
                         if (!taken && ev.value) {
-                            taken = net_click(&c, c.mouse_x, c.mouse_y);
+                            /* Painted last, so asked first. See the
+                             * note on the other click path. */
+                            taken = welcome_click(&c, c.mouse_x, c.mouse_y);
+                            if (!taken)
+                                taken = net_click(&c, c.mouse_x, c.mouse_y);
                             if (!taken)
                                 taken = settings_click(&c, c.mouse_x, c.mouse_y);
                             if (!taken)
                                 taken = bt_click(&c, c.mouse_x, c.mouse_y);
-                            if (!taken)
-                                taken = welcome_click(&c, c.mouse_x, c.mouse_y);
                             /* Anything still not taken, with a panel on
                              * screen, is swallowed: a press that fell
                              * through would reach whatever she was

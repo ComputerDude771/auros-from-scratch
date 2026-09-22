@@ -439,6 +439,15 @@ void foot_open_only(shell_ctx *c, int *flag)
     int want = !*flag;
     c->help_open = c->net_open = c->settings_open = 0;
     c->bt_open = c->power_open = 0;
+    /* AND THE WELCOME QUESTION, which nothing on the band opens and
+     * which therefore never reaches this function by the front door.
+     * It still has to go: it is painted over the other panels, so a
+     * Settings opened underneath it would take clicks that land on
+     * something she cannot see. Closing it answers nothing and it is
+     * back the next time the machine is switched on -- which is what
+     * "Let me look first" does, and it is the right meaning for
+     * "she pressed Settings" too. */
+    c->welcome_open = 0;
     c->power_sel = 0;          /* nothing is chosen until she chooses */
     *flag = want;
 }
