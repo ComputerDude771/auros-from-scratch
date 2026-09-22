@@ -1099,18 +1099,32 @@ static void ab_prog_cb(int pct, void *ud)
 
 /* Where this program is, so that the image and the staging environment
  * beside it can be named without asking the user where she put them. */
+/* BOTH CONVERSIONS ARE CHECKED, and neither used to be.
+ *
+ * GetModuleFileNameW truncates silently when the path does not fit and
+ * reports the buffer size, so a deep install directory produced a
+ * DIFFERENT directory that looked plausible. WideCharToMultiByte
+ * returns 0 and writes nothing when the UTF-8 form does not fit --
+ * 260 wide characters of CJK can need 780 bytes and `dir` holds 519 --
+ * leaving uninitialised stack to be formatted into a path the
+ * installer then tries to read five gigabytes from.
+ *
+ * An empty `out` is the honest answer to both, and every caller
+ * already treats it as "not there". */
 static void beside_me(char *out, size_t n, const char *leaf)
 {
+    out[0] = 0;
     wchar_t w[MAX_PATH];
-    DWORD k = GetModuleFileNameW(NULL, w, MAX_PATH - 1);
-    if (!k) { out[0] = 0; return; }
+    DWORD k = GetModuleFileNameW(NULL, w, MAX_PATH);
+    if (k == 0 || k >= MAX_PATH) return;    /* 0, or truncated */
     w[k] = 0;
     for (DWORD i = k; i > 0; i--)
         if (w[i - 1] == L'\\' || w[i - 1] == L'/') { w[i] = 0; break; }
-    char dir[MAX_PATH * 2];
-    WideCharToMultiByte(CP_UTF8, 0, w, -1, dir, sizeof dir - 1, NULL, NULL);
+    char dir[MAX_PATH * 4];
+    int dn = WideCharToMultiByte(CP_UTF8, 0, w, -1, dir, sizeof dir, NULL, NULL);
+    if (dn <= 0) return;
     dir[sizeof dir - 1] = 0;
-    _snprintf(out, n - 1, "%s%s", dir, leaf);
+    if (_snprintf(out, n - 1, "%s%s", dir, leaf) < 0) { out[0] = 0; return; }
     out[n - 1] = 0;
 }
 

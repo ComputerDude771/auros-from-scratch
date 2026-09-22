@@ -192,6 +192,17 @@ if [ -n "${AUROS_IMAGE_URL:-}" ]; then
         || die "AUROS_IMAGE_URL is set and AUROS_IMAGE_SHA256 is not.
      An installer that downloads five gigabytes and cannot say what they
      should be is an installer that will write anything it is handed."
+    # AND HOW BIG IT WILL BE, because phase 0 asks whether the memory
+    # stick is large enough before there is a file to measure. Without
+    # this it guesses six gigabytes and then quotes the guess to the
+    # user in megabytes -- so somebody with a stick between the real
+    # figure and the guess is told, precisely and falsely, to go and
+    # buy a larger one.
+    [ -n "${AUROS_IMAGE_BYTES:-}" ] \
+        || die "AUROS_IMAGE_URL is set and AUROS_IMAGE_BYTES is not.
+     Phase 0 has to know how much room the memory stick needs before the
+     image has been downloaded, and a guess is a refusal with a number
+     in it that is not true."
     note "it will fetch the image from $AUROS_IMAGE_URL"
 elif [ "${AUROS_RELEASE:-0}" = 1 ]; then
     die "this is a release build and no AUROS_IMAGE_URL was given, so

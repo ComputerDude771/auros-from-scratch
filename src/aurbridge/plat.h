@@ -18,11 +18,21 @@
  *               mountvol for the EFI partition.
  *   plat_sim.c  a machine made of ordinary files -- a directory with
  *               disk0.img, disk1.img, an esp/ tree and an efivars
- *               file. It builds for Linux as well as for Windows, so
- *               the phase engine can be run, end to end, against the
+ *               file. Built with the HOST compiler and never shipped,
+ *               so the phase engine can be run end to end against the
  *               same synthetic machine tools/machine.sh gives the
  *               staging environment -- and the stick it produces is
  *               then the stick the installer is tested with.
+ *
+ *               It used to say "builds for Linux as well as for
+ *               Windows", and it does not any more: its plat_fetch is
+ *               a socket client behind #ifndef _WIN32, so a Windows
+ *               link of it fails on an undefined symbol. Nothing
+ *               builds it that way and nothing should -- build/aurbridge
+ *               refuses to put the simulated platform into a shipped
+ *               binary at all -- but a header that describes a
+ *               property the tree does not have is a header somebody
+ *               will rely on.
  *
  * That last sentence is the whole point. Before this, the test's
  * memory stick and journal were written by a python heredoc that
@@ -85,6 +95,18 @@ int plat_file_read(const char *path, uint64_t off, void *buf, size_t n,
 int plat_file_copy(const char *from, const char *to, char *why, size_t wn);
 int plat_file_put(const char *to, const void *buf, size_t n,
                   char *why, size_t wn);
+/* Add to the end of a file that already exists. The journal is four
+ * hundred bytes going on the end of a 13 MB staging image, on an EFI
+ * partition, on a ten-year-old laptop -- and the alternative is
+ * reading the whole thing into memory and writing it back, which is
+ * what this replaced. */
+int plat_file_append(const char *to, const void *buf, size_t n,
+                     char *why, size_t wn);
+/* How much room is left on the volume holding `path` -- which need not
+ * exist yet; the DIRECTORY it would go in is what is asked about. 0 if
+ * this computer will not say, which is not a refusal: a machine that
+ * cannot answer is not a machine to stop. */
+uint64_t plat_free_space(const char *path);
 
 /* ── what the installer carries inside itself ────────────────────── */
 /*

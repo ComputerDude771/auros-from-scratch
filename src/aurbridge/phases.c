@@ -440,6 +440,36 @@ static int prepare_possible(const ab_choice *c, ab_machine *m,
         image_bytes = c->image_expect ? c->image_expect
                                       : (6ull * 1024 * 1024 * 1024);
     }
+    /* AND A PARTIAL DOWNLOAD IS NOT THE SIZE OF THE IMAGE. Resume is a
+     * first-class feature here, so a 2 GB partial beside the installer
+     * is an expected state -- and measuring it made phase 0 ask "does
+     * the stick hold 2 GB?", say yes, and phase 2 refuse after the
+     * download finished and after phase 1 had suspended BitLocker.
+     * That is the class of failure this function exists to
+     * eliminate. */
+    if (c->image_expect > image_bytes) image_bytes = c->image_expect;
+    /* AND SOMEWHERE TO PUT THE DOWNLOAD. Asked here, where refusing
+     * costs nothing, rather than discovered forty minutes into a five
+     * gigabyte transfer on a small cheap disk -- which is the disk the
+     * people this product is for have. A machine that will not say how
+     * much room it has is not stopped; a machine that says it has too
+     * little is. */
+    if (c->image_url[0] && c->image_expect) {
+        uint64_t have_now = 0, free_now = plat_free_space(c->image_path);
+        plat_file_size(c->image_path, &have_now);
+        uint64_t still = c->image_expect > have_now
+                       ? c->image_expect - have_now : 0;
+        if (free_now && free_now < still) {
+            snprintf(why, n,
+                     "there is not enough room on this computer to download "
+                     "AurOS: it needs %llu MB more and this computer has "
+                     "%llu MB free.",
+                     (unsigned long long)(still / MIB),
+                     (unsigned long long)(free_now / MIB));
+            return -1;
+        }
+    }
+
     uint64_t if_, il, rf, rl, sf, sl;
     return ab_stick_layout(m->stick_bytes, m->stick_sector, image_bytes,
                            m->esp_length, &if_, &il, &rf, &rl, &sf, &sl,
@@ -447,6 +477,26 @@ static int prepare_possible(const ab_choice *c, ab_machine *m,
 }
 
 /* ── getting the image, which is the download ─────────────────────── */
+
+/* Exactly 64 hexadecimal characters, or it is not a hash.
+ *
+ * hex_eq compared 64 characters whatever was there, so a hash pasted
+ * one character short into the build produced: download five
+ * gigabytes, mismatch, start again, download five gigabytes, mismatch,
+ * and then "something between here and AurOS is changing it -- try a
+ * different network." She changes networks, buys a hotspot, and it
+ * fails identically, because the fault is in our build. */
+static int hex_ok(const char *h)
+{
+    int n = 0;
+    for (; h[n]; n++) {
+        char c = h[n];
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') ||
+              (c >= 'A' && c <= 'F')))
+            return 0;
+    }
+    return n == 64;
+}
 
 static int hex_eq(const unsigned char d[32], const char *want)
 {
@@ -519,10 +569,34 @@ static int fetch_progress(uint64_t got, uint64_t total, void *ud)
 static int ensure_image(const ab_choice *c, ab_say say, ab_progress prog,
                         void *ud, char *why, size_t n)
 {
+    if (c->image_sha256[0] && !hex_ok(c->image_sha256)) {
+        snprintf(why, n,
+                 "this copy of the installer was not built correctly -- it "
+                 "does not say properly what AurOS should look like. "
+                 "Download the installer again.");
+        return -1;
+    }
     uint64_t have = 0;
     int present = plat_file_size(c->image_path, &have) == 0 && have > 0;
 
-    if (present && !c->image_sha256[0]) return 0;   /* nothing to check it against */
+    /* NOTHING TO CHECK IT AGAINST is a state with two sides. A file
+     * already here and no hash is the developer arrangement and is
+     * fine. A URL and no hash would mean downloading five gigabytes
+     * and then comparing them with nothing -- which hex_eq answers
+     * "different" to, twice, and then blames the network for. */
+    if (!c->image_sha256[0]) {
+        if (present) return 0;
+        if (!c->image_url[0]) {
+            snprintf(why, n, "the copy of AurOS to install could not be "
+                             "found.");
+            return -1;
+        }
+        snprintf(why, n,
+                 "this copy of the installer does not say what AurOS should "
+                 "look like, so it will not download five gigabytes and hope. "
+                 "Download the installer again.");
+        return -1;
+    }
 
     unsigned char dig[32];
     if (present) {
@@ -547,17 +621,31 @@ static int ensure_image(const ab_choice *c, ab_say say, ab_progress prog,
     for (int attempt = 0; attempt < 2; attempt++) {
         if (attempt == 1) {
             /* Second time, from nothing: a resume onto a file that was
-             * already wrong resumes being wrong. */
+             * already wrong resumes being wrong.
+             *
+             * AND THE TRUNCATE IS CHECKED. Ignored, a file that could
+             * not be emptied -- open elsewhere, read-only, a sharing
+             * violation -- turned "start again from nothing" into
+             * another resume of the same corruption. */
             talk(say, ud, "that did not come down cleanly; starting again");
-            plat_file_put(c->image_path, "", 0, why, n);
+            if (plat_file_put(c->image_path, "", 0, why, n) != 0) return -1;
         }
         talk(say, ud, present || attempt
                           ? "downloading AurOS (this carries on if it stops)"
                           : "downloading AurOS -- about five gigabytes. This "
                             "can take a while and carries on if it stops.");
+        /* A FAILED FETCH TAKES THE NEXT ATTEMPT, it does not end the
+         * loop. It used to `return -1`, which made the second attempt
+         * unreachable in exactly the case the comment above describes:
+         * a complete-length file that hashes wrong asks for
+         * `Range: bytes=<filesize>-`, the standards-correct answer is
+         * 416, and the user was told to try again later -- for ever,
+         * because nothing ever removed the bad file. */
         if (plat_fetch(c->image_url, c->image_path, fetch_progress, &fc,
-                       why, n) != 0)
+                       why, n) != 0) {
+            if (attempt == 0) { present = 0; continue; }
             return -1;
+        }
         talk(say, ud, "checking what was downloaded");
         if (image_hash(c->image_path, dig, prog, ud, why, n) != 0) return -1;
         if (hex_eq(dig, c->image_sha256)) {
@@ -836,6 +924,7 @@ static int phase_handoff(const ab_choice *c, pf_report *r, ab_machine *m,
         snprintf(why, n, "the installer's note about this computer could not "
                          "be written.");
         plat_esp_close();
+        plat_payload_free();
         return -1;
     }
     static uint8_t cpio[8192], gz[16384];
@@ -845,6 +934,7 @@ static int phase_handoff(const ab_choice *c, pf_report *r, ab_machine *m,
     if (!gn) {
         snprintf(why, n, "the installer's note could not be packed.");
         plat_esp_close();
+        plat_payload_free();
         return -1;
     }
 
@@ -859,25 +949,20 @@ static int phase_handoff(const ab_choice *c, pf_report *r, ab_machine *m,
         if (plat_file_size(dst, &have) != 0) {
             snprintf(why, n, "the staging environment could not be measured.");
             plat_esp_close();
+            plat_payload_free();
             return -1;
         }
-        /* Appended rather than rewritten: the staging image is 13 MB
-         * and reading it into memory to add 400 bytes is not a thing
-         * to do on the machine this is for. */
-        static uint8_t whole[64 << 20];
-        if (have + gn > sizeof whole) {
-            snprintf(why, n, "the staging environment is larger than AurOS "
-                             "expected.");
+        /* APPENDED RATHER THAN REWRITTEN, which this comment claimed
+         * while the code underneath it declared a 64 MB static buffer,
+         * read the whole staging image into it, and wrote all 13 MB
+         * back with CREATE_ALWAYS -- truncating a file on the EFI
+         * partition to zero and putting it back, to add four hundred
+         * bytes, on the machine this product exists for. The comment
+         * was right and the code was not; now they agree. */
+        (void)have;
+        if (plat_file_append(dst, gz, gn, why, n) != 0) {
             plat_esp_close();
-            return -1;
-        }
-        if (plat_file_read(dst, 0, whole, (size_t)have, why, n) != 0) {
-            plat_esp_close();
-            return -1;
-        }
-        memcpy(whole + have, gz, gn);
-        if (plat_file_put(dst, whole, (size_t)have + gn, why, n) != 0) {
-            plat_esp_close();
+            plat_payload_free();
             return -1;
         }
     }
@@ -945,6 +1030,13 @@ int ab_run(ab_phase upto, const ab_choice *c, pf_report *r, ab_machine *m,
 void ab_abort(ab_machine *m, ab_say say, void *ud)
 {
     if (!m) return;
+    /* AND WHATEVER WAS UNPACKED GOES. plat_win.c says the payload "is
+     * removed again on the way out, and a leftover from a crash is 28
+     * MB in a directory Windows cleans" -- a failed run is not a
+     * crash, and it is the ordinary path. Six error paths in
+     * phase_handoff and every abort used to leave both files behind.
+     * It is idempotent, so the ones that already free it can stay. */
+    plat_payload_free();
     /* THE STICK IS LET GO OF FIRST. An aborted phase 2 used to leave
      * it locked and dismounted for the life of the process -- gone
      * from Explorer, and with the next write still pointed at the dead

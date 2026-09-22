@@ -40,6 +40,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <sys/types.h>
 #include <unistd.h>
 
@@ -450,6 +451,36 @@ int plat_run(const char *cmdline, char *tail, size_t n)
      * command's output. */
     if (tail && n) snprintf(tail, n, "(not run: simulated machine)");
     return 0;
+}
+
+int plat_file_append(const char *to, const void *buf, size_t n,
+                     char *why, size_t wn)
+{
+    FILE *f = fopen(to, "ab");
+    if (!f) {
+        snprintf(why, wn, "the installer could not finish writing to this "
+                          "computer's start-up partition.");
+        return -1;
+    }
+    size_t k = fwrite(buf, 1, n, f);
+    int bad = (k != n);
+    if (fclose(f) != 0) bad = 1;
+    if (bad) {
+        snprintf(why, wn, "this computer's start-up partition is full.");
+        return -1;
+    }
+    return 0;
+}
+
+uint64_t plat_free_space(const char *path)
+{
+    char dir[1024];
+    snprintf(dir, sizeof dir, "%s", path);
+    char *slash = strrchr(dir, '/');
+    if (slash) *slash = 0; else snprintf(dir, sizeof dir, ".");
+    struct statvfs v;
+    if (statvfs(dir, &v) != 0) return 0;
+    return (uint64_t)v.f_bavail * (uint64_t)v.f_frsize;
 }
 
 /* ── what the installer carries inside itself ────────────────────── */

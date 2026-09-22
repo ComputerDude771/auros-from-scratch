@@ -920,6 +920,43 @@ int plat_run(const char *cmdline, char *tail, size_t n)
 }
 
 
+int plat_file_append(const char *to, const void *buf, size_t n,
+                     char *why, size_t wn)
+{
+    HANDLE f = CreateFileA(to, FILE_APPEND_DATA, FILE_SHARE_READ, NULL,
+                           OPEN_EXISTING, 0, NULL);
+    if (f == INVALID_HANDLE_VALUE) {
+        snprintf(why, wn, "the installer could not finish writing to this "
+                          "computer's start-up partition.");
+        return -1;
+    }
+    const char *p = buf;
+    DWORD done = 0, wrote = 0;
+    while (done < n) {
+        if (!WriteFile(f, p + done, (DWORD)(n - done), &wrote, NULL) || !wrote) {
+            CloseHandle(f);
+            snprintf(why, wn, "this computer's start-up partition is full.");
+            return -1;
+        }
+        done += wrote;
+    }
+    CloseHandle(f);
+    return 0;
+}
+
+uint64_t plat_free_space(const char *path)
+{
+    char dir[MAX_PATH * 4];
+    snprintf(dir, sizeof dir, "%s", path);
+    char *slash = strrchr(dir, '\\');
+    char *fwd   = strrchr(dir, '/');
+    if (fwd > slash) slash = fwd;
+    if (slash) *slash = 0; else snprintf(dir, sizeof dir, ".");
+    ULARGE_INTEGER avail;
+    if (!GetDiskFreeSpaceExA(dir, &avail, NULL, NULL)) return 0;
+    return (uint64_t)avail.QuadPart;
+}
+
 /* ── what the installer carries inside itself ────────────────────── */
 /*
  * A PE RESOURCE, and not bytes appended to the file, for one reason:
@@ -980,8 +1017,14 @@ int plat_payload(const char *name, char *path, size_t pn, char *why, size_t wn)
         snprintf(why, wn, "the installer could not read its own contents.");
         return -1;
     }
-    char dir[MAX_PATH];
-    if (!GetTempPathA(sizeof dir, dir)) {
+    /* MAX_PATH + 1, which is the documented maximum this returns. Given
+     * exactly MAX_PATH it writes NOTHING and returns the size it
+     * needed -- a non-zero value that passed the old test -- leaving
+     * `dir` uninitialised stack, which was then formatted into a path
+     * and used. */
+    char dir[MAX_PATH + 1];
+    DWORD dn = GetTempPathA(sizeof dir, dir);
+    if (dn == 0 || dn > MAX_PATH) {
         snprintf(why, wn, "this computer would not say where temporary files "
                           "go.");
         return -1;
@@ -998,7 +1041,15 @@ int plat_payload(const char *name, char *path, size_t pn, char *why, size_t wn)
      * to the EFI partition would succeed and the restart would find
      * nothing to start. */
     char tmp[MAX_PATH];
-    _snprintf(tmp, sizeof tmp - 1, "%s.part", out); tmp[sizeof tmp - 1] = 0;
+    /* CHECKED, like its sibling above. Truncated, `tmp` can come out
+     * EQUAL to `out` -- and then the DeleteFileA(out) below removes
+     * the file that was just written and the move fails, with the
+     * payload gone. */
+    if (_snprintf(tmp, sizeof tmp - 1, "%s.part", out) < 0) {
+        snprintf(why, wn, "the path for a temporary file was too long.");
+        return -1;
+    }
+    tmp[sizeof tmp - 1] = 0;
     HANDLE f = CreateFileA(tmp, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,
                            FILE_ATTRIBUTE_TEMPORARY, NULL);
     if (f == INVALID_HANDLE_VALUE) {
@@ -1046,14 +1097,15 @@ void plat_payload_free(void)
 /*
  * WinHTTP, and a Range request every time -- not only on a resume.
  *
- * A server that ignores Range answers 200 with the whole file where a
- * 206 was asked for, and a client that does not notice writes byte
- * zero of the body at byte four billion of the file. That is not a
- * theoretical server: it is every misconfigured CDN edge and every
- * captive portal, and the failure it produces is a five gigabyte
- * download that hashes wrong after forty minutes with nothing to say
- * about why. So the status code decides, and a 200 where a 206 was
- * asked for restarts the file rather than continuing it.
+ * THE STATUS CODE IS NOT ENOUGH, and the first version of this said it
+ * was. A server or proxy that answers 206 with `bytes 0-N/N` whatever
+ * it was asked for is not hypothetical -- it is a mis-tuned CDN edge
+ * and several caching proxies -- and reading only the status meant its
+ * byte zero was written at our offset. A review reproduced a 5120-byte
+ * file where the image is 4096, with the download reported as
+ * successful. So the Content-Range's FIRST number decides where the
+ * body goes, and a server that starts past where we are leaves a hole
+ * and is refused.
  */
 #include <winhttp.h>
 
@@ -1061,56 +1113,43 @@ static int fetch_progress_cancel(int (*cb)(uint64_t, uint64_t, void *),
                                  void *ud, uint64_t got, uint64_t total)
 { return cb ? cb(got, total, ud) : 0; }
 
-int plat_fetch(const char *url, const char *dest,
-               int (*progress)(uint64_t got, uint64_t total, void *ud),
-               void *ud, char *why, size_t wn)
+/* `bytes <first>-<last>/<total>`, as WinHTTP hands it back. */
+static int win_parse_range(const wchar_t *v, uint64_t *first, uint64_t *total)
 {
-    wchar_t wurl[1024];
-    if (to_wide(url, wurl, 1024) != 0) {
-        snprintf(why, wn, "that address is not one AurOS can use."); return -1;
-    }
-    URL_COMPONENTS uc;
-    wchar_t host[256], path[1024];
-    memset(&uc, 0, sizeof uc);
-    uc.dwStructSize = sizeof uc;
-    uc.lpszHostName = host;  uc.dwHostNameLength = 256;
-    uc.lpszUrlPath  = path;  uc.dwUrlPathLength  = 1024;
-    if (!WinHttpCrackUrl(wurl, 0, 0, &uc)) {
-        snprintf(why, wn, "that address is not one AurOS can use."); return -1;
-    }
+    while (*v == L' ') v++;
+    if (!_wcsnicmp(v, L"bytes", 5)) v += 5;
+    while (*v == L' ') v++;
+    wchar_t *e = NULL;
+    unsigned __int64 f = _wcstoui64(v, &e, 10);
+    if (!e || e == v || *e != L'-') return -1;
+    const wchar_t *sl = wcschr(e, L'/');
+    if (!sl) return -1;
+    *first = (uint64_t)f;
+    *total = (uint64_t)_wcstoui64(sl + 1, NULL, 10);
+    return 0;
+}
 
-    uint64_t have = 0;
-    {
-        HANDLE e = CreateFileA(dest, GENERIC_READ, FILE_SHARE_READ, NULL,
-                               OPEN_EXISTING, 0, NULL);
-        if (e != INVALID_HANDLE_VALUE) {
-            LARGE_INTEGER sz;
-            if (GetFileSizeEx(e, &sz)) have = (uint64_t)sz.QuadPart;
-            CloseHandle(e);
-        }
-    }
-
-    HINTERNET s = WinHttpOpen(L"AurBridge", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
-                              WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
-    if (!s) { snprintf(why, wn, "this computer would not let AurOS use the "
-                                "internet."); return -1; }
-    /* Minutes, not the default 30 seconds: this is a five gigabyte
-     * transfer on a connection that is probably why the machine is
-     * being replaced. */
-    WinHttpSetTimeouts(s, 30000, 30000, 60000, 60000);
-    HINTERNET c = WinHttpConnect(s, host, uc.nPort, 0);
-    HINTERNET q = c ? WinHttpOpenRequest(s ? c : NULL, L"GET", path, NULL,
+/* One request. `*have` is where to continue from and is updated to
+ * where the server actually started. 0 done, 1 "ask again from
+ * nothing", -1 refused. */
+static int win_fetch_once(HINTERNET s, const URL_COMPONENTS *uc,
+                          const wchar_t *path, const char *dest,
+                          uint64_t *have,
+                          int (*progress)(uint64_t, uint64_t, void *),
+                          void *ud, char *why, size_t wn)
+{
+    HINTERNET c = WinHttpConnect(s, uc->lpszHostName, uc->nPort, 0);
+    HINTERNET q = c ? WinHttpOpenRequest(c, L"GET", path, NULL,
                           WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES,
-                          uc.nScheme == INTERNET_SCHEME_HTTPS
+                          uc->nScheme == INTERNET_SCHEME_HTTPS
                               ? WINHTTP_FLAG_SECURE : 0) : NULL;
     if (!q) {
         if (c) WinHttpCloseHandle(c);
-        WinHttpCloseHandle(s);
         snprintf(why, wn, "AurOS could not reach the place it downloads from.");
         return -1;
     }
     wchar_t range[64];
-    _snwprintf(range, 63, L"Range: bytes=%I64u-", (unsigned __int64)have);
+    _snwprintf(range, 63, L"Range: bytes=%I64u-", (unsigned __int64)*have);
     range[63] = 0;
     WinHttpAddRequestHeaders(q, range, (DWORD)-1L, WINHTTP_ADDREQ_FLAG_ADD);
 
@@ -1124,15 +1163,29 @@ int plat_fetch(const char *url, const char *dest,
         goto out;
     }
     DWORD status = 0, slen = sizeof status;
-    WinHttpQueryHeaders(q, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
-                        WINHTTP_HEADER_NAME_BY_INDEX, &status, &slen,
-                        WINHTTP_NO_HEADER_INDEX);
-    if (status == 200 && have > 0) {
-        /* The server sent the whole thing where a continuation was
-         * asked for. Start again rather than write its first byte into
-         * the middle of the file. */
-        have = 0;
-    } else if (status != 200 && status != 206) {
+    if (!WinHttpQueryHeaders(q, WINHTTP_QUERY_STATUS_CODE |
+                             WINHTTP_QUERY_FLAG_NUMBER,
+                             WINHTTP_HEADER_NAME_BY_INDEX, &status, &slen,
+                             WINHTTP_NO_HEADER_INDEX)) {
+        /* Unchecked, this left `status` at 0 and printed "answered 0". */
+        snprintf(why, wn, "the place AurOS downloads from did not answer "
+                          "properly.");
+        goto out;
+    }
+    if (status == 416) {
+        /* Our offset is at or past the end of what the server has,
+         * which is what a file that is already complete -- and wrong
+         * -- looks like. Starting again is the answer. */
+        if (*have == 0) {
+            snprintf(why, wn, "the place AurOS downloads from has nothing "
+                              "there any more.");
+            goto out;
+        }
+        *have = 0;
+        rc = 1;
+        goto out;
+    }
+    if (status != 200 && status != 206) {
         snprintf(why, wn,
                  "the place AurOS downloads from answered %lu. Try again "
                  "later.", (unsigned long)status);
@@ -1140,34 +1193,53 @@ int plat_fetch(const char *url, const char *dest,
     }
 
     uint64_t total = 0;
-    {
-        wchar_t cr[128]; DWORD cl = sizeof cr;
-        if (status == 206 &&
-            WinHttpQueryHeaders(q, WINHTTP_QUERY_CONTENT_RANGE,
-                                WINHTTP_HEADER_NAME_BY_INDEX, cr, &cl,
-                                WINHTTP_NO_HEADER_INDEX)) {
-            const wchar_t *slash = wcsrchr(cr, L'/');
-            if (slash) total = (uint64_t)_wtoi64(slash + 1);
-        } else {
-            DWORD len64 = 0, ll = sizeof len64;
-            if (WinHttpQueryHeaders(q, WINHTTP_QUERY_CONTENT_LENGTH |
-                                    WINHTTP_QUERY_FLAG_NUMBER,
-                                    WINHTTP_HEADER_NAME_BY_INDEX, &len64, &ll,
-                                    WINHTTP_NO_HEADER_INDEX))
-                total = have + (uint64_t)len64;
+    if (status == 206) {
+        wchar_t cr[160]; DWORD cl = sizeof cr;
+        uint64_t first = 0;
+        if (!WinHttpQueryHeaders(q, WINHTTP_QUERY_CONTENT_RANGE,
+                                 WINHTTP_HEADER_NAME_BY_INDEX, cr, &cl,
+                                 WINHTTP_NO_HEADER_INDEX) ||
+            win_parse_range(cr, &first, &total) != 0) {
+            snprintf(why, wn, "the place AurOS downloads from did not answer "
+                              "properly.");
+            goto out;
         }
+        if (first > *have) {
+            snprintf(why, wn, "the place AurOS downloads from sent the wrong "
+                              "part of the file. Try again later.");
+            goto out;
+        }
+        *have = first;
+    } else {
+        /* 200 where a continuation was asked for: the server ignored
+         * the Range, so its first byte is byte zero of the file. */
+        *have = 0;
+        /* AS A STRING, NOT AS A NUMBER. WINHTTP_QUERY_FLAG_NUMBER is
+         * 32-bit, and the image is five gigabytes: the value either
+         * failed to come back at all (a progress bar stuck at 0% for
+         * forty minutes) or came back truncated (one that fills at
+         * 1 GiB and then sits at 100% for the other four fifths).
+         * FLAG_NUMBER64 would be the obvious answer and is 8.1+. */
+        wchar_t lenbuf[64]; DWORD ll = sizeof lenbuf;
+        if (WinHttpQueryHeaders(q, WINHTTP_QUERY_CONTENT_LENGTH,
+                                WINHTTP_HEADER_NAME_BY_INDEX, lenbuf, &ll,
+                                WINHTTP_NO_HEADER_INDEX))
+            total = (uint64_t)_wcstoui64(lenbuf, NULL, 10);
     }
 
     f = CreateFileA(dest, GENERIC_WRITE, FILE_SHARE_READ, NULL,
-                    have ? OPEN_ALWAYS : CREATE_ALWAYS, 0, NULL);
+                    *have ? OPEN_ALWAYS : CREATE_ALWAYS, 0, NULL);
     if (f == INVALID_HANDLE_VALUE) {
         snprintf(why, wn, "AurOS could not write the file it is downloading.");
         goto out;
     }
-    if (have) {
-        LARGE_INTEGER to; to.QuadPart = (LONGLONG)have;
-        SetFilePointerEx(f, to, NULL, FILE_BEGIN);
-        SetEndOfFile(f);
+    if (*have) {
+        LARGE_INTEGER to; to.QuadPart = (LONGLONG)*have;
+        if (!SetFilePointerEx(f, to, NULL, FILE_BEGIN) || !SetEndOfFile(f)) {
+            snprintf(why, wn, "AurOS could not write the file it is "
+                              "downloading.");
+            goto out;
+        }
     }
 
     static char buf[256 * 1024];
@@ -1188,16 +1260,102 @@ int plat_fetch(const char *url, const char *dest,
             }
             at += wrote;
         }
-        have += got;
-        if (fetch_progress_cancel(progress, ud, have, total)) {
+        *have += got;
+        if (fetch_progress_cancel(progress, ud, *have, total)) {
             snprintf(why, wn, "the download was stopped.");
             goto out;
         }
     }
+    /* AND IT HAS TO HAVE ALL ARRIVED. Stopping on end-of-file and
+     * reporting success meant a connection cut partway was a completed
+     * download, and the accusation the user eventually got was that
+     * the network had tampered with it. */
+    if (total && *have != total) {
+        snprintf(why, wn, "the download stopped partway through. It will "
+                          "carry on from here if you try again.");
+        goto out;
+    }
     rc = 0;
 out:
     if (f != INVALID_HANDLE_VALUE) CloseHandle(f);
-    WinHttpCloseHandle(q); WinHttpCloseHandle(c); WinHttpCloseHandle(s);
+    WinHttpCloseHandle(q);
+    WinHttpCloseHandle(c);
+    return rc;
+}
+
+int plat_fetch(const char *url, const char *dest,
+               int (*progress)(uint64_t got, uint64_t total, void *ud),
+               void *ud, char *why, size_t wn)
+{
+    wchar_t wurl[1024];
+    if (to_wide(url, wurl, 1024) != 0) {
+        snprintf(why, wn, "that address is not one AurOS can use."); return -1;
+    }
+    URL_COMPONENTS uc;
+    wchar_t host[256], path[1024], extra[1024];
+    memset(&uc, 0, sizeof uc);
+    uc.dwStructSize = sizeof uc;
+    uc.lpszHostName  = host;  uc.dwHostNameLength  = 256;
+    uc.lpszUrlPath   = path;  uc.dwUrlPathLength   = 1024;
+    /* THE QUERY STRING IS PART OF THE ADDRESS. Left out, a pre-signed
+     * S3 or CloudFront URL, a ?token=, or a mirror selector is fetched
+     * without the thing that authorises it, and the server answers
+     * 403 -- which surfaced as "the place AurOS downloads from
+     * answered 403. Try again later." for ever. */
+    uc.lpszExtraInfo = extra; uc.dwExtraInfoLength = 1024;
+    if (!WinHttpCrackUrl(wurl, 0, 0, &uc)) {
+        snprintf(why, wn, "that address is not one AurOS can use."); return -1;
+    }
+    if (uc.dwExtraInfoLength) {
+        if (wcslen(path) + wcslen(extra) + 1 >= 1024) {
+            snprintf(why, wn, "that address is too long.");
+            return -1;
+        }
+        wcscat(path, extra);
+    }
+
+    uint64_t have = 0;
+    {
+        HANDLE e = CreateFileA(dest, GENERIC_READ, FILE_SHARE_READ, NULL,
+                               OPEN_EXISTING, 0, NULL);
+        if (e != INVALID_HANDLE_VALUE) {
+            LARGE_INTEGER sz;
+            if (GetFileSizeEx(e, &sz)) have = (uint64_t)sz.QuadPart;
+            CloseHandle(e);
+        }
+    }
+
+    /* WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY IS 8.1 AND LATER, and this
+     * product targets Windows 7 -- preflight.c, wizard.c and the design
+     * document all carry Win7 fallbacks. On an older system WinHttpOpen
+     * fails with ERROR_INVALID_PARAMETER and the first thing the
+     * download did was tell the user "this computer would not let AurOS
+     * use the internet", which reads as a firewall and is neither.
+     * Nothing about retrying helps, because it is our API call. */
+    HINTERNET s = WinHttpOpen(L"AurBridge", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
+                              WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    if (!s)
+        s = WinHttpOpen(L"AurBridge", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+                        WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    if (!s) { snprintf(why, wn, "this computer would not let AurOS use the "
+                                "internet."); return -1; }
+    /* Resolve, connect, send, receive. The receive timeout is the one
+     * that matters: this is a five gigabyte transfer on a connection
+     * that is probably why the machine is being replaced. The connect
+     * timeout is LONGER than WinHTTP's default rather than shorter,
+     * which an earlier version of this made it while the comment
+     * claimed the opposite. */
+    WinHttpSetTimeouts(s, 30000, 60000, 60000, 300000);
+
+    int rc = -1;
+    for (int attempt = 0; attempt < 2; attempt++) {
+        int r = win_fetch_once(s, &uc, path, dest, &have, progress, ud,
+                               why, wn);
+        if (r == 0) { rc = 0; break; }
+        if (r < 0) break;
+        /* r == 1: start again from nothing, once. */
+    }
+    WinHttpCloseHandle(s);
     return rc;
 }
 
