@@ -41,6 +41,7 @@ cat > "$TMP/g.c" <<'EOC'
 #include <unistd.h>
 #include <sys/stat.h>
 #include "gpt.h"
+#include "plan.h"
 
 static uint64_t disk_bytes(int fd)
 { struct stat st; return fstat(fd, &st) == 0 ? (uint64_t)st.st_size : 0; }
@@ -133,6 +134,31 @@ int main(int argc, char **argv)
         close(fd); return 0;
     }
 
+    if (!strcmp(cmd, "plan")) {
+        /* win_new_bytes root_src rec_bytes min_root */
+        int wi = gpt_find_start(&t, strtoull(argv[4], NULL, 10));
+        stage_layout L; char why[240] = {0};
+        int r = plan_compute(&t, wi,
+                             strtoull(argv[5], NULL, 10),
+                             strtoull(argv[6], NULL, 10),
+                             strtoull(argv[7], NULL, 10),
+                             strtoull(argv[8], NULL, 10),
+                             &L, why, sizeof why);
+        printf("plan=%d\n", r);
+        printf("why=%s\n", why);
+        if (r == 0) {
+            printf("win_last_new=%llu\n", (unsigned long long)L.win_last_new);
+            printf("root_first=%llu\n", (unsigned long long)L.root_first);
+            printf("root_last=%llu\n",  (unsigned long long)L.root_last);
+            printf("rec_first=%llu\n",  (unsigned long long)L.rec_first);
+            printf("rec_last=%llu\n",   (unsigned long long)L.rec_last);
+            printf("root_gib=%.2f\n",
+                   (double)((L.root_last - L.root_first + 1) * (uint64_t)L.sector)
+                   / (1024.0*1024.0*1024.0));
+        }
+        close(fd); return r ? 1 : 0;
+    }
+
     if (!strcmp(cmd, "fill")) {
         /* Use every free slot, then ask for one more. */
         char why[200] = {0}; uint8_t u[16];
@@ -153,7 +179,9 @@ int main(int argc, char **argv)
 EOC
 gcc -O1 -g -std=gnu11 -Wall -Wextra -fsanitize=address,undefined \
     -fno-sanitize-recover=all -I src/aurstage -o "$TMP/g" \
-    "$TMP/g.c" src/aurstage/gpt.c || { echo "  did not build"; exit 2; }
+    "$TMP/g.c" src/aurstage/gpt.c src/aurstage/plan.c src/aurstage/boot.c \
+    src/aurstage/disks.c src/aurstage/sha256.c src/aurstage/ntfs.c \
+    src/aurstage/fde.c || { echo "  did not build"; exit 2; }
 
 get() { "$TMP/g" "$@" 2>/dev/null | sed -n "s/^$F=//p"; }
 
@@ -262,6 +290,48 @@ if [ -f out/auros-desktop.img ]; then
 else
     echo "    (no built image here)"
 fi
+
+echo
+echo "  and the layout that goes in the gap"
+WINSTART=$(sgdisk -i 3 "$D" 2>/dev/null | sed -n 's/^First sector: \([0-9]*\).*/\1/p')
+# Shrink Windows to 1 GiB. The gap then runs from there to WinRE.
+# 600 MiB recovery, a 3 GiB image, and a 1 GB floor so the fixture is
+# not refused for being small -- the floor itself is tested separately.
+F=plan; got=$(get plan "$D" 512 "$WINSTART" 1073741824 3221225472 629145600 1000000000)
+[ "$got" = "0" ] && ok "a layout is found in the gap" \
+                 || bad "a layout is found in the gap" "$(F=why; get plan "$D" 512 "$WINSTART" 1073741824 3221225472 629145600 1000000000)"
+
+F=rec_last; got=$(get plan "$D" 512 "$WINSTART" 1073741824 3221225472 629145600 1000000000)
+if [ "$got" = "$((WINRE - 1))" ]; then
+    ok "the way back ends exactly where WinRE begins"
+else
+    bad "the way back ends exactly where WinRE begins" "rec_last=$got WinRE=$WINRE"
+fi
+
+F=root_first; RF=$(get plan "$D" 512 "$WINSTART" 1073741824 3221225472 629145600 1000000000)
+[ -n "$RF" ] && [ "$((RF % 2048))" = "0" ] && ok "AurOS is aligned on a mebibyte" \
+                                           || bad "AurOS is aligned on a mebibyte" "root_first=$RF"
+
+# THE FLOOR. The same machine, asked for 24 GB, must be refused -- and
+# the refusal must say how much it actually has, not just "no".
+F=plan; got=$(get plan "$D" 512 "$WINSTART" 1073741824 3221225472 629145600 24000000000)
+[ "$got" = "-1" ] && ok "the product floor refuses a machine that is too small" \
+                  || bad "the product floor refuses a machine that is too small" "plan=$got"
+F=why; case "$(get plan "$D" 512 "$WINSTART" 1073741824 3221225472 629145600 24000000000)" in
+  *"needs 24 GB"*"can spare"*) ok "...and says how much it does have" ;;
+  *) bad "...and says how much it does have" \
+         "it said: $(get plan "$D" 512 "$WINSTART" 1073741824 3221225472 629145600 24000000000)" ;;
+esac
+
+# A shrink that does not shrink.
+F=plan; got=$(get plan "$D" 512 "$WINSTART" 99999999999999 3221225472 629145600 1000000000)
+[ "$got" = "-1" ] && ok "a Windows that would not get smaller is refused" \
+                  || bad "a Windows that would not get smaller is refused" "plan=$got"
+
+# An image bigger than the gap.
+F=plan; got=$(get plan "$D" 512 "$WINSTART" 1073741824 999999999999 629145600 1000000000)
+[ "$got" = "-1" ] && ok "an image too big for the gap is refused" \
+                  || bad "an image too big for the gap is refused" "plan=$got"
 
 echo
 if [ "$fail" -gt 0 ]; then
