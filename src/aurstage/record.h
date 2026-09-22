@@ -31,6 +31,15 @@
  * the one before it is still there. Nothing is ever overwritten in
  * place.
  *
+ * THE STEP NUMBERS ARE NOT A WIRE FORMAT, and it is worth saying why
+ * inserting one in the middle of the enum below is safe. A record is
+ * only ever read by the same build that wrote it, within one install:
+ * rec_is_ours() compares the run id, and a record from another run is
+ * history rather than progress. A stick carried between two builds of
+ * this program therefore has its older records ignored rather than
+ * misread -- which is the same answer it already gives to a stick that
+ * has somebody else's install on it.
+ *
  * AND EVERY RECORD CARRIES THE RUN IT BELONGS TO. Without that, a
  * refusal from last Tuesday is indistinguishable from this run's
  * progress, and the resume ladder reads somebody else's history as its
@@ -58,10 +67,18 @@ typedef enum {
     REC_SHRINK_END,
     REC_WRITE_BEGIN,
     REC_WRITE_END,      /* written AND read back AND hashed           */
+    /* The boot partition, written into the gap while the OLD table is
+     * still in force. Two steps rather than one because the thing
+     * between them is minutes long on a slow stick, and "it stopped
+     * somewhere in there" is the difference between a resume that can
+     * reason and one that cannot. */
+    REC_BOOT_BEGIN,
+    REC_BOOT_END,
     REC_PROBE_END,
     REC_COMMIT_ARRAY,   /* primary array down; still the old layout   */
     REC_COMMIT_SECTOR,  /* LBA 1 down. The machine is committed.      */
     REC_COMMIT_BACKUP,
+    REC_BOOT_ENTRY,     /* AurOS is in the firmware's menu            */
     REC_SETTLE_END,     /* checked and grown                          */
     REC_DONE,
     REC_REFUSED,        /* a designed refusal; nothing was changed    */

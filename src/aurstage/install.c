@@ -22,11 +22,22 @@
 #include "commit.h"
 #include "record.h"
 #include "rescue.h"
+#include "loader.h"
 #include "fault.h"
 
-/* 600 MiB: enough for a rescue kernel, an initramfs, the captured ESP
- * and this machine's payload, with room for the payload to grow. */
-#define RECOVERY_BYTES   (600ull * 1024 * 1024)
+/* THE BOOT PARTITION IS AS BIG AS WHAT GOES IN IT, and that number
+ * comes from the image rather than from here.
+ *
+ * It was a 600 MiB constant, chosen when this partition was going to
+ * hold a rescue kernel, an initramfs and a copy of this machine's
+ * Windows startup. Two of those moved: the captured copy has its own
+ * partition (rescue.h says why a raw extent beats a file on a FAT
+ * filesystem for it), and the rescue environment is a menu entry on
+ * the AurOS root. What is left is exactly one thing -- the image's own
+ * EFI partition, copied whole, see loader.h -- so the size to reserve
+ * is the size of that, and a constant that disagrees with it is
+ * either wasted gigabytes of somebody's Windows or an install that
+ * fails after the shrink. */
 #define MIN_ROOT_DEFAULT (24ull * 1000 * 1000 * 1000)
 
 /* THE SAME NUMBER THE DRY RUN USES. It was hardcoded here while the
@@ -328,6 +339,13 @@ void install_run(const stage_machine *m)
     if (image_verify(&img, dots, why, sizeof why) != 0)
         refuse(why, NULL, "image-damaged");
 
+    /* HOW MUCH ROOM THE THING THAT STARTS THE COMPUTER NEEDS, asked
+     * here, before the plan, so that an image whose boot partition
+     * will not fit is refused with the disk untouched. */
+    uint64_t boot_need = 0;
+    if (loader_bytes_needed(&img, &boot_need, why, sizeof why) != 0)
+        refuse(why, NULL, "no-boot-area");
+
     /* ── THE WAY BACK, AND IT IS NOT OPTIONAL ──────────────────────
      *
      * R4: a single-PC household whose install goes wrong has no second
@@ -390,7 +408,7 @@ void install_run(const stage_machine *m)
     /* A layout that fits, checked against the table. */
     stage_layout L;
     if (plan_compute(&old, wi, sp.smallest_bytes, img.root_len,
-                     RECOVERY_BYTES, rsc_need, min_root_bytes(), &L,
+                     boot_need, rsc_need, min_root_bytes(), &L,
                      why, sizeof why) != 0)
         refuse(why, NULL, "no-room");
     plan_say(&L);
@@ -445,7 +463,7 @@ void install_run(const stage_machine *m)
      * boundary, and a partition entry that ends below its filesystem
      * is a filesystem whose last blocks are outside its partition. */
     if (plan_compute(&old, wi, sr.achieved_bytes, img.root_len,
-                     RECOVERY_BYTES, rsc_need, min_root_bytes(), &L,
+                     boot_need, rsc_need, min_root_bytes(), &L,
                      why, sizeof why) != 0)
         give_up(why, "The Windows drive is smaller but nothing else has "
                      "changed.", "no-room-after-shrink", 1);
@@ -469,6 +487,25 @@ void install_run(const stage_machine *m)
     step(REC_WRITE_END, NULL);
     fault_maybe("write-end");
     wr_disarm(&t, WR_ROOT);
+
+    /* ── phase 8a: the thing that starts the computer ──────────────
+     *
+     * Into the gap, while the OLD table is still in force, exactly
+     * like the root filesystem above it. Rule 4 is untouched: the
+     * layout still changes at one sector, further down. A machine
+     * that loses power in here is the "5-7 write and verify" row --
+     * Windows smaller, old table, garbage in free space, and
+     * BootOrder still pointing at Windows Boot Manager. */
+    stage_say("%s", "");
+    stage_say("Making this computer able to start AurOS.");
+    step(REC_BOOT_BEGIN, NULL);
+    fprintf(stderr, "aurstage: ");
+    if (loader_write_boot(&t, &img, &L, ss, dots, why, sizeof why) != 0)
+        give_up(why, "The Windows drive is smaller but still works.",
+                "boot-write-failed", 1);
+    fprintf(stderr, "\n");
+    step(REC_BOOT_END, NULL);
+    fault_maybe("boot-end");
 
     /* ── phase 7 ─────────────────────────────────────────────────── */
     stage_say("%s", "");
@@ -503,6 +540,34 @@ void install_run(const stage_machine *m)
     stage_say("Writing the new layout.");
     if (commit_table(&t, &nw, commit_note, NULL, why, sizeof why) != 0)
         give_up(why, NULL, "commit-failed", 1);
+
+    /* ── phase 8c: the firmware's menu ─────────────────────────────
+     *
+     * The boot entry names the partition the commit has just made, by
+     * the GUID the commit generated, so it cannot be written before
+     * this point. BootOrder is NOT touched -- switching this machine
+     * on still reaches Windows until the user has seen AurOS work.
+     * What is armed is BootNext, which the firmware clears as it uses
+     * it: the next start reaches AurOS once, and a machine that
+     * cannot start AurOS comes back to Windows by itself.
+     *
+     * A failure is a warning. AurOS is on the disk and verified; what
+     * is missing is a line in a menu, and the sentence says how to
+     * get there without it. */
+    uint16_t boot_entry = 0;
+    if (loader_register(&nw, &L, &boot_entry, why, sizeof why) != 0) {
+        stage_warn("AurOS is installed but could not add itself to this "
+                   "computer's start-up menu (%s).", why);
+        stage_say("         Hold the key your computer shows at start-up for "
+                  "a boot menu");
+        stage_say("         and choose AurOS from it.");
+    } else {
+        stage_say("startup  AurOS is in this computer's start-up menu "
+                  "(entry %04X); Windows is still what it starts by "
+                  "default", boot_entry);
+    }
+    step(REC_BOOT_ENTRY, NULL);
+    fault_maybe("boot-entry");
 
     /* A SECOND COPY OF THE WAY BACK, on the machine itself.
      *

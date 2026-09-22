@@ -172,10 +172,13 @@ const char *rec_step_name(rec_step s)
     case REC_SHRINK_END:    return "shrink-end";
     case REC_WRITE_BEGIN:   return "write-begin";
     case REC_WRITE_END:     return "write-end";
+    case REC_BOOT_BEGIN:    return "boot-begin";
+    case REC_BOOT_END:      return "boot-end";
     case REC_PROBE_END:     return "probe-end";
     case REC_COMMIT_ARRAY:  return "commit-array";
     case REC_COMMIT_SECTOR: return "committed";
     case REC_COMMIT_BACKUP: return "commit-backup";
+    case REC_BOOT_ENTRY:    return "boot-entry";
     case REC_SETTLE_END:    return "settled";
     case REC_DONE:          return "done";
     case REC_REFUSED:       return "refused";

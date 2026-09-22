@@ -52,6 +52,13 @@ typedef struct {
     uint64_t gap_first, gap_last;   /* the space the shrink creates   */
 
     uint64_t root_first, root_last;
+    /* WHAT STARTS THE COMPUTER. An EFI System partition of our own,
+     * holding a byte-for-byte copy of the image's own ESP -- the
+     * signed shim and grub the build already boots in QEMU. loader.h
+     * says why it is a partition of ours rather than a directory
+     * inside the machine's, and `rec_bytes` below is therefore not a
+     * constant: it is the size of that ESP, so the space taken out of
+     * somebody's Windows is exactly the space that gets used. */
     uint64_t rec_first,  rec_last;
     /* THE WAY BACK GETS ITS OWN PARTITION, and not a file in the one
      * above it. The recovery partition is an EFI System partition, so
@@ -71,7 +78,8 @@ typedef struct {
  *   `win_new_bytes`  what the volume will actually be after the
  *                    shrink -- NOT what ntfsresize says the floor is.
  *   `root_src_bytes` the size of the root image that will be written.
- *   `rec_bytes`      the recovery partition.
+ *   `rec_bytes`      the boot partition -- the size of the image's own
+ *                    EFI partition, which is what gets copied into it.
  *   `min_root_bytes` the PRODUCT floor, not the image size. Setting it
  *                    to "the size at which the image merely fits"
  *                    silently deletes the documented 24 GB minimum and

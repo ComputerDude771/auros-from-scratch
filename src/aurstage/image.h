@@ -108,4 +108,23 @@ int image_verify(const image_src *s, void (*progress)(int percent),
 int image_write_root(wr_target *t, const image_src *s, uint64_t dst_off,
                      void (*progress)(int percent), char *why, size_t n);
 
+/* Where the image's OWN EFI System partition lies, as a byte offset
+ * and length INSIDE the image -- the same frame `root_off` uses.
+ *
+ * The installer copies that partition WHOLE onto the machine, into a
+ * partition of its own, and loader.h says at length why it is copied
+ * rather than assembled. All this function does is find it, out of
+ * the image's own table, for the same reason the root extent is taken
+ * from there: the manifest describes one partition and the thing that
+ * has to be copied is another, and inventing an offset for it in the
+ * manifest would mean a wire format change across both halves of the
+ * product to carry a number the image already states. */
+int image_esp_extent(const image_src *s, uint64_t *off, uint64_t *len,
+                     char *why, size_t n);
+
+/* Where the image itself starts on the stick. Every offset "inside the
+ * image" -- root_off, and what image_esp_extent returns -- is measured
+ * from here, and the manifest sits in front of it. */
+uint64_t image_base_off(const image_src *s);
+
 #endif

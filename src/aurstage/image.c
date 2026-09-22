@@ -54,18 +54,30 @@ static int read_at(int fd, void *b, size_t n, uint64_t off)
     return 0;
 }
 
-/* Is the image's own GPT consistent with what the manifest claims? */
-static int cross_check(const image_src *s, char *why, size_t n)
+/* One partition of the image's OWN table, by type GUID.
+ *
+ * The image is a whole-disk GPT image sitting inside a partition on
+ * the stick, 4096 bytes past its start, so its LBA 1 is at
+ * part_off + MAN_BYTES + one of ITS blocks. Nothing here uses
+ * gpt_read(): that wants an fd whose offset 0 is the disk, and this
+ * one's offset 0 is the stick.
+ *
+ * Returns 0 and fills `off`/`len` -- byte offsets INSIDE THE IMAGE,
+ * the same frame the manifest's root_off uses -- or -1 with a
+ * sentence. `missing` distinguishes "the table was unreadable" from
+ * "the table is fine and has no such partition", because those two
+ * deserve different sentences from different callers.
+ */
+static int img_part_by_type(const image_src *s, const uint8_t type[16],
+                            uint64_t *off, uint64_t *len, int *missing,
+                            char *why, size_t n)
 {
+    if (missing) *missing = 0;
     int fd = open(s->dev, O_RDONLY | O_CLOEXEC);
     if (fd < 0) {
         snprintf(why, n, "the AurOS image could not be read");
         return -1;
     }
-    /* The image begins after the manifest, so its GPT is at
-     * MAN_BYTES + one block. A plain pread-based table reader is
-     * enough: gpt_read wants an fd whose offset 0 is the disk, so the
-     * image is read into a temporary view by hand. */
     uint8_t h[4096];
     int rc = -1;
     uint32_t ss = s->image_sector ? s->image_sector : 512;
@@ -92,21 +104,49 @@ static int cross_check(const image_src *s, char *why, size_t n)
         snprintf(why, n, "the AurOS image's own table could not be read");
         goto out;
     }
-    /* The root partition, by type GUID. */
-    uint64_t off = 0, len = 0;
+    uint64_t o = 0, l = 0;
     for (uint32_t i = 0; i < num; i++) {
         const uint8_t *e = arr + (size_t)i * esz;
-        if (memcmp(e, GPT_TYPE_LINUX_ROOT, 16) != 0) continue;
+        if (memcmp(e, type, 16) != 0) continue;
         uint64_t first = rd64(e + 32), last = rd64(e + 40);
         if (!first || last < first) continue;
-        off = first * ss;
-        len = (last - first + 1) * ss;
+        o = first * ss;
+        l = (last - first + 1) * ss;
         break;
     }
     free(arr);
-    if (!len) {
-        snprintf(why, n, "the AurOS image has no root filesystem in it");
+    if (!l) {
+        if (missing) *missing = 1;
+        snprintf(why, n, "the AurOS image does not contain the part of "
+                         "itself AurOS was looking for");
         goto out;
+    }
+    /* INSIDE THE IMAGE, and checked here rather than by each caller:
+     * an extent the manifest's own length does not contain is a
+     * length that would be read off the end of the stick. */
+    if (o + l < o || o + l > s->image_bytes) {
+        snprintf(why, n, "the AurOS image describes a part of itself that "
+                         "is not inside it");
+        goto out;
+    }
+    if (off) *off = o;
+    if (len) *len = l;
+    rc = 0;
+out:
+    close(fd);
+    return rc;
+}
+
+/* Is the image's own GPT consistent with what the manifest claims? */
+static int cross_check(const image_src *s, char *why, size_t n)
+{
+    uint64_t off = 0, len = 0;
+    int missing = 0;
+    if (img_part_by_type(s, GPT_TYPE_LINUX_ROOT, &off, &len, &missing,
+                         why, n) != 0) {
+        if (missing)
+            snprintf(why, n, "the AurOS image has no root filesystem in it");
+        return -1;
     }
     if (off != s->root_off || len != s->root_len) {
         /* OUR OWN BUILD, WRONG. Worth the twenty lines that catch it:
@@ -115,12 +155,25 @@ static int cross_check(const image_src *s, char *why, size_t n)
         snprintf(why, n,
                  "the AurOS image and its description do not agree with each "
                  "other");
-        goto out;
+        return -1;
     }
-    rc = 0;
-out:
-    close(fd);
-    return rc;
+    return 0;
+}
+
+uint64_t image_base_off(const image_src *s)
+{ return s->part_off + MAN_BYTES; }
+
+int image_esp_extent(const image_src *s, uint64_t *off, uint64_t *len,
+                     char *why, size_t n)
+{
+    int missing = 0;
+    if (img_part_by_type(s, GPT_TYPE_ESP, off, len, &missing, why, n) != 0) {
+        if (missing)
+            snprintf(why, n, "the copy of AurOS on the memory stick has "
+                             "nothing in it to start the computer with");
+        return -1;
+    }
+    return 0;
 }
 
 int image_find(const stage_machine *m, const char *want_profile,

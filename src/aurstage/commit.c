@@ -38,10 +38,22 @@ int commit_build(const gpt_table *old, const stage_layout *L,
     if (gpt_add(out, RESCUE_TYPE_GUID, "AUROS-SAVED",
                 L->rsc_first, L->rsc_last, NULL, why, n) < 0)
         return -1;
-    /* The recovery partition is an EFI System partition: it has to be
-     * launchable by firmware without anything else on the disk being
-     * intact, which is the whole of what it is for. */
-    if (gpt_add(out, GPT_TYPE_ESP, "AUROS-RECOVERY",
+    /* WHAT STARTS THE COMPUTER, and it is an EFI System partition of
+     * our own rather than a directory inside the machine's.
+     *
+     * loader.h has the argument at length. The short form is R12: the
+     * machine's EFI partition holds vendor boot files and firmware
+     * capsules as well as \EFI\Microsoft\Boot, and is never mounted
+     * by this program. UEFI launches whatever a Boot#### entry names
+     * and does not care which EFI System partition that is, so AurOS
+     * gets one it owns outright -- and Windows' own remains a
+     * partition this installer has only ever read.
+     *
+     * It was called AUROS-RECOVERY while it was going to hold a rescue
+     * environment and nothing else did. It holds the bootloader, so it
+     * says so: somebody reading this disk in a partition manager
+     * should be able to tell which partition starts the computer. */
+    if (gpt_add(out, GPT_TYPE_ESP, "AUROS-BOOT",
                 L->rec_first, L->rec_last, NULL, why, n) < 0)
         return -1;
     return 0;

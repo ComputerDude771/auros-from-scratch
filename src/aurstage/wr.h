@@ -25,10 +25,19 @@
  *
  * WHAT THIS DOES NOT COVER, said plainly because a reader will assume
  * otherwise: writes the kernel makes on our behalf. A mount(2) is
- * invisible to it, and so is anything a program we exec does. The ESP
- * merge goes through the kernel's vfat driver and is therefore outside
- * this file entirely -- espfix reads its own writes back by hand, and
- * says so.
+ * invisible to it, and so is anything a program we exec does.
+ *
+ * That paragraph used to end by promising an `espfix` that would mount
+ * the machine's EFI partition read-write and read its own writes back
+ * by hand. There is no such file and there will not be one. R12 says
+ * that partition is never mounted, and loader.c is what replaced the
+ * idea: AurOS is started from an EFI System partition of its own,
+ * written through THIS file like everything else, so the boot chain is
+ * inside the gate rather than beside it.
+ *
+ * EFI VARIABLES ARE THE ONE THING GENUINELY OUTSIDE IT, and they have
+ * a gate of their own: nvram.c, named in build/staging the way this
+ * file is, with four checks of its own. See nvram.h.
  */
 #ifndef AUROS_WR_H
 #define AUROS_WR_H
@@ -38,7 +47,9 @@
 
 typedef enum {
     WR_ROOT = 0,        /* the AurOS root extent                      */
-    WR_RECOVERY,        /* the recovery partition                     */
+    WR_RECOVERY,        /* the AurOS boot partition: the copy of the
+                         * image's own ESP that makes the machine able
+                         * to start AurOS on its own. See loader.h.   */
     WR_GPT_PRIMARY,     /* protective MBR, header, primary entry array*/
     WR_GPT_BACKUP,      /* backup entry array and header              */
     WR_LOG,             /* the preallocated journal/log extents       */
