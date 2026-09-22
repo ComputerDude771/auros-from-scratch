@@ -62,9 +62,11 @@ mknod -m 600 dev/console c 5 1 2>/dev/null || true
 mknod -m 666 dev/null    c 1 3 2>/dev/null || true
 
 step "the staging init"
+# Every .c in the directory, not a list that has to be remembered: a
+# stage B file left out of a hand-written list links and runs, and the
+# check it was written to perform simply does not happen.
 gcc -O2 -std=gnu11 -Wall -Wextra -o init \
-    "$ROOT/src/aurstage/main.c" "$ROOT/src/aurstage/boot.c" \
-    "$ROOT/src/aurstage/disks.c" -I "$ROOT/src/aurstage" \
+    "$ROOT"/src/aurstage/*.c -I "$ROOT/src/aurstage" \
     || die "aurstage did not build"
 note "init $(du -h init | cut -f1)"
 
