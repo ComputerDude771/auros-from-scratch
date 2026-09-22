@@ -62,24 +62,42 @@ mknod -m 600 dev/console c 5 1 2>/dev/null || true
 mknod -m 666 dev/null    c 1 3 2>/dev/null || true
 
 step "the staging init"
-# THE READ-ONLY GATE.
+# THE WRITE GATE.
 #
-# aurstage.h says stages A and B write nothing, and until stage B it
+# aurstage.h used to say the whole directory writes nothing, and that
 # was true because one function opened block devices and opened them
-# O_RDONLY. That is no longer how it is true: ntfs.c, fde.c, shrink.c
-# and disks.c all open devices now, each of them read-only, and "each
-# of them, read-only" is a property that holds until somebody adds a
-# fifth file in a hurry.
+# O_RDONLY. Stage C has to write, so the rule changes shape rather
+# than being dropped: EXACTLY ONE FILE may open a device writably, and
+# the build refuses an image where any other one does.
 #
-# So it is checked instead of remembered. /dev/null is the one
-# exception and it is named, not pattern-matched, because an exception
-# a regular expression grants is an exception nobody reviewed.
-BAD=$(grep -nE 'O_RDWR|O_WRONLY|O_CREAT|O_TRUNC|O_APPEND' "$ROOT"/src/aurstage/*.c \
-      | grep -v '/dev/null' || true)
+# That is what keeps wr.c worth having. Its value is not that it
+# bounds-checks -- anybody can bounds-check -- it is that there is
+# nowhere else to write from, so the whole destructive surface of this
+# program is one file a person can read in an afternoon. A gate that
+# merely counted writable opens would let the second one in silently.
+#
+# The two exceptions are named, not pattern-matched, because an
+# exception a regular expression grants is an exception nobody
+# reviewed: wr.c, and /dev/null in boot.c.
+WRITER="wr.c"
+BAD=""
+for f in "$ROOT"/src/aurstage/*.c; do
+    case "$(basename "$f")" in "$WRITER") continue ;; esac
+    hit=$(grep -nE 'O_RDWR|O_WRONLY|O_CREAT|O_TRUNC|O_APPEND' "$f" \
+          | grep -v '/dev/null' || true)
+    [ -n "$hit" ] && BAD="$BAD
+$(basename "$f"): $hit"
+done
 if [ -n "$BAD" ]; then
     printf '%s\n' "$BAD" >&2
-    die "stage B opened something writable. Nothing in it may."
+    die "only $WRITER may write to a disk. Something else tried."
 fi
+# And the writer must still exist, or the gate above is vacuous and
+# passes a tree in which somebody deleted it and moved the writes.
+[ -f "$ROOT/src/aurstage/$WRITER" ] \
+    || die "$WRITER is missing; the write gate would pass anything"
+grep -q 'O_RDWR' "$ROOT/src/aurstage/$WRITER" \
+    || die "$WRITER no longer opens anything writable; where did the writes go?"
 
 # Every .c in the directory, not a list that has to be remembered: a
 # stage B file left out of a hand-written list links and runs, and the
