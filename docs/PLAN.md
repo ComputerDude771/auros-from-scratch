@@ -205,20 +205,56 @@ Recorded now so they are never a late surprise. These are product
 prerequisites, not engineering tasks — some cost money and calendar time
 that no amount of code replaces.
 
-1. **Secure Boot.** An unsigned bootloader will not start on a machine
-   with Secure Boot enabled, which is most Windows 10/11 hardware. The
-   real fix is a Microsoft-signed `shim`, which requires a legal entity
-   and a review process measured in months.
-2. **Code signing.** An unsigned `.exe` triggers SmartScreen's "unknown
-   publisher" wall. For an audience defined as *non-technical*, that wall
-   is fatal to conversion. Requires a certificate on a hardware token.
-3. **BitLocker.** Common on modern Windows. The volume cannot be shrunk
-   until protection is suspended.
-4. **NTFS shrink limits.** Unmovable files cap what can be reclaimed. Must
-   be measured before promising the user anything.
-5. **Liability.** This product repartitions consumer disks. Someone will
-   lose data. The entity, EULA, and support path must exist before the
-   first public download.
+1. **Secure Boot — answered, and not by us.** AurOS boots through
+   Canonical's `shimx64.efi.dualsigned` and their signed
+   `grubx64.efi`, copied out of the image rather than rebuilt, so
+   Microsoft's signature is already on them and no submission is
+   needed. `tools/loadertest.sh` proves it against
+   `OVMF_CODE_4M.ms.fd` with Microsoft's keys enrolled and Secure
+   Boot enforcing. The shim is *dual*-signed — by the 2011 CA as well
+   as the 2023 one — and the 2011 CA is the one old firmware trusts,
+   which is the whole reason the chain is borrowed: the dual-signing
+   window closed in June 2026, so a distribution applying on its own
+   today gets a 2023-only shim that would not boot on exactly the
+   machines this product exists for. See `docs/SIGNING.md`.
+2. **Code signing — still a purchase.** An unsigned `.exe` gets
+   SmartScreen's full-screen panel whose only visible button says
+   *Don't run*. For an audience defined as non-technical that is
+   fatal, and for the ones who find the hidden *Run anyway* it is
+   worse: they have been taught to click past a security warning
+   immediately before handing a program their whole disk. The
+   pipeline is written and tested (`build/sign`, `tools/signtest.sh`,
+   12 checks); what is missing is an OV or EV certificate on a
+   hardware token or cloud HSM, which since June 2023 is the only
+   form any public CA will issue. `docs/SIGNING.md` says what to buy
+   and why EV is the one worth the difference here.
+3. **BitLocker — refused, permanently.** There is no shrink path for
+   a protected volume, online or offline, and suspension does not
+   decrypt a sector. Preflight blocks and the remedy says what is
+   actually required — fully decrypt — rather than implying that
+   producing the recovery key clears it. `docs/AURBRIDGE.md` has the
+   reasoning; this matters more over time, not less, as Windows 11
+   24H2 enables device encryption on more clean installs.
+4. **NTFS shrink limits — measured, never promised.** `ntfsresize
+   --no-action` is asked before anything is said to the user, and the
+   number it gives is the number the plan is built from. A machine
+   where the answer is "not enough" is refused with the disk
+   untouched.
+5. **Liability.** This product repartitions consumer disks. Someone
+   will lose data. The entity, EULA and support path must exist
+   before the first public download — and the entity is the same one
+   the code-signing certificate is issued to, so it is on the
+   critical path twice.
+6. **No Firefox from this builder.** The network these images were
+   built on answers `403` for every Mozilla and Launchpad host, so
+   all five ship Epiphany. `build/forge` now tries three routes and
+   refuses to substitute quietly, which is the check that was missing
+   — but the fix is a network, not a commit. See
+   `docs/results/images.md`.
+7. **Nowhere to download the image from.** The installer fetches it,
+   resumably, against a hash baked in at build time
+   (`tools/exetest.sh`, 14 checks) — and `AUROS_IMAGE_URL` is empty,
+   because there is no host yet. A release build refuses without one.
 
 Detailed findings on each are being gathered and land in `docs/research/`.
 
@@ -226,11 +262,38 @@ Detailed findings on each are being gathered and land in `docs/research/`.
 
 ## 6. Where the work is right now
 
-**Done and verified:**
-- `aurora` theme engine — inheritance, colour algebra, 9 render targets, 4 themes
-- `aurwall` — procedural wallpaper renderer + PNG encoder with its own DEFLATE
-- `aurb` — source-to-package build system with dependency resolution
-- musl 1.2.4 built from pristine upstream source; toolchain verified musl-only
+**The whole path works, end to end, on a synthetic machine.**
 
-**Next:** busybox, kernel, `aurinit`, the package manager, a bootable ISO
-proven in QEMU — then AurBridge.
+A person double-clicks one `.exe`. It looks at the computer and refuses
+the ones it cannot help; it explains and asks; it writes a memory stick
+and arms a one-shot boot entry; the machine restarts **once** into the
+staging environment, which shrinks Windows, writes AurOS, verifies it,
+probes the hardware, commits a new partition table in one sector,
+writes a signed boot chain into a partition of its own, puts AurOS in
+the firmware's menu without making it the default, and hands over to it
+in the same boot. AurOS comes up, asks whether it works, and only when
+somebody says yes does it become what the computer starts — and only
+then may it read a single file off the old Windows volume.
+
+What proves it, and the numbers are the current transcripts in
+`docs/results/`:
+
+| | |
+|---|---|
+| `installtest.sh` | 32 — install, start, put Windows back twice, refuse a damaged copy |
+| `loadertest.sh` | 17 — and does it come back up in AurOS with the stick out, including under Secure Boot |
+| `powercuttest.sh` | 138 — the power goes at each of seventeen named instants |
+| `matrixtest.sh` | 10 — shapes of computer that cannot be bought |
+| `bridgetest.sh` | 13 — the two halves agree about the bytes |
+| `aurfirsttest.sh` | 31 — BootOrder is untouched until somebody says so |
+| `nvramtest.sh` | 25 — the boot entry, decoded by something that did not write it |
+| `exetest.sh` | 14 — one file, and a download that resumes |
+| `signtest.sh` | 12 — it signs, and a changed byte breaks it |
+| `welcometest.c` | 25 — the question, and what each answer asks for |
+| `targets.c` | 10021 — everything she has to press, at every text size |
+| `modaltest.c` | 50 — a panel covers the desktop and can always be left |
+
+**What is left is not code.** A certificate. A host for the image. A
+network that allows Firefox. A legal entity. And the thing none of the
+above can substitute for: a real, old, dusty PC with a real firmware
+and a real disk that lies about having flushed.
