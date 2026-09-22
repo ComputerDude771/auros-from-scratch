@@ -852,14 +852,30 @@ static int fde_guard(int disk_fd, uint32_t sector,
      * that will not read is a sector we do not know the contents of. */
     uint64_t seen[GPT_MAX_ENT * 2];
     int n_seen = 0;
+    /* A table with more entries than this list can hold would have
+     * some of its partitions checked and some not, which is the shape
+     * of a guard that looks like one. gpt.c refuses a table above
+     * GPT_MAX_ENT for the same reason; the captured one is held to the
+     * same bound rather than to the specification's 4096. */
+    if (n_ent > GPT_MAX_ENT) {
+        snprintf(why, n,
+                 "the saved partition table has more parts in it than AurOS "
+                 "can check. It will not be used.");
+        return -1;
+    }
     /* Direction 1: something on the disk now whose entry the captured
      * table does not reproduce exactly. Its geometry is about to
      * change, so it must not be encrypted. */
     if (live_ok) {
         for (uint32_t k = 0; k < live->n_entries; k++) {
             if (!gpt_used(&live->ent[k])) continue;
-            if (n_seen < (int)(sizeof seen / sizeof seen[0]))
-                seen[n_seen++] = live->ent[k].first;
+            if (n_seen >= (int)(sizeof seen / sizeof seen[0])) {
+                snprintf(why, n,
+                         "this disk is divided into more parts than AurOS can "
+                         "check for encryption. Nothing has been written.");
+                return -1;
+            }
+            seen[n_seen++] = live->ent[k].first;
         }
     }
     for (uint32_t j = 0; j < n_ent; j++) {
@@ -870,8 +886,14 @@ static int fde_guard(int disk_fd, uint32_t sector,
         uint64_t f = rd64(e + 32);
         int have = 0;
         for (int q = 0; q < n_seen; q++) if (seen[q] == f) { have = 1; break; }
-        if (!have && n_seen < (int)(sizeof seen / sizeof seen[0]))
-            seen[n_seen++] = f;
+        if (have) continue;
+        if (n_seen >= (int)(sizeof seen / sizeof seen[0])) {
+            snprintf(why, n,
+                     "this disk is divided into more parts than AurOS can "
+                     "check for encryption. Nothing has been written.");
+            return -1;
+        }
+        seen[n_seen++] = f;
     }
 
     for (int i = 0; i < n_seen; i++) {

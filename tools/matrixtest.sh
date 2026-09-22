@@ -82,15 +82,35 @@ build() { # out  sector  esp_start  esp_mib  win_mib  extra
     _eb=$(( _emib * 1024 * 1024 / _ss ))
     _wb=$(( _wmib * 1024 * 1024 / _ss ))
     _ws=$(( _es + _eb ))
-    sgdisk -n 1:$_es:$(( _ws - 1 ))            -t 1:ef00 -c 1:"EFI" \
+    # -a 1: SGDISK ALIGNS TO 2048 SECTORS BY DEFAULT, SILENTLY.
+    #
+    # The "first partition at LBA 34" row asked for 34 and got 2048,
+    # and -- worse -- the filesystems were then written at the offsets
+    # ASKED FOR while the table said something else, so the row failed
+    # with "no Windows drive on this computer" and looked like an
+    # installer bug. The whole point of that row is a start sgdisk
+    # would not choose on its own.
+    sgdisk -a 1 -n 1:$_es:$(( _ws - 1 ))       -t 1:ef00 -c 1:"EFI" \
            "$_l" >/dev/null 2>&1 || { losetup -d "$_l"; return 1; }
-    sgdisk -n 2:$_ws:$(( _ws + _wb - 1 ))      -t 2:0700 -c 2:"Windows" \
+    sgdisk -a 1 -n 2:$_ws:$(( _ws + _wb - 1 )) -t 2:0700 -c 2:"Windows" \
            "$_l" >/dev/null 2>&1 || { losetup -d "$_l"; return 1; }
     case "$_extra" in
-      winre) sgdisk -n 3:$(( _ws + _wb + 2048 )):+200M -t 3:2700 \
+      winre) sgdisk -a 1 -n 3:$(( _ws + _wb + 2048 )):+200M -t 3:2700 \
                     -c 3:"WinRE" "$_l" >/dev/null 2>&1 ;;
     esac
+    # AND THE TABLE IS READ BACK. A fixture that is not the shape it
+    # says it is produces a red row nobody can diagnose, and the
+    # obvious repair is to change the expectation.
+    _got1=$(sgdisk -i 1 "$_l" 2>/dev/null |
+            sed -n 's/^First sector: \([0-9]*\).*/\1/p')
+    _got2=$(sgdisk -i 2 "$_l" 2>/dev/null |
+            sed -n 's/^First sector: \([0-9]*\).*/\1/p')
     losetup -d "$_l"
+    if [ "$_got1" != "$_es" ] || [ "$_got2" != "$_ws" ]; then
+        echo "  the fixture did not land where it was asked:" \
+             "wanted $_es/$_ws, got ${_got1:-?}/${_got2:-?}"
+        return 1
+    fi
     # The filesystems, by offset into the file.
     _eoff=$(( _es * _ss )); _elen=$(( _eb * _ss ))
     _woff=$(( _ws * _ss )); _wlen=$(( _wb * _ss ))
@@ -225,12 +245,40 @@ fi
 [ "$hib_made" = yes ] || { echo "  could not make the hibernation fixture"; exit 2; }
 row "Windows is asleep, not shut down" ntfs-refused "$T/hib.img" "" uefi
 
-# An MBR disk. parted rather than sgdisk, which only speaks GPT.
+# An MBR disk, written by hand.
+#
+# This used parted, which is not installed on every builder -- and when
+# it is missing the command fails silently, the image stays 4 GB of
+# zeros, and the row comes back "no-disk" instead of "not-gpt", which
+# reads as a broken test rather than a missing tool. A DOS partition
+# table is sixteen bytes at offset 446 and a two-byte signature; there
+# is no reason to shell out for it.
 rm -f "$T/mbr.img"; truncate -s 4G "$T/mbr.img"
-parted -s "$T/mbr.img" mklabel msdos mkpart primary ntfs 1MiB 1025MiB \
-    >/dev/null 2>&1
-L=$(losetup --find --show -o $((1048576)) --sizelimit $((1024*1024*1024)) "$T/mbr.img")
-nt mkntfs -Q -F -L WINDOWS "$L" >/dev/null 2>&1; losetup -d "$L"
+python3 - "$T/mbr.img" <<'EOPY'
+import sys, struct
+first, count = 2048, 2 * 1024 * 1024        # 1 MiB in, 1 GiB long
+f = open(sys.argv[1], 'r+b')
+f.seek(446)
+f.write(bytes([0x80,               # bootable
+               0x01, 0x01, 0x00,   # starting CHS, nonsense and ignored
+               0x07,               # type 0x07: NTFS/exFAT
+               0xFE, 0xFF, 0xFF])  # ending CHS, the "too big" marker
+       + struct.pack('<II', first, count))
+f.seek(510); f.write(b'\x55\xaa')
+f.close()
+EOPY
+L=$(losetup --find --show -o $((2048*512)) --sizelimit $((1024*1024*1024)) "$T/mbr.img")
+nt mkntfs -Q -F -L WINDOWS "$L" >/dev/null 2>&1 || {
+    losetup -d "$L"; echo "  could not make the MBR fixture"; exit 2; }
+losetup -d "$L"
+# AND THE FIXTURE IS CHECKED, for the same reason as the two above.
+python3 - "$T/mbr.img" <<'EOPY'
+import sys
+f = open(sys.argv[1], 'rb'); f.seek(510)
+assert f.read(2) == b'\x55\xaa', "the MBR fixture has no signature"
+f.seek(2048 * 512)
+assert f.read(512)[3:11] == b'NTFS    ', "the MBR fixture has no NTFS in it"
+EOPY
 row "a disk divided up the old way (MBR)" not-gpt "$T/mbr.img" "" uefi
 
 row "a computer that starts up the old way (no EFI)" not-uefi \
