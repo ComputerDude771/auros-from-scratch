@@ -229,20 +229,48 @@ int af_confirm(const af_state *s, char *why, size_t n)
          * has spent its budget not doing. So it is built from every
          * Boot#### that exists, ours first and the rest in the order
          * they are numbered. */
+        /* NOT EVERY Boot#### IS SOMETHING TO BOOT. The manufacturer's
+         * diagnostics, the firmware setup entry, and anything marked
+         * inactive or hidden are all Boot#### variables, and the UEFI
+         * spec says none of them belongs in the ordinary start-up
+         * sequence. In plain numeric order a diagnostics partition
+         * lands ahead of Windows on a machine whose owner never asked
+         * for it, and undoing that means the firmware menu this
+         * product exists to keep her out of.
+         *
+         * SO THEY ARE ORDERED, NOT REMOVED, and the difference is the
+         * whole safety of it.
+         *
+         * Removing them was the first version, and a review built the
+         * machine it breaks: firmware with no BootOrder -- which is
+         * firmware that has already shown it does not keep the boot
+         * variables tidy -- and a Windows entry with
+         * LOAD_OPTION_ACTIVE clear, which is how several vendors
+         * record "the user switched this off" rather than deleting the
+         * variable. Windows was filtered out, a BootOrder holding only
+         * AurOS was written, this printed success and stamped the
+         * answer permanently, and af_decline below then refused to
+         * undo it because ours was the only entry left. The way back
+         * was gone and the program had removed it.
+         *
+         * A BootOrder is a list of NUMBERS. Firmware skips a number
+         * whose entry it will not start, so carrying one costs
+         * nothing; leaving one out can cost somebody their other
+         * operating system. Two passes: the ones the firmware says are
+         * boot options, then the rest, each ascending. af_boot_bootable
+         * returns -1 for "could not tell", and that goes with the
+         * yeses -- not being able to read an entry is not evidence
+         * against it. */
         uint16_t all[MAX_BOOTS];
         int an = af_boot_numbers(all, MAX_BOOTS);
-        for (int i = 0; i < an && k < MAX_BOOTS; i++)
-            /* NOT EVERY Boot#### IS SOMETHING TO BOOT. The
-             * manufacturer's diagnostics, a firmware setup entry, and
-             * anything marked inactive or hidden are all Boot####
-             * variables, and the UEFI spec says none of them belongs
-             * in the ordinary start-up sequence. Building a BootOrder
-             * out of all of them would promote a diagnostics partition
-             * above Windows on a machine whose owner never asked for
-             * it -- and would leave her undoing it in a firmware menu
-             * this product exists to keep her out of. */
-            if (all[i] != s->entry && af_boot_bootable(all[i]))
+        for (int pass = 0; pass < 2; pass++)
+            for (int i = 0; i < an && k < MAX_BOOTS; i++) {
+                if (all[i] == s->entry) continue;
+                int refused = (af_boot_bootable(all[i]) == 0);
+                if (pass == 0 && refused)  continue;   /* later */
+                if (pass == 1 && !refused) continue;   /* already in */
                 nw[k++] = all[i];
+            }
     }
 
     uint8_t buf[MAX_BOOTS * 2];

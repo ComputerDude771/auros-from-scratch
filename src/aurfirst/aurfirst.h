@@ -182,7 +182,10 @@ int  af_boot_numbers(uint16_t *out, int max);
 /* The ASCII description of a load option. */
 void af_desc_of(const uint8_t *opt, int len, char *out, size_t n);
 
-/* IS THIS ONE MEANT TO BE STARTED BY ITSELF? 1 yes, 0 no.
+/* IS THIS ONE MEANT TO BE STARTED BY ITSELF?
+ *   1  yes -- read, and its attributes say it is a boot option
+ *   0  no  -- read, and its attributes say it is not
+ *  -1  cannot tell: unreadable, truncated, or too short to be one
  *
  * A load option's first four bytes are its attributes, and the UEFI
  * spec is explicit about two of them: an entry without
@@ -194,15 +197,28 @@ void af_desc_of(const uint8_t *opt, int len, char *out, size_t n);
  *
  * This matters in exactly one place: a machine whose firmware ships
  * with no BootOrder and enumerates for itself. af_confirm() builds one
- * there, and building it from every Boot#### that exists would promote
- * the manufacturer's diagnostics partition into the machine's ordinary
- * start-up sequence -- something nobody asked for and which the person
- * would then have to undo in a firmware menu they were told they would
- * never have to open.
+ * there, and building it in plain numeric order would put the
+ * manufacturer's diagnostics partition ahead of Windows -- something
+ * nobody asked for, which she would then have to undo in a firmware
+ * menu she was told she would never have to open.
  *
- * An entry that cannot be read at all is not bootable as far as this
- * is concerned: leaving something out of a list it was never in costs
- * nothing, and putting something into one is the mistake. */
+ * THREE ANSWERS AND NOT TWO, and that distinction is the whole safety
+ * of this. The first version returned 0 for "no" and for "I could not
+ * read it" alike, and af_confirm DROPPED everything that answered 0.
+ * A review built the machine that breaks: firmware with no BootOrder
+ * -- which is firmware that has already shown it does not keep the
+ * boot variables tidy -- and a Windows entry with LOAD_OPTION_ACTIVE
+ * clear, which is how several vendors record "the user switched this
+ * off in the boot menu" rather than deleting the variable. Windows
+ * was filtered out, a BootOrder containing only AurOS was written,
+ * confirm printed success and stamped the answer permanently, and
+ * af_decline then refused to undo it because ours was the only entry
+ * left. The way back was gone, and the program had removed it while
+ * saying the opposite.
+ *
+ * So nothing is dropped any more; see af_confirm. This answer only
+ * decides ORDER, and -1 is ordered with the yeses, because "I could
+ * not read it" is not evidence against an entry. */
 int  af_boot_bootable(uint16_t num);
 
 #endif

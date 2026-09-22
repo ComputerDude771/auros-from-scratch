@@ -562,20 +562,39 @@ number would be a boot menu with one thing in it and Windows gone,
 which is the one thing this whole design has spent its budget not
 doing.
 
-It builds that one out of the `Boot####` entries **the firmware marks
-as boot options**, ours first. Not every `Boot####` is something to
-boot: the UEFI load-option attributes distinguish an entry that is not
+That one contains **every** `Boot####` on the machine, ours first — but
+not in plain numeric order. Not every `Boot####` is something to boot:
+the UEFI load-option attributes distinguish an entry that is not
 `ACTIVE`, one that is `HIDDEN`, and one whose category is APPLICATION
 rather than boot — which is what a manufacturer's diagnostics partition
-and the firmware setup entry are. Building the order out of all of them
-promoted those above Windows on a machine whose owner never asked for
-it, and left her undoing it in a firmware menu this product exists to
-keep her out of.
+and the firmware setup entry are. In numeric order those land ahead of
+Windows on a machine whose owner never asked for it, and undoing that
+means the firmware menu this product exists to keep her out of. So they
+go **behind** the entries the firmware vouches for.
 
-That filter applies only where there was no `BootOrder` to begin with.
-An order that already names a hidden entry keeps it: somewhere there is
-a laptop whose vendor put it there on purpose, and taking it out is not
-this program's decision.
+**Behind, not out**, and that distinction is the whole safety of it.
+The first version removed them, and a review built the machine it
+breaks: firmware with no `BootOrder` — which is firmware that has
+already shown it does not keep the boot variables tidy — and a Windows
+entry with `LOAD_OPTION_ACTIVE` clear, which is how several vendors
+record "the user switched this off in the boot menu" rather than
+deleting the variable. Windows was filtered out, a `BootOrder` holding
+only AurOS was written, `confirm` reported success and stamped the
+answer permanently, and `aurfirst decline` then refused to undo it
+because ours was the only entry left. The way back was gone and the
+program had removed it while saying the opposite.
+
+A `BootOrder` is a list of **numbers**. Firmware skips a number whose
+entry it will not start, so carrying one costs nothing; leaving one out
+can cost somebody their other operating system. An entry `aurfirst`
+cannot read at all — unreadable, or longer than it will look at — is
+ordered with the ones it vouches for, because not being able to read an
+entry is not evidence against it.
+
+The ordering applies only where there was no `BootOrder` to begin with.
+An order that already names a hidden entry is preserved exactly:
+somewhere there is a laptop whose vendor put it there on purpose, and
+reordering it is not this program's decision.
 
 `aurfirst decline` clears the one-shot **before** it records the answer.
 The other order leaves an instant where the machine has stopped

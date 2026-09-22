@@ -14,7 +14,12 @@
 #      BootNext is re-armed every boot, because the firmware eats it.
 #    - `confirm` PROMOTES our entry. It never removes anybody else's,
 #      and on firmware that ships without a BootOrder it builds one
-#      that still contains everything.
+#      that still contains everything. Everything: the entries the
+#      firmware marks inactive, hidden or not-a-boot-option are put
+#      BEHIND the ones it vouches for rather than left out, because a
+#      BootOrder is a list of numbers and firmware skips a number it
+#      will not start -- while leaving one out can cost somebody the
+#      Windows they were promised they could go back to.
 #    - "it does not work" clears the one-shot BEFORE it records the
 #      answer, so there is no instant where the machine has stopped
 #      re-arming and is still armed once.
@@ -175,10 +180,79 @@ plant 0004 "Recovery"        0x0     # not ACTIVE
 plant 0006 "Firmware Setup"  0x9     # ACTIVE | HIDDEN
 plant 0005 "Fedora"
 "$AF" confirm >/dev/null 2>&1
-[ "$(read_order)" = "0002 0000 0005" ] \
-  && ok "...and not the entries the firmware marked not-to-be-booted" \
-  || bad "...and not the entries the firmware marked not-to-be-booted" \
+[ "$(read_order)" = "0002 0000 0005 0003 0004 0006" ] \
+  && ok "...with the not-to-be-booted ones behind, not promoted" \
+  || bad "...with the not-to-be-booted ones behind, not promoted" \
         "$(read_order)"
+case " $(read_order) " in
+  *" 0003 "*) case " $(read_order) " in
+                *" 0004 "*) case " $(read_order) " in
+                              *" 0006 "*) ok "...and none of them dropped" ;;
+                              *) bad "...and none of them dropped" "$(read_order)" ;;
+                            esac ;;
+                *) bad "...and none of them dropped" "$(read_order)" ;;
+              esac ;;
+  *) bad "...and none of them dropped" "$(read_order)" ;;
+esac
+
+# THE DIRECTION THAT WAS NOT TESTED, AND IS THE ONE THAT MATTERS.
+#
+# The first version of the filter REMOVED what it did not like, and a
+# review built the machine that breaks: no BootOrder, and a Windows
+# entry whose LOAD_OPTION_ACTIVE is clear -- which is how several
+# vendors record "the user switched this off in the boot menu" rather
+# than deleting the variable. Windows was filtered out, a BootOrder
+# holding only AurOS was written, confirm printed success and stamped
+# the answer permanently, and decline then refused to undo it because
+# ours was the only entry left.
+fresh
+plant 0000 "Windows Boot Manager" 0x0     # the vendor switched it off
+plant 0002 "AurOS"
+"$AF" confirm >/dev/null 2>&1
+case " $(read_order) " in
+  *" 0000 "*) ok "a Windows entry the firmware marked inactive is still there" ;;
+  *) bad "a Windows entry the firmware marked inactive is still there" \
+         "$(read_order)" ;;
+esac
+[ "$(read_order)" != "0002" ] \
+  && ok "...so the menu is never left with only AurOS in it" \
+  || bad "...so the menu is never left with only AurOS in it" "$(read_order)"
+# And the way back still exists, which is the thing that was lost.
+"$AF" decline >/dev/null 2>&1
+case " $(read_order) " in
+  0002*) bad "and declining can still put Windows first" "$(read_order)" ;;
+  *) ok "and declining can still put Windows first" ;;
+esac
+
+# AN ENTRY THIS PROGRAM CANNOT READ IS NOT AN ENTRY IT MAY JUDGE.
+# af_var_get answers -1 for a variable it cannot read and -2 for one
+# longer than aurfirst will look at; both used to mean "not bootable",
+# which meant "delete from the boot menu".
+#
+# The numbering below is what makes this a test rather than a
+# formality. 0003 is positively hidden, so it belongs at the BACK;
+# 0007 and 0008 are merely unreadable, so they belong at the FRONT
+# with the ones the firmware vouched for. Since 0003 sorts BEFORE
+# them, an implementation that lumps "cannot read" in with "refused"
+# produces 0002 0000 0003 0007 0008 and this fails. Give 0003 a higher
+# number and both orders agree, and the check tests nothing.
+fresh
+plant 0000 "Windows Boot Manager"
+plant 0002 "AurOS"
+plant 0003 "Firmware Setup" 0x9                   # positively hidden
+printf 'xyz' > "$VD/Boot0007-$G"                  # too short to be one
+plant 0008 "Enormous"
+python3 - "$VD/Boot0008-$G" <<'EOPY'
+import sys
+p = sys.argv[1]
+b = open(p, 'rb').read()
+open(p, 'wb').write(b + b'\0' * 6000)            # longer than AF_OPT_MAX
+EOPY
+"$AF" confirm >/dev/null 2>&1
+[ "$(read_order)" = "0002 0000 0007 0008 0003" ] \
+  && ok "an entry that cannot be read is kept, and not demoted" \
+  || bad "an entry that cannot be read is kept, and not demoted" \
+        "wanted 0002 0000 0007 0008 0003, got $(read_order)"
 
 # BUT AN ORDER THAT ALREADY NAMES ONE KEEPS IT. The filter above is a
 # judgement about what to ADD to a machine that had no order at all.
@@ -191,9 +265,14 @@ plant 0002 "AurOS"
 plant 0006 "Firmware Setup" 0x9
 order 0000 0006
 "$AF" confirm >/dev/null 2>&1
+# NB: this does not exercise the attribute filter -- there IS a
+# BootOrder here, so the branch above runs and af_boot_bootable is
+# never called. It is here to keep it that way: a refactor that moved
+# the filter into the shared path would reorder somebody's existing
+# menu, and this is what would say so.
 [ "$(read_order)" = "0002 0000 0006" ] \
-  && ok "an order that already names a hidden entry keeps it" \
-  || bad "an order that already names a hidden entry keeps it" "$(read_order)"
+  && ok "an existing order is preserved, hidden entry and all" \
+  || bad "an existing order is preserved, hidden entry and all" "$(read_order)"
 
 # ── "it does not" ───────────────────────────────────────────────────
 echo

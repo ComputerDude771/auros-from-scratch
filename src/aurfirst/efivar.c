@@ -196,11 +196,18 @@ int af_boot_bootable(uint16_t num)
     snprintf(name, sizeof name, "Boot%04X", num);
     uint8_t opt[AF_OPT_MAX];
     int len = af_var_get(name, opt, sizeof opt);
-    if (len < 6) return 0;           /* unreadable, or too short to be one */
+    /* -1 unreadable, -2 longer than this will look at, and anything
+     * shorter than the fixed part of a load option is not one. None of
+     * those is evidence that the firmware does not want it booted. */
+    if (len < 6) return -1;
     uint32_t a = (uint32_t)opt[0] | ((uint32_t)opt[1] << 8) |
                  ((uint32_t)opt[2] << 16) | ((uint32_t)opt[3] << 24);
     if (!(a & LOAD_OPTION_ACTIVE)) return 0;
     if (a & LOAD_OPTION_HIDDEN)    return 0;
+    /* Anything that is not category BOOT -- APPLICATION, or a value
+     * this spec revision does not name -- is not for the ordinary
+     * sequence. It is still not dropped; it goes behind the ones that
+     * are. */
     if ((a & LOAD_OPTION_CATEGORY) != LOAD_OPTION_CATEGORY_BOOT) return 0;
     return 1;
 }
