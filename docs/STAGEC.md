@@ -212,10 +212,32 @@ because the firmware will otherwise boot the stick again and loop.
     reachable only when `ntfsresize` refuses, which `--force` prevents.
     Dirty, unclean log, hibernated, or any UNSURE: do not run it.
   - **The commit is one sector.** Rule 4 says so. Staging a 2048-LBA
-    write and calling it atomic is not it: write the backup array and
-    header, flush; write the primary array and, if it differs, the
-    protective MBR, flush; then write LBA 1 alone. That sector is the
-    commit.
+    write and calling it atomic is not it.
+
+    **And the order everybody agreed on does not achieve it.** The doc
+    said "backup header, then primary, one flush"; the review said
+    "write the backup array and header, flush; write the primary array,
+    flush; then write LBA 1 alone — that single sector is the commit".
+    `tools/committest.sh` snapshotted the disk after each flush and
+    asked an independent tool what it saw. Backup-first fails: writing
+    the primary **entry array** invalidates the primary header, because
+    the header carries a CRC of the array, so every reader falls back to
+    the backup — which backup-first has already replaced with the new
+    layout. The machine's partitions change at the array write, not at
+    LBA 1.
+
+    So the primary array goes first and the backup goes **last**. During
+    the window where the primary is invalid, readers fall back to a
+    backup that still describes the old layout, and the disk goes on
+    reading exactly as it did. Then LBA 1 lands — one sector, atomic on
+    every real device — and that is the commit. The cost is a brief
+    stale backup afterwards, which no reader prefers over a valid
+    primary.
+
+    The test asserts the interrupted disk reports *Main partition table:
+    ERROR, Backup: OK* — the half-written primary rejected rather than
+    believed — which is what correct looks like here, not "no problems
+    found".
   - **The recovery partition must hold this machine's payload.** A
     prebuilt static image cannot: `parttable.bin`, `esp-backup.tar`,
     `bcd-backup.bin`, `ntfs-boot.bin` and the original sector count are
