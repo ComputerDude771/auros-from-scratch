@@ -206,6 +206,12 @@ typedef struct shell_ctx_s {
     /* The headphones-and-mice panel. Same arrangement as the other
      * two: only the flag lives here, src/aurshell/bt.c owns the rest. */
     int   bt_open;
+    /* "AurOS is on this computer -- does it work?", which is phase 9 of
+     * docs/AURBRIDGE.md and the only thing in the product that asks it.
+     * Same arrangement again; src/aurshell/welcome.c owns the rest. It
+     * is the one panel nothing on the band opens: it opens itself, on
+     * the first frame of every session, until it has been answered. */
+    int   welcome_open;
     /* Set by a panel that has changed something the shell reads from a
      * file -- the archetype, the theme. The host notices it, rereads
      * everything and rebuilds, which is the same path a SIGHUP takes.
@@ -255,8 +261,9 @@ typedef struct shell_ctx_s {
 
 /* ONE test for "something is covering the desktop".
  *
- * There are five of these now -- help, the wifi, Settings, headphones
- * and the three power choices -- and every place that has to behave
+ * There are six of these now -- help, the wifi, Settings, headphones,
+ * the three power choices and the welcome question -- and every place
+ * that has to behave
  * differently while one is up was listing them by hand. Four such
  * lists drifted apart: the scroll wheel knew about three of them, the
  * right button about four, the key path about three, and the button
@@ -270,7 +277,7 @@ typedef struct shell_ctx_s {
  * updated in four. */
 #define SHELL_PANEL_OPEN(c) \
     ((c)->help_open || (c)->net_open || (c)->settings_open || \
-     (c)->bt_open   || (c)->power_open)
+     (c)->bt_open   || (c)->power_open || (c)->welcome_open)
 
 typedef struct {
     const char *id;

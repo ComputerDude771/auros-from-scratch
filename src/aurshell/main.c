@@ -38,6 +38,7 @@
 #include "notify.h"
 #include "settings.h"
 #include "bt.h"
+#include "welcome.h"
 #include "watch.h"
 #include "run.h"
 #include "../aurwl/aurwl.h"
@@ -1063,6 +1064,13 @@ int main(int argc, char **argv)
     int dirty = 1, last_min = -1;
     uint32_t last_damage = 0;
     int super_down = 0;
+    /* PHASE 9, ASKED ONCE PER SESSION AND NOT BY A BUTTON.
+     *
+     * Nothing on the band opens this one: it opens itself, here, if
+     * aurfirst says this machine is waiting to be told AurOS works,
+     * and it comes back the next time the machine is switched on if
+     * she closed it without answering. See src/aurshell/welcome.h. */
+    welcome_init(&c);
     /* The wifi panel as of the last pass, and what had the keyboard
      * before it took it. See the transition handler in the loop. */
     int net_open_last = 0;
@@ -1344,6 +1352,7 @@ int main(int argc, char **argv)
          * no compositor at all. */
         net_reap();
         bt_reap();
+        if (welcome_step(&c)) dirty = 1;
         run_reap();
         /* The indicator fades on a clock rather than on an event, so
          * the loop has to keep coming round while one is up. */
@@ -1554,6 +1563,11 @@ int main(int argc, char **argv)
             net_paint(&c, fb, &f);
             settings_paint(&c, fb, &f);
             bt_paint(&c, fb, &f);
+            /* AFTER the other panels and BEFORE the band. It is the
+             * only panel nothing opened on purpose, so it must not be
+             * underneath one she did open -- and the band stays on top
+             * because the way out of everything is always the band. */
+            welcome_paint(&c, fb, &f);
             foot_paint(&c, fb, &f);
             /* Last, over everything including the band: it is the
              * answer to a key that was just pressed, and an answer
@@ -1673,6 +1687,14 @@ int main(int argc, char **argv)
          * slept straight through otherwise: see notify.h. */
         int nw = notify_wait_ms();
         if (nw >= 0 && nw < wait_ms) wait_ms = nw;
+        /* Something the root side is doing on the desktop's behalf --
+         * a boot entry being written, somebody's documents being
+         * copied -- answers in a file rather than on an fd, so the
+         * wait is shortened only while one is in flight. An idle
+         * desktop that polls four times a second for a file nobody is
+         * going to write is a laptop with an hour less battery. */
+        int ww = welcome_wait_ms();
+        if (ww >= 0 && ww < wait_ms) wait_ms = ww;
         if (np > (int)(sizeof pfd / sizeof pfd[0])) {
             /* Unreachable by construction; here because the thing it
              * guards is a stack overflow and "unreachable" is what was
@@ -1821,6 +1843,8 @@ int main(int argc, char **argv)
                         if (!pad_taken)
                             pad_taken = bt_click(&c, c.mouse_x, c.mouse_y);
                         if (!pad_taken)
+                            pad_taken = welcome_click(&c, c.mouse_x, c.mouse_y);
+                        if (!pad_taken)
                             pad_taken = session_button(&c, c.mouse_x, c.mouse_y,
                                                        BTN_LEFT, 1);
                         if (!pad_taken && L->click) L->click(&c, c.mouse_x, c.mouse_y);
@@ -1873,6 +1897,8 @@ int main(int argc, char **argv)
                                 taken = settings_click(&c, c.mouse_x, c.mouse_y);
                             if (!taken)
                                 taken = bt_click(&c, c.mouse_x, c.mouse_y);
+                            if (!taken)
+                                taken = welcome_click(&c, c.mouse_x, c.mouse_y);
                             /* Anything still not taken, with a panel on
                              * screen, is swallowed: a press that fell
                              * through would reach whatever she was
@@ -2010,6 +2036,7 @@ int main(int argc, char **argv)
                                 if      (c.net_open)      net_key(&c, ev.code);
                                 else if (c.settings_open) settings_key(&c, ev.code);
                                 else if (c.bt_open)       bt_key(&c, ev.code);
+                                else if (c.welcome_open)  welcome_key(&c, ev.code);
                                 else                      foot_key(&c, ev.code);
                             }
                             c.key_text[0] = 0;
@@ -2034,6 +2061,7 @@ int main(int argc, char **argv)
             net_motion(&c, c.mouse_x, c.mouse_y);
             settings_motion(&c, c.mouse_x, c.mouse_y);
             bt_motion(&c, c.mouse_x, c.mouse_y);
+            welcome_motion(&c, c.mouse_x, c.mouse_y);
             session_motion(&c, c.mouse_x, c.mouse_y);
             if (L->motion) L->motion(&c, c.mouse_x, c.mouse_y);
         }

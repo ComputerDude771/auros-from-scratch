@@ -40,6 +40,7 @@
 #include "../src/aurshell/net.h"
 #include "../src/aurshell/settings.h"
 #include "../src/aurshell/bt.h"
+#include "../src/aurshell/welcome.h"
 
 #define FLOOR 44
 
@@ -364,6 +365,77 @@ int main(void)
         printf("    %d measured across %d screens, every text size and\n",
                checked - before, BT_PAGE_N);
         printf("    every panel size, with nothing near and a room full\n");
+    }
+
+    /* THE ONE PANEL NOBODY OPENED ON PURPOSE.
+     *
+     * Every other screen here is reached by pressing something, so a
+     * button that is too small to press is a screen she never gets to.
+     * This one opens itself over whatever she was doing, and the
+     * button that is too small to press is the only way to answer the
+     * question this product is actually asking -- or the only way to
+     * say no to it. It also has the longest label in the shell,
+     * "No, go back to Windows", which is deliberately a sentence and
+     * is exactly what makes three buttons across a 1024 screen at her
+     * largest text impossible. The layout drops to a column there;
+     * this is what proves it does.
+     */
+    printf("\nand the welcome question, on every screen it has\n");
+    {
+        int before = checked;
+        quiet = 1;
+        static const struct { int w, h; } RES[] = {
+            { 1024, 600 }, { 1366, 768 }, { 1920, 1080 },
+        };
+        for (size_t r = 0; r < sizeof RES / sizeof RES[0]; r++)
+         for (size_t k = 0; k < sizeof SCALES / sizeof SCALES[0]; k++)
+          for (int page = 0; page < W_PAGE_N; page++)
+           for (int imp = 0; imp < 2; imp++) {
+                shell_ctx c; memset(&c, 0, sizeof c);
+                theme_t t = {0};
+                shell_theme_load(&c, &t);
+                c.allow_settings = 1;
+                c.text_scale = SCALES[k];
+                c.screen_w = RES[r].w;
+                c.screen_h = RES[r].h - foot_height(&c);
+                welcome_view v = { page, imp };
+                rect b[16];
+                int n = welcome_targets(&c, c.screen_w, c.screen_h, &v, b, 16);
+                for (int i = 0; i < n; i++) {
+                    char nm[80];
+                    snprintf(nm, sizeof nm,
+                             "welcome page %d%s, text %.0f%%", page,
+                             imp ? " with Windows" : "",
+                             (double)(SCALES[k] * 100.f));
+                    measure(nm, b[i], RES[r].w, RES[r].h);
+                }
+                for (int i = 0; i < n; i++) {
+                    for (int j = i + 1; j < n; j++) {
+                        int ox = !(b[i].x + b[i].w <= b[j].x ||
+                                   b[j].x + b[j].w <= b[i].x);
+                        int oy = !(b[i].y + b[i].h <= b[j].y ||
+                                   b[j].y + b[j].h <= b[i].y);
+                        if (ox && oy) {
+                            printf("    FAIL welcome page %d: targets %d and "
+                                   "%d overlap at %dx%d\n", page, i + 1,
+                                   j + 1, RES[r].w, RES[r].h);
+                            fail++;
+                        }
+                    }
+                    if (b[i].x < 0 || b[i].y < 0 ||
+                        b[i].x + b[i].w > c.screen_w ||
+                        b[i].y + b[i].h > c.screen_h) {
+                        printf("    FAIL welcome page %d: target %d is "
+                               "outside the panel at %dx%d\n", page, i + 1,
+                               RES[r].w, RES[r].h);
+                        fail++;
+                    }
+                }
+            }
+        quiet = 0;
+        printf("    %d measured across %d screens, every text size, every\n",
+               checked - before, W_PAGE_N);
+        printf("    panel size, with and without a Windows to import from\n");
     }
 
     printf("\nand Settings, on every screen and every machine\n");
