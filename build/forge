@@ -34,6 +34,18 @@ die()  { printf '%s::%s %s\n' "$C_ERR" "$C_RST" "$*" >&2; exit 1; }
 # branch had run yet.
 warn() { printf '%s::%s %s\n' "$C_ERR" "$C_RST" "$*" >&2; }
 
+# A line in the image's own record of what went wrong while building
+# it. /etc/auros DOES NOT EXIST YET when the browser stage runs on a
+# fresh rootfs -- stage 3 is what creates it -- so the three places
+# that appended to the file directly worked only on a rootfs left over
+# from a previous build. The first profile ever built from scratch
+# after that died with "No such file or directory" in the middle of
+# stage 2, which is a long way from the line that caused it.
+warn_note() {
+    mkdir -p "$RFS/etc/auros"
+    printf '%s\n' "$*" >> "$RFS/etc/auros/build-warnings"
+}
+
 # ── profile loading, with single-parent inheritance ────────────────
 load_profile() {
     local name=$1 chain="" cur=$1 depth=0 f
@@ -130,8 +142,21 @@ stage_packages() {
     inchroot "apt-get update -qq"
     inchroot "apt-get install -y --no-install-recommends $pkgs" \
         || die "package install failed — see the log above"
-    [ -n "${packages_exclude:-}" ] && \
-        inchroot "apt-get purge -y $packages_exclude 2>/dev/null || true"
+    # ON ONE LINE, like the install list twelve lines above.
+    #
+    # A profile's package lists are written across several lines --
+    # every one in profiles/desktop.profile is -- and this one went
+    # into the chroot's shell verbatim, so the newlines became command
+    # separators: the first line purged, and every line after it was
+    # RUN. The revive profile's exclude list produced "tracker: command
+    # not found", "gnome-software: command not found", nothing was
+    # purged, and the build carried on as though it had been. It only
+    # ever worked because the three profiles that existed before had a
+    # single-line exclude.
+    if [ -n "${packages_exclude:-}" ]; then
+        excl=$(printf '%s' "$packages_exclude" | tr -s ' \n\t' ' ')
+        inchroot "apt-get purge -y $excl 2>/dev/null || true"
+    fi
 
     stage_browser
     stage_store
@@ -310,7 +335,7 @@ stage_browser_fallback() {
     local why="$1" fb="${browser_fallback:-}"
     if [ -z "$fb" ]; then
         MISSING_BROWSER=1
-        printf '%s\n' "browser=MISSING" >> "$RFS/etc/auros/build-warnings"
+        warn_note "browser=MISSING"
         say "${C_ERR}WARNING${C_RST}: $why, and no browser_fallback is set."
         note "The image will have NO BROWSER. Do not ship this image."
         return 0
@@ -318,11 +343,11 @@ stage_browser_fallback() {
     say "${C_ERR}NOTE${C_RST}: $why."
     note "Falling back to $fb from the Ubuntu archive."
     if install_browser_pkg "$fb"; then
-        printf '%s\n' "browser=$fb (fallback; $why)" >> "$RFS/etc/auros/build-warnings"
+        warn_note "browser=$fb (fallback; $why)"
         note "$fb installed — the desktop has a working browser"
     else
         MISSING_BROWSER=1
-        printf '%s\n' "browser=MISSING" >> "$RFS/etc/auros/build-warnings"
+        warn_note "browser=MISSING"
         say "${C_ERR}WARNING${C_RST}: the fallback browser $fb also failed to install."
         note "The image will have NO BROWSER. Do not ship this image."
     fi
