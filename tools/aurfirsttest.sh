@@ -40,6 +40,7 @@ echo
 
 gcc -O1 -std=gnu11 -Wall -Wextra \
     -DAF_DIR_EFIVARS="\"$VD\"" -DAF_DIR="\"$SD\"" \
+    -DAF_STATE_FILE="\"$TMP/first.state\"" \
     -o "$TMP/af" src/aurfirst/*.c -Isrc/aurfirst 2>"$TMP/cc.log" \
     || { echo "  aurfirst did not build:"; sed -n '1,12p' "$TMP/cc.log"; exit 2; }
 AF="$TMP/af"
@@ -217,6 +218,39 @@ B=$(sed -n 's/.*#define LOADER_ENTRY_DESC   "\(.*\)".*/\1/p' src/aurstage/loader
 [ -n "$A" ] && [ "$A" = "$B" ] \
   && ok "and about what the installer called the entry" \
   || bad "and about what the installer called the entry" "aurfirst: '$A'  loader: '$B'"
+
+# ── what the desktop is told ────────────────────────────────────────
+echo
+echo "  and what it leaves for the desktop to read"
+# The shell runs as the person using the machine. It does not read
+# efivarfs, does not parse a load option and does not start a program
+# to ask a question -- it reads one file, and this is the file. A
+# desktop that cannot read it asks nothing, on the one boot that
+# mattered.
+fresh
+plant 0000 "Windows Boot Manager"; plant 0002 "AurOS"
+order 0000
+rm -f "$TMP/first.state"
+"$AF" hold >/dev/null 2>&1
+grep -q '^phase=asking$' "$TMP/first.state" 2>/dev/null \
+  && ok "the hold writes down that the question is open" \
+  || bad "the hold writes down that the question is open" \
+         "$(cat "$TMP/first.state" 2>/dev/null | tr '\n' ' ')"
+[ "$(stat -c %a "$TMP/first.state" 2>/dev/null)" = "644" ] \
+  && ok "and leaves it readable by the desktop's own user" \
+  || bad "and leaves it readable by the desktop's own user" \
+         "mode $(stat -c %a "$TMP/first.state" 2>/dev/null)"
+# AFTER the change, not before it. Publishing the state the run started
+# with leaves a machine that has just been confirmed still asking.
+"$AF" confirm >/dev/null 2>&1
+grep -q '^phase=done$' "$TMP/first.state" 2>/dev/null \
+  && ok "and confirming rewrites it, so the question stops being asked" \
+  || bad "and confirming rewrites it, so the question stops being asked" \
+         "$(cat "$TMP/first.state" 2>/dev/null | tr '\n' ' ')"
+"$AF" state >/dev/null 2>&1
+grep -q '^entry=0002$' "$TMP/first.state" 2>/dev/null \
+  && ok "and it names the entry, so nothing else has to look" \
+  || bad "and it names the entry, so nothing else has to look"
 
 # ── the privilege boundary ──────────────────────────────────────────
 echo

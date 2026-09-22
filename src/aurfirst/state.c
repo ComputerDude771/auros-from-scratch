@@ -101,6 +101,41 @@ int af_look(af_state *s)
     return 0;
 }
 
+static const char *phase_of(const af_state *s)
+{
+    if (!s->have_entry) return "not-converted";
+    if (s->confirmed)   return "done";
+    if (s->declined)    return "declined";
+    return "asking";
+}
+
+void af_publish(const af_state *s)
+{
+    /* WRITTEN WHOLE, THEN MOVED. The desktop reads this file on its
+     * first frame; one caught halfway through being written is one
+     * with no phase line in it, and welcome.c would then ask nothing
+     * on the one boot that mattered. */
+    char tmp[512];
+    if ((size_t)snprintf(tmp, sizeof tmp, "%s.new", AF_STATE_FILE)
+            >= sizeof tmp)
+        return;
+    FILE *f = fopen(tmp, "w");
+    if (!f) return;
+    fprintf(f, "phase=%s\n", phase_of(s));
+    fprintf(f, "efivars=%s\n", s->efivars ? "yes" : "no");
+    fprintf(f, "writable=%s\n", s->writable ? "yes" : "no");
+    fprintf(f, "converted=%s\n", s->have_entry ? "yes" : "no");
+    if (s->have_entry) fprintf(f, "entry=%04X\n", s->entry);
+    fprintf(f, "is_default=%s\n", s->is_default ? "yes" : "no");
+    fprintf(f, "bootnext=%s\n", s->bootnext ? "yes" : "no");
+    fprintf(f, "confirmed=%s\n", s->confirmed ? "yes" : "no");
+    fprintf(f, "declined=%s\n", s->declined ? "yes" : "no");
+    fclose(f);
+    /* Readable by the desktop's user, which is the whole point of it. */
+    chmod(tmp, 0644);
+    if (rename(tmp, AF_STATE_FILE) != 0) unlink(tmp);
+}
+
 int af_hold(const af_state *s, char *why, size_t n)
 {
     if (s->confirmed || s->declined) return 1;

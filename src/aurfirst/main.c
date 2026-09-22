@@ -40,7 +40,17 @@ int main(int argc, char **argv)
     af_state s;
     af_look(&s);
 
+    /* WHATEVER HAPPENS BELOW, THE DESKTOP GETS TOLD.
+     *
+     * Published after the command rather than before it, because the
+     * thing the desktop has to know is what is true now -- and
+     * `confirm` changes it. The look is redone for the same reason:
+     * publishing the state this run started with would leave a
+     * machine that has just been confirmed still asking. */
+    #define PUBLISH() do { af_state s2; af_look(&s2); af_publish(&s2); } while (0)
+
     if (!strcmp(cmd, "state")) {
+        af_publish(&s);
         printf("efivars=%s\n",   say_bool(s.efivars));
         printf("writable=%s\n",  say_bool(s.writable));
         printf("converted=%s\n", say_bool(s.have_entry));
@@ -65,6 +75,7 @@ int main(int argc, char **argv)
 
     if (!strcmp(cmd, "hold")) {
         int rc = af_hold(&s, why, sizeof why);
+        PUBLISH();
         if (rc < 0) { fprintf(stderr, "aurfirst: %s\n", why); return 1; }
         if (rc == 1) return 0;
         fprintf(stderr, "aurfirst: the next start will reach AurOS once "
@@ -74,6 +85,7 @@ int main(int argc, char **argv)
 
     if (!strcmp(cmd, "confirm")) {
         int rc = af_confirm(&s, why, sizeof why);
+        PUBLISH();
         if (rc < 0) { fprintf(stderr, "aurfirst: %s\n", why); return 1; }
         if (rc == 1) {
             fprintf(stderr, "aurfirst: this computer was not converted from "
@@ -85,7 +97,9 @@ int main(int argc, char **argv)
     }
 
     if (!strcmp(cmd, "decline")) {
-        if (af_decline(&s, why, sizeof why) != 0) {
+        int rc = af_decline(&s, why, sizeof why);
+        PUBLISH();
+        if (rc != 0) {
             fprintf(stderr, "aurfirst: %s\n", why);
             return 1;
         }

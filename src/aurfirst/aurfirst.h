@@ -80,6 +80,22 @@
 #define AF_CONFIRMED  AF_DIR "/converted.confirmed"
 #define AF_DECLINED   AF_DIR "/converted.declined"
 
+/* WHERE THE DESKTOP READS THIS FROM.
+ *
+ * The shell runs as the person using the machine and has no business
+ * reading efivarfs, parsing load options, or starting a program to ask
+ * a question. So every run of aurfirst writes what it found here, as
+ * key=value, and src/aurshell/welcome.c reads that one small file.
+ *
+ * On /run rather than in AF_DIR because it describes THIS BOOT: the
+ * hold unit refreshes it before the desktop starts, and a stale copy
+ * surviving a reboot would be a desktop asking a question that has
+ * already been answered on a machine somebody has since changed in
+ * the firmware setup screen. */
+#ifndef AF_STATE_FILE
+#define AF_STATE_FILE "/run/auros-first.state"
+#endif
+
 /* The description the installer gave its entry. One string, in one
  * place, because the two halves finding each other by it is the whole
  * mechanism. It matches src/aurstage/loader.h's LOADER_ENTRY_DESC and
@@ -101,6 +117,14 @@ typedef struct {
 
 /* Look, and change nothing. */
 int  af_look(af_state *s);
+
+/* Write what was found where the desktop can read it. Called after
+ * every subcommand, including the ones that changed something, so the
+ * file is never a description of the state before the change. Failure
+ * is not an error worth stopping for: the answer is in NVRAM and on
+ * the root filesystem either way, and the worst case is a desktop that
+ * does not ask this boot. */
+void af_publish(const af_state *s);
 
 /* Arm BootNext at our entry, so the next start reaches AurOS once.
  * Does nothing at all once the question has been answered either way.
