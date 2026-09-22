@@ -105,7 +105,18 @@ earlyoom_min_free_percent="5"
 # browser on a machine somebody's mother uses for her bank is not a
 # saving. The memory is bought back everywhere else instead.
 browser="firefox"
-browser_source="mozilla-apt"
+# IN ORDER, AND EVERY ONE OF THEM IS A DIFFERENT HOST TO BLOCK.
+# packages.mozilla.org first; the mozillateam PPA next, which is
+# the same binaries built for Ubuntu and is reachable on networks
+# that block the first; then the release tarball, checked against
+# the SHA256SUMS published beside it, which needs no repository at
+# all. Ubuntu's own archive is deliberately NOT in this list: its
+# `firefox` is a 120 KB package whose job is to run snap.
+browser_source="mozilla-apt mozilla-ppa mozilla-tarball"
+# Pinned, because the tarball route has no repository to ask what
+# the current release is and an unpinned download is not a
+# reproducible build.
+firefox_version="140.0"
 browser_fallback="epiphany-browser"
 
 # Fonts are not free on a machine with this little memory, and the CJK

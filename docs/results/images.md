@@ -22,11 +22,42 @@ to what the manifest says.
 
 ## What is not in these images
 
-**Firefox.** `packages.mozilla.org` is unreachable from this build
-host, so every one of them fell back to `epiphany-browser` from the
-Ubuntu archive — which is forge's designed fallback and it worked, and
-is also not what these profiles ask for. A builder that can reach
-Mozilla produces the same images with Firefox in them. The image says
-so itself: `/etc/auros/build-warnings` carries the line
-`browser=epiphany-browser (fallback; ...)`.
+**Firefox.** Every one of these five fell back to `epiphany-browser`
+from the Ubuntu archive. That is what forge was told to do when the
+preferred source could not be reached, it worked, and it is also not
+what these profiles ask for — and nothing failed, so the images looked
+finished. The note was one line in a build log.
+
+Three things have changed since, and one has not.
+
+*The network has not.* This builder's egress policy answers `403` at
+the gateway for `packages.mozilla.org`, `ppa.launchpadcontent.net`,
+`ftp.mozilla.org` and `download.mozilla.org`; only `archive.ubuntu.com`
+and `keyserver.ubuntu.com` are reachable. Ubuntu's own `firefox` is a
+121 KB transitional package whose job is to run `snap install`, on an
+image that purges snapd — so there is no route to Firefox from here at
+all, and the fix for that is the environment's network policy, not the
+build. See the *Network access* section of
+<https://code.claude.com/docs/en/claude-code-on-the-web>.
+
+*`browser_source` is now a list*, tried in order:
+`mozilla-apt mozilla-ppa mozilla-tarball`. The PPA is the same binaries
+built for Ubuntu and is reachable on networks that block Mozilla's own
+repository; the tarball route needs no repository at all and checks the
+download against the `SHA256SUMS` Mozilla publishes beside it, with a
+pinned version, because an unpinned download is not a reproducible
+build. None of the three can be exercised from here.
+
+*A successful `apt-get install` is no longer taken as a browser.*
+`apt-get install firefox` on Ubuntu exits 0, prints nothing alarming
+and leaves an image with no browser in it. forge now looks for the
+program afterwards, and treats a shell script that mentions snap as
+what it is.
+
+*And a substitution now fails the build.* `browser_fallback_ok="yes"`
+in the profile, or `ALLOW_BROWSER_FALLBACK=1` in the environment, says
+the substitution is acceptable for a build somebody is making for
+themselves. Without it, an image that shipped Epiphany where the
+profile asked for Firefox does not get built at all — which is the
+check that was missing when these five were.
 

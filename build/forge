@@ -349,15 +349,166 @@ EOL
 
 # ── browser: never let a desktop ship without one, silently ───────
 #
-# The preferred source is Mozilla's own apt repository, because Ubuntu's
-# `firefox` is a transitional package that pulls in snapd, and this
-# build purges snapd. If that repository cannot be reached from the
-# build host -- a proxy, an air gap, a blocked domain -- the image falls
-# back to a real browser from Ubuntu's own archive rather than shipping
-# with none. A person who downloads an operating system and finds it
-# cannot open a web page does not care which network the builder was on.
+# Ubuntu's `firefox` and `chromium-browser` are 120-kilobyte
+# TRANSITIONAL PACKAGES whose whole job is to run `snap install`, and
+# this build purges snapd. `apt-get install firefox` therefore exits 0,
+# prints nothing alarming, and leaves an image with no browser in it --
+# which is how an image can be built, tested, published and downloaded
+# before anybody notices. That is why there is a check below and not
+# just an install.
+#
+# Several sources are tried in order because "the browser" is one of the
+# two or three things a person opens this machine to do, and the places
+# it can be fetched from are exactly the places a corporate proxy, a
+# regional block or an air gap is likely to sit in front of.
+#
+#   mozilla-apt      Mozilla's own apt repository. Real .debs, updated
+#                    by the distribution's own machinery.
+#   mozilla-ppa      the mozillateam PPA on Launchpad, which is the
+#                    same binaries built for Ubuntu, and is reachable
+#                    on networks that block packages.mozilla.org.
+#   mozilla-tarball  the release tarball, checked against the SHA256SUMS
+#                    file Mozilla publishes beside it. No repository, no
+#                    apt, nothing to be blocked but ftp.mozilla.org.
+#   archive          whatever Ubuntu itself has -- which for Firefox is
+#                    the snap stub, and the check below catches it.
+#
+# And if none of them can be reached, the fallback is a REAL browser
+# from Ubuntu's archive rather than an apology -- but the build refuses
+# to finish quietly. See browser_fallback_ok.
 install_browser_pkg() {
     inchroot "apt-get install -y --no-install-recommends $1" >/dev/null 2>&1
+}
+
+# WHAT THE PROFILE ASKED FOR, AS A COMMAND. A package is not a program:
+# epiphany-browser's binary is `epiphany`, and a check that looked for a
+# command named after the package would fail on a browser that is
+# installed and working.
+browser_command_of() {
+    case "$1" in
+      epiphany-browser) echo epiphany ;;
+      chromium-browser) echo chromium-browser ;;
+      *)                echo "$1" ;;
+    esac
+}
+
+# IS IT ACTUALLY THERE, AND IS IT ACTUALLY IT?
+#
+# Two questions, because apt answers neither. A transitional package
+# installs cleanly and ships no browser; a snap shim ships a shell
+# script that runs snapd, which on this image is not installed.
+browser_present() {
+    local cmd; cmd=$(browser_command_of "$1")
+    inchroot "command -v $cmd >/dev/null 2>&1" || return 1
+    # A two-byte read decides whether it is worth reading further. An
+    # ELF is a browser; a script that mentions snap is a note saying
+    # where the browser would have been.
+    inchroot "p=\$(command -v $cmd); \
+              case \"\$(head -c2 \"\$p\")\" in \
+                '#!') grep -qi snap \"\$p\" && exit 1 ;; \
+              esac; exit 0"
+}
+
+# Everything a failed repository leaves behind. An image whose first
+# `apt update` fails because of a repository WE added, on a machine
+# somebody has owned for five minutes, is our bug and not theirs.
+browser_unconfigure() {
+    rm -f "$RFS/etc/apt/sources.list.d/mozilla.list" \
+          "$RFS/etc/apt/sources.list.d/mozillateam.list" \
+          "$RFS/etc/apt/preferences.d/mozilla" \
+          "$RFS/etc/apt/keyrings/packages.mozilla.org.asc" \
+          "$RFS/etc/apt/keyrings/mozillateam.asc"
+}
+
+try_mozilla_apt() {
+    inchroot "install -d -m 0755 /etc/apt/keyrings"
+    inchroot "curl -fsSL --max-time 30 https://packages.mozilla.org/apt/repo-signing-key.gpg \
+              -o /etc/apt/keyrings/packages.mozilla.org.asc" 2>/dev/null || return 1
+    cat > "$RFS/etc/apt/sources.list.d/mozilla.list" <<'EOL'
+deb [signed-by=/etc/apt/keyrings/packages.mozilla.org.asc] https://packages.mozilla.org/apt mozilla main
+EOL
+    # Pin so Ubuntu's snap transitional package can never win.
+    cat > "$RFS/etc/apt/preferences.d/mozilla" <<'EOL'
+Package: firefox*
+Pin: origin packages.mozilla.org
+Pin-Priority: 1000
+EOL
+    inchroot "apt-get update -qq && apt-get install -y --no-install-recommends $browser" \
+        >/dev/null 2>&1
+}
+
+try_mozilla_ppa() {
+    inchroot "install -d -m 0755 /etc/apt/keyrings"
+    # The PPA's signing key, from the keyserver rather than from
+    # Launchpad's web pages: one host, one protocol, one thing to
+    # unblock. 0AB215679C571D1C8325275B9BDB3D89CE49EC21 is the
+    # mozillateam key.
+    inchroot "curl -fsSL --max-time 30 \
+              'https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x0AB215679C571D1C8325275B9BDB3D89CE49EC21' \
+              -o /etc/apt/keyrings/mozillateam.asc" 2>/dev/null || return 1
+    [ -s "$RFS/etc/apt/keyrings/mozillateam.asc" ] || return 1
+    local codename
+    codename=$(. "$RFS/etc/os-release" 2>/dev/null; echo "${UBUNTU_CODENAME:-noble}")
+    cat > "$RFS/etc/apt/sources.list.d/mozillateam.list" <<EOL
+deb [signed-by=/etc/apt/keyrings/mozillateam.asc] https://ppa.launchpadcontent.net/mozillateam/ppa/ubuntu $codename main
+EOL
+    cat > "$RFS/etc/apt/preferences.d/mozilla" <<'EOL'
+Package: firefox*
+Pin: release o=LP-PPA-mozillateam
+Pin-Priority: 1000
+EOL
+    inchroot "apt-get update -qq && apt-get install -y --no-install-recommends $browser" \
+        >/dev/null 2>&1
+}
+
+# THE TARBALL, WITH ITS HASH CHECKED BEFORE IT IS UNPACKED.
+#
+# No repository and no apt: one host, one file, and the SHA256SUMS
+# Mozilla publishes beside it. It is the route that survives a network
+# where every apt host is blocked, and the only one where WE are
+# responsible for the integrity check -- so it is done here, against
+# the file from the release directory, and a mismatch is a refusal
+# rather than a warning.
+#
+# The updater is switched off in policies.json because the program
+# lives in /opt and runs as her: an updater that cannot write to its
+# own directory is a dialog box every morning that nothing can act on.
+try_mozilla_tarball() {
+    [ "$browser" = firefox ] || return 1
+    local v="${firefox_version:-}"
+    [ -n "$v" ] || return 1
+    local base="https://ftp.mozilla.org/pub/firefox/releases/$v/linux-x86_64/en-US"
+    local tar="firefox-$v.tar.bz2"
+    inchroot "cd /tmp && curl -fsSL --max-time 900 '$base/$tar' -o '$tar' && \
+              curl -fsSL --max-time 60 \
+                'https://ftp.mozilla.org/pub/firefox/releases/$v/SHA256SUMS' \
+                -o SHA256SUMS" >/dev/null 2>&1 || return 1
+    inchroot "cd /tmp && grep ' linux-x86_64/en-US/$tar\$' SHA256SUMS \
+              | sed 's#linux-x86_64/en-US/##' > want.sha && \
+              [ -s want.sha ] && sha256sum -c want.sha" >/dev/null 2>&1 || {
+        inchroot "rm -f /tmp/firefox-*.tar.bz2 /tmp/SHA256SUMS /tmp/want.sha"
+        return 1
+    }
+    inchroot "rm -rf /opt/firefox && mkdir -p /opt && \
+              tar -xjf /tmp/$tar -C /opt && \
+              ln -sf /opt/firefox/firefox /usr/bin/firefox && \
+              mkdir -p /opt/firefox/distribution && \
+              printf '%s\\n' '{ \"policies\": { \"DisableAppUpdate\": true } }' \
+                > /opt/firefox/distribution/policies.json && \
+              rm -f /tmp/$tar /tmp/SHA256SUMS /tmp/want.sha" >/dev/null 2>&1 || return 1
+    cat > "$RFS/usr/share/applications/firefox.desktop" <<'EOL'
+[Desktop Entry]
+Name=Firefox
+Comment=Browse the web
+Exec=/opt/firefox/firefox %u
+Icon=/opt/firefox/browser/chrome/icons/default/default128.png
+Terminal=false
+Type=Application
+Categories=Network;WebBrowser;
+MimeType=text/html;text/xml;application/xhtml+xml;x-scheme-handler/http;x-scheme-handler/https;
+StartupNotify=true
+EOL
+    return 0
 }
 
 stage_browser_fallback() {
@@ -371,7 +522,8 @@ stage_browser_fallback() {
     fi
     say "${C_ERR}NOTE${C_RST}: $why."
     note "Falling back to $fb from the Ubuntu archive."
-    if install_browser_pkg "$fb"; then
+    if install_browser_pkg "$fb" && browser_present "$fb"; then
+        BROWSER_SUBSTITUTED="$fb"
         warn_note "browser=$fb (fallback; $why)"
         note "$fb installed — the desktop has a working browser"
     else
@@ -383,49 +535,46 @@ stage_browser_fallback() {
 }
 
 stage_browser() {
+    BROWSER_SUBSTITUTED=""
     case "${browser_source:-none}" in
       none|"") note "no browser requested"; return 0 ;;
-      archive)
-        install_browser_pkg "$browser" \
-            && { note "$browser installed from the Ubuntu archive"; return 0; }
-        stage_browser_fallback "$browser is not installable from the archive"
-        return 0 ;;
-      snap)
-        inchroot "apt-get install -y --no-install-recommends snapd $browser" \
-            && { note "$browser installed via snap"; return 0; }
-        stage_browser_fallback "the snap install of $browser failed"
-        return 0 ;;
-      mozilla-apt) ;;
-      *) die "unknown browser_source: $browser_source" ;;
     esac
-
-    note "installing $browser from packages.mozilla.org"
-    inchroot "install -d -m 0755 /etc/apt/keyrings"
-    if ! inchroot "curl -fsSL --max-time 30 https://packages.mozilla.org/apt/repo-signing-key.gpg \
-                   -o /etc/apt/keyrings/packages.mozilla.org.asc" 2>/dev/null; then
-        stage_browser_fallback "packages.mozilla.org is unreachable from this build host"
-        return 0
-    fi
-    cat > "$RFS/etc/apt/sources.list.d/mozilla.list" <<'EOL'
-deb [signed-by=/etc/apt/keyrings/packages.mozilla.org.asc] https://packages.mozilla.org/apt mozilla main
-EOL
-    # Pin so Ubuntu's snap transitional package can never win.
-    cat > "$RFS/etc/apt/preferences.d/mozilla" <<'EOL'
-Package: firefox*
-Pin: origin packages.mozilla.org
-Pin-Priority: 1000
-EOL
-    if inchroot "apt-get update -qq && apt-get install -y --no-install-recommends $browser"; then
-        note "$browser installed from the Mozilla apt repo (real .deb, no snap)"
-    else
-        # Leaving the repo configured after it failed means the first
-        # `apt update` the user runs fails too, on a machine they have
-        # owned for five minutes.
-        rm -f "$RFS/etc/apt/sources.list.d/mozilla.list" \
-              "$RFS/etc/apt/preferences.d/mozilla" \
-              "$RFS/etc/apt/keyrings/packages.mozilla.org.asc"
-        stage_browser_fallback "the install of $browser from the Mozilla repo failed"
-    fi
+    local tried=""
+    local src
+    # browser_source may name one route or several, in order. A single
+    # name is what every profile said before this was a list, and it
+    # still means exactly what it meant.
+    for src in ${browser_source}; do
+        tried="$tried $src"
+        case "$src" in
+          archive)
+            note "trying $browser from the Ubuntu archive"
+            install_browser_pkg "$browser" || continue ;;
+          snap)
+            note "trying $browser as a snap"
+            inchroot "apt-get install -y --no-install-recommends snapd $browser" \
+                >/dev/null 2>&1 || continue ;;
+          mozilla-apt)
+            note "trying $browser from packages.mozilla.org"
+            try_mozilla_apt || { browser_unconfigure; continue; } ;;
+          mozilla-ppa)
+            note "trying $browser from the mozillateam PPA"
+            try_mozilla_ppa || { browser_unconfigure; continue; } ;;
+          mozilla-tarball)
+            note "trying the Firefox ${firefox_version:-?} tarball, hash-checked"
+            try_mozilla_tarball || continue ;;
+          *) die "unknown browser_source: $src" ;;
+        esac
+        # THE ONLY THING THAT COUNTS. apt exiting 0 is not a browser.
+        if browser_present "$browser"; then
+            note "$browser installed from $src"
+            warn_note "browser=$browser ($src)"
+            return 0
+        fi
+        note "$src reported success but left no $browser behind; going on"
+        case "$src" in mozilla-apt|mozilla-ppa) browser_unconfigure ;; esac
+    done
+    stage_browser_fallback "none of$tried could provide $browser"
 }
 
 # ── stage 3: overlay our own stack ─────────────────────────────────
@@ -1406,6 +1555,42 @@ case "${1:-}" in
      nor the fallback could be installed. Set browser_source=\"archive\"
      to take one from Ubuntu's own archive, or browser_source=\"none\"
      if you genuinely want a machine that cannot open a web page."
+        fi
+        # AND A SUBSTITUTION IS NOT A SUCCESS EITHER, unless somebody
+        # said so in the profile.
+        #
+        # This is the check that was missing when five images were
+        # built, published and their manifests written, every one of
+        # them shipping Epiphany under a profile that asks for Firefox
+        # -- because the builder could not reach packages.mozilla.org
+        # and falling back is what the code was told to do. Nothing
+        # failed. The note was in the build log, one line among
+        # hundreds, and the images looked finished.
+        #
+        # A fallback is the right behaviour for somebody building for
+        # themselves on a train. It is the wrong behaviour for an
+        # artifact somebody else will download, and the difference
+        # between those two is a sentence in the profile, not a guess
+        # here. browser_fallback_ok="yes" -- or ALLOW_BROWSER_FALLBACK=1
+        # for a one-off -- says the substitution is acceptable, and it
+        # is still written into the manifest either way.
+        # BOTH SIGNALS, for the reason the check above gives: the
+        # variable is what stage_browser sets, and the line in the
+        # image is what survives a refactor that wraps a stage in a
+        # subshell -- which is exactly the change that would switch
+        # this off without anybody meaning to.
+        if { [ -n "${BROWSER_SUBSTITUTED:-}" ] ||
+             grep -q '^browser=.*(fallback;' "$RFS/etc/auros/build-warnings" 2>/dev/null; } && \
+           [ "${browser_fallback_ok:-no}" != yes ] && \
+           [ "${ALLOW_BROWSER_FALLBACK:-0}" != 1 ]; then
+            printf '\n'
+            die "this image has '${BROWSER_SUBSTITUTED:-a fallback browser}' where
+     $profile_id asked for '$browser', and will not be built.
+     Every source in browser_source=\"$browser_source\" was unreachable
+     from this machine. On a network that blocks them, the fix is the
+     network; if this build is for you rather than for somebody else,
+     set browser_fallback_ok=\"yes\" in the profile or run
+     ALLOW_BROWSER_FALLBACK=1 build/forge build $profile_id."
         fi
         printf '\n%s::%s %s is built.\n' "$C_OK" "$C_RST" "$brand_name $os_version" ;;
     stage)
