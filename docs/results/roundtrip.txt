@@ -2,7 +2,7 @@
 Does it actually install AurOS, and leave Windows intact?
 
   a 3 GiB machine: ESP, a 1 GiB Windows with 7 files, WinRE at the end
-  a stick with a 302 MiB AurOS image, a record area and room for the way back
+  a stick with a 334 MiB AurOS image, a record area and room for the way back
 
   refusals, with the disk untouched
     no stick in the computer: refused                          ok
@@ -19,9 +19,9 @@ Does it actually install AurOS, and leave Windows intact?
       p1 2048..206847 EFI
       p2 206848..223256 Windows
       p3 5498880..6291422 WinRE
-      p4 225280..4063231 AUROS-ROOT
-      p5 4063232..4270079 AUROS-SAVED
-      p6 4270080..5498879 AUROS-RECOVERY
+      p4 225280..5193727 AUROS-ROOT
+      p5 5193728..5400575 AUROS-SAVED
+      p6 5400576..5498879 AUROS-BOOT
     Windows is smaller than it was                             ok
     the Windows volume still mounts                            ok
     and all 7 files in it are byte-for-byte what they were     ok
