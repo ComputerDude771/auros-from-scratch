@@ -138,7 +138,17 @@ static void dots(int pct)
 static void dots_write(int pct)
 {
     dots(pct);
-    if (pct >= 50 && pct < 55) fault_maybe("write-mid");
+    /* TWENTY-FIVE, NOT FIFTY, and the number matters.
+     *
+     * image_write_root() reports 0..50 for the write and 50..100 for
+     * the read-back, so `pct >= 50` was not the middle of the write --
+     * it was the moment the write FINISHED, which is a disk state
+     * `write-end` already covers one loop iteration later. The point
+     * exists to cut the machine with the root extent half written into
+     * space that is not in the partition table yet, and to prove the
+     * "first megabyte last" rule leaves nothing that will mount. That
+     * is a quarter of the way through the whole call. */
+    if (pct == 25) fault_maybe("write-mid");
 }
 
 static void commit_note(int n, void *ud)
@@ -609,13 +619,49 @@ void restore_run(const stage_machine *m)
                        areas[i].dev, why);
             continue;
         }
+        /* EVERY CANDIDATE IS READ END TO END HERE, not later.
+         *
+         * This loop used to check only the 4 KiB header, which is what
+         * rescue_open reads, and rescue_restore did the full check on
+         * whichever one was chosen. So a stick with an intact header
+         * and bit-rot anywhere in its 900 MB body was PREFERRED (being
+         * off-target), failed its hashes inside rescue_restore, and the
+         * whole run stopped -- with a perfectly good copy sitting on
+         * the machine's own disk that was never tried. The fallback
+         * this file's own comment promises did not exist. */
+        stage_say("checking the saved copy on %s", areas[i].dev);
+        if (rescue_verify(&areas[i], &p, NULL, why, sizeof why) != 0) {
+            stage_warn("the saved copy on %s is damaged: %s",
+                       areas[i].dev, why);
+            continue;
+        }
+        /* WHICH DISK IT IS OF, and a serial in the capture is an answer
+         * rather than a hint. The first version fell through to
+         * matching on size whenever THIS disk would not state a serial,
+         * even when the capture named one -- and it had no `break`, so
+         * on a desktop with two identical drives the LAST one won. */
         int di = -1;
-        for (int k = 0; k < m->n_disks; k++) {
+        for (int k = 0; k < m->n_disks && di < 0; k++) {
             const stage_disk *d = &m->disk[k];
-            if (p.serial[0] && d->serial[0]) {
-                if (!strcmp(p.serial, d->serial)) { di = k; break; }
+            if (p.serial[0]) {
+                if (d->serial[0] && !strcmp(p.serial, d->serial)) di = k;
             } else if (d->bytes == p.disk_bytes && !d->removable) {
                 di = k;
+            }
+        }
+        if (di < 0 && p.serial[0]) {
+            /* The capture names a disk and no disk here says that name.
+             * Size alone then decides, and only when exactly one disk
+             * is that size -- two are a refusal, not a coin toss. */
+            int hits = 0;
+            for (int k = 0; k < m->n_disks; k++)
+                if (m->disk[k].bytes == p.disk_bytes && !m->disk[k].removable)
+                    { hits++; di = k; }
+            if (hits != 1) {
+                di = -1;
+                stage_warn("a saved copy on %s names a disk this computer "
+                           "does not report, and %d disks here are its size; "
+                           "AurOS will not guess", areas[i].dev, hits);
             }
         }
         if (di < 0) {

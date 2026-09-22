@@ -135,13 +135,16 @@ int main(int argc, char **argv)
     }
 
     if (!strcmp(cmd, "plan")) {
-        /* win_new_bytes root_src rec_bytes min_root */
+        /* win_new_bytes root_src rec_bytes min_root; the saved copy
+         * gets a fixed 128 MiB here, because what this case is about
+         * is the gap arithmetic and not that number. */
         int wi = gpt_find_start(&t, strtoull(argv[4], NULL, 10));
         stage_layout L; char why[240] = {0};
         int r = plan_compute(&t, wi,
                              strtoull(argv[5], NULL, 10),
                              strtoull(argv[6], NULL, 10),
                              strtoull(argv[7], NULL, 10),
+                             128ull * 1024 * 1024,
                              strtoull(argv[8], NULL, 10),
                              &L, why, sizeof why);
         printf("plan=%d\n", r);

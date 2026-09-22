@@ -95,8 +95,24 @@ win_files_ok() { # image  label
 }
 
 # And is it the machine it started as?
+#
+# THE FILESYSTEM'S OWN SIZE IS IN HERE, and it was not. An audit found
+# that this checked the partition table and the files and nothing else
+# -- and rescue.c has four paths that put the table back, leave the NTFS
+# inside it at its shrunken size on purpose, say so, and return SUCCESS.
+# ntfs-3g mounts such a volume happily with every file present, so five
+# checks went green on a machine whose C: was permanently smaller. That
+# is the exact bug tools/installtest.sh documents at length and guards
+# against; the test that drives the restore through far more dangerous
+# states did not carry the guard.
 back_to_normal() { # image  label
     _i=$1; _lab=$2
+    if sgdisk -v "$_i" 2>&1 | grep -q "No problems found"; then
+        ok "$_lab: the table is valid again"
+    else
+        bad "$_lab: the table is valid again" \
+            "$(sgdisk -v "$_i" 2>&1 | head -3)"
+    fi
     _n=$(sgdisk -p "$_i" 2>/dev/null | sed -n '/^Number/,$p' | tail -n +2 | grep -c .)
     [ "$_n" = "3" ] && ok "$_lab: the three original partitions are back" \
                     || bad "$_lab: the three original partitions are back" "it has $_n"
@@ -109,7 +125,20 @@ back_to_normal() { # image  label
          md5sum | cut -d' ' -f1)
     [ "$_m" = "$ESPMD5" ] && ok "$_lab: the EFI partition is byte-for-byte what it was" \
                           || bad "$_lab: the EFI partition is byte-for-byte what it was"
-    win_files_ok "$_i" "$_lab"
+    _t=$(ntfs_total "$_i" "${_s:-$P2S}" | cut -d' ' -f1)
+    _d=$((NTFSTOT - _t))
+    if [ "$_d" -ge 0 ] && [ "$_d" -le "$NTFSSPC" ]; then
+        ok "$_lab: the Windows FILESYSTEM is its full size again"
+    else
+        bad "$_lab: the Windows FILESYSTEM is its full size again" \
+            "it claims $_t sectors, it had $NTFSTOT (one cluster is $NTFSSPC)"
+    fi
+    if grep -aq "verdict=restored .*grown=1 small=0" "$MTMP/out.txt"; then
+        ok "$_lab: and the installer says so itself"
+    else
+        bad "$_lab: and the installer says so itself" \
+            "$(grep -a 'aurstage-report' "$MTMP/out.txt" | tail -1)"
+    fi
 }
 
 # ── one full install, to make the machine the restore cuts happen on ─

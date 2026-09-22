@@ -80,10 +80,31 @@ done
 # not from $ROOT, which can be a different mount. `df --output=avail`
 # because parsing the human-readable columns of df is how a builder
 # ends up comparing "15G" against "9000".
+# `df -P -BM --output=avail` IS NOT A COMMAND. df refuses -P and
+# --output together ("mutually exclusive"), so this printed nothing,
+# `have` was the empty string, `[ "" -lt 9500 ]` returned 2 inside an
+# `if` -- which `set -e` exempts -- and every space check in this file
+# was dead code. The driver announced "there is not enough room" as
+# rule 3 and then started the build anyway on a machine with 2 GB
+# free, which is exactly the outcome its own header says it exists to
+# prevent. An audit found it; nothing else could have, because the
+# failure is silent and the number it prints (0.0 GB) reads like a
+# measurement.
+#
+# So: --output alone, and a result that is not a number is a REFUSAL
+# rather than a permissive zero.
 free_mb() {
-    local d="$1"
+    local d="$1" v
     while [ ! -d "$d" ]; do d=$(dirname "$d"); done
-    df -P -BM --output=avail "$d" 2>/dev/null | tail -1 | tr -dc '0-9'
+    v=$(df -BM --output=avail "$d" 2>/dev/null | tail -1 | tr -dc '0-9')
+    if [ -z "$v" ]; then
+        v=$(df -Pk "$d" 2>/dev/null | tail -1 | awk '{print int($4/1024)}')
+    fi
+    case "${v:-x}" in
+        ''|*[!0-9]*) die "this builder will not say how much room it has
+     on $d, and build/all will not start a build it cannot size." ;;
+    esac
+    printf '%s' "$v"
 }
 mb() { printf '%s MB' "$1"; }
 gb() { printf '%.1f GB' "$(echo "$1" | awk '{print $1/1024}')"; }
@@ -157,8 +178,19 @@ manifest_ok() { # id profile_hash  -> 0 if this profile is already done
     grep -q "\"profile_sha256\": \"$2\"" "$f" || return 1
     local art
     art=$(sed -n 's/.*"artifact"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$f" | head -1)
-    # --keep=none records no artifact, and that is a complete record.
-    if [ -z "$art" ] || [ "$art" = "none" ]; then return 0; fi
+    # AN EMPTY `artifact` IS A TRUNCATED FILE, NOT A RECORD. The
+    # manifest is written by a heredoc; a crash or a full disk between
+    # the profile_sha256 line and the artifact line leaves exactly
+    # this, and treating it as complete makes every later run skip.
+    [ -n "$art" ] || return 1
+    # "none" is a complete record only for a run that asked to keep
+    # nothing. Otherwise a single `--keep=none` pass would make every
+    # subsequent `build/all` report "5 of 5 profiles are built and
+    # recorded" with no images in out/ at all.
+    if [ "$art" = "none" ]; then
+        [ "$KEEP" = none ] && return 0
+        return 1
+    fi
     [ -f "$OUT/$art" ] || return 1
     local want got
     want=$(sed -n 's/.*"artifact_sha256"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$f" | head -1)
@@ -223,7 +255,15 @@ for id in "${WANT[@]}"; do
             [ "$oid" = "$id" ] && continue
             if manifest_ok "$oid" "$(profile_hash "$oid" 2>/dev/null || echo x)"; then
                 note "reclaiming the finished work tree for $oid"
-                rm -rf "$other"
+                # `forge clean`, NEVER a bare rm -rf. forge bind-mounts
+                # the host's /dev, /proc, /sys and /dev/pts into the
+                # rootfs, and an interrupted build leaves them up.
+                # rm -rf does not stop at a mount point, and this runs
+                # as root, so the bare version deletes the contents of
+                # the host's /dev. The ${WORK:?} guard protects against
+                # an empty variable, not against this.
+                "$ROOT/build/forge" clean "$oid" >/dev/null 2>&1 \
+                    || warn "could not clean $oid's work tree; leaving it"
             fi
         done
         have=$(free_mb "$ROOT")
@@ -299,7 +339,15 @@ for id in "${WANT[@]}"; do
     # of them is recorded. `forge clean` rather than rm -rf, because
     # the work tree has bind mounts in it during a build and the only
     # code that knows how to take them down lives there.
-    "$ROOT/build/forge" clean "$id" >/dev/null 2>&1 || rm -rf "${WORK:?}/$id"
+    # AND NO rm -rf FALLBACK, for the same reason: the fallback fires
+    # exactly when the unmount failed, which is the one case where
+    # rm -rf would walk into the host's /dev.
+    if ! "$ROOT/build/forge" clean "$id" >/dev/null 2>&1; then
+        warn "$id's work tree could not be cleaned -- it may still have
+     /dev and /proc mounted inside it. Left in place on purpose:
+     'rm -rf' on it would delete the contents of this machine's /dev.
+     Run: build/forge clean $id"
+    fi
     rm -f "$OUT/$id-"*.squashfs
     kept=0
     if [ -f "$OUT/$art" ]; then kept=$(du -sm "$OUT/$art" | cut -f1); fi

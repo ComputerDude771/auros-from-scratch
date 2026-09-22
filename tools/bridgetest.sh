@@ -135,6 +135,11 @@ fi
 # EVERY FIELD, NOT JUST THE ONES THAT PARSE. A writer that emits a
 # field the reader ignores passes the test above while the install
 # refuses on the machine.
+#
+# AND THE CHECK RUNS EITHER WAY. It used to sit inside
+# `if [ -f "$T/journal.json" ]`, so when the step above failed to build
+# or run, this printed neither ok nor bad and was not even counted --
+# the suite reported one fewer check than the last run and exited 0.
 if [ -f "$T/journal.json" ]; then
     miss=""
     for k in disk_serial disk_model disk_bytes logical_sector win_part \
@@ -145,6 +150,9 @@ if [ -f "$T/journal.json" ]; then
     [ -z "$miss" ] && ok "and it carries every field the reader looks for" \
                    || bad "and it carries every field the reader looks for" \
                           "missing:$miss"
+else
+    bad "and it carries every field the reader looks for" \
+        "no journal was written at all"
 fi
 
 # ── the hash of a partition table, against a third opinion ──────────

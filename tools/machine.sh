@@ -92,11 +92,50 @@ mach_disk() {
     fi
     losetup -d "$L"
     WINFILES=$(wc -l < "$MTMP/win.before")
+    # AND THERE HAD BETTER BE SOME.
+    #
+    # Every "is every file in Windows still exactly what it was" check
+    # in every one of these tests is `cmp -s` of this file against a
+    # later one. If the dd's above failed -- no room, a degraded fuse
+    # mount, a cd that did not happen -- win.before is empty, both
+    # sides are empty, and the single property the whole suite exists
+    # to prove passes vacuously. The only clue would be the word "0" in
+    # a banner line.
+    [ "$WINFILES" -ge 7 ] || {
+        echo "  only $WINFILES files went into Windows; the fixture is broken"
+        exit 2
+    }
     # What the EFI partition held before any of this. The restore has to
     # put these bytes back or Windows does not start, and nothing else
     # would notice if it put back something almost right.
     ESPMD5=$(dd if="$DISK" bs=512 skip=$P1S count=$((P1E-P1S+1)) status=none \
              | md5sum | cut -d' ' -f1)
+    NTFSTOT=$(ntfs_total "$DISK" $P2S | cut -d' ' -f1)
+    NTFSSPC=$(ntfs_total "$DISK" $P2S | cut -d' ' -f2)
+    [ -n "$NTFSTOT" ] && [ "$NTFSTOT" -gt 0 ] || {
+        echo "  the NTFS volume does not state a size; the fixture is broken"
+        exit 2
+    }
+}
+
+# THE FILESYSTEM'S OWN SIZE, not the partition entry's.
+#
+# Checking only the partition table let a restore pass while the NTFS
+# inside was still its shrunken size -- Windows would start and show a
+# smaller C: than it had, which is exactly the thing "put Windows back"
+# promises not to do. total_sectors lives at offset 0x28 of the boot
+# sector and sectors_per_cluster at 0x0d; the second is the tolerance,
+# because mkntfs sets total_sectors to one less than the partition,
+# which is not a multiple of the cluster size, and ntfsresize can only
+# land on (floor(size/cluster) - 1) x sectors_per_cluster. The original
+# number is not reachable by any resize at all.
+ntfs_total() { # image  first_sector  ->  "total_sectors sectors_per_cluster"
+    python3 - "$1" "$2" <<'EOPY'
+import sys, struct
+f = open(sys.argv[1], 'rb'); f.seek(int(sys.argv[2]) * 512)
+b = f.read(512); f.close()
+print(struct.unpack_from('<Q', b, 0x28)[0], b[0x0d])
+EOPY
 }
 
 # → AIMG, ROFF, RLEN

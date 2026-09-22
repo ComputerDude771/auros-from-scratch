@@ -274,6 +274,8 @@ static int hdr_unpack(const uint8_t *h, rescue_payload *p, char *why, size_t n)
     memcpy(p->body_sha, h + 208, 32);
     if (p->n_sections == 0 || p->n_sections > RESCUE_MAX_SEC ||
         p->sector < 512 || p->sector > 65536 ||
+        (p->sector & (p->sector - 1)) ||
+        p->disk_bytes < (uint64_t)p->sector * 64 ||
         p->payload_bytes <= RESCUE_HDR_BYTES) {
         snprintf(why, n,
                  "the saved way back on this memory stick describes "
@@ -301,6 +303,51 @@ static int hdr_unpack(const uint8_t *h, rescue_payload *p, char *why, size_t n)
                      "the saved way back on this memory stick points outside "
                      "itself and will not be used.");
             return -1;
+        }
+
+        /* AND WHERE ON THE DISK IT SAYS IT CAME FROM, which is the
+         * field that decides where the restore WRITES.
+         *
+         * This was checked nowhere, and every write offset in the
+         * restore is `disk_lba * sector`. A section whose disk_lba is
+         * 0x0020000000000000 multiplies to zero on a 4Kn disk, and the
+         * captured EFI partition then lands on the partition table and
+         * the head of C:. The payload hash does not catch it -- the
+         * header is not in the hash -- and wr.c cannot, because by the
+         * time it sees the offset the wrap has already happened. A
+         * memory stick lives in a drawer for eighteen months and is
+         * protected by one CRC-32; the numbers on it are input.
+         *
+         * len == lba_count * sector ties the payload to the extent, so
+         * a section cannot claim to be a megabyte of disk and carry
+         * four bytes. */
+        uint64_t blocks = p->disk_bytes / p->sector;
+        if (p->sec[i].lba_count == 0 ||
+            p->sec[i].lba_count > blocks ||
+            p->sec[i].disk_lba > blocks - p->sec[i].lba_count ||
+            p->sec[i].len != p->sec[i].lba_count * (uint64_t)p->sector) {
+            snprintf(why, n,
+                     "the saved way back on this memory stick describes a "
+                     "place on this disk that cannot exist, and will not be "
+                     "used.");
+            return -1;
+        }
+
+        /* The two entry-array sections carry the table's own shape in
+         * `aux`/`aux2`, and fde_guard() walks the array with them. The
+         * bounds are gpt.c's, so that a table this accepts is one the
+         * rest of the product would accept. Without the lower bound on
+         * the entry size, a forged 1-byte entry size walks 47 bytes
+         * past the allocation. */
+        if (p->sec[i].kind == RS_GPT_ARR || p->sec[i].kind == RS_GPT_ALT_ARR) {
+            if (p->sec[i].aux == 0 || p->sec[i].aux > 4096 ||
+                p->sec[i].aux2 < 128 || p->sec[i].aux2 > 4096 ||
+                p->sec[i].aux * p->sec[i].aux2 > p->sec[i].len) {
+                snprintf(why, n,
+                         "the saved partition table on this memory stick "
+                         "describes itself wrongly and will not be used.");
+                return -1;
+            }
         }
     }
     return 0;
@@ -514,7 +561,21 @@ int rescue_capture(const stage_disk *d, const rescue_area *area,
         uint64_t first = t.ent[k].first, last = t.ent[k].last;
         uint8_t first_sec[4096];
         if (sec > sizeof first_sec) continue;
-        if (read_at(fd, first_sec, sec, first * sec) != 0) continue;
+        /* A READ THAT FAILS IS NOT "NOT NTFS".
+         *
+         * This used to `continue`, eleven lines from add_section()
+         * where the identical failure is a refusal. A C: whose first
+         * sector has a media error -- the ten-year-old laptop this
+         * product is for -- was then captured with no record of itself
+         * at all, and the restore afterwards said "Windows is back
+         * exactly as it was" over a drive left at its shrunken size. */
+        if (read_at(fd, first_sec, sec, first * sec) != 0) {
+            snprintf(why, n,
+                     "the first block of one of this computer's drives would "
+                     "not read, so there is no trustworthy way back. The "
+                     "disk may be failing; do not install anything on it.");
+            goto fail;
+        }
         if (ntfs_is_bitlocker(first_sec)) {
             /* Captured deliberately as nothing. A BitLocker volume's
              * geometry is never changed by this product, so there is
@@ -685,11 +746,36 @@ int rescue_mirror(wr_target *t, const rescue_area *area,
         }
         at += chunk;
     }
-    close(fd);
     if (wr_flush(t) != 0) {
+        close(fd);
         snprintf(why, n, "the disk would not confirm the copy of the way back");
         return -1;
     }
+    /* AND READ IT BACK, which rescue.h has promised since it was
+     * written and this did not do. The copy exists for the person who
+     * reused the stick eighteen months ago; one that was never
+     * compared is one she finds out about on the day she needs it. */
+    at = 0;
+    while (at < p->payload_bytes) {
+        size_t chunk = (size_t)(p->payload_bytes - at);
+        if (chunk > sizeof buf) chunk = sizeof buf;
+        if (read_at(fd, buf, chunk, area->part_off + at) != 0) {
+            close(fd);
+            snprintf(why, n, "the way back could not be read off the stick.");
+            return -1;
+        }
+        uint64_t bad = 0;
+        if (wr_check(t, dst_off + at, buf, chunk, &bad) != 0) {
+            close(fd);
+            snprintf(why, n,
+                     "this computer did not keep the copy of the way back it "
+                     "was given (at %llu MB into it).",
+                     (unsigned long long)(bad / (1024 * 1024)));
+            return -1;
+        }
+        at += chunk;
+    }
+    close(fd);
     return 0;
 }
 
@@ -746,61 +832,65 @@ static int fde_guard(int disk_fd, uint32_t sector,
         snprintf(why, n, "this disk uses blocks AurOS cannot read");
         return -1;
     }
+
+    /* EVERY PARTITION THE RESTORE TOUCHES, NOT ONLY THE ONES IT MOVES.
+     *
+     * The first version of this checked only entries whose extent
+     * differs between the live table and the captured one, on the
+     * premise that those are the ones whose geometry changes. The
+     * premise is wrong, and a review found the hole before it shipped:
+     * the restore also writes $Boot into volumes whose entries it
+     * leaves exactly where they are, and runs ntfsresize inside them.
+     * A machine where the user turned on BitLocker for D: after the
+     * install -- which Windows 11 does by itself on first sign-in --
+     * has a D: whose extent is unchanged and whose first sector must
+     * never be written. So every used entry in both tables is read.
+     *
+     * AND A READ THAT FAILS IS A REFUSAL. It used to `continue`, which
+     * is the permissive answer, on the one check whose whole point is
+     * that the disk cannot lie the way a recorded flag can. A sector
+     * that will not read is a sector we do not know the contents of. */
+    uint64_t seen[GPT_MAX_ENT * 2];
+    int n_seen = 0;
     /* Direction 1: something on the disk now whose entry the captured
      * table does not reproduce exactly. Its geometry is about to
      * change, so it must not be encrypted. */
     if (live_ok) {
         for (uint32_t k = 0; k < live->n_entries; k++) {
             if (!gpt_used(&live->ent[k])) continue;
-            int same = 0;
-            for (uint32_t j = 0; j < n_ent; j++) {
-                const uint8_t *e = cap_arr + (uint64_t)j * ent_sz;
-                int used = 0;
-                for (int q = 0; q < 16; q++) if (e[q]) { used = 1; break; }
-                if (!used) continue;
-                if (rd64(e + 32) == live->ent[k].first &&
-                    rd64(e + 40) == live->ent[k].last) { same = 1; break; }
-            }
-            if (same) continue;
-            if (read_at(disk_fd, first, sector,
-                        live->ent[k].first * (uint64_t)sector) != 0) continue;
-            if (ntfs_is_bitlocker(first)) {
-                snprintf(why, n,
-                         "REFUSING: the part of this disk starting at block "
-                         "%llu is BitLocker-encrypted, and putting the saved "
-                         "layout back would change where it begins or ends. "
-                         "That destroys the encrypted drive completely and "
-                         "nothing brings it back -- not chkdsk, not a "
-                         "recovery key. Unlock and turn off BitLocker from "
-                         "Windows first.",
-                         (unsigned long long)live->ent[k].first);
-                return -1;
-            }
+            if (n_seen < (int)(sizeof seen / sizeof seen[0]))
+                seen[n_seen++] = live->ent[k].first;
         }
     }
-    /* Direction 2: a partition the captured table puts somewhere the
-     * disk currently holds an encrypted volume. Restoring the table
-     * would reinterpret those bytes as something else. */
     for (uint32_t j = 0; j < n_ent; j++) {
         const uint8_t *e = cap_arr + (uint64_t)j * ent_sz;
         int used = 0;
         for (int q = 0; q < 16; q++) if (e[q]) { used = 1; break; }
         if (!used) continue;
-        uint64_t f = rd64(e + 32), l = rd64(e + 40);
-        if (live_ok) {
-            int same = 0;
-            for (uint32_t k = 0; k < live->n_entries; k++)
-                if (gpt_used(&live->ent[k]) &&
-                    live->ent[k].first == f && live->ent[k].last == l)
-                    { same = 1; break; }
-            if (same) continue;
+        uint64_t f = rd64(e + 32);
+        int have = 0;
+        for (int q = 0; q < n_seen; q++) if (seen[q] == f) { have = 1; break; }
+        if (!have && n_seen < (int)(sizeof seen / sizeof seen[0]))
+            seen[n_seen++] = f;
+    }
+
+    for (int i = 0; i < n_seen; i++) {
+        uint64_t f = seen[i];
+        if (read_at(disk_fd, first, sector, f * (uint64_t)sector) != 0) {
+            snprintf(why, n,
+                     "REFUSING: block %llu of this disk would not read, so "
+                     "AurOS cannot tell whether there is an encrypted drive "
+                     "there. The disk may be failing. Nothing has been "
+                     "written to it.", (unsigned long long)f);
+            return -1;
         }
-        if (read_at(disk_fd, first, sector, f * (uint64_t)sector) != 0) continue;
         if (ntfs_is_bitlocker(first)) {
             snprintf(why, n,
-                     "REFUSING: block %llu of this disk holds the start of a "
-                     "BitLocker-encrypted drive, and the saved layout "
-                     "describes something else there. Unlock and turn off "
+                     "REFUSING: the part of this disk starting at block %llu "
+                     "is BitLocker-encrypted, and putting the saved layout "
+                     "back would write to it. That destroys the encrypted "
+                     "drive completely and nothing brings it back -- not "
+                     "chkdsk, not a recovery key. Unlock and turn off "
                      "BitLocker from Windows first.", (unsigned long long)f);
             return -1;
         }
@@ -808,14 +898,68 @@ static int fde_guard(int disk_fd, uint32_t sector,
     return 0;
 }
 
-/* The head of a volume was overwritten, so the captured $Boot and the
- * captured spare boot sector are the only copies of it left. Both go
- * back, in their own window, one at a time.
+/* READ IT BACK. R5 asks for it on every written block, commit.c and
+ * image.c do it, and the restore did not do it once -- not even for
+ * LBA 1, the sector that decides whether the machine boots. A drive
+ * that accepts a write and drops it then produced "the original layout
+ * is back" and a computer that starts nothing.
  *
- * This is the one place in the restore that writes into a volume's
- * data without knowing what state that volume is in, and it is
- * correct only under a condition nothing on the disk can check -- so
- * the caller says so out loud rather than this deciding quietly. */
+ * wr_check() counts what it compares, so wr_verified() is what a test
+ * asserts on; that is the reason this goes through it rather than
+ * doing its own pread. */
+static int checked(wr_target *t, uint64_t off, const void *expect, size_t len,
+                   const char *what, char *why, size_t n)
+{
+    uint64_t bad = 0;
+    if (wr_check(t, off, expect, len, &bad) == 0) return 0;
+    snprintf(why, n,
+             "this disk did not give back what was written to it at %llu MB "
+             "while putting %s back. The disk is failing. Do not restart the "
+             "computer.", (unsigned long long)(bad / (1024 * 1024)), what);
+    return -1;
+}
+
+/* The head of a volume was overwritten, so the captured $Boot and the
+ * captured spare boot sector are the only copies of it left.
+ *
+ * THIS IS THE MOST DANGEROUS WRITE IN THE RESTORE and the first
+ * version of it had no guard at all. A review found the path: a user
+ * who turns BitLocker on for D: after the install, or who reformats
+ * D: as exFAT, has a volume whose first sector is no longer NTFS --
+ * which is exactly the condition that sends the caller here. It would
+ * then have stamped a stale NTFS boot sector over the FVE header that
+ * points at the encryption keys, and told her to run chkdsk.
+ *
+ * So identity is PROVED before anything is written, and the proof does
+ * not come from the sector that is missing:
+ *
+ *   - the sector at the recorded backup-boot LBA must still be exactly
+ *     the bytes the capture recorded there. NTFS keeps that copy in
+ *     the volume's last sector; nothing but this volume puts those
+ *     bytes at that offset, and a reformat or an encryption pass
+ *     changes it. If it matches, this is our volume and the head is
+ *     what was lost.
+ *   - and the live head must not be a filesystem anybody recognises.
+ *     Something unreadable is damage. Something that IS a filesystem
+ *     is somebody's data, whatever the capture says used to be there.
+ *
+ * If neither can be established, nothing is written and the person is
+ * told what is actually true, which is that AurOS cannot tell what is
+ * on that part of the disk any more. */
+static int head_is_a_filesystem(const uint8_t *b, uint32_t sector)
+{
+    if (ntfs_is_bitlocker(b)) return 1;
+    static const char *oem[] = { "NTFS    ", "MSDOS5.0", "MSWIN4.1", "EXFAT   ",
+                                 "FAT32   ", "-FVE-FS-", NULL };
+    for (int i = 0; oem[i]; i++)
+        if (memcmp(b + 3, oem[i], 8) == 0) return 1;
+    /* ext2/3/4: the superblock magic 0xEF53 at byte 1080. */
+    if (sector > 1080 + 1 && b[1080] == 0x53 && b[1081] == 0xEF) return 1;
+    /* An MBR or a boot sector of some kind. */
+    if (sector >= 512 && b[510] == 0x55 && b[511] == 0xAA) return 1;
+    return 0;
+}
+
 static int restore_boot_sectors(const char *disk_dev, const rescue_area *area,
                                 const rescue_payload *p, uint32_t idx,
                                 uint32_t sec, int stick, char *why, size_t n)
@@ -829,6 +973,44 @@ static int restore_boot_sectors(const char *disk_dev, const rescue_area *area,
         return -1;
     }
     static uint8_t buf[8192];
+
+    /* ── the proof ─────────────────────────────────────────────── */
+    {
+        int dfd = open(disk_dev, O_RDONLY | O_CLOEXEC);
+        if (dfd < 0) {
+            snprintf(why, n, "the disk in this computer could not be read");
+            return -1;
+        }
+        uint8_t live_bak[4096], cap_bak[4096], live_head[4096];
+        int ok = sec <= sizeof live_bak &&
+                 b2->len == sec &&
+                 read_at(dfd, live_bak, sec, b2->disk_lba * sec) == 0 &&
+                 read_at(dfd, live_head, sec, b1->disk_lba * sec) == 0 &&
+                 read_at(stick, cap_bak, sec, area->part_off + b2->off) == 0;
+        close(dfd);
+        if (!ok) {
+            snprintf(why, n,
+                     "drive %u could not be read, so AurOS cannot tell "
+                     "whether the saved copy of its first blocks belongs to "
+                     "it. Nothing has been written to it.", idx);
+            return -1;
+        }
+        if (memcmp(live_bak, cap_bak, sec) != 0) {
+            snprintf(why, n,
+                     "REFUSING: what is on drive %u now is not the drive the "
+                     "saved copy was made from -- it has been reformatted, "
+                     "encrypted or replaced since. Putting the saved first "
+                     "blocks back would destroy whatever is on it now. "
+                     "Nothing has been written to it.", idx);
+            return -1;
+        }
+        if (head_is_a_filesystem(live_head, sec)) {
+            snprintf(why, n,
+                     "REFUSING: drive %u already holds a filesystem AurOS did "
+                     "not put there. Nothing has been written to it.", idx);
+            return -1;
+        }
+    }
     wr_target t;
     if (wr_open(&t, disk_dev, why, n) != 0) return -1;
     const rescue_section *two[2] = { b1, b2 };
@@ -843,7 +1025,10 @@ static int restore_boot_sectors(const char *disk_dev, const rescue_area *area,
                    s->disk_lba * sec + s->len, why, n) != 0 ||
             wr_bytes(&t, WR_RESTORE, s->disk_lba * sec, buf,
                      (size_t)s->len, why, n) != 0 ||
-            wr_flush(&t) != 0) { wr_close(&t); return -1; }
+            wr_flush(&t) != 0 ||
+            checked(&t, s->disk_lba * sec, buf, (size_t)s->len,
+                    "a drive's first blocks", why, n) != 0)
+            { wr_close(&t); return -1; }
         wr_disarm(&t, WR_RESTORE);
     }
     wr_close(&t);
@@ -883,9 +1068,21 @@ int rescue_restore(const char *disk_dev, const rescue_area *area,
      * spare copy in the wrong place and describes partitions that do
      * not exist. */
     uint64_t live_bytes = 0;
-    if (ioctl(disk_fd, _IOR(0x12, 114, size_t), &live_bytes) != 0)
-        live_bytes = 0;
-    if (live_bytes && live_bytes != p.disk_bytes) {
+    if (ioctl(disk_fd, _IOR(0x12, 114, size_t), &live_bytes) != 0 ||
+        live_bytes == 0) {
+        /* THE FAILURE OF THIS CHECK IS NOT A PASS. It used to set
+         * live_bytes to 0 and then skip the comparison, so a disk that
+         * would not state its size was one the captured partition
+         * table could be written onto unconditionally. wr.c refuses a
+         * device it cannot size; so does this. */
+        close(stick); close(disk_fd);
+        snprintf(why, n,
+                 "this computer will not say how large its disk is, and "
+                 "AurOS will not write a saved partition table onto a disk "
+                 "it cannot identify. Nothing has been changed.");
+        return -1;
+    }
+    if (live_bytes != p.disk_bytes) {
         close(stick); close(disk_fd);
         snprintf(why, n,
                  "REFUSING: what was saved came from a %llu MB disk, and this "
@@ -914,22 +1111,23 @@ int rescue_restore(const char *disk_dev, const rescue_area *area,
     /* The captured entry array, in memory. It is at most 16 MiB by the
      * bounds gpt.c enforces, and everything below needs to look at it
      * more than once. */
-    uint8_t *cap_arr = malloc((size_t)s_arr->len);
+    uint8_t *cap_arr  = malloc((size_t)s_arr->len);
+    uint8_t *cap_aarr = malloc((size_t)s_aar->len);
     uint8_t cap_hdr[4096], cap_ahd[4096], cap_mbr[4096];
-    if (!cap_arr || sec > sizeof cap_hdr ||
+    if (!cap_arr || !cap_aarr || sec > sizeof cap_hdr ||
         sec_bytes(stick, area, s_hdr, cap_hdr, sec) != 0 ||
         sec_bytes(stick, area, s_ahd, cap_ahd, sec) != 0 ||
         sec_bytes(stick, area, s_mbr, cap_mbr, sec) != 0 ||
         read_at(stick, cap_arr, (size_t)s_arr->len,
                 area->part_off + s_arr->off) != 0) {
-        free(cap_arr); close(stick); close(disk_fd);
+        free(cap_arr); free(cap_aarr); close(stick); close(disk_fd);
         snprintf(why, n, "the saved copy could not be read off the stick.");
         return -1;
     }
     uint32_t n_ent  = (uint32_t)s_arr->aux;
     uint32_t ent_sz = (uint32_t)s_arr->aux2;
     if (!n_ent || !ent_sz || (uint64_t)n_ent * ent_sz > s_arr->len) {
-        free(cap_arr); close(stick); close(disk_fd);
+        free(cap_arr); free(cap_aarr); close(stick); close(disk_fd);
         snprintf(why, n, "the saved partition table describes itself wrongly.");
         return -1;
     }
@@ -941,10 +1139,64 @@ int rescue_restore(const char *disk_dev, const rescue_area *area,
     if (!live_ok)
         talk(say, ud, "this disk has no readable layout at the moment");
 
+    /* AND THE DISK'S OWN IDENTIFIER, when there is still a table to
+     * read it from. Two identical drives in one desktop -- the Windows
+     * one and the one full of photographs -- are the same size, so
+     * size alone is not identity, and the DiskGUID at offset 56 of the
+     * header is the only thing on a disk that is meant to be unique.
+     * Stage C never changes it: commit.c copies the old table and edits
+     * entries, so the disk AurOS installed onto still carries the GUID
+     * the capture recorded. */
+    if (live_ok && memcmp(live.disk_guid, cap_hdr + 56, 16) != 0) {
+        free(cap_arr); free(cap_aarr); close(stick); close(disk_fd);
+        snprintf(why, n,
+                 "REFUSING: this disk is not the one the saved copy was made "
+                 "from. It is the same size, and it is a different disk. "
+                 "Nothing has been written to it.");
+        return -1;
+    }
+
     if (fde_guard(disk_fd, sec, &live, live_ok, cap_arr, n_ent, ent_sz,
                   why, n) != 0) {
-        free(cap_arr); close(stick); close(disk_fd);
+        free(cap_arr); free(cap_aarr); close(stick); close(disk_fd);
         return -1;
+    }
+
+    /* ── EVERY VOLUME, MEASURED BEFORE THE FIRST DESTRUCTIVE BYTE ──
+     *
+     * The "this drive is larger than it was" refusal used to live in
+     * the grow loop, which runs AFTER the table has been committed and
+     * the ESP rewritten -- so a user who had extended D: in Windows
+     * since the install got her partition entry truncated below its own
+     * filesystem, an unmountable drive, and the sentence "Nothing has
+     * been written to it."
+     *
+     * Everything that decision needs is available here, with the disk
+     * untouched: the captured size is in the section, and the live size
+     * is in the volume's own boot sector, which is read by offset
+     * because the partition nodes still describe the AurOS layout. */
+    for (uint32_t i = 0; i < p.n_sections; i++) {
+        if (p.sec[i].kind != RS_NTFS_BOOT) continue;
+        uint8_t head[4096];
+        if (sec > sizeof head ||
+            read_at(disk_fd, head, sec, p.sec[i].disk_lba * sec) != 0)
+            continue;              /* unreadable or gone: the loop below
+                                    * decides, with its own guards */
+        if (memcmp(head + 3, "NTFS    ", 8) != 0) continue;
+        uint32_t bps = rd16(head + 0x0B);
+        uint64_t now = rd64(head + 0x28);
+        if (bps < 512 || bps > 4096) continue;
+        if (now > p.sec[i].aux) {
+            free(cap_arr); free(cap_aarr); close(stick); close(disk_fd);
+            snprintf(why, n,
+                     "REFUSING: drive %u is larger than it was before AurOS "
+                     "was installed -- somebody has made it bigger since. "
+                     "Putting the saved layout back would leave part of that "
+                     "drive outside its own partition, and Windows would not "
+                     "open it. Nothing has been written to this disk.",
+                     p.sec[i].index);
+            return -1;
+        }
     }
 
     /* Does the protective record at the very front need putting back?
@@ -972,14 +1224,14 @@ int rescue_restore(const char *disk_dev, const rescue_area *area,
 
     wr_target t;
     if (wr_open(&t, disk_dev, why, n) != 0) {
-        free(cap_arr); close(stick); return -1;
+        free(cap_arr); free(cap_aarr); close(stick); return -1;
     }
     /* The primary window starts at byte 0 here and at LBA 1 in the
      * install. Different purpose: the install has no business touching
      * the protective record, and this does. */
     if (wr_arm(&t, WR_GPT_PRIMARY, 0, prim_hi, why, n) != 0 ||
         wr_arm(&t, WR_GPT_BACKUP, back_lo, back_hi, why, n) != 0) {
-        wr_close(&t); free(cap_arr); close(stick); return -1;
+        wr_close(&t); free(cap_arr); free(cap_aarr); close(stick); return -1;
     }
 
     talk(say, ud, "putting this computer's original layout back");
@@ -996,20 +1248,39 @@ int rescue_restore(const char *disk_dev, const rescue_area *area,
      * the disk exactly as it is this second. Nothing changes yet. */
     if (wr_bytes(&t, WR_GPT_PRIMARY, arr_lba * sec, cap_arr,
                  (size_t)s_arr->len, why, n) != 0 ||
-        wr_flush(&t) != 0) goto table_failed;
+        wr_flush(&t) != 0 ||
+        checked(&t, arr_lba * sec, cap_arr, (size_t)s_arr->len,
+                "the partition table", why, n) != 0) goto table_failed;
     fault_maybe("restore-array");
     /* Step 2: LBA 1. One sector. This is the instant the machine's
      * layout becomes the one it had before AurOS. */
     if (wr_bytes(&t, WR_GPT_PRIMARY, hdr_lba * sec, cap_hdr, sec,
                  why, n) != 0 ||
-        wr_flush(&t) != 0) goto table_failed;
+        wr_flush(&t) != 0 ||
+        checked(&t, hdr_lba * sec, cap_hdr, sec,
+                "the partition table", why, n) != 0) goto table_failed;
     fault_maybe("restore-sector");
     /* Step 3: the spare copy catches up. */
-    if (wr_bytes(&t, WR_GPT_BACKUP, aarr_lba * sec, cap_arr,
+    /* FROM ITS OWN SECTION, not from the primary's buffer. The two
+     * arrays are the same bytes on every table this product has ever
+     * made, and writing the primary's with the BACKUP's length was a
+     * heap over-read waiting for the day they were not -- and it made
+     * the captured backup array, sixteen kilobytes this spends time
+     * reading, hashing and checking, dead weight. */
+    if (read_at(stick, cap_aarr, (size_t)s_aar->len,
+                area->part_off + s_aar->off) != 0) {
+        snprintf(why, n, "the saved copy could not be read off the stick.");
+        goto table_failed;
+    }
+    if (wr_bytes(&t, WR_GPT_BACKUP, aarr_lba * sec, cap_aarr,
                  (size_t)s_aar->len, why, n) != 0 ||
         wr_bytes(&t, WR_GPT_BACKUP, alt_lba * sec, cap_ahd, sec,
                  why, n) != 0 ||
-        wr_flush(&t) != 0) goto table_failed;
+        wr_flush(&t) != 0 ||
+        checked(&t, aarr_lba * sec, cap_aarr, (size_t)s_aar->len,
+                "the spare partition table", why, n) != 0 ||
+        checked(&t, alt_lba * sec, cap_ahd, sec,
+                "the spare partition table", why, n) != 0) goto table_failed;
     fault_maybe("restore-backup");
     wr_disarm(&t, WR_GPT_PRIMARY);
     wr_disarm(&t, WR_GPT_BACKUP);
@@ -1041,7 +1312,10 @@ int rescue_restore(const char *disk_dev, const rescue_area *area,
                 goto esp_failed;
             }
             if (wr_bytes(&t, WR_RESTORE, s_esp->disk_lba * sec + at,
-                         buf, chunk, why, n) != 0) goto esp_failed;
+                         buf, chunk, why, n) != 0 ||
+                checked(&t, s_esp->disk_lba * sec + at, buf, chunk,
+                        "the Windows startup files", why, n) != 0)
+                goto esp_failed;
             at += chunk;
             if (at * 2 >= s_esp->len) fault_maybe("restore-esp-mid");
         }
@@ -1096,7 +1370,7 @@ int rescue_restore(const char *disk_dev, const rescue_area *area,
                           "blocks back", idx);
             if (restore_boot_sectors(disk_dev, area, &p, idx, sec, stick,
                                      why, n) != 0) {
-                free(cap_arr); close(stick);
+                free(cap_arr); free(cap_aarr); close(stick);
                 return -1;
             }
             talk(say, ud, "if Windows does not start, run 'chkdsk /f' from "
@@ -1116,7 +1390,7 @@ int rescue_restore(const char *disk_dev, const rescue_area *area,
          * space than it did. */
         uint64_t want_bytes = (want_sectors + 1) * (uint64_t)bps;
         if (now_bytes > want_bytes) {
-            free(cap_arr); close(stick);
+            free(cap_arr); free(cap_aarr); close(stick);
             snprintf(why, n,
                      "REFUSING: drive %u is larger than it was before AurOS "
                      "was installed. Making it smaller could delete somebody's "
@@ -1194,7 +1468,12 @@ int rescue_restore(const char *disk_dev, const rescue_area *area,
              * was, Windows shows C: at its full size, and treating
              * that as a failure would report every correct restore as
              * a broken one. */
-            uint64_t shortfall = want_bytes - after;
+            /* after > want_bytes is not excluded by the branch above,
+             * and an unsigned subtraction in the wrong direction told
+             * one tester her drive was seventeen million terabytes
+             * short. It is on the screen of somebody watching a
+             * restore, so it is worth the two lines. */
+            uint64_t shortfall = after < want_bytes ? want_bytes - after : 0;
             uint64_t cluster = ns.bytes_per_cluster ? ns.bytes_per_cluster
                                                     : 65536;
             if (shortfall <= cluster) {
@@ -1216,7 +1495,7 @@ int rescue_restore(const char *disk_dev, const rescue_area *area,
         }
     }
 
-    free(cap_arr);
+    free(cap_arr); free(cap_aarr);
     close(stick);
     if (out->volumes_left_small)
         talk(say, ud, "Windows should start now. One or more drives are "
@@ -1228,7 +1507,7 @@ int rescue_restore(const char *disk_dev, const rescue_area *area,
     return 0;
 
 table_failed:
-    wr_close(&t); free(cap_arr); close(stick);
+    wr_close(&t); free(cap_arr); free(cap_aarr); close(stick);
     if (out->table_restored) return -1;
     /* Nothing landed, or only the array did -- and while only the array
      * is down, readers use the spare copy, which still describes the
@@ -1244,6 +1523,6 @@ table_failed:
     return -1;
 
 esp_failed:
-    wr_close(&t); free(cap_arr); close(stick);
+    wr_close(&t); free(cap_arr); free(cap_aarr); close(stick);
     return -1;
 }

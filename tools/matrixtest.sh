@@ -94,31 +94,53 @@ build() { # out  sector  esp_start  esp_mib  win_mib  extra
     # The filesystems, by offset into the file.
     _eoff=$(( _es * _ss )); _elen=$(( _eb * _ss ))
     _woff=$(( _ws * _ss )); _wlen=$(( _wb * _ss ))
+    _rc=0
     _l=$(losetup --find --show -o "$_eoff" --sizelimit "$_elen" "$_o")
-    mkfs.vfat -n EFI "$_l" >/dev/null 2>&1; losetup -d "$_l"
+    mkfs.vfat -n EFI "$_l" >/dev/null 2>&1 || _rc=1
+    losetup -d "$_l"
     _l=$(losetup --find --show -o "$_woff" --sizelimit "$_wlen" \
          --sector-size "$_ss" "$_o")
-    nt mkntfs -Q -F -L WINDOWS "$_l" >/dev/null 2>&1; losetup -d "$_l"
+    nt mkntfs -Q -F -L WINDOWS "$_l" >/dev/null 2>&1 || _rc=1
+    losetup -d "$_l"
+    # THE RETURN VALUE IS THE FILESYSTEMS', not just the table's. This
+    # used to `return 0` unconditionally, so `build ... || exit 2` could
+    # not catch a failed mkntfs and two rows below ran against a disk
+    # with no filesystem on it -- passing, for the wrong reason.
     WOFF=$_woff; WLEN=$_wlen
-    return 0
+    return $_rc
 }
 
 # Boot the staging environment on a machine and return its report line.
 # `$1` is the image, `$2` extra -device properties, `$3` bios|uefi.
 look() { # image  blockprops  firmware
+    _img=$1; _props=$2; _fw=$3
     cp /usr/share/OVMF/OVMF_VARS_4M.fd "$T/vars.fd"
     : > "$T/out.txt"
-    if [ "$3" = uefi ]; then
-        set -- -drive if=pflash,format=raw,unit=0,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
-               -drive "if=pflash,format=raw,unit=1,file=$T/vars.fd"
-    else
-        set --
+    # THE ARGUMENTS ARE COPIED OUT FIRST, and the firmware flags go in
+    # a file rather than into "$@".
+    #
+    # This used to build the pflash arguments with `set --`, which
+    # REPLACES the function's positional parameters -- so $1 became
+    # "-drive" and QEMU was handed `-drive file=-drive`. Every row in
+    # this file failed with "no report line at all", which is also what
+    # a machine with no QEMU prints, so the whole matrix read as an
+    # environment problem and had never verified anything at all.
+    : > "$T/fw.args"
+    if [ "$_fw" = uefi ]; then
+        printf '%s\n' \
+            "-drive" \
+            "if=pflash,format=raw,unit=0,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd" \
+            "-drive" \
+            "if=pflash,format=raw,unit=1,file=$T/vars.fd" > "$T/fw.args"
     fi
-    qemu-system-x86_64 -machine q35,accel=tcg -m 1024 -smp 2 "$@" \
+    _fwargs=""
+    while IFS= read -r a; do _fwargs="$_fwargs $a"; done < "$T/fw.args"
+    # shellcheck disable=SC2086
+    qemu-system-x86_64 -machine q35,accel=tcg -m 1024 -smp 2 $_fwargs \
         -no-reboot -kernel out/auros-staging-vmlinuz \
         -initrd out/auros-staging.img -append "console=ttyS0 aurstage.dry aurstage.min_gb=1" \
-        -drive file="$1",format=raw,if=none,id=d0 \
-        -device "virtio-blk-pci,drive=d0,serial=AUROSTEST$2" \
+        -drive file="$_img",format=raw,if=none,id=d0 \
+        -device "virtio-blk-pci,drive=d0,serial=AUROSTEST$_props" \
         -display none -serial stdio > "$T/out.txt" 2>&1 &
     _qp=$!
     _i=0
@@ -158,25 +180,49 @@ row "the first partition at LBA 34, as disks were made before 2010" \
 
 echo
 echo "  machines it must refuse"
-# THE MUST NOT. -FVE-FS- at offset 3 of the volume's first sector.
-cp --sparse=always "$T/base.img" "$T/fve.img"
+# BOTH FIXTURES ARE REBUILT, NOT COPIED, and the offsets come back from
+# the build that made them.
+#
+# They used to be copies of base.img patched at $WOFF -- a global left
+# over from the LAST build() call, which by then was old.img with its
+# first partition at LBA 34. So the BitLocker signature went into the
+# middle of base.img's EFI partition, the hibernation fixture's loop
+# device would not mount, the `if` body never ran, and neither disk was
+# corrupted at all. Both rows then ran against a perfectly healthy
+# machine, and the obvious way to make them green would have been to
+# relax the expectation -- which is how the MUST NOT stops being
+# guarded.
+build "$T/fve.img" 512 2048 100 1024 winre || { echo "  cannot build"; exit 2; }
 python3 - "$T/fve.img" "$WOFF" <<'EOPY'
 import sys
-f=open(sys.argv[1],'r+b'); f.seek(int(sys.argv[2])+3); f.write(b'-FVE-FS-'); f.close()
+f = open(sys.argv[1], 'r+b'); off = int(sys.argv[2])
+f.seek(off); head = bytearray(f.read(512))
+assert head[3:11] == b'NTFS    ', "the fixture is not where the test thinks"
+head[3:11] = b'-FVE-FS-'
+f.seek(off); f.write(bytes(head)); f.close()
+EOPY
+python3 - "$T/fve.img" "$WOFF" <<'EOPY'
+import sys
+f = open(sys.argv[1], 'rb'); f.seek(int(sys.argv[2]))
+assert f.read(512)[3:11] == b'-FVE-FS-', "the BitLocker fixture did not take"
 EOPY
 row "a BitLocker-encrypted Windows drive" ntfs-refused "$T/fve.img" "" uefi
 
 # A session still in there. hiberfil.sys with the header Windows writes.
-cp --sparse=always "$T/base.img" "$T/hib.img"
+build "$T/hib.img" 512 2048 100 1024 winre || { echo "  cannot build"; exit 2; }
 L=$(losetup --find --show -o "$WOFF" --sizelimit "$WLEN" "$T/hib.img")
-if nt ntfs-3g "$L" "$T/m" >/dev/null 2>&1; then
-    printf 'hibr' > "$T/m/hiberfil.sys"
-    dd if=/dev/zero of="$T/m/hiberfil.sys" bs=1M count=4 seek=0 \
-       conv=notrunc status=none 2>/dev/null
+if [ -n "$L" ] && nt ntfs-3g "$L" "$T/m" >/dev/null 2>&1; then
+    dd if=/dev/zero of="$T/m/hiberfil.sys" bs=1M count=4 status=none
     printf 'hibr' | dd of="$T/m/hiberfil.sys" bs=1 conv=notrunc status=none
     sync; umount "$T/m"
+    hib_made=yes
+else
+    hib_made=no
 fi
-losetup -d "$L"
+[ -n "$L" ] && losetup -d "$L"
+# AND THE FIXTURE IS CHECKED BEFORE THE ROW RUNS. A corruption that
+# silently did nothing is the whole reason these two moved.
+[ "$hib_made" = yes ] || { echo "  could not make the hibernation fixture"; exit 2; }
 row "Windows is asleep, not shut down" ntfs-refused "$T/hib.img" "" uefi
 
 # An MBR disk. parted rather than sgdisk, which only speaks GPT.

@@ -85,6 +85,7 @@ int main(int argc, char **argv)
     stage_layout L; char why[240] = {0};
     if (plan_compute(&old, wi, strtoull(argv[3], NULL, 10),
                      strtoull(argv[4], NULL, 10), strtoull(argv[5], NULL, 10),
+                     128ull * 1024 * 1024,
                      strtoull(argv[6], NULL, 10), &L, why, sizeof why) != 0) {
         printf("plan=failed\n"); printf("why=%s\n", why); return 2;
     }
@@ -119,6 +120,7 @@ gcc -O1 -g -std=gnu11 -Wall -Wextra -fsanitize=address,undefined \
     src/aurstage/commit.c src/aurstage/gpt.c src/aurstage/plan.c \
     src/aurstage/wr.c src/aurstage/boot.c src/aurstage/disks.c \
     src/aurstage/sha256.c src/aurstage/ntfs.c src/aurstage/fde.c \
+    src/aurstage/rescue.c src/aurstage/shrink.c src/aurstage/fault.c \
     || { echo "  did not build"; exit 2; }
 
 # The OEM shape again: ESP, MSR, Windows, and a recovery partition at
@@ -150,7 +152,10 @@ OUT=$("$TMP/c" "$D" "$WS" 536870912 268435456 209715200 200000000 2>/dev/null)
 
 AFTER=$(parts "$D")
 N=$(printf '%s\n' "$AFTER" | wc -l)
-[ "$N" = "6" ] && ok "the disk now has 6 partitions" || bad "the disk now has 6 partitions" "got $N"
+# Four before (ESP, MSR, Windows, OEM recovery) plus the three AurOS
+# adds: the root, the saved copy of this machine's Windows startup, and
+# the recovery partition.
+[ "$N" = "7" ] && ok "the disk now has 7 partitions" || bad "the disk now has 7 partitions" "got $N"
 # sgdisk is an independent reader: if it agrees, our CRCs are right.
 if sgdisk -v "$D" 2>&1 | grep -q "No problems found"; then
     ok "and another tool agrees the table is valid"

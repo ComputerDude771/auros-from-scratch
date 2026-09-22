@@ -103,9 +103,19 @@ for f in "$ROOT"/src/aurstage/*.c; do
     # closes its input as soon as it matches, gcc takes a SIGPIPE, and
     # the pipeline "fails" on success -- which made this gate report
     # that wr.c had stopped writing. Captured first, searched second.
-    code=$(gcc -fpreprocessed -dD -E "$f" 2>/dev/null || true)
+    # AND A FILE THAT WOULD NOT PREPROCESS IS A REFUSAL, not an empty
+    # answer. `gcc -fpreprocessed -dD -E` exits non-zero on a lexical
+    # error -- an unterminated comment or string -- and `|| true` then
+    # made `code` empty, `hit` empty, and the file waved through in
+    # silence. "EXACTLY ONE FILE may open a device writably" became
+    # "exactly one file, plus anything that fails to preprocess".
+    if ! code=$(gcc -fpreprocessed -dD -E "$f" 2>/dev/null); then
+        die "$(basename "$f") could not be read as C, so the write gate
+     could not look at it. Refusing to build an image containing a file
+     nothing has checked."
+    fi
     hit=$(printf '%s\n' "$code" \
-          | grep -nE 'O_RDWR|O_WRONLY|O_CREAT|O_TRUNC|O_APPEND' \
+          | grep -nE 'O_RDWR|O_WRONLY|O_CREAT|O_TRUNC|O_APPEND|creat\(|openat\(' \
           | grep -v '/dev/null' || true)
     [ -n "$hit" ] && BAD="$BAD
 $(basename "$f"): $hit"
@@ -156,8 +166,15 @@ fi
 gcc -O2 -std=gnu11 -Wall -Wextra -static $FAULTDEF -o init \
     "$ROOT"/src/aurstage/*.c -I "$ROOT/src/aurstage" \
     || die "aurstage did not build"
-file init 2>/dev/null | grep -q "statically linked" \
-    || die "init is not statically linked; PID 1 would depend on the build host"
+# NOT A PIPELINE INTO grep -q. Third time in this file; see the two
+# notes above. `file` writes one short line so the race is narrow, but
+# a narrow race that dies on a CORRECT build is still a build that
+# fails for a reason nobody can find.
+FILEOUT=$(file init 2>/dev/null || true)
+case "$FILEOUT" in
+  *"statically linked"*) ;;
+  *) die "init is not statically linked; PID 1 would depend on the build host" ;;
+esac
 
 # AND THE GATE IS ON THE BINARY, not on the source.
 #
@@ -290,16 +307,38 @@ libs_of() {
 # non-zero, and the "closure is empty" guard below passes. The fix
 # that added --library-path caught ALL libraries missing and not ONE,
 # which is the commoner shape of the same bug.
+# NOT A PIPELINE INTO grep -c EITHER. Under `set -o pipefail` a loader
+# that fails makes the whole pipeline fail, `|| true` swallows it, and
+# the answer comes back "0" -- "none missing" -- when the question was
+# never asked. Captured first, counted second, and a loader that says
+# nothing at all is a refusal.
 unresolved() {
-    "$RFS/$LDSO" --library-path "$LIBPATH" --list "$1" 2>/dev/null \
-        | grep -c "not found" || true
+    _lines=$("$RFS/$LDSO" --library-path "$LIBPATH" --list "$1" 2>/dev/null || true)
+    if [ -z "$_lines" ]; then printf 'unreadable'; return; fi
+    printf '%s\n' "$_lines" | grep -c "not found" || true
 }
 n_lib=0
 for prog in sbin/modprobe sbin/ntfsresize sbin/ntfsinfo \
             sbin/e2fsck sbin/resize2fs; do
     got=0
     for lib in $(libs_of "$WORK/$prog"); do
-        [ -f "$RFS$lib" ] || continue
+        # A LIBRARY THAT RESOLVED OUTSIDE THE IMAGE IS A MISSING ONE.
+        #
+        # ld.so --library-path still falls back to the SYSTEM search
+        # path, so a library present on this builder and absent from
+        # the rootfs comes back as /lib/x86_64-linux-gnu/libfoo.so.1 --
+        # which `sed "s|^$RFS||"` leaves alone, so `[ -f "$RFS$lib" ]`
+        # is false and it was simply skipped. `got` stayed above zero
+        # because its siblings resolved inside the image, and
+        # unresolved() counted zero because the loader had printed no
+        # "not found". The program then failed the first time it ran
+        # inside QEMU, with "error while loading shared libraries",
+        # which is the exact history this block exists to have fixed.
+        if [ ! -f "$RFS$lib" ]; then
+            die "$prog needs $lib, and it resolved to a library on THIS
+     builder rather than one inside the image. The image would ship
+     without it and the program would not start on a user's machine."
+        fi
         got=$((got + 1))
         [ -f ".$lib" ] && continue
         install -D -m 755 "$RFS$lib" ".$lib"

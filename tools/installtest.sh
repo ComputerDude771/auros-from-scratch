@@ -21,201 +21,44 @@
 # ═══════════════════════════════════════════════════════════════════
 set -u
 cd "$(dirname "$0")/.."
-RFS="${RFS:-work/forge/desktop/rootfs}"
 
 fail=0; checked=0
 ok()  { checked=$((checked+1)); printf '    %-58s %s\n' "$1" "ok"; }
 bad() { checked=$((checked+1)); fail=$((fail+1)); printf '    %-58s %s\n' "$1" "FAIL"
         shift; for m in "$@"; do printf '      %s\n' "$m"; done; }
 
-for t in qemu-system-x86_64 sgdisk mkfs.ext4 cpio python3; do
-    command -v "$t" >/dev/null 2>&1 || { echo "need $t"; exit 2; }
-done
+# THE MACHINE COMES FROM ONE FILE, shared with the power-cut matrix.
+#
+# Both tests used to build the same synthetic computer from their own
+# copy of the same seventy lines. Two fixtures meant to be identical and
+# maintained separately are two fixtures that eventually are not, and an
+# audit of the power-cut matrix found exactly that: its copy was missing
+# the check this one added after a real bug, so it was passing a restore
+# that never grew Windows back.
+. tools/machine.sh
+mach_need
 [ -f out/auros-staging.img ] || { echo "run ./build/staging first"; exit 2; }
-[ -d "$RFS" ] || { echo "no rootfs at $RFS"; exit 2; }
-[ -f /usr/share/OVMF/OVMF_CODE_4M.fd ] || { echo "need OVMF"; exit 2; }
-
-LD=$(ls "$RFS"/lib64/ld-linux-x86-64.so.2 2>/dev/null || \
-     ls "$RFS"/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2 2>/dev/null)
-LP="$RFS/lib/x86_64-linux-gnu:$RFS/lib64:$RFS/usr/lib/x86_64-linux-gnu"
-nt() { p="$RFS/usr/sbin/$1"; [ -x "$p" ] || p="$RFS/usr/bin/$1"; shift
-       "$LD" --library-path "$LP" "$p" "$@"; }
 
 LOCK="${TMPDIR:-/tmp}/installtest.lock"
-mkdir "$LOCK" 2>/dev/null || { echo "another installtest is running"; exit 2; }
-TMP=$(mktemp -d "${TMPDIR:-/tmp}/installtest.XXXXXX")
-trap 'mountpoint -q "$TMP/m" 2>/dev/null && umount "$TMP/m"; rm -rf "$TMP" "$LOCK"' EXIT
+mkdir "$LOCK" 2>/dev/null || { echo "another end-to-end test is running"; exit 2; }
+MTMP=$(mktemp -d "${TMPDIR:-/tmp}/installtest.XXXXXX")
+[ -n "$MTMP" ] && [ -d "$MTMP" ] || { rmdir "$LOCK"; echo "no scratch dir"; exit 2; }
+TMP="$MTMP"
+trap 'mountpoint -q "$MTMP/m" 2>/dev/null && umount "$MTMP/m"; rm -rf "$MTMP" "$LOCK"' EXIT
 
 echo
 echo "Does it actually install AurOS, and leave Windows intact?"
 echo
 
-# ── the machine ─────────────────────────────────────────────────────
-P1S=2048;    P1E=206847       # ESP, 100 MiB
-P2S=206848;  P2E=2303999      # Windows, 1 GiB
-P3S=5500000; P3E=6291422      # WinRE, at the very end
-DISK="$TMP/disk.img"
-truncate -s 3G "$DISK"
-sgdisk --zap-all "$DISK" >/dev/null 2>&1
-sgdisk -n 1:$P1S:$P1E -t 1:ef00 -c 1:"EFI"     "$DISK" >/dev/null 2>&1
-sgdisk -n 2:$P2S:$P2E -t 2:0700 -c 2:"Windows" "$DISK" >/dev/null 2>&1
-sgdisk -n 3:$P3S:$P3E -t 3:2700 -c 3:"WinRE"   "$DISK" >/dev/null 2>&1
-
-mkpart() {
-    off=$(( $1 * 512 )); len=$(( ($2 - $1 + 1) * 512 ))
-    l=$(losetup --find --show -o "$off" --sizelimit "$len" "$DISK") || return 1
-    case "$3" in
-      ntfs) nt mkntfs -Q -F -L WINDOWS "$l" >/dev/null 2>&1 ;;
-      vfat) mkfs.vfat -n EFI "$l" >/dev/null 2>&1 ;;
-      ext4) mkfs.ext4 -q -L WINRE "$l" >/dev/null 2>&1 ;;
-    esac
-    rc=$?; losetup -d "$l"; return $rc
-}
-mkpart $P1S $P1E vfat || { echo "  no ESP"; exit 2; }
-mkpart $P2S $P2E ntfs || { echo "  no NTFS"; exit 2; }
-mkpart $P3S $P3E ext4 || { echo "  no WinRE"; exit 2; }
-
-# Real files in Windows, so "intact" means something.
-L=$(losetup --find --show -o $((P2S*512)) --sizelimit $(((P2E-P2S+1)*512)) "$DISK")
-mkdir -p "$TMP/m"
-if nt ntfs-3g "$L" "$TMP/m" >/dev/null 2>&1; then
-    mkdir -p "$TMP/m/Users/auros/Pictures"
-    for i in 1 2 3 4 5 6; do
-        dd if=/dev/urandom of="$TMP/m/Users/auros/Pictures/p$i.jpg" \
-           bs=64k count=1 status=none
-    done
-    dd if=/dev/urandom of="$TMP/m/Users/auros/thesis.odt" bs=1M count=2 status=none
-    ( cd "$TMP/m" && find . -type f -exec md5sum {} \; | sort ) > "$TMP/win.before"
-    sync; umount "$TMP/m"
-else
-    echo "  cannot write to the NTFS volume (no FUSE?)"; losetup -d "$L"; exit 2
-fi
-losetup -d "$L"
-WINFILES=$(wc -l < "$TMP/win.before")
-# What the EFI partition held before any of this. The restore has to
-# put these bytes back or Windows does not start, and nothing else in
-# this test would notice if it put back something almost right.
-ESPMD5=$(dd if="$DISK" bs=512 skip=$P1S count=$((P1E-P1S+1)) status=none | md5sum | cut -d" " -f1)
-# THE FILESYSTEM'S OWN SIZE, not the partition entry's.
-#
-# Checking only the partition table let a restore pass while the NTFS
-# inside was still its shrunken size -- Windows would start and show a
-# smaller C: than it had, which is exactly the thing "put Windows back"
-# promises not to do. total_sectors lives at offset 0x28 of the boot
-# sector and is the number the filesystem itself claims.
-ntfs_total() { # image  first_sector  ->  "total_sectors sectors_per_cluster"
-    python3 - "$1" "$2" <<'EOPY'
-import sys, struct
-f = open(sys.argv[1], 'rb'); f.seek(int(sys.argv[2]) * 512)
-b = f.read(512); f.close()
-print(struct.unpack_from('<Q', b, 0x28)[0], b[0x0d])
-EOPY
-}
-NTFSTOT=$(ntfs_total "$DISK" $P2S | cut -d' ' -f1)
-NTFSSPC=$(ntfs_total "$DISK" $P2S | cut -d' ' -f2)
+mach_disk
+mach_image
+mach_stick
+mach_journal
 echo "  a 3 GiB machine: ESP, a 1 GiB Windows with $WINFILES files, WinRE at the end"
-
-# ── a small AurOS image ─────────────────────────────────────────────
-AIMG="$TMP/auros.img"
-truncate -s 320M "$AIMG"
-sgdisk --zap-all "$AIMG" >/dev/null 2>&1
-sgdisk -n 1:2048:+16M -t 1:ef00 -c 1:"AUROS-ESP"  "$AIMG" >/dev/null 2>&1
-sgdisk -n 2:0:0       -t 2:8304 -c 2:"AUROS-ROOT" "$AIMG" >/dev/null 2>&1
-RS=$(sgdisk -i 2 "$AIMG" | sed -n 's/^First sector: \([0-9]*\).*/\1/p')
-RE=$(sgdisk -i 2 "$AIMG" | sed -n 's/^Last sector: \([0-9]*\).*/\1/p')
-ROFF=$((RS*512)); RLEN=$(((RE-RS+1)*512))
-
-cat > "$TMP/init.c" <<'EOC'
-#include <stdio.h>
-#include <unistd.h>
-#include <sys/reboot.h>
-int main(void){ puts("\nINSTALLTEST-AUROS-STARTED"); fflush(stdout);
-                sync(); sleep(2); reboot(RB_POWER_OFF); for(;;) pause(); }
-EOC
-cc -static -O2 -o "$TMP/init" "$TMP/init.c" 2>/dev/null || { echo "  no cc"; exit 2; }
-
-dd if=/dev/zero of="$TMP/root.img" bs=1M count=$((RLEN/1048576)) status=none
-mkfs.ext4 -q -L AUROS-ROOT "$TMP/root.img"
-# A REAL MODULE TREE. Phase 7 mounts this filesystem and loads ITS
-# drivers -- that is the whole point of probing after the write -- and
-# an image with an empty /lib/modules is, correctly, reported as our
-# fault rather than the machine's. So the fixture carries the same
-# modules the staging image does, which is what a real AurOS image
-# carries: the ones for the kernel it ships with.
-KVER=$(ls work/staging/lib/modules 2>/dev/null | head -1)
-mount -o loop "$TMP/root.img" "$TMP/m" && {
-    mkdir -p "$TMP/m/sbin" "$TMP/m/proc" "$TMP/m/sys" "$TMP/m/dev" "$TMP/m/run"
-    cp "$TMP/init" "$TMP/m/sbin/init"
-    if [ -n "$KVER" ]; then
-        mkdir -p "$TMP/m/lib/modules"
-        cp -a "work/staging/lib/modules/$KVER" "$TMP/m/lib/modules/" 2>/dev/null
-    fi
-    sync; umount "$TMP/m"
-}
-[ -n "$KVER" ] || { echo "  no built module tree to put in the image"; exit 2; }
-dd if="$TMP/root.img" of="$AIMG" bs=1M seek=$((ROFF/1048576)) conv=notrunc status=none
-
-# ── the recovery stick: an image partition and a record partition ───
-STICK="$TMP/stick.img"
-mkstick() { # [corrupt]
-    rm -f "$STICK"; truncate -s 768M "$STICK"
-    sgdisk --zap-all "$STICK" >/dev/null 2>&1
-    sgdisk -n 1:2048:+400M -t 1:A12A5E9C-AB6E-4E4D-9F35-5B1C0A2E7D41 \
-           -c 1:"AUROS-IMAGE" "$STICK" >/dev/null 2>&1
-    sgdisk -n 2:0:+4M      -t 2:7E1C3B90-4D2A-4F16-8B77-2C6E5A9D0E33 \
-           -c 2:"AUROS-RECORD" "$STICK" >/dev/null 2>&1
-    # Room for a copy of this machine's Windows startup. Dominated by
-    # the ESP, which is 100 MiB here and is a gigabyte on some OEM
-    # laptops -- AurBridge sizes this from the machine it looked at.
-    sgdisk -n 3:0:+180M    -t 3:7E1C3B90-4D2A-4F16-8B77-2C6E5A9D0E34 \
-           -c 3:"AUROS-SAVED" "$STICK" >/dev/null 2>&1
-    IS=$(sgdisk -i 1 "$STICK" | sed -n 's/^First sector: \([0-9]*\).*/\1/p')
-    python3 - "$STICK" "$AIMG" "$((IS*512))" "$ROFF" "$RLEN" "${1:-}" <<'EOPY'
-import sys, struct, hashlib
-stick, img, pstart, roff, rlen, corrupt = sys.argv[1:7]
-pstart, roff, rlen = int(pstart), int(roff), int(rlen)
-data = bytearray(open(img,'rb').read())
-sha = hashlib.sha256(bytes(data[roff:roff+rlen])).digest()
-if corrupt: data[roff + rlen//2] ^= 0xFF
-man = bytearray(4096)
-man[0:8] = b'AURIMG01'
-struct.pack_into('<Q', man, 8, len(data))
-struct.pack_into('<Q', man, 16, roff)
-struct.pack_into('<Q', man, 24, rlen)
-struct.pack_into('<I', man, 32, 512)
-man[36:68] = sha
-man[68:75] = b'desktop'
-f = open(stick,'r+b'); f.seek(pstart); f.write(man)
-f.seek(pstart+4096); f.write(bytes(data)); f.close()
-EOPY
-}
-mkstick
 echo "  a stick with a $((RLEN/1048576)) MiB AurOS image, a record area and room for the way back"
 
-# ── the journal AurBridge would have written ────────────────────────
-journal() { # out  serial  start  sectors  hash  boot_from
-    mkdir -p "$TMP/j/aurbridge"
-    J="$TMP/j/aurbridge/journal.json"
-    printf '{"disk_serial":"%s","disk_model":"QEMU",' "$2" > "$J"
-    printf '"disk_bytes":3221225472,"logical_sector":512,' >> "$J"
-    printf '"win_part":"2","win_start_lba":%s,"win_sectors":%s,' "$3" "$4" >> "$J"
-    printf '"win_ntfs_serial":0,"gpt_sha256":"%s","stage":"armed",' "$5" >> "$J"
-    printf '"boot_from":"%s","run_id":%s,' "$6" "$(date +%s)" >> "$J"
-    printf '"written_unix":%s}\n' "$(date +%s)" >> "$J"
-    ( cd "$TMP/j" && find . -print0 | cpio --null -o --format=newc --quiet ) \
-        | gzip -9 > "$1"
-    rm -rf "$TMP/j"
-}
-gpthash() { python3 - "$1" <<'EOPY'
-import sys, struct, hashlib
-ss=512; f=open(sys.argv[1],'rb'); f.seek(ss); h=f.read(ss)
-hs=struct.unpack_from('<I',h,12)[0]; pl=struct.unpack_from('<Q',h,72)[0]
-n=struct.unpack_from('<I',h,80)[0]; e=struct.unpack_from('<I',h,84)[0]
-f.seek(pl*ss); print(hashlib.sha256(h[:hs]+f.read(n*e)).hexdigest())
-EOPY
-}
-GPT=$(gpthash "$DISK")
-JNL="$TMP/j.cpio"; journal "$JNL" AUROSTEST $P2S $((P2E-P2S+1)) "$GPT" esp
+# The stick, remade -- optionally with the image on it damaged.
+mkstick() { mach_stick "${1:-}"; }
 
 # Which disk each run starts from. The install runs start from the
 # pristine machine; the restore runs start from the machine as the
@@ -462,9 +305,23 @@ for line in p.splitlines():
         fh.write(b"\xff" * 512); fh.close()
 EOPY
 SRCDISK="$TMP/wiped.img"
+# THE MARKER MUST NOT BE A PREFIX OF SUCCESS.
+#
+# This waited for "aurstage-report v1 verdict=restore", which is a
+# prefix of "verdict=restored record=done ..." -- so a restore that
+# BELIEVED the corrupted copy printed a line matching it and the row
+# said "refused ok". The disk-unchanged check would usually have
+# caught it, but the restore is idempotent by design, so a run that
+# wrote back exactly what was already there would have passed both.
 run "a damaged saved copy: refused, disk untouched" \
-    "aurstage.restore" "aurstage-report v1 verdict=restore" \
+    "aurstage.restore" "aurstage-report v1 verdict=restore-" \
     "$TMP/badstick.img" unchanged
+if grep -aq "verdict=restored" "$TMP/out.txt"; then
+    bad "...and it did not quietly restore anyway" \
+        "$(grep -a 'aurstage-report' "$TMP/out.txt" | tail -1)"
+else
+    ok "...and it did not quietly restore anyway"
+fi
 
 echo
 if [ "$fail" -gt 0 ]; then
