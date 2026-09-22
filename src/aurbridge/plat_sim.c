@@ -451,3 +451,239 @@ int plat_run(const char *cmdline, char *tail, size_t n)
     if (tail && n) snprintf(tail, n, "(not run: simulated machine)");
     return 0;
 }
+
+/* ── what the installer carries inside itself ────────────────────── */
+/*
+ * There is no PE here and so no resource to read. The simulation --
+ * and a developer build of the Windows binary, which is built before
+ * there is a staging environment to embed -- take the same two files
+ * out of a directory instead, so the phase engine is given a path
+ * either way and does not know which world it is in.
+ *
+ *   $AURBRIDGE_SIM/payload/staging-kernel
+ *   $AURBRIDGE_SIM/payload/staging-initrd
+ */
+int plat_payload_embedded(void)
+{
+    char p[600];
+    simpath(p, sizeof p, "payload/" PAYLOAD_KERNEL);
+    if (access(p, R_OK) != 0) return 0;
+    simpath(p, sizeof p, "payload/" PAYLOAD_INITRD);
+    return access(p, R_OK) == 0;
+}
+
+int plat_payload(const char *name, char *path, size_t pn, char *why, size_t wn)
+{
+    if (strcmp(name, PAYLOAD_KERNEL) && strcmp(name, PAYLOAD_INITRD)) {
+        snprintf(why, wn, "the installer asked itself for something it does "
+                          "not carry.");
+        return -1;
+    }
+    char p[600];
+    snprintf(p, sizeof p, "payload/%s", name);
+    char full[600];
+    simpath(full, sizeof full, p);
+    if (access(full, R_OK) != 0) {
+        snprintf(why, wn,
+                 "this copy of the installer is incomplete -- the part that "
+                 "starts your computer is missing from it. Download it "
+                 "again.");
+        return -1;
+    }
+    if ((size_t)snprintf(path, pn, "%s", full) >= pn) {
+        snprintf(why, wn, "the path for a temporary file was too long.");
+        return -1;
+    }
+    return 0;
+}
+
+/* Nothing was unpacked, so there is nothing to remove. Defined rather
+ * than left out: a caller that has to ask which world it is in before
+ * tidying up is a caller that will forget. */
+void plat_payload_free(void) { }
+
+/* ── fetching the image ──────────────────────────────────────────── */
+/*
+ * HTTP over a plain socket, spoken by hand, and deliberately only the
+ * six lines of it this needs. The point is not to be an HTTP client:
+ * it is that the RESUME LOGIC -- ask from where we got to, refuse a
+ * server that ignores it, never write byte zero of a body into the
+ * middle of a file -- is the part that goes wrong, and it is the same
+ * code path on both platforms. A test can start a server that answers
+ * a Range and one that ignores it, and find out which of those this
+ * survives.
+ *
+ * file:// is here too, because "the image is already on this machine"
+ * is the common case and the caller should not have to know.
+ */
+static int fetch_file_url(const char *url, const char *dest,
+                          int (*progress)(uint64_t, uint64_t, void *),
+                          void *ud, char *why, size_t wn)
+{
+    const char *src = url + 7;                  /* file:// */
+    FILE *in = fopen(src, "rb");
+    if (!in) { snprintf(why, wn, "the copy of AurOS to install could not be "
+                                 "found."); return -1; }
+    fseek(in, 0, SEEK_END);
+    long total = ftell(in);
+    fseek(in, 0, SEEK_SET);
+    FILE *out = fopen(dest, "wb");
+    if (!out) { fclose(in);
+                snprintf(why, wn, "AurOS could not write the file it is "
+                                  "downloading."); return -1; }
+    static char buf[256 * 1024];
+    uint64_t got = 0;
+    size_t k;
+    int rc = 0;
+    while ((k = fread(buf, 1, sizeof buf, in)) > 0) {
+        if (fwrite(buf, 1, k, out) != k) {
+            snprintf(why, wn, "this computer ran out of room for the "
+                              "download.");
+            rc = -1; break;
+        }
+        got += k;
+        if (progress && progress(got, (uint64_t)total, ud)) {
+            snprintf(why, wn, "the download was stopped."); rc = -1; break;
+        }
+    }
+    fclose(in); fclose(out);
+    return rc;
+}
+
+#ifndef _WIN32
+#include <netdb.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+
+int plat_fetch(const char *url, const char *dest,
+               int (*progress)(uint64_t got, uint64_t total, void *ud),
+               void *ud, char *why, size_t wn)
+{
+    if (!strncmp(url, "file://", 7))
+        return fetch_file_url(url, dest, progress, ud, why, wn);
+    if (strncmp(url, "http://", 7)) {
+        snprintf(why, wn, "that address is not one AurOS can use.");
+        return -1;
+    }
+    char host[256], port[8] = "80", path[1024];
+    const char *h = url + 7;
+    const char *slash = strchr(h, '/');
+    const char *colon = memchr(h, ':', slash ? (size_t)(slash - h) : strlen(h));
+    size_t hl = colon ? (size_t)(colon - h)
+                      : (slash ? (size_t)(slash - h) : strlen(h));
+    if (hl >= sizeof host) { snprintf(why, wn, "that address is too long.");
+                             return -1; }
+    memcpy(host, h, hl); host[hl] = 0;
+    if (colon) {
+        size_t pl = (slash ? (size_t)(slash - colon - 1) : strlen(colon + 1));
+        if (pl >= sizeof port) { snprintf(why, wn, "that address is not one "
+                                                   "AurOS can use."); return -1; }
+        memcpy(port, colon + 1, pl); port[pl] = 0;
+    }
+    snprintf(path, sizeof path, "%s", slash ? slash : "/");
+
+    /* Where we got to last time. */
+    uint64_t have = 0;
+    {
+        FILE *e = fopen(dest, "rb");
+        if (e) { fseek(e, 0, SEEK_END); long v = ftell(e); fclose(e);
+                 if (v > 0) have = (uint64_t)v; }
+    }
+
+    struct addrinfo hints, *ai = NULL;
+    memset(&hints, 0, sizeof hints);
+    hints.ai_family = AF_UNSPEC; hints.ai_socktype = SOCK_STREAM;
+    if (getaddrinfo(host, port, &hints, &ai) != 0 || !ai) {
+        snprintf(why, wn, "AurOS could not reach the place it downloads from.");
+        return -1;
+    }
+    int fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+    if (fd < 0 || connect(fd, ai->ai_addr, ai->ai_addrlen) != 0) {
+        if (fd >= 0) close(fd);
+        freeaddrinfo(ai);
+        snprintf(why, wn, "AurOS could not reach the place it downloads from. "
+                          "Check this computer is online.");
+        return -1;
+    }
+    freeaddrinfo(ai);
+
+    char req[1600];
+    int rl = snprintf(req, sizeof req,
+                      "GET %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: AurBridge\r\n"
+                      "Range: bytes=%llu-\r\nConnection: close\r\n\r\n",
+                      path, host, (unsigned long long)have);
+    if (rl <= 0 || (size_t)rl >= sizeof req ||
+        write(fd, req, (size_t)rl) != rl) {
+        close(fd);
+        snprintf(why, wn, "AurOS could not ask for the download.");
+        return -1;
+    }
+
+    /* The head of the response, one byte at a time until the blank
+     * line. Slow and exactly right: reading ahead means holding body
+     * bytes in a buffer this does not need to have. */
+    char head[8192];
+    size_t hn = 0;
+    while (hn + 1 < sizeof head) {
+        ssize_t k = read(fd, head + hn, 1);
+        if (k <= 0) break;
+        hn++;
+        if (hn >= 4 && !memcmp(head + hn - 4, "\r\n\r\n", 4)) break;
+    }
+    head[hn] = 0;
+    int status = 0;
+    if (sscanf(head, "HTTP/1.%*d %d", &status) != 1) {
+        close(fd);
+        snprintf(why, wn, "the place AurOS downloads from did not answer "
+                          "properly.");
+        return -1;
+    }
+    /* A 200 WHERE A 206 WAS ASKED FOR is a server that ignored the
+     * Range, and writing its first byte at our offset would put the
+     * front of the file four gigabytes in. Start again instead. */
+    if (status == 200 && have > 0) have = 0;
+    else if (status != 200 && status != 206) {
+        close(fd);
+        snprintf(why, wn, "the place AurOS downloads from answered %d. Try "
+                          "again later.", status);
+        return -1;
+    }
+    uint64_t total = 0;
+    {
+        const char *cr = strcasestr(head, "content-range:");
+        const char *cl = strcasestr(head, "content-length:");
+        if (cr && status == 206) {
+            const char *sl = strchr(cr, '/');
+            if (sl) total = strtoull(sl + 1, NULL, 10);
+        } else if (cl) {
+            total = have + strtoull(cl + 15, NULL, 10);
+        }
+    }
+
+    FILE *out = fopen(dest, have ? "r+b" : "wb");
+    if (!out) { close(fd);
+                snprintf(why, wn, "AurOS could not write the file it is "
+                                  "downloading."); return -1; }
+    if (have) fseek(out, (long)have, SEEK_SET);
+    static char buf[256 * 1024];
+    int rc = 0;
+    for (;;) {
+        ssize_t k = read(fd, buf, sizeof buf);
+        if (k < 0) { snprintf(why, wn, "the download stopped partway through. "
+                                       "It will carry on from here if you try "
+                                       "again."); rc = -1; break; }
+        if (k == 0) break;
+        if (fwrite(buf, 1, (size_t)k, out) != (size_t)k) {
+            snprintf(why, wn, "this computer ran out of room for the "
+                              "download."); rc = -1; break;
+        }
+        have += (uint64_t)k;
+        if (progress && progress(have, total, ud)) {
+            snprintf(why, wn, "the download was stopped."); rc = -1; break;
+        }
+    }
+    fclose(out); close(fd);
+    return rc;
+}
+#endif /* !_WIN32 */

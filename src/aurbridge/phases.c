@@ -410,15 +410,167 @@ static int prepare_possible(const ab_choice *c, ab_machine *m,
                  "stick.");
         return -1;
     }
+    /* THE STAGING ENVIRONMENT, CHECKED BEFORE ANYTHING ELSE.
+     *
+     * A build that was assembled wrongly carries no kernel, and the
+     * only place that used to be discovered was phase 3 -- after the
+     * shrink had been arranged, the stick had been erased and
+     * BitLocker had been suspended. It costs a FindResource to ask
+     * here, where nothing has happened yet. */
+    if (!c->kernel_path[0] && !plat_payload_embedded()) {
+        snprintf(why, n,
+                 "this copy of the installer is incomplete -- the part that "
+                 "starts your computer is missing from it. Download it "
+                 "again.");
+        return -1;
+    }
     uint64_t image_bytes = 0;
     if (plat_file_size(c->image_path, &image_bytes) != 0 || !image_bytes) {
-        snprintf(why, n, "the copy of AurOS to install could not be found.");
-        return -1;
+        /* NOT YET IS NOT THE SAME AS NOT AT ALL. An installer that
+         * knows where to fetch the image has an image; what it does
+         * not have is the twenty minutes, and asking for those is
+         * phase 2's job. The size check below is then done against
+         * what the build recorded rather than against a file that is
+         * not there. */
+        if (!c->image_url[0]) {
+            snprintf(why, n, "the copy of AurOS to install could not be "
+                             "found.");
+            return -1;
+        }
+        image_bytes = c->image_expect ? c->image_expect
+                                      : (6ull * 1024 * 1024 * 1024);
     }
     uint64_t if_, il, rf, rl, sf, sl;
     return ab_stick_layout(m->stick_bytes, m->stick_sector, image_bytes,
                            m->esp_length, &if_, &il, &rf, &rl, &sf, &sl,
                            why, n);
+}
+
+/* ── getting the image, which is the download ─────────────────────── */
+
+static int hex_eq(const unsigned char d[32], const char *want)
+{
+    static const char H[] = "0123456789abcdef";
+    for (int i = 0; i < 32; i++) {
+        char a = H[d[i] >> 4], b = H[d[i] & 15];
+        char x = want[i * 2], y = want[i * 2 + 1];
+        if (x >= 'A' && x <= 'F') x = (char)(x - 'A' + 'a');
+        if (y >= 'A' && y <= 'F') y = (char)(y - 'A' + 'a');
+        if (a != x || b != y) return 0;
+    }
+    return 1;
+}
+
+/* Hash the file where it lies. Slow -- it is five gigabytes -- so it
+ * reports progress, and it is only ever done when there is a hash to
+ * compare against. */
+static int image_hash(const char *path, unsigned char out[32],
+                      ab_progress prog, void *ud, char *why, size_t n)
+{
+    uint64_t total = 0;
+    if (plat_file_size(path, &total) != 0 || !total) {
+        snprintf(why, n, "the copy of AurOS to install could not be read.");
+        return -1;
+    }
+    fmt_sha h; fmt_sha_start(&h);
+    static uint8_t buf[1 << 20];
+    uint64_t at = 0;
+    while (at < total) {
+        size_t take = total - at > sizeof buf ? sizeof buf : (size_t)(total - at);
+        if (plat_file_read(path, at, buf, take, why, n) != 0) return -1;
+        fmt_sha_feed(&h, buf, take);
+        at += take;
+        if (prog) prog((int)(at * 100 / total), ud);
+    }
+    fmt_sha_done(&h, out);
+    return 0;
+}
+
+typedef struct { ab_progress prog; void *ud; } fetch_ctx;
+
+static int fetch_progress(uint64_t got, uint64_t total, void *ud)
+{
+    fetch_ctx *f = ud;
+    if (f && f->prog && total)
+        f->prog((int)(got * 100 / total), f->ud);
+    return 0;
+}
+
+/*
+ * THE IMAGE IS HERE, OR IT IS FETCHED, OR THIS REFUSES.
+ *
+ * Three states and no fourth:
+ *
+ *   it is beside the installer and hashes right     -> use it
+ *   it is not, or does not, and there is a URL      -> fetch, resuming
+ *   neither                                         -> refuse, in words
+ *
+ * A PARTIAL FILE IS RESUMED, NOT DELETED. A five gigabyte download
+ * that starts again from zero because the wifi dropped at 90% is the
+ * difference between a person finishing this and giving up, and it is
+ * exactly the connection that drops that this product exists for. The
+ * resume lives in plat_fetch, which asks from where it got to and
+ * refuses a server that ignores the question.
+ *
+ * AND A FILE THAT HASHES WRONG IS TRIED ONCE MORE FROM NOTHING. A
+ * resume onto a file that was corrupt to begin with resumes the
+ * corruption; a second failure is a refusal rather than a loop.
+ */
+static int ensure_image(const ab_choice *c, ab_say say, ab_progress prog,
+                        void *ud, char *why, size_t n)
+{
+    uint64_t have = 0;
+    int present = plat_file_size(c->image_path, &have) == 0 && have > 0;
+
+    if (present && !c->image_sha256[0]) return 0;   /* nothing to check it against */
+
+    unsigned char dig[32];
+    if (present) {
+        talk(say, ud, "checking the copy of AurOS on this computer");
+        if (image_hash(c->image_path, dig, prog, ud, why, n) == 0 &&
+            hex_eq(dig, c->image_sha256))
+            return 0;
+    }
+    if (!c->image_url[0]) {
+        if (present)
+            snprintf(why, n,
+                     "the copy of AurOS beside the installer is not the one "
+                     "this installer was built for. Download the installer "
+                     "again.");
+        else
+            snprintf(why, n, "the copy of AurOS to install could not be "
+                             "found.");
+        return -1;
+    }
+
+    fetch_ctx fc = { prog, ud };
+    for (int attempt = 0; attempt < 2; attempt++) {
+        if (attempt == 1) {
+            /* Second time, from nothing: a resume onto a file that was
+             * already wrong resumes being wrong. */
+            talk(say, ud, "that did not come down cleanly; starting again");
+            plat_file_put(c->image_path, "", 0, why, n);
+        }
+        talk(say, ud, present || attempt
+                          ? "downloading AurOS (this carries on if it stops)"
+                          : "downloading AurOS -- about five gigabytes. This "
+                            "can take a while and carries on if it stops.");
+        if (plat_fetch(c->image_url, c->image_path, fetch_progress, &fc,
+                       why, n) != 0)
+            return -1;
+        talk(say, ud, "checking what was downloaded");
+        if (image_hash(c->image_path, dig, prog, ud, why, n) != 0) return -1;
+        if (hex_eq(dig, c->image_sha256)) {
+            talk(say, ud, "the download is complete and has been checked");
+            return 0;
+        }
+        present = 0;
+    }
+    snprintf(why, n,
+             "what was downloaded is not what it should be, twice. Something "
+             "between here and AurOS is changing it -- try a different "
+             "network.");
+    return -1;
 }
 
 static int phase_prepare(const ab_choice *c, pf_report *r, ab_machine *m,
@@ -427,6 +579,7 @@ static int phase_prepare(const ab_choice *c, pf_report *r, ab_machine *m,
 {
     (void)r;
     if (find_stick(c, m, why, n) != 0) return -1;
+    if (ensure_image(c, say, prog, ud, why, n) != 0) return -1;
 
     uint64_t image_bytes = 0;
     if (plat_file_size(c->image_path, &image_bytes) != 0 || !image_bytes) {
@@ -597,13 +750,35 @@ static int phase_handoff(const ab_choice *c, pf_report *r, ab_machine *m,
                          ab_say say, void *ud, char *why, size_t n)
 {
     (void)r;
+    /* THE STAGING ENVIRONMENT, OUT OF THE INSTALLER ITSELF.
+     *
+     * A path in the choice means a developer running against a build
+     * tree. Empty -- which is what a shipped installer has -- means it
+     * is carried inside this executable, and plat_payload unpacks it.
+     * Either way what comes out is a path, so the copy below does not
+     * know which world it is in. */
+    char kern[512], init[512];
+    if (c->kernel_path[0]) {
+        snprintf(kern, sizeof kern, "%s", c->kernel_path);
+    } else if (plat_payload(PAYLOAD_KERNEL, kern, sizeof kern, why, n) != 0) {
+        return -1;
+    }
+    if (c->initrd_path[0]) {
+        snprintf(init, sizeof init, "%s", c->initrd_path);
+    } else if (plat_payload(PAYLOAD_INITRD, init, sizeof init, why, n) != 0) {
+        plat_payload_free();
+        return -1;
+    }
+
     char esp[256];
-    if (plat_esp_open(esp, sizeof esp, why, n) != 0) return -1;
+    if (plat_esp_open(esp, sizeof esp, why, n) != 0)
+        { plat_payload_free(); return -1; }
 
     char dst[512];
     snprintf(dst, sizeof dst, "%s/EFI/AurOS/staging.efi", esp);
-    if (plat_file_copy(c->kernel_path, dst, why, n) != 0) {
+    if (plat_file_copy(kern, dst, why, n) != 0) {
         plat_esp_close();
+        plat_payload_free();
         return -1;
     }
 
@@ -647,8 +822,9 @@ static int phase_handoff(const ab_choice *c, pf_report *r, ab_machine *m,
     }
 
     snprintf(dst, sizeof dst, "%s/EFI/AurOS/staging.img", esp);
-    if (plat_file_copy(c->initrd_path, dst, why, n) != 0) {
+    if (plat_file_copy(init, dst, why, n) != 0) {
         plat_esp_close();
+        plat_payload_free();
         return -1;
     }
     {
@@ -679,6 +855,9 @@ static int phase_handoff(const ab_choice *c, pf_report *r, ab_machine *m,
         }
     }
     plat_esp_close();
+    /* Anything that was unpacked to get here is gone again. The bytes
+     * that matter are on the EFI partition now. */
+    plat_payload_free();
 
     /* The boot entry, found by its own description and replaced, never
      * by "the entries we did not record" -- which also selects the

@@ -53,9 +53,34 @@ typedef struct {
     char language[16];
     char stick_serial[64];     /* the disk she nominated (R4/R11)     */
 
-    /* Where the build put things. Absolute paths; the wizard fills
-     * them in from where it is running. */
-    char image_path[512];      /* out/auros-<profile>.img             */
+    /* Where the image is, or will be. The wizard fills this in from
+     * where it is running: the download lands beside the installer,
+     * which is where somebody would look for it. */
+    char image_path[512];      /* auros-<profile>.img                 */
+
+    /* WHERE TO GET IT, AND WHAT IT MUST BE.
+     *
+     * The product is one file somebody downloads. The image is five
+     * gigabytes and does not fit inside one, so the installer fetches
+     * it -- resumably, because the people this is for are on the
+     * connections that drop -- and checks it against a hash that was
+     * baked in when the installer was built. A downloaded image whose
+     * hash is not this one is not installed, whatever else is true
+     * about it.
+     *
+     * Both empty means the old arrangement: the image must already be
+     * sitting beside the installer. That is still what a developer
+     * build does. */
+    char image_url[512];
+    char image_sha256[65];     /* 64 hex characters, or empty         */
+    /* How big it will be once it is here. Phase 0 asks whether the
+     * memory stick is large enough, and on a machine where the image
+     * has not been downloaded yet there is no file to measure. */
+    uint64_t image_expect;
+
+    /* The staging environment. Empty means "out of the installer
+     * itself", which is what a shipped one does -- see plat.h. A path
+     * is for a developer running against a build tree. */
     char kernel_path[512];     /* out/auros-staging-vmlinuz           */
     char initrd_path[512];     /* out/auros-staging.img               */
 

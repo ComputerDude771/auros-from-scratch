@@ -54,6 +54,19 @@
 #include "preflight.h"
 #include "phases.h"
 
+/* Baked in by build/aurbridge. A build that has not been told where
+ * the image lives produces an installer that expects it to be sitting
+ * beside itself, which is what a developer build is. */
+#ifndef AUROS_IMAGE_URL
+#define AUROS_IMAGE_URL     ""
+#endif
+#ifndef AUROS_IMAGE_SHA256
+#define AUROS_IMAGE_SHA256  ""
+#endif
+#ifndef AUROS_IMAGE_BYTES
+#define AUROS_IMAGE_BYTES   0ULL
+#endif
+
 /* ── Palette: themes/nocturne.theme, copied exactly ───────────────── */
 #define C_BG          0x0B0E14u   /* bg          */
 #define C_BG_ALT      0x10151Fu   /* bg_alt      */
@@ -1136,12 +1149,28 @@ static void install_begin(void)
     _snprintf(g_ab_choice.stick_serial,
               sizeof g_ab_choice.stick_serial - 1, "%s",
               pf_recovery_stick() ? pf_recovery_stick() : "");
+    /* WHERE THE IMAGE GOES, NOT WHERE IT IS. Beside the installer,
+     * because that is where a person would look for it and where a
+     * second run will find it already downloaded. */
     beside_me(g_ab_choice.image_path,  sizeof g_ab_choice.image_path,
               "auros-desktop.img");
-    beside_me(g_ab_choice.kernel_path, sizeof g_ab_choice.kernel_path,
-              "auros-staging-vmlinuz");
-    beside_me(g_ab_choice.initrd_path, sizeof g_ab_choice.initrd_path,
-              "auros-staging.img");
+    /* WHERE TO GET IT, BAKED IN WHEN THIS WAS BUILT. Empty in a
+     * developer build, which then requires the image to be sitting
+     * there already -- the arrangement this product had before it was
+     * one file. */
+    _snprintf(g_ab_choice.image_url, sizeof g_ab_choice.image_url - 1,
+              "%s", AUROS_IMAGE_URL);
+    _snprintf(g_ab_choice.image_sha256, sizeof g_ab_choice.image_sha256 - 1,
+              "%s", AUROS_IMAGE_SHA256);
+    g_ab_choice.image_expect = AUROS_IMAGE_BYTES;
+    /* AND THE STAGING ENVIRONMENT IS INSIDE THIS FILE. Leaving these
+     * empty is what says so: phases.c unpacks them from the
+     * executable's own resources. They were two more files a person
+     * had to have downloaded and put in the right folder, and "the
+     * copy of AurOS to install could not be found" was the product
+     * blaming her for that. */
+    g_ab_choice.kernel_path[0] = 0;
+    g_ab_choice.initrd_path[0] = 0;
     /* SET BY A PERSON AND NOTHING ELSE. Reaching this function means
      * she has read the page that says what happens and pressed the
      * button on it; phases.c refuses without it, and that refusal is

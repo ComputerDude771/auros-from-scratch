@@ -32,8 +32,30 @@ static void prog(int pct, void *ud)
     if (pct >= 100) fprintf(stderr, "\n");
 }
 
+/* One thing at a time, for the parts of the engine that do not need a
+ * whole machine. The download is the obvious one: it needs a URL and a
+ * file and nothing else, and what is worth testing about it -- does a
+ * resume resume, does a server that ignores Range get noticed -- is
+ * not reachable from a run that also wants a disk and a stick. */
+static int one_fetch(int argc, char **argv)
+{
+    if (argc < 4) {
+        fprintf(stderr, "usage: aurbridge-sim fetch URL DEST\n");
+        return 2;
+    }
+    char why[400] = "";
+    if (plat_fetch(argv[2], argv[3], NULL, NULL, why, sizeof why) != 0) {
+        fprintf(stderr, "aurbridge: %s\n", why);
+        printf("fetch verdict=failed why=\"%s\"\n", why);
+        return 1;
+    }
+    printf("fetch verdict=ok\n");
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
+    if (argc >= 2 && !strcmp(argv[1], "fetch")) return one_fetch(argc, argv);
     if (argc < 7) {
         fprintf(stderr,
             "usage: aurbridge-sim MACHINE-DIR PROFILE STICK-SERIAL "

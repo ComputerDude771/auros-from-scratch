@@ -86,6 +86,51 @@ int plat_file_copy(const char *from, const char *to, char *why, size_t wn);
 int plat_file_put(const char *to, const void *buf, size_t n,
                   char *why, size_t wn);
 
+/* ── what the installer carries inside itself ────────────────────── */
+/*
+ * THE PRODUCT IS ONE FILE SOMEBODY DOUBLE-CLICKS, and for a long time
+ * it was three: the wizard, plus a kernel and an initramfs that had to
+ * be sitting in the same folder. A person who downloads one of three
+ * files and double-clicks it gets "the copy of AurOS to install could
+ * not be found", which is a true sentence about a mistake we made.
+ *
+ * The staging environment is about 28 MB, which is an ordinary size
+ * for an installer, so it travels INSIDE the executable. On Windows
+ * that is a PE resource -- the mechanism Authenticode already covers,
+ * so signing and carrying a payload do not fight. The simulation has
+ * no PE, so it reads the same names out of a directory, which is also
+ * what a developer build does.
+ *
+ * `name` is one of the PAYLOAD_* names below. On success `path` holds
+ * somewhere the caller may read the bytes from, and plat_payload_free()
+ * removes anything that had to be unpacked to get there.
+ */
+#define PAYLOAD_KERNEL  "staging-kernel"
+#define PAYLOAD_INITRD  "staging-initrd"
+
+int  plat_payload(const char *name, char *path, size_t pn,
+                  char *why, size_t wn);
+void plat_payload_free(void);
+/* 1 if this binary is carrying the payload rather than expecting it in
+ * a folder. The release build refuses to publish one that is not. */
+int  plat_payload_embedded(void);
+
+/* ── fetching the image ──────────────────────────────────────────── */
+/*
+ * The image is five gigabytes and does not go inside anything. It is
+ * downloaded, once, into a file beside the installer -- and RESUMED
+ * rather than restarted, because the people this product is for are on
+ * the connections that drop.
+ *
+ * `have` is how many bytes are already in `dest`; the fetch continues
+ * from there with a Range request and refuses a server that ignores
+ * it rather than silently writing the first megabyte into the middle
+ * of the file. `progress` returns non-zero to cancel.
+ */
+int plat_fetch(const char *url, const char *dest,
+               int (*progress)(uint64_t got, uint64_t total, void *ud),
+               void *ud, char *why, size_t wn);
+
 /* ── the EFI System Partition ────────────────────────────────────── */
 
 /* Give the ESP a path we can write files into, and take it away again.

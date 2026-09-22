@@ -66,16 +66,70 @@ LIB="$LIB $WINONLY"
 # the only way that works the same on Windows 7 and 11.
 WARN="-Wall -Wextra -Wno-unused-parameter -std=gnu11"
 
+# ── what this installer carries and where it fetches from ──────────
+#
+# ONE FILE SOMEBODY DOUBLE-CLICKS. It was three: the wizard, plus a
+# kernel and an initramfs that had to be sitting in the same folder,
+# and a person who downloads one of three and double-clicks it is told
+# "the copy of AurOS to install could not be found" -- a true sentence
+# about a mistake we made.
+#
+# The staging environment is about 28 MB, which is an ordinary size for
+# an installer, so it goes INSIDE the executable as a PE resource --
+# the mechanism Authenticode already covers, so carrying a payload and
+# being signed do not fight. The image is five gigabytes and does not
+# go inside anything, so its address and its hash are baked in instead
+# and the installer downloads it, resuming.
+#
+# Both are optional here. A developer build with neither produces the
+# arrangement this product had before -- everything beside the exe --
+# and says so; AUROS_RELEASE=1 refuses that, because an installer that
+# tells a stranger to go and find two more files is not the product.
+KERNEL="${AUROS_STAGING_KERNEL:-$OUT/auros-staging-vmlinuz}"
+INITRD="${AUROS_STAGING_INITRD:-$OUT/auros-staging.img}"
+IMGDEF=""
+[ -n "${AUROS_IMAGE_URL:-}" ] && \
+    IMGDEF="$IMGDEF -DAUROS_IMAGE_URL=\"$AUROS_IMAGE_URL\""
+[ -n "${AUROS_IMAGE_SHA256:-}" ] && \
+    IMGDEF="$IMGDEF -DAUROS_IMAGE_SHA256=\"$AUROS_IMAGE_SHA256\""
+[ -n "${AUROS_IMAGE_BYTES:-}" ] && \
+    IMGDEF="$IMGDEF -DAUROS_IMAGE_BYTES=${AUROS_IMAGE_BYTES}ULL"
+
+PAYLOAD_OBJ=""
+if [ -f "$KERNEL" ] && [ -f "$INITRD" ]; then
+    step "the staging environment, into the executable"
+    RC="$OUT/aurbridge-payload.rc"
+    # windres reads the file names out of the .rc, so they are written
+    # as absolute paths and the ids are the two plat.h knows about.
+    # RCDATA is 10; naming it numerically means nothing has to agree
+    # about a string.
+    {
+        printf '1 10 "%s"\n' "$KERNEL"
+        printf '2 10 "%s"\n' "$INITRD"
+    } > "$RC"
+    WINDRES="${WINDRES:-x86_64-w64-mingw32-windres}"
+    command -v "$WINDRES" >/dev/null 2>&1 \
+        || die "no $WINDRES — install mingw-w64 (binutils)"
+    "$WINDRES" -O coff -i "$RC" -o "$OUT/aurbridge-payload.o" \
+        || die "the staging environment could not be put into the installer"
+    PAYLOAD_OBJ="$OUT/aurbridge-payload.o"
+    note "$(du -h "$KERNEL" | cut -f1) kernel + $(du -h "$INITRD" | cut -f1) initramfs"
+else
+    note "no staging environment to embed (run ./build/staging first)"
+fi
+
 step "aurbridge.exe (console)"
 # shellcheck disable=SC2086
-$CC -O2 $WARN -o "$OUT/aurbridge.exe" "$SRC/main.c" $LIB \
+$CC -O2 $WARN $IMGDEF -o "$OUT/aurbridge.exe" "$SRC/main.c" $LIB $PAYLOAD_OBJ \
+    -lwinhttp \
     || die "the console tool did not build"
 note "$(du -h "$OUT/aurbridge.exe" | cut -f1)"
 
 step "aurbridge-wizard.exe"
 # shellcheck disable=SC2086
-$CC -O2 $WARN -mwindows -o "$OUT/aurbridge-wizard.exe" "$SRC/wizard.c" $LIB \
-    -lgdi32 -lcomctl32 \
+$CC -O2 $WARN $IMGDEF -mwindows -o "$OUT/aurbridge-wizard.exe" \
+    "$SRC/wizard.c" $LIB $PAYLOAD_OBJ \
+    -lgdi32 -lcomctl32 -lwinhttp \
     || die "the wizard did not build"
 note "$(du -h "$OUT/aurbridge-wizard.exe" | cut -f1)"
 
@@ -122,6 +176,31 @@ note "neither shipped binary contains the simulation"
 # So a release does not get built without a signature. A developer
 # build says what is missing and carries on, because requiring a
 # hardware token to compile is how nobody compiles.
+# ── what a release must carry ──────────────────────────────────────
+step "checking what this installer carries"
+if [ -n "$PAYLOAD_OBJ" ]; then
+    note "the staging environment is inside both binaries"
+elif [ "${AUROS_RELEASE:-0}" = 1 ]; then
+    die "this is a release build and the installer carries no staging
+     environment, so it would tell a stranger to go and find two more
+     files. Run ./build/staging first."
+else
+    note "NOT carried: a release build will refuse this"
+fi
+if [ -n "${AUROS_IMAGE_URL:-}" ]; then
+    [ -n "${AUROS_IMAGE_SHA256:-}" ] \
+        || die "AUROS_IMAGE_URL is set and AUROS_IMAGE_SHA256 is not.
+     An installer that downloads five gigabytes and cannot say what they
+     should be is an installer that will write anything it is handed."
+    note "it will fetch the image from $AUROS_IMAGE_URL"
+elif [ "${AUROS_RELEASE:-0}" = 1 ]; then
+    die "this is a release build and no AUROS_IMAGE_URL was given, so
+     the installer would expect a five gigabyte file to be sitting
+     beside it. Set AUROS_IMAGE_URL and AUROS_IMAGE_SHA256."
+else
+    note "no image address: it will expect one beside itself"
+fi
+
 step "signing"
 if sh "$ROOT/build/sign" --configured 2>/dev/null; then
     sh "$ROOT/build/sign" "$OUT/aurbridge.exe" "$OUT/aurbridge-wizard.exe" \

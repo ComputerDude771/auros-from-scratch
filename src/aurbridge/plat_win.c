@@ -919,4 +919,286 @@ int plat_run(const char *cmdline, char *tail, size_t n)
     return (int)code;
 }
 
+
+/* ── what the installer carries inside itself ────────────────────── */
+/*
+ * A PE RESOURCE, and not bytes appended to the file, for one reason:
+ * Authenticode. A signature is a certificate table at the end of the
+ * executable, so anything appended after signing is outside the
+ * signature and anything appended before it moves when the signature
+ * lands. A resource is inside the image the signature covers, which
+ * means the installer can carry a kernel and be signed, in either
+ * order, and neither breaks the other.
+ *
+ * It is unpacked to the temporary directory because the things that
+ * read it -- the ESP copy in phase 3 -- take a path. It is removed
+ * again on the way out, and a leftover from a crash is 28 MB in a
+ * directory Windows cleans.
+ */
+#define RT_AUROS_PAYLOAD  10        /* RT_RCDATA */
+
+static char g_payload_tmp[2][MAX_PATH];
+static int  g_payload_n;
+
+static int payload_id(const char *name)
+{
+    if (!strcmp(name, PAYLOAD_KERNEL)) return 1;
+    if (!strcmp(name, PAYLOAD_INITRD)) return 2;
+    return 0;
+}
+
+int plat_payload_embedded(void)
+{
+    /* BOTH, or it is not carrying the payload. An executable with one
+     * of the two is an executable that fails halfway through a restart
+     * it has already arranged. */
+    for (int i = 1; i <= 2; i++)
+        if (!FindResourceA(NULL, MAKEINTRESOURCEA(i),
+                           MAKEINTRESOURCEA(RT_AUROS_PAYLOAD)))
+            return 0;
+    return 1;
+}
+
+int plat_payload(const char *name, char *path, size_t pn, char *why, size_t wn)
+{
+    int id = payload_id(name);
+    if (!id) { snprintf(why, wn, "the installer asked itself for something "
+                                 "it does not carry."); return -1; }
+    HRSRC r = FindResourceA(NULL, MAKEINTRESOURCEA(id),
+                            MAKEINTRESOURCEA(RT_AUROS_PAYLOAD));
+    if (!r) {
+        snprintf(why, wn,
+                 "this copy of the installer is incomplete -- the part that "
+                 "starts your computer is missing from it. Download it "
+                 "again.");
+        return -1;
+    }
+    DWORD len = SizeofResource(NULL, r);
+    HGLOBAL h = LoadResource(NULL, r);
+    const void *p = h ? LockResource(h) : NULL;
+    if (!p || !len) {
+        snprintf(why, wn, "the installer could not read its own contents.");
+        return -1;
+    }
+    char dir[MAX_PATH];
+    if (!GetTempPathA(sizeof dir, dir)) {
+        snprintf(why, wn, "this computer would not say where temporary files "
+                          "go.");
+        return -1;
+    }
+    char out[MAX_PATH];
+    if (_snprintf(out, sizeof out - 1, "%saurbridge-%s-%lu", dir, name,
+                  (unsigned long)GetCurrentProcessId()) < 0) {
+        snprintf(why, wn, "the path for a temporary file was too long.");
+        return -1;
+    }
+    out[sizeof out - 1] = 0;
+    /* WRITTEN WHOLE OR NOT AT ALL. A half-written kernel in a place
+     * with a plausible name is the one thing worse than none: the copy
+     * to the EFI partition would succeed and the restart would find
+     * nothing to start. */
+    char tmp[MAX_PATH];
+    _snprintf(tmp, sizeof tmp - 1, "%s.part", out); tmp[sizeof tmp - 1] = 0;
+    HANDLE f = CreateFileA(tmp, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,
+                           FILE_ATTRIBUTE_TEMPORARY, NULL);
+    if (f == INVALID_HANDLE_VALUE) {
+        snprintf(why, wn, "the installer could not write a temporary file.");
+        return -1;
+    }
+    DWORD done = 0, wrote = 0;
+    int okw = 1;
+    while (done < len) {
+        if (!WriteFile(f, (const char *)p + done, len - done, &wrote, NULL) ||
+            wrote == 0) { okw = 0; break; }
+        done += wrote;
+    }
+    CloseHandle(f);
+    if (!okw) {
+        DeleteFileA(tmp);
+        snprintf(why, wn, "this computer ran out of room for a temporary "
+                          "file.");
+        return -1;
+    }
+    DeleteFileA(out);
+    if (!MoveFileA(tmp, out)) {
+        DeleteFileA(tmp);
+        snprintf(why, wn, "the installer could not put its own contents "
+                          "where it needs them.");
+        return -1;
+    }
+    if (g_payload_n < 2) {
+        _snprintf(g_payload_tmp[g_payload_n], MAX_PATH - 1, "%s", out);
+        g_payload_tmp[g_payload_n][MAX_PATH - 1] = 0;
+        g_payload_n++;
+    }
+    _snprintf(path, pn - 1, "%s", out);
+    path[pn - 1] = 0;
+    return 0;
+}
+
+void plat_payload_free(void)
+{
+    for (int i = 0; i < g_payload_n; i++) DeleteFileA(g_payload_tmp[i]);
+    g_payload_n = 0;
+}
+
+/* ── fetching the image ──────────────────────────────────────────── */
+/*
+ * WinHTTP, and a Range request every time -- not only on a resume.
+ *
+ * A server that ignores Range answers 200 with the whole file where a
+ * 206 was asked for, and a client that does not notice writes byte
+ * zero of the body at byte four billion of the file. That is not a
+ * theoretical server: it is every misconfigured CDN edge and every
+ * captive portal, and the failure it produces is a five gigabyte
+ * download that hashes wrong after forty minutes with nothing to say
+ * about why. So the status code decides, and a 200 where a 206 was
+ * asked for restarts the file rather than continuing it.
+ */
+#include <winhttp.h>
+
+static int fetch_progress_cancel(int (*cb)(uint64_t, uint64_t, void *),
+                                 void *ud, uint64_t got, uint64_t total)
+{ return cb ? cb(got, total, ud) : 0; }
+
+int plat_fetch(const char *url, const char *dest,
+               int (*progress)(uint64_t got, uint64_t total, void *ud),
+               void *ud, char *why, size_t wn)
+{
+    wchar_t wurl[1024];
+    if (to_wide(url, wurl, 1024) != 0) {
+        snprintf(why, wn, "that address is not one AurOS can use."); return -1;
+    }
+    URL_COMPONENTS uc;
+    wchar_t host[256], path[1024];
+    memset(&uc, 0, sizeof uc);
+    uc.dwStructSize = sizeof uc;
+    uc.lpszHostName = host;  uc.dwHostNameLength = 256;
+    uc.lpszUrlPath  = path;  uc.dwUrlPathLength  = 1024;
+    if (!WinHttpCrackUrl(wurl, 0, 0, &uc)) {
+        snprintf(why, wn, "that address is not one AurOS can use."); return -1;
+    }
+
+    uint64_t have = 0;
+    {
+        HANDLE e = CreateFileA(dest, GENERIC_READ, FILE_SHARE_READ, NULL,
+                               OPEN_EXISTING, 0, NULL);
+        if (e != INVALID_HANDLE_VALUE) {
+            LARGE_INTEGER sz;
+            if (GetFileSizeEx(e, &sz)) have = (uint64_t)sz.QuadPart;
+            CloseHandle(e);
+        }
+    }
+
+    HINTERNET s = WinHttpOpen(L"AurBridge", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
+                              WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    if (!s) { snprintf(why, wn, "this computer would not let AurOS use the "
+                                "internet."); return -1; }
+    /* Minutes, not the default 30 seconds: this is a five gigabyte
+     * transfer on a connection that is probably why the machine is
+     * being replaced. */
+    WinHttpSetTimeouts(s, 30000, 30000, 60000, 60000);
+    HINTERNET c = WinHttpConnect(s, host, uc.nPort, 0);
+    HINTERNET q = c ? WinHttpOpenRequest(s ? c : NULL, L"GET", path, NULL,
+                          WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES,
+                          uc.nScheme == INTERNET_SCHEME_HTTPS
+                              ? WINHTTP_FLAG_SECURE : 0) : NULL;
+    if (!q) {
+        if (c) WinHttpCloseHandle(c);
+        WinHttpCloseHandle(s);
+        snprintf(why, wn, "AurOS could not reach the place it downloads from.");
+        return -1;
+    }
+    wchar_t range[64];
+    _snwprintf(range, 63, L"Range: bytes=%I64u-", (unsigned __int64)have);
+    range[63] = 0;
+    WinHttpAddRequestHeaders(q, range, (DWORD)-1L, WINHTTP_ADDREQ_FLAG_ADD);
+
+    int rc = -1;
+    HANDLE f = INVALID_HANDLE_VALUE;
+    if (!WinHttpSendRequest(q, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
+                            WINHTTP_NO_REQUEST_DATA, 0, 0, 0) ||
+        !WinHttpReceiveResponse(q, NULL)) {
+        snprintf(why, wn, "AurOS could not reach the place it downloads from. "
+                          "Check this computer is online.");
+        goto out;
+    }
+    DWORD status = 0, slen = sizeof status;
+    WinHttpQueryHeaders(q, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                        WINHTTP_HEADER_NAME_BY_INDEX, &status, &slen,
+                        WINHTTP_NO_HEADER_INDEX);
+    if (status == 200 && have > 0) {
+        /* The server sent the whole thing where a continuation was
+         * asked for. Start again rather than write its first byte into
+         * the middle of the file. */
+        have = 0;
+    } else if (status != 200 && status != 206) {
+        snprintf(why, wn,
+                 "the place AurOS downloads from answered %lu. Try again "
+                 "later.", (unsigned long)status);
+        goto out;
+    }
+
+    uint64_t total = 0;
+    {
+        wchar_t cr[128]; DWORD cl = sizeof cr;
+        if (status == 206 &&
+            WinHttpQueryHeaders(q, WINHTTP_QUERY_CONTENT_RANGE,
+                                WINHTTP_HEADER_NAME_BY_INDEX, cr, &cl,
+                                WINHTTP_NO_HEADER_INDEX)) {
+            const wchar_t *slash = wcsrchr(cr, L'/');
+            if (slash) total = (uint64_t)_wtoi64(slash + 1);
+        } else {
+            DWORD len64 = 0, ll = sizeof len64;
+            if (WinHttpQueryHeaders(q, WINHTTP_QUERY_CONTENT_LENGTH |
+                                    WINHTTP_QUERY_FLAG_NUMBER,
+                                    WINHTTP_HEADER_NAME_BY_INDEX, &len64, &ll,
+                                    WINHTTP_NO_HEADER_INDEX))
+                total = have + (uint64_t)len64;
+        }
+    }
+
+    f = CreateFileA(dest, GENERIC_WRITE, FILE_SHARE_READ, NULL,
+                    have ? OPEN_ALWAYS : CREATE_ALWAYS, 0, NULL);
+    if (f == INVALID_HANDLE_VALUE) {
+        snprintf(why, wn, "AurOS could not write the file it is downloading.");
+        goto out;
+    }
+    if (have) {
+        LARGE_INTEGER to; to.QuadPart = (LONGLONG)have;
+        SetFilePointerEx(f, to, NULL, FILE_BEGIN);
+        SetEndOfFile(f);
+    }
+
+    static char buf[256 * 1024];
+    for (;;) {
+        DWORD got = 0;
+        if (!WinHttpReadData(q, buf, sizeof buf, &got)) {
+            snprintf(why, wn, "the download stopped partway through. It will "
+                              "carry on from here if you try again.");
+            goto out;
+        }
+        if (got == 0) break;
+        DWORD wrote = 0, at = 0;
+        while (at < got) {
+            if (!WriteFile(f, buf + at, got - at, &wrote, NULL) || !wrote) {
+                snprintf(why, wn, "this computer ran out of room for the "
+                                  "download.");
+                goto out;
+            }
+            at += wrote;
+        }
+        have += got;
+        if (fetch_progress_cancel(progress, ud, have, total)) {
+            snprintf(why, wn, "the download was stopped.");
+            goto out;
+        }
+    }
+    rc = 0;
+out:
+    if (f != INVALID_HANDLE_VALUE) CloseHandle(f);
+    WinHttpCloseHandle(q); WinHttpCloseHandle(c); WinHttpCloseHandle(s);
+    return rc;
+}
+
 #endif /* _WIN32 */
