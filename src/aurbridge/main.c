@@ -14,6 +14,7 @@ static void usage(void)
     "aurbridge — install AurOS alongside Windows\n\n"
     "  aurbridge preflight            check this PC and report (read-only)\n"
     "  aurbridge preflight --json     same, machine-readable for the wizard\n"
+    "  aurbridge selftest             check this binary, not this PC\n"
     "  aurbridge version\n\n"
     "Preflight never writes to a disk. Destructive phases refuse to start\n"
     "unless preflight returns no blocking issues.\n", stderr);
@@ -33,6 +34,21 @@ int main(int argc, char **argv)
     if (!strcmp(cmd, "-h") || !strcmp(cmd, "--help") || !strcmp(cmd, "help")) {
         usage(); return 0;
     }
+    /* WHAT THE BINARY CAN SAY ABOUT ITSELF, as against what it can say
+     * about the machine. preflight needs real disks, a real BitLocker
+     * state and real firmware variables, so it says nothing useful
+     * under Wine or in CI on Linux. pf_selftest() checks the parts
+     * that are pure -- the parsers, the thresholds, the report
+     * plumbing -- and those are exactly the parts a build should
+     * refuse to ship broken. */
+    if (!strcmp(cmd, "selftest")) {
+        int bad = pf_selftest();
+        if (bad == 0) puts("aurbridge selftest: ok");
+        else fprintf(stderr, "aurbridge selftest: %d check%s wrong\n",
+                     bad, bad == 1 ? "" : "s");
+        return bad ? 1 : 0;
+    }
+
     if (strcmp(cmd, "preflight") != 0) { usage(); return 2; }
 
     pf_report r;

@@ -1,0 +1,83 @@
+#!/bin/sh
+# ═══════════════════════════════════════════════════════════════════
+#  aurbridge — build the Windows half of the installer
+#
+#  Two binaries out of one set of sources:
+#
+#    aurbridge.exe          the console tool. `preflight` returns 0 for
+#                           go and 1 for blocked, which CI depends on.
+#    aurbridge-wizard.exe   the thing a person double-clicks.
+#
+#  WHY A SCRIPT RATHER THAN THE COMMENT IT REPLACES. The build line
+#  lived in a comment at the top of wizard.c, which means it was right
+#  until the day somebody added a source file. The phase engine is a
+#  new translation unit and that day is today.
+#
+#    ./build/aurbridge            build both
+#    ./build/aurbridge test       build, then run the console tool
+#                                 under wine as far as wine will go
+# ═══════════════════════════════════════════════════════════════════
+set -eu
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+SRC="$ROOT/src/aurbridge"
+OUT="$ROOT/out"
+CC="${CC:-x86_64-w64-mingw32-gcc}"
+
+C_OK=$(printf '\033[38;2;125;211;192m'); C_DIM=$(printf '\033[38;2;110;120;134m')
+C_ERR=$(printf '\033[38;2;242;120;141m'); C_RST=$(printf '\033[0m')
+step() { printf '\n%s▸%s %s\n' "$C_OK" "$C_RST" "$*"; }
+note() { printf '%s   %s%s\n' "$C_DIM" "$*" "$C_RST"; }
+die()  { printf '%s::%s %s\n' "$C_ERR" "$C_RST" "$*" >&2; exit 1; }
+
+command -v "$CC" >/dev/null 2>&1 || die "no $CC — install mingw-w64"
+mkdir -p "$OUT"
+
+# Every .c in the directory except the two that hold a main(). A source
+# file left out of a hand-written list still links, and the checks it
+# was written to perform simply do not happen -- the staging build
+# learned that the expensive way.
+LIB=""
+for f in "$SRC"/*.c; do
+    case "$(basename "$f")" in
+      main.c|wizard.c) continue ;;
+    esac
+    LIB="$LIB $f"
+done
+note "shared:$(echo "$LIB" | sed "s|$SRC/||g")"
+
+# -municode is NOT used: main.c is a plain main() and the wizard has
+# its own WinMain. Unicode comes from the W-suffixed APIs, which is
+# the only way that works the same on Windows 7 and 11.
+WARN="-Wall -Wextra -Wno-unused-parameter -std=gnu11"
+
+step "aurbridge.exe (console)"
+# shellcheck disable=SC2086
+$CC -O2 $WARN -o "$OUT/aurbridge.exe" "$SRC/main.c" $LIB \
+    || die "the console tool did not build"
+note "$(du -h "$OUT/aurbridge.exe" | cut -f1)"
+
+step "aurbridge-wizard.exe"
+# shellcheck disable=SC2086
+$CC -O2 $WARN -mwindows -o "$OUT/aurbridge-wizard.exe" "$SRC/wizard.c" $LIB \
+    -lgdi32 -lcomctl32 \
+    || die "the wizard did not build"
+note "$(du -h "$OUT/aurbridge-wizard.exe" | cut -f1)"
+
+if [ "${1:-}" = "test" ]; then
+    step "self-test"
+    # WHAT WINE CAN AND CANNOT SAY. It has no real disks, no BitLocker,
+    # no BCD store and no firmware variables, so a preflight run under
+    # it exercises the parsing, the report and the exit-code contract
+    # and nothing about a real machine. That is still worth running on
+    # every build: it is the difference between "it compiles" and "it
+    # starts".
+    if command -v wine >/dev/null 2>&1; then
+        WINEDEBUG=-all wine "$OUT/aurbridge.exe" selftest 2>/dev/null \
+            && note "selftest passed under wine" \
+            || note "selftest did not pass under wine (it may need a real machine)"
+    else
+        note "no wine here; skipped"
+    fi
+fi
+
+printf '\n%s::%s %s\n' "$C_OK" "$C_RST" "$OUT/aurbridge.exe, $OUT/aurbridge-wizard.exe"
