@@ -95,6 +95,31 @@
  * sign. */
 #define LOADER_PATH         "\\EFI\\AurOS\\shimx64.efi"
 
+/* HOW BIG THE PART THAT STARTS THE COMPUTER IS.
+ *
+ * Two different questions, and conflating them cost four rows of the
+ * hardware matrix.
+ *
+ * MIN and MAX are DISBELIEF: a manifest claiming an ESP smaller than a
+ * shim and a grub, or larger than two gigabytes, is a manifest we do
+ * not act on. They bound a number read off a stick.
+ *
+ * TYPICAL is an ESTIMATE, for the one caller that has no stick to
+ * read: stage B's dry run, which answers "could this computer be
+ * converted" with nothing plugged into it. That caller reached for
+ * MAX -- reasoning that generous is safe -- and generous in this
+ * direction is a machine told there is not enough room when there is.
+ * At MAX the dry run demanded three gigabytes where the install needs
+ * one and a half, and refused four of the ordinary machines in
+ * tools/matrixtest.sh.
+ *
+ * 512 MiB is not a guess: it is ESP_MB in build/mkimage, the size
+ * every AurOS image's own EFI partition is actually made. build/staging
+ * refuses to build if the two stop agreeing. */
+#define LOADER_BOOT_MIN_BYTES  (8ull * 1024 * 1024)
+#define LOADER_BOOT_MAX_BYTES  (2ull * 1024 * 1024 * 1024)
+#define LOADER_BOOT_TYPICAL_MB 512
+
 /* How much room the boot partition needs, given the image that will be
  * copied into it. Called BEFORE the plan is computed, so that a
  * machine which cannot fit it is refused with the disk untouched

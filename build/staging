@@ -163,6 +163,31 @@ if [ -n "$BAD" ]; then
     printf '%s\n' "$BAD" >&2
     die "only $WRITER may write to a disk. Something else tried."
 fi
+# ── the dry run's estimate must be the size the builder makes ──────
+#
+# LOADER_BOOT_TYPICAL_MB is what stage B counts for the partition AurOS
+# starts from, on a machine with no stick in it to measure. It is only
+# true because build/mkimage makes that partition exactly that size,
+# and nothing but this connects the two.
+#
+# The cost of them drifting is a false refusal -- the dry run telling
+# somebody with an ordinary laptop that there is not enough room, which
+# is what happened when this number was loader.h's disbelief ceiling
+# instead of a size. A false refusal is silent: the person just goes
+# away.
+LTYP=$(sed -n 's/^#define LOADER_BOOT_TYPICAL_MB *\([0-9]*\).*/\1/p' \
+       "$ROOT/src/aurstage/loader.h" | head -1)
+MKESP=$(sed -n 's/^ESP_MB="\${ESP_MB:-\([0-9]*\)}".*/\1/p' \
+        "$ROOT/build/mkimage" | head -1)
+[ -n "$LTYP" ] && [ -n "$MKESP" ] \
+    || die "could not read LOADER_BOOT_TYPICAL_MB from loader.h or ESP_MB
+     from build/mkimage. One of them moved, and the dry run's estimate
+     of how much room an install needs rests on the two agreeing."
+[ "$LTYP" = "$MKESP" ] \
+    || die "loader.h says the part that starts the computer is ${LTYP} MiB and
+     build/mkimage makes it ${MKESP} MiB. The dry run would tell people
+     the wrong thing about whether their computer has room."
+
 # And the writer must still exist, or the gate above is vacuous and
 # passes a tree in which somebody deleted it and moved the writes.
 [ -f "$ROOT/src/aurstage/$WRITER" ] \

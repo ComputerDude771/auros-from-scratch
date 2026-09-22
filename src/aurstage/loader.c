@@ -29,7 +29,7 @@ int loader_bytes_needed(const image_src *img, uint64_t *need,
      * of somebody's Windows gets taken. An ESP smaller than a shim and
      * a grub cannot hold the chain it is supposed to hold, and one
      * larger than two gigabytes is a manifest we do not believe. */
-    if (len < 8ull * 1024 * 1024 || len > 2ull * 1024 * 1024 * 1024) {
+    if (len < LOADER_BOOT_MIN_BYTES || len > LOADER_BOOT_MAX_BYTES) {
         snprintf(why, n, "the copy of AurOS on the memory stick describes a "
                          "start-up area that is not a believable size");
         return -1;

@@ -31,6 +31,9 @@
 #include "install.h"
 #include "rescue.h"
 #include "fault.h"
+/* For LOADER_BOOT_TYPICAL_MB: how much of the gap the part that starts
+ * the computer takes. The dry run has to count it. */
+#include "loader.h"
 
 /* What the kernel was told to do with us, out of /proc/cmdline. */
 
@@ -409,17 +412,27 @@ static void dry_run(const stage_machine *m)
      * before the shrink -- but a hardware matrix built from the dry
      * run has rows in it that are not true.
      *
-     * The allowance is measured where it can be and generous where it
-     * cannot: rescue_size_needed asks this disk, and the boot area is
-     * bounded by loader.h's own ceiling rather than guessed, because
-     * the dry run has no stick in it to read an image from. */
+     * The allowance is measured where it can be and estimated where it
+     * cannot: rescue_size_needed asks THIS disk about its own ESP, and
+     * the boot area is the size build/mkimage actually makes one,
+     * because the dry run has no stick in it to read an image from.
+     *
+     * IT USED TO REACH FOR loader.h's CEILING HERE, on the reasoning
+     * that generous is safe. Generous in this direction is a machine
+     * told there is not enough room when there is: two gigabytes where
+     * the install needs half of one, which made the dry run demand
+     * three gigabytes and refuse four of the ordinary machines in
+     * tools/matrixtest.sh -- ordinary laptops, the people this product
+     * is for. A false refusal is not the safe side of this question.
+     * The ceiling is disbelief about a number read off a stick; it was
+     * never an estimate of anything. */
     uint64_t extra = 0;
     {
         uint64_t rsc = 0;
         char rw[200];
         if (rescue_size_needed(on, &rsc, rw, sizeof rw) == 0) extra += rsc;
         else extra += 1024ull * 1024 * 1024;     /* the worst ESP seen  */
-        extra += 2ull * 1024 * 1024 * 1024;      /* loader.h's ceiling  */
+        extra += LOADER_BOOT_TYPICAL_MB * 1024ull * 1024;
     }
     uint64_t need = needs_bytes() + extra;
     if (freeable < need) {
