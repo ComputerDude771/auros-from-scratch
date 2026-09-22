@@ -184,6 +184,27 @@ int af_boot_numbers(uint16_t *out, int max)
     return n;
 }
 
+/* UEFI 2.10, table "Load Option Attributes". */
+#define LOAD_OPTION_ACTIVE        0x00000001u
+#define LOAD_OPTION_HIDDEN        0x00000008u
+#define LOAD_OPTION_CATEGORY      0x00001F00u
+#define LOAD_OPTION_CATEGORY_BOOT 0x00000000u
+
+int af_boot_bootable(uint16_t num)
+{
+    char name[16];
+    snprintf(name, sizeof name, "Boot%04X", num);
+    uint8_t opt[AF_OPT_MAX];
+    int len = af_var_get(name, opt, sizeof opt);
+    if (len < 6) return 0;           /* unreadable, or too short to be one */
+    uint32_t a = (uint32_t)opt[0] | ((uint32_t)opt[1] << 8) |
+                 ((uint32_t)opt[2] << 16) | ((uint32_t)opt[3] << 24);
+    if (!(a & LOAD_OPTION_ACTIVE)) return 0;
+    if (a & LOAD_OPTION_HIDDEN)    return 0;
+    if ((a & LOAD_OPTION_CATEGORY) != LOAD_OPTION_CATEGORY_BOOT) return 0;
+    return 1;
+}
+
 void af_desc_of(const uint8_t *opt, int len, char *out, size_t n)
 {
     size_t o = 0;

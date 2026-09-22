@@ -46,14 +46,15 @@ gcc -O1 -std=gnu11 -Wall -Wextra \
 AF="$TMP/af"
 
 # ── the fixture ─────────────────────────────────────────────────────
-plant() { # slot description
-    python3 - "$VD/Boot$1-$G" "$2" <<'EOPY'
+plant() { # slot description [load-option-attributes, default ACTIVE]
+    python3 - "$VD/Boot$1-$G" "$2" "${3:-1}" <<'EOPY'
 import sys, struct
 d = sys.argv[2].encode('utf-16-le') + b'\x00\x00'
 f = '\\EFI\\x.efi'.encode('utf-16-le') + b'\x00\x00'
 dp = struct.pack('<BBH', 4, 4, 4 + len(f)) + f + struct.pack('<BBH', 0x7F, 0xFF, 4)
+attrs = int(sys.argv[3], 0)
 open(sys.argv[1], 'wb').write(struct.pack('<I', 7) +
-                              struct.pack('<IH', 1, len(dp)) + d + dp)
+                              struct.pack('<IH', attrs, len(dp)) + d + dp)
 EOPY
 }
 order() { # 0002 0000 ...
@@ -157,6 +158,42 @@ plant 0000 "Windows Boot Manager"; plant 0002 "AurOS"; plant 0005 "Fedora"
 [ "$(read_order)" = "0002 0000 0005" ] \
   && ok "no BootOrder at all: one is built that still holds everything" \
   || bad "no BootOrder at all: one is built that still holds everything" "$(read_order)"
+
+# AND NOT EVERYTHING. A Boot#### is not automatically something to
+# boot: the UEFI load-option attributes mark an entry inactive, hidden,
+# or an APPLICATION rather than a boot option, and the manufacturer's
+# diagnostics and the firmware setup entry are exactly those. Building
+# the order out of every variable in the directory used to promote all
+# three above Windows on a machine whose owner never asked for it --
+# and left her undoing it in a firmware menu this product exists to
+# keep her out of.
+fresh
+plant 0000 "Windows Boot Manager"
+plant 0002 "AurOS"
+plant 0003 "Diagnostics"     0x101   # ACTIVE, category APPLICATION
+plant 0004 "Recovery"        0x0     # not ACTIVE
+plant 0006 "Firmware Setup"  0x9     # ACTIVE | HIDDEN
+plant 0005 "Fedora"
+"$AF" confirm >/dev/null 2>&1
+[ "$(read_order)" = "0002 0000 0005" ] \
+  && ok "...and not the entries the firmware marked not-to-be-booted" \
+  || bad "...and not the entries the firmware marked not-to-be-booted" \
+        "$(read_order)"
+
+# BUT AN ORDER THAT ALREADY NAMES ONE KEEPS IT. The filter above is a
+# judgement about what to ADD to a machine that had no order at all.
+# Somewhere there is a laptop whose vendor ships a hidden entry in
+# BootOrder on purpose, and taking it out is not this program's
+# decision to make.
+fresh
+plant 0000 "Windows Boot Manager"
+plant 0002 "AurOS"
+plant 0006 "Firmware Setup" 0x9
+order 0000 0006
+"$AF" confirm >/dev/null 2>&1
+[ "$(read_order)" = "0002 0000 0006" ] \
+  && ok "an order that already names a hidden entry keeps it" \
+  || bad "an order that already names a hidden entry keeps it" "$(read_order)"
 
 # ── "it does not" ───────────────────────────────────────────────────
 echo

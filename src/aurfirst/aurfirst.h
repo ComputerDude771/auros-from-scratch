@@ -157,6 +157,11 @@ int af_request_take(char *out, size_t n);
 
 #define AF_GLOBAL_GUID "8be4df61-93ca-11d2-aa0d-00e098032b8c"
 
+/* As much of one Boot#### as anything here needs to look at. The
+ * firmware's own limit is far higher; a load option this side cannot
+ * read whole is one it declines to reason about. */
+#define AF_OPT_MAX 4096
+
 /* Read one global variable's data, attributes stripped. Returns the
  * length, -1 if there is nothing to read, or -2 if it is LONGER than
  * `n` -- which is a refusal and not a shorter answer, because a
@@ -176,5 +181,28 @@ int  af_efivars_writable(void);
 int  af_boot_numbers(uint16_t *out, int max);
 /* The ASCII description of a load option. */
 void af_desc_of(const uint8_t *opt, int len, char *out, size_t n);
+
+/* IS THIS ONE MEANT TO BE STARTED BY ITSELF? 1 yes, 0 no.
+ *
+ * A load option's first four bytes are its attributes, and the UEFI
+ * spec is explicit about two of them: an entry without
+ * LOAD_OPTION_ACTIVE is not to be booted, and one with
+ * LOAD_OPTION_HIDDEN is not even to be shown. A third, the category
+ * field, separates a boot option from an APPLICATION -- a firmware
+ * setup entry, a vendor's diagnostics -- which the boot manager is not
+ * supposed to run in the ordinary sequence at all.
+ *
+ * This matters in exactly one place: a machine whose firmware ships
+ * with no BootOrder and enumerates for itself. af_confirm() builds one
+ * there, and building it from every Boot#### that exists would promote
+ * the manufacturer's diagnostics partition into the machine's ordinary
+ * start-up sequence -- something nobody asked for and which the person
+ * would then have to undo in a firmware menu they were told they would
+ * never have to open.
+ *
+ * An entry that cannot be read at all is not bootable as far as this
+ * is concerned: leaving something out of a list it was never in costs
+ * nothing, and putting something into one is the mistake. */
+int  af_boot_bootable(uint16_t num);
 
 #endif

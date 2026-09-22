@@ -332,7 +332,16 @@ void install_run(const stage_machine *m)
 
     /* The image, found and hashed BEFORE anything is touched. */
     image_src img;
-    if (image_find(m, j.stage[0] ? NULL : NULL, &img, why, sizeof why) != 0)
+    /* THE PROFILE THE JOURNAL NAMES, not the first image on the stick.
+     *
+     * This argument was `j.stage[0] ? NULL : NULL` -- NULL either way,
+     * written to look like a decision. image_find() has been able to
+     * insist on a profile since it was written; there was nothing on
+     * this side of the restart that knew which one, so it was never
+     * asked to. Now the journal carries it. A journal from before that
+     * has an empty profile, and an empty profile asks for no check,
+     * which is exactly what happened before. */
+    if (image_find(m, j.profile, &img, why, sizeof why) != 0)
         refuse(why, NULL, "no-image");
     stage_say("image    %s, %.1f GiB", img.profile,
               (double)img.root_len / (1024.0*1024.0*1024.0));

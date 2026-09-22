@@ -915,6 +915,10 @@ static int phase_handoff(const ab_choice *c, pf_report *r, ab_machine *m,
     snprintf(j.gpt_sha256, sizeof j.gpt_sha256, "%s", m->gpt_sha256);
     snprintf(j.stage, sizeof j.stage, "armed");
     snprintf(j.boot_from, sizeof j.boot_from, "esp");
+    /* The one thing on the stick that says WHICH AurOS she asked for.
+     * Without it the staging environment installs whichever image it
+     * finds first, on a stick that may hold two. */
+    snprintf(j.profile, sizeof j.profile, "%s", c->profile);
     j.run_id = m->run_id;
     j.written_unix = (uint64_t)time(NULL);
 

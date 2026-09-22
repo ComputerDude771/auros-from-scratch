@@ -125,7 +125,24 @@ run "a damaged boot chain on the stick: refused" \
     "aurstage.install aurstage.min_gb=1" \
     "part of the memory stick that starts a computer is damaged" \
     "$STICK" unchanged
+# THE STICK IS PUT BACK FIRST, and it matters: the case below must
+# refuse for the profile and for nothing else, and the stick it would
+# otherwise have used is the one with a damaged boot chain.
 mkstick
+
+# AND A STICK FOR A DIFFERENT AUROS. A stick can hold more than one
+# image -- somebody who made one for Office in March and re-made it for
+# the plain desktop in October has a stick that answers to both -- and
+# the staging environment used to install whichever it came to first.
+# image_find() has taken a wanted profile since the day it was written
+# and the one caller passed NULL, written as `j.stage[0] ? NULL : NULL`
+# so that it looked like a decision. The journal carries the choice now.
+mach_journal office
+run "a stick for a different AurOS: refused" \
+    "aurstage.install aurstage.min_gb=1" \
+    "for a different version of AurOS" \
+    "$STICK" unchanged
+mach_journal
 
 echo
 echo "  and then installing, for real"

@@ -88,6 +88,7 @@ int main(int argc, char **argv)
                "0123456789abcdef0123456789abcdef");
     snprintf(j.stage, sizeof j.stage, "armed");
     snprintf(j.boot_from, sizeof j.boot_from, "esp");
+    snprintf(j.profile, sizeof j.profile, "school-kiosk");
     j.run_id = 7788990011ull;
     j.written_unix = 1758000000ull;
 
@@ -115,6 +116,7 @@ int main(int argc, char **argv)
     SEQ(r.gpt_sha256,  j.gpt_sha256,  "gpt_sha256");
     SEQ(r.stage,       j.stage,       "stage");
     SEQ(r.boot_from,   j.boot_from,   "boot_from");
+    SEQ(r.profile,     j.profile,     "profile");
     EQ(r.run_id,       j.run_id,      "run_id");
     EQ(r.written_unix, j.written_unix, "written_unix");
     if (r.corrupt) { puts("DIFF corrupt-flag-set"); bad++; }

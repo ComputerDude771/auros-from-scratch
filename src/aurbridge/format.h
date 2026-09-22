@@ -137,6 +137,22 @@ typedef struct {
     char     gpt_sha256[65];
     char     stage[16];
     char     boot_from[16];
+    /* WHICH AUROS THE PERSON CHOSE, and the reason it is written down
+     * rather than inferred after the restart.
+     *
+     * A memory stick can hold more than one image, and a person who
+     * made one for Office in March and re-made it for Revive in
+     * October has a stick that still answers to both. The staging
+     * environment used to take the first image it found on it and
+     * install that -- image_find() has taken a wanted profile since
+     * the day it was written, and the one caller passed NULL, because
+     * there was nothing on this side of the restart to pass.
+     *
+     * So the wizard's choice travels with the rest of the record. An
+     * older journal has no profile, the field is empty, and the check
+     * does not happen: the same behaviour as before, for a stick made
+     * before this existed. */
+    char     profile[64];
     uint64_t run_id;
     uint64_t written_unix;
 } fmt_journal;

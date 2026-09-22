@@ -64,6 +64,12 @@ typedef struct {
      * simply restarted, so the sentence has to be "take it out first"
      * rather than "switch it on again". */
     char     boot_from[JOURNAL_STR];
+    /* Which AurOS the person chose, before the restart. A stick can
+     * hold more than one image; this is how the staging environment
+     * knows which of them she asked for rather than installing the
+     * first one it comes to. Empty in a journal written before this
+     * field existed, and an empty one asks for no check at all. */
+    char     profile[JOURNAL_STR];
     uint64_t run_id;              /* this install attempt             */
     uint64_t written_unix;        /* when Windows wrote this          */
 } journal;

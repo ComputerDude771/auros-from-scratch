@@ -450,26 +450,27 @@ static void esc(char *out, size_t n, const char *in)
 size_t fmt_journal_json(const fmt_journal *j, char *out, size_t n)
 {
     char e_serial[300], e_model[300], e_part[32], e_gpt[160];
-    char e_stage[64], e_boot[64];
+    char e_stage[64], e_boot[64], e_prof[140];
     esc(e_serial, sizeof e_serial, j->disk_serial);
     esc(e_model,  sizeof e_model,  j->disk_model);
     esc(e_part,   sizeof e_part,   j->win_part);
     esc(e_gpt,    sizeof e_gpt,    j->gpt_sha256);
     esc(e_stage,  sizeof e_stage,  j->stage);
     esc(e_boot,   sizeof e_boot,   j->boot_from);
+    esc(e_prof,   sizeof e_prof,   j->profile);
     int k = snprintf(out, n,
         "{\"disk_serial\":\"%s\",\"disk_model\":\"%s\","
         "\"disk_bytes\":%llu,\"logical_sector\":%u,"
         "\"win_part\":\"%s\",\"win_start_lba\":%llu,\"win_sectors\":%llu,"
         "\"win_ntfs_serial\":%llu,\"gpt_sha256\":\"%s\",\"stage\":\"%s\","
-        "\"boot_from\":\"%s\",\"run_id\":%llu,"
+        "\"boot_from\":\"%s\",\"profile\":\"%s\",\"run_id\":%llu,"
         "\"written_unix\":%llu}\n",
         e_serial, e_model,
         (unsigned long long)j->disk_bytes, (unsigned)j->logical_sector,
         e_part, (unsigned long long)j->win_start_lba,
         (unsigned long long)j->win_sectors,
         (unsigned long long)j->win_ntfs_serial,
-        e_gpt, e_stage, e_boot,
+        e_gpt, e_stage, e_boot, e_prof,
         (unsigned long long)j->run_id,
         (unsigned long long)j->written_unix);
     if (k < 0 || (size_t)k >= n) return 0;
@@ -785,6 +786,7 @@ int fmt_selftest(void)
         snprintf(j.gpt_sha256, sizeof j.gpt_sha256, "%064d", 0);
         snprintf(j.stage, sizeof j.stage, "armed");
         snprintf(j.boot_from, sizeof j.boot_from, "esp");
+        snprintf(j.profile, sizeof j.profile, "office");
         j.run_id = 12345; j.written_unix = 1700000000;
         char out[1024];
         size_t k = fmt_journal_json(&j, out, sizeof out);
@@ -795,7 +797,8 @@ int fmt_selftest(void)
             "\"win_part\":\"2\"", "\"win_start_lba\":206848",
             "\"win_sectors\":2097152", "\"win_ntfs_serial\":0",
             "\"gpt_sha256\":\"", "\"stage\":\"armed\"",
-            "\"boot_from\":\"esp\"", "\"run_id\":12345",
+            "\"boot_from\":\"esp\"", "\"profile\":\"office\"",
+            "\"run_id\":12345",
             "\"written_unix\":1700000000", NULL };
         for (int i = 0; want[i]; i++)
             if (!strstr(out, want[i])) {

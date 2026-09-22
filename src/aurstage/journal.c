@@ -114,6 +114,7 @@ int journal_read(const char *path, journal *j)
             STR("gpt_sha256",   gpt_sha256)
             STR("stage",        stage)
             STR("boot_from",    boot_from)
+            STR("profile",      profile)
             #undef STR
         } else {
             char *end = NULL;

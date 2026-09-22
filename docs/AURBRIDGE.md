@@ -285,6 +285,14 @@ Two things must happen right at the end, in this order:
    the machine against `journal.json` — disk serial, GPT hash, NTFS
    start LBA and sector count — and aborts on any mismatch.
 
+`journal.json` also carries the **profile** the user chose. A memory
+stick can hold more than one AurOS image — somebody who made one for
+Office in March and re-made it for the plain desktop in October has a
+stick that still answers to both — and without the choice written down,
+the staging environment installs whichever image it comes to first.
+`image_find()` has been able to insist on a profile since it was
+written; for a while its one caller passed `NULL`, so it never did.
+
 `BootOrder` is only rewritten in phase 10, after the user confirms.
 
 ## Making the machine able to start AurOS (phase 8a)
@@ -549,10 +557,25 @@ finding a function that already does the thing. `aurfirst confirm` is
 that function, in a different program, after the answer.
 
 It **promotes**. It never removes anybody else's entry, and on firmware
-that ships with no `BootOrder` at all it builds one containing every
-`Boot####` there is, ours first — writing just our number would be a
-boot menu with one thing in it and Windows gone, which is the one thing
-this whole design has spent its budget not doing.
+that ships with no `BootOrder` at all it builds one — writing just our
+number would be a boot menu with one thing in it and Windows gone,
+which is the one thing this whole design has spent its budget not
+doing.
+
+It builds that one out of the `Boot####` entries **the firmware marks
+as boot options**, ours first. Not every `Boot####` is something to
+boot: the UEFI load-option attributes distinguish an entry that is not
+`ACTIVE`, one that is `HIDDEN`, and one whose category is APPLICATION
+rather than boot — which is what a manufacturer's diagnostics partition
+and the firmware setup entry are. Building the order out of all of them
+promoted those above Windows on a machine whose owner never asked for
+it, and left her undoing it in a firmware menu this product exists to
+keep her out of.
+
+That filter applies only where there was no `BootOrder` to begin with.
+An order that already names a hidden entry keeps it: somewhere there is
+a laptop whose vendor put it there on purpose, and taking it out is not
+this program's decision.
 
 `aurfirst decline` clears the one-shot **before** it records the answer.
 The other order leaves an instant where the machine has stopped

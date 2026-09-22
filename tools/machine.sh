@@ -424,7 +424,12 @@ mach_boot_firmware() {
 }
 
 # → JNL, the cpio AurBridge would have left in the initramfs
+# `mach_journal [profile]` -- which AurOS the person chose before the
+# restart. It defaults to the one mach_stick puts on the stick, so the
+# ordinary case is the matching one; naming another is how a test asks
+# for the refusal.
 mach_journal() {
+    JPROF="${1:-desktop}"
     GPT=$(mach_gpthash "$DISK")
     JNL="$MTMP/j.cpio"
     mkdir -p "$MTMP/j/aurbridge"
@@ -434,7 +439,8 @@ mach_journal() {
     printf '"win_part":"2","win_start_lba":%s,"win_sectors":%s,' \
            "$P2S" "$((P2E-P2S+1))" >> "$J"
     printf '"win_ntfs_serial":0,"gpt_sha256":"%s","stage":"armed",' "$GPT" >> "$J"
-    printf '"boot_from":"esp","run_id":%s,' "$(date +%s)" >> "$J"
+    printf '"boot_from":"esp","profile":"%s","run_id":%s,' \
+           "$JPROF" "$(date +%s)" >> "$J"
     printf '"written_unix":%s}\n' "$(date +%s)" >> "$J"
     ( cd "$MTMP/j" && find . -print0 | cpio --null -o --format=newc --quiet ) \
         | gzip -9 > "$JNL"
