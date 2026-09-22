@@ -92,6 +92,26 @@ else
 fi
 losetup -d "$L"
 WINFILES=$(wc -l < "$TMP/win.before")
+# What the EFI partition held before any of this. The restore has to
+# put these bytes back or Windows does not start, and nothing else in
+# this test would notice if it put back something almost right.
+ESPMD5=$(dd if="$DISK" bs=512 skip=$P1S count=$((P1E-P1S+1)) status=none | md5sum | cut -d" " -f1)
+# THE FILESYSTEM'S OWN SIZE, not the partition entry's.
+#
+# Checking only the partition table let a restore pass while the NTFS
+# inside was still its shrunken size -- Windows would start and show a
+# smaller C: than it had, which is exactly the thing "put Windows back"
+# promises not to do. total_sectors lives at offset 0x28 of the boot
+# sector and is the number the filesystem itself claims.
+ntfs_total() { # image  first_sector
+    python3 - "$1" "$2" <<'EOPY'
+import sys, struct
+f = open(sys.argv[1], 'rb'); f.seek(int(sys.argv[2]) * 512)
+b = f.read(512); f.close()
+print(struct.unpack_from('<Q', b, 0x28)[0])
+EOPY
+}
+NTFSTOT=$(ntfs_total "$DISK" $P2S)
 echo "  a 3 GiB machine: ESP, a 1 GiB Windows with $WINFILES files, WinRE at the end"
 
 # ── a small AurOS image ─────────────────────────────────────────────
@@ -137,12 +157,17 @@ dd if="$TMP/root.img" of="$AIMG" bs=1M seek=$((ROFF/1048576)) conv=notrunc statu
 # ── the recovery stick: an image partition and a record partition ───
 STICK="$TMP/stick.img"
 mkstick() { # [corrupt]
-    rm -f "$STICK"; truncate -s 512M "$STICK"
+    rm -f "$STICK"; truncate -s 768M "$STICK"
     sgdisk --zap-all "$STICK" >/dev/null 2>&1
     sgdisk -n 1:2048:+400M -t 1:A12A5E9C-AB6E-4E4D-9F35-5B1C0A2E7D41 \
            -c 1:"AUROS-IMAGE" "$STICK" >/dev/null 2>&1
     sgdisk -n 2:0:+4M      -t 2:7E1C3B90-4D2A-4F16-8B77-2C6E5A9D0E33 \
            -c 2:"AUROS-RECORD" "$STICK" >/dev/null 2>&1
+    # Room for a copy of this machine's Windows startup. Dominated by
+    # the ESP, which is 100 MiB here and is a gigabyte on some OEM
+    # laptops -- AurBridge sizes this from the machine it looked at.
+    sgdisk -n 3:0:+180M    -t 3:7E1C3B90-4D2A-4F16-8B77-2C6E5A9D0E34 \
+           -c 3:"AUROS-SAVED" "$STICK" >/dev/null 2>&1
     IS=$(sgdisk -i 1 "$STICK" | sed -n 's/^First sector: \([0-9]*\).*/\1/p')
     python3 - "$STICK" "$AIMG" "$((IS*512))" "$ROFF" "$RLEN" "${1:-}" <<'EOPY'
 import sys, struct, hashlib
@@ -164,7 +189,7 @@ f.seek(pstart+4096); f.write(bytes(data)); f.close()
 EOPY
 }
 mkstick
-echo "  a stick with a $((RLEN/1048576)) MiB AurOS image and a record area"
+echo "  a stick with a $((RLEN/1048576)) MiB AurOS image, a record area and room for the way back"
 
 # ── the journal AurBridge would have written ────────────────────────
 journal() { # out  serial  start  sectors  hash  boot_from
@@ -191,8 +216,13 @@ EOPY
 GPT=$(gpthash "$DISK")
 JNL="$TMP/j.cpio"; journal "$JNL" AUROSTEST $P2S $((P2E-P2S+1)) "$GPT" esp
 
+# Which disk each run starts from. The install runs start from the
+# pristine machine; the restore runs start from the machine as the
+# install left it, which is the only honest way to ask whether the way
+# back works.
+SRCDISK="$DISK"
 run() { # name  kargs  expect  stick-file  want-unchanged
-    cp --sparse=always "$DISK" "$TMP/run.img"
+    cp --sparse=always "$SRCDISK" "$TMP/run.img"
     cp --sparse=always "${4:-$STICK}" "$TMP/stk.img"
     cat out/auros-staging.img "$JNL" > "$TMP/initrd.img"
     cp /usr/share/OVMF/OVMF_VARS_4M.fd "$TMP/vars.fd"
@@ -257,8 +287,8 @@ else
         "$(sgdisk -v "$TMP/run.img" 2>&1 | head -3)"
 fi
 N=$(sgdisk -p "$TMP/run.img" 2>/dev/null | sed -n '/^Number/,$p' | tail -n +2 | grep -c .)
-[ "$N" = "5" ] && ok "the disk now has 5 partitions" \
-               || bad "the disk now has 5 partitions" "it has $N"
+[ "$N" = "6" ] && ok "the disk now has 6 partitions" \
+               || bad "the disk now has 6 partitions" "it has $N"
 sgdisk -p "$TMP/run.img" 2>/dev/null | sed -n '/^Number/,$p' | tail -n +2 |
     awk 'NF{printf "      p%s %s..%s %s\n",$1,$2,$3,$7}'
 
@@ -292,12 +322,113 @@ else
     bad "the installer reported success" "$(grep -a 'aurstage-report' "$TMP/out.txt" | tail -1)"
 fi
 
+# ════════════════════════════════════════════════════════════════════
+#  And now the other direction: put Windows back.
+#
+#  This is the half of the product that decides whether the whole thing
+#  is honest. Rule 2 of docs/AURBRIDGE.md says the machine can always
+#  go back; every sentence in the wizard rests on it. So the machine
+#  the installer just changed is handed to the restore, and afterwards
+#  it has to be the machine we started with -- the same three
+#  partitions at the same sectors, the same EFI partition byte for
+#  byte, and the same files in Windows with the same md5sums as the
+#  ones taken before anything was touched.
+# ════════════════════════════════════════════════════════════════════
+cp --sparse=always "$TMP/run.img" "$TMP/installed.img"
+SRCDISK="$TMP/installed.img"
+
+check_back() { # label
+    if sgdisk -v "$TMP/run.img" 2>&1 | grep -q "No problems found"; then
+        ok "$1: the table is valid again"
+    else
+        bad "$1: the table is valid again" \
+            "$(sgdisk -v "$TMP/run.img" 2>&1 | head -3)"
+    fi
+    N=$(sgdisk -p "$TMP/run.img" 2>/dev/null | sed -n '/^Number/,$p' |
+        tail -n +2 | grep -c .)
+    [ "$N" = "3" ] && ok "$1: the three original partitions are back" \
+                   || bad "$1: the three original partitions are back" "it has $N"
+    E=$(sgdisk -i 2 "$TMP/run.img" | sed -n 's/^Last sector: \([0-9]*\).*/\1/p')
+    S=$(sgdisk -i 2 "$TMP/run.img" | sed -n 's/^First sector: \([0-9]*\).*/\1/p')
+    if [ "$S" = "$P2S" ] && [ "$E" = "$P2E" ]; then
+        ok "$1: Windows is its full size again"
+    else
+        bad "$1: Windows is its full size again" "$S..$E, was $P2S..$P2E"
+    fi
+    M=$(dd if="$TMP/run.img" bs=512 skip=$P1S count=$((P1E-P1S+1)) status=none |
+        md5sum | cut -d' ' -f1)
+    [ "$M" = "$ESPMD5" ] && ok "$1: the EFI partition is byte-for-byte what it was" \
+                         || bad "$1: the EFI partition is byte-for-byte what it was"
+    T2=$(ntfs_total "$TMP/run.img" "$S")
+    [ "$T2" = "$NTFSTOT" ] \
+        && ok "$1: the Windows FILESYSTEM is its full size again" \
+        || bad "$1: the Windows FILESYSTEM is its full size again" \
+               "it claims $T2 sectors, it had $NTFSTOT"
+    L=$(losetup --find --show -o $((P2S*512)) \
+        --sizelimit $(((P2E-P2S+1)*512)) "$TMP/run.img" 2>/dev/null)
+    if [ -n "$L" ] && nt ntfs-3g "$L" "$TMP/m" >/dev/null 2>&1; then
+        ( cd "$TMP/m" && find . -type f -exec md5sum {} \; | sort ) > "$TMP/win.back"
+        umount "$TMP/m"
+        if cmp -s "$TMP/win.before" "$TMP/win.back"; then
+            ok "$1: all $WINFILES files in Windows are exactly what they were"
+        else
+            bad "$1: all $WINFILES files in Windows are exactly what they were" \
+                "$(diff "$TMP/win.before" "$TMP/win.back" | head -4)"
+        fi
+    else
+        bad "$1: the Windows volume mounts again" "it does not"
+    fi
+    [ -n "$L" ] && losetup -d "$L"
+}
+
+echo
+echo "  and then putting Windows back, from the memory stick"
+run "it restores and says so" "aurstage.restore" "verdict=restored"
+check_back "from the stick"
+
+echo
+echo "  and again with no stick at all, from the copy on the computer"
+run "it restores from the copy it left on this computer" \
+    "aurstage.restore" "verdict=restored" "$TMP/blank.img"
+check_back "from the computer"
+
+echo
+echo "  and a refusal, with the disk untouched"
+# A stick whose saved copy has been damaged, and no second copy to fall
+# back on: the restore must refuse rather than write half a table.
+cp --sparse=always "$TMP/installed.img" "$TMP/wiped.img"
+python3 - "$TMP/wiped.img" <<'EOPY'
+import sys, subprocess, re
+# Blank the AUROS-SAVED partition on the installed disk, so the only
+# copy left is the damaged one on the stick.
+p = subprocess.run(["sgdisk","-p",sys.argv[1]],capture_output=True,text=True).stdout
+for line in p.splitlines():
+    f = line.split()
+    if len(f) >= 7 and f[0].isdigit() and "AUROS-SAVED" in line:
+        f_ = open(sys.argv[1],"r+b"); f_.seek(int(f[1])*512)
+        f_.write(b"\0" * 4096); f_.close()
+EOPY
+cp --sparse=always "$STICK" "$TMP/badstick.img"
+python3 - "$TMP/badstick.img" <<'EOPY'
+import sys, subprocess
+p = subprocess.run(["sgdisk","-p",sys.argv[1]],capture_output=True,text=True).stdout
+for line in p.splitlines():
+    f = line.split()
+    if len(f) >= 7 and f[0].isdigit() and "AUROS-SAVED" in line:
+        fh = open(sys.argv[1],"r+b"); fh.seek(int(f[1])*512 + 4096 + 1024)
+        fh.write(b"\xff" * 512); fh.close()
+EOPY
+SRCDISK="$TMP/wiped.img"
+run "a damaged saved copy: refused, disk untouched" \
+    "aurstage.restore" "aurstage-report v1 verdict=restore" \
+    "$TMP/badstick.img" unchanged
+
 echo
 if [ "$fail" -gt 0 ]; then
     echo "$fail of $checked wrong."
     echo "This is the whole product, on one synthetic machine."
     exit 1
 fi
-echo "$checked checks: it installs AurOS, starts it, and every file in"
-echo "Windows is still exactly what it was."
+echo "$checked checks: it installs AurOS, starts it, puts Windows back"
+echo "again, and every file in Windows is exactly what it was."
 exit 0

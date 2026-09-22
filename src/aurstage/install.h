@@ -38,4 +38,12 @@
  * stops in a way a person can describe over the telephone. */
 void install_run(const stage_machine *m);
 
+/* The other direction, started by `aurstage.restore` on the kernel
+ * command line: read the saved copy of this machine's Windows startup
+ * and put it back. Never returns -- it powers the machine off when it
+ * is done, because the next thing that should happen is a restart into
+ * Windows with the stick removed, and a machine that carried on
+ * booting would come straight back into the installer. */
+void restore_run(const stage_machine *m);
+
 #endif

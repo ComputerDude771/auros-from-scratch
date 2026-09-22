@@ -36,12 +36,22 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PROFILE="${1:-desktop}"
 RFS="$ROOT/work/forge/$PROFILE/rootfs"
 OUT="$ROOT/out"
+# A fault-injection image never overwrites the real one.
+SUF=""
+[ "${AURSTAGE_FAULT:-0}" = 1 ] && SUF="-fault"
 WORK="$ROOT/work/staging"
 
 C_OK=$'\033[38;2;125;211;192m'; C_ERR=$'\033[38;2;242;120;141m'
-C_DIM=$'\033[38;2;110;120;134m'; C_RST=$'\033[0m'
+C_DIM=$'\033[38;2;110;120;134m'; C_WRN=$'\033[38;2;240;186;104m'
+C_RST=$'\033[0m'
 step() { printf '\n%s▸%s %s\n' "$C_OK" "$C_RST" "$*"; }
 note() { printf '%s   %s%s\n' "$C_DIM" "$*" "$C_RST"; }
+# Something the builder must see and that does not stop the build. It
+# did not exist here either, and the one caller added below runs under
+# `set -euo pipefail`, where an unknown command ends the build -- in
+# the branch that only a fault-injection build reaches, so nothing
+# would have noticed until somebody needed it.
+warn() { printf '%s!!%s %s\n' "$C_WRN" "$C_RST" "$*" >&2; }
 die()  { printf '%s::%s %s\n' "$C_ERR" "$C_RST" "$*" >&2; exit 1; }
 
 [ -d "$RFS" ] || die "no rootfs at $RFS — run ./build/forge build $PROFILE first"
@@ -130,11 +140,43 @@ esac
 # happen. Nothing in the build would have noticed.
 #
 # Linking it statically removes the question rather than answering it.
-gcc -O2 -std=gnu11 -Wall -Wextra -static -o init \
+# FAULT INJECTION IS OFF UNLESS SOMEBODY ASKED FOR IT, IN WORDS.
+#
+# src/aurstage/fault.c compiles to nothing without -DAURSTAGE_FAULT, so
+# an ordinary image cannot be made to stop halfway through rewriting a
+# partition table by anything on the kernel command line. Asking for
+# one is AURSTAGE_FAULT=1 in the environment, it changes the name of
+# the image, and the image says so on every boot.
+FAULTDEF=""
+if [ "${AURSTAGE_FAULT:-0}" = 1 ]; then
+    FAULTDEF="-DAURSTAGE_FAULT"
+    warn "building a FAULT INJECTION image: aurstage.die_at= will stop"
+    warn "this machine dead in the middle of writing to a disk."
+fi
+gcc -O2 -std=gnu11 -Wall -Wextra -static $FAULTDEF -o init \
     "$ROOT"/src/aurstage/*.c -I "$ROOT/src/aurstage" \
     || die "aurstage did not build"
 file init 2>/dev/null | grep -q "statically linked" \
     || die "init is not statically linked; PID 1 would depend on the build host"
+
+# AND THE GATE IS ON THE BINARY, not on the source.
+#
+# The source can be right while the build is wrong -- a stale object, a
+# Makefile that kept a define, somebody's editor. What ships is the
+# binary, so the binary is what is searched. `strings` rather than
+# grep: the flag lives in .rodata and grep on a 1 MB static binary
+# matches all sorts of things.
+if [ -z "$FAULTDEF" ]; then
+    if strings init 2>/dev/null | grep -q 'aurstage\.die_at='; then
+        die "this image can be told to stop in the middle of writing to a
+     disk, and nobody asked for that. src/aurstage/fault.c is meant to
+     compile to nothing without -DAURSTAGE_FAULT. Refusing to pack it."
+    fi
+else
+    strings init 2>/dev/null | grep -q 'aurstage\.die_at=' \
+        || die "a fault-injection image was asked for and the flag is not in
+     the binary, so every power-cut test would silently pass."
+fi
 note "init $(du -h init | cut -f1)"
 
 # ── the programs it shells out to ──────────────────────────────────
@@ -306,16 +348,16 @@ note "$(find lib/modules -name '*.ko*' | wc -l) modules, $(du -sh lib/modules | 
 
 # ── the archive ────────────────────────────────────────────────────
 step "packing"
-find . -print0 | cpio --null -o --format=newc --quiet | gzip -9 > "$OUT/auros-staging.img"
-SZ=$(du -h "$OUT/auros-staging.img" | cut -f1)
+find . -print0 | cpio --null -o --format=newc --quiet | gzip -9 > "$OUT/auros-staging$SUF.img"
+SZ=$(du -h "$OUT/auros-staging$SUF.img" | cut -f1)
 
 # The kernel that goes with it. They are a pair: modules built for one
 # kernel do not load into another, and shipping them separately is how
 # that gets discovered on somebody's laptop.
-cp -a "$RFS/boot/vmlinuz-$KVER" "$OUT/auros-staging-vmlinuz"
+cp -a "$RFS/boot/vmlinuz-$KVER" "$OUT/auros-staging$SUF-vmlinuz"
 
 printf '\n%s::%s %s  (%s, kernel %s)\n' "$C_OK" "$C_RST" \
-       "$OUT/auros-staging.img" "$SZ" "$KVER"
+       "$OUT/auros-staging$SUF.img" "$SZ" "$KVER"
 printf '%s   %s%s\n' "$C_DIM" \
   "boot it with: aurstage.dry   (look and change nothing)" "$C_RST"
 printf '%s   %s%s\n' "$C_DIM" \

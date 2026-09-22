@@ -18,8 +18,8 @@
  * to widen the range or add a bypass flag, and that is exactly the
  * property the file exists to hold.
  *
- * So there are four windows, disjoint, each with a purpose in its
- * name, all decided in one place. A write names the window it belongs
+ * So the windows are disjoint, each with a purpose in its name,
+ * all decided in one place. A write names the window it belongs
  * to. Widening one to make a write fit is then a change somebody has
  * to defend, not a flag somebody sets.
  *
@@ -42,6 +42,13 @@ typedef enum {
     WR_GPT_PRIMARY,     /* protective MBR, header, primary entry array*/
     WR_GPT_BACKUP,      /* backup entry array and header              */
     WR_LOG,             /* the preallocated journal/log extents       */
+    WR_RESCUE,          /* the rescue capture area, ON THE STICK      */
+    WR_RESTORE,         /* captured bytes going back inside a
+                         * partition: the ESP, or one volume's $Boot.
+                         * Armed over exactly the extent being put
+                         * back and disarmed straight after, so the
+                         * restore never holds a window wider than the
+                         * one thing it is writing. */
     WR_N
 } wr_kind;
 

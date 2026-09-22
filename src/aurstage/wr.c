@@ -18,6 +18,8 @@ static const char *kind_name(wr_kind k)
     case WR_GPT_PRIMARY: return "the partition table";
     case WR_GPT_BACKUP:  return "the spare partition table";
     case WR_LOG:         return "the installer's notes";
+    case WR_RESCUE:      return "the way back, on the memory stick";
+    case WR_RESTORE:     return "putting a saved part of Windows back";
     case WR_N:           break;
     }
     return "somewhere unnamed";

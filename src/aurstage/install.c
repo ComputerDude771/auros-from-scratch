@@ -21,6 +21,8 @@
 #include "probe.h"
 #include "commit.h"
 #include "record.h"
+#include "rescue.h"
+#include "fault.h"
 
 /* 600 MiB: enough for a rescue kernel, an initramfs, the captured ESP
  * and this machine's payload, with room for the payload to grow. */
@@ -122,6 +124,10 @@ static void dots(int pct)
     last = pct;
     fprintf(stderr, " %d%%", pct);
     if (pct >= 100) fprintf(stderr, "\n");
+    /* Halfway through whatever long thing is running. One name for
+     * all of them: which one it is is decided by where the run got to,
+     * and a test asks for one long step at a time. */
+    if (pct >= 50 && pct < 55) fault_maybe("halfway");
 }
 
 static void commit_note(int n, void *ud)
@@ -129,6 +135,10 @@ static void commit_note(int n, void *ud)
     (void)ud;
     step(n == 1 ? REC_COMMIT_ARRAY : n == 2 ? REC_COMMIT_SECTOR
                                             : REC_COMMIT_BACKUP, NULL);
+    /* The three most dangerous instants in the product, named so a
+     * test can stop the machine at each of them. See fault.h. */
+    fault_maybe(n == 1 ? "commit-array"
+              : n == 2 ? "commit-sector" : "commit-backup");
 }
 
 /* The partition device the kernel will make for an entry index. */
@@ -297,6 +307,27 @@ void install_run(const stage_machine *m)
     if (image_verify(&img, dots, why, sizeof why) != 0)
         refuse(why, NULL, "image-damaged");
 
+    /* ── THE WAY BACK, AND IT IS NOT OPTIONAL ──────────────────────
+     *
+     * R4: a single-PC household whose install goes wrong has no second
+     * computer to read instructions on and no way to make a stick. So
+     * the stick is mandatory. It is FOUND and MEASURED here, because
+     * the layout below has to leave room for the copy and the size of
+     * that copy is dominated by this machine's EFI partition -- 100 MB
+     * on one laptop and a gigabyte on the next. The copy itself is
+     * made last, further down. */
+    rescue_area rsc;
+    if (rescue_find(m, disk->name, &rsc, why, sizeof why) != 0)
+        refuse(why, "Make the AurOS memory stick again and start over.",
+               "no-rescue-area");
+    uint64_t rsc_need = 0;
+    if (rescue_size_needed(disk, &rsc_need, why, sizeof why) != 0)
+        refuse(why, NULL, "cannot-size-rescue");
+    if (rsc_need > rsc.part_bytes)
+        refuse("The AurOS memory stick does not have room to save this "
+               "computer's Windows startup.",
+               "Make the stick again on a larger drive.", "rescue-too-small");
+
     /* The table, and the plan. */
     int dfd = open(diskdev, O_RDONLY | O_CLOEXEC);
     gpt_table old;
@@ -338,12 +369,31 @@ void install_run(const stage_machine *m)
     /* A layout that fits, checked against the table. */
     stage_layout L;
     if (plan_compute(&old, wi, sp.smallest_bytes, img.root_len,
-                     RECOVERY_BYTES, min_root_bytes(), &L,
+                     RECOVERY_BYTES, rsc_need, min_root_bytes(), &L,
                      why, sizeof why) != 0)
         refuse(why, NULL, "no-room");
     plan_say(&L);
 
+    /* ── THE WAY BACK, AND IT IS NOT OPTIONAL ──────────────────────
+     *
+     * R4: a single-PC household whose install goes wrong has no second
+     * computer to read instructions on and no way to make a stick. So
+     * the stick is mandatory, it is checked here, and the copy of this
+     * machine's startup is made here -- LAST in the gate, because it
+     * is the only gate item that takes minutes and writes half a
+     * gigabyte, and spending that before the cheap refusals would be
+     * rude to everybody it is going to refuse anyway. */
+    stage_say("%s", "");
+    stage_say("Saving this computer's Windows startup, so it can be put back.");
+    fprintf(stderr, "aurstage: ");
+    if (rescue_capture(disk, &rsc, j.run_id, dots, why, sizeof why) != 0)
+        refuse(why, NULL, "rescue-capture-failed");
+    fprintf(stderr, "\n");
+    stage_say("saved    %llu MB, read back and checked",
+              (unsigned long long)(rsc_need / (1024 * 1024)));
+
     step(REC_GATE_OK, NULL);
+    fault_maybe("gate");
     stage_say("%s", "");
     stage_say("Everything AurOS can check has been checked.");
 
@@ -353,6 +403,7 @@ void install_run(const stage_machine *m)
     stage_say("Making room on the Windows drive. This is the only part");
     stage_say("that cannot be undone. Do not turn the computer off.");
     step(REC_SHRINK_BEGIN, NULL);
+    fault_maybe("shrink-begin");
     fprintf(stderr, "aurstage: ");
     shrink_result sr;
     shrink_do(windev, sp.smallest_bytes, dots, &sr);
@@ -365,6 +416,7 @@ void install_run(const stage_machine *m)
                 "shrink-failed", 1);
     }
     step(REC_SHRINK_END, sr.why);
+    fault_maybe("shrink-end");
     stage_say("windows  %s", sr.why);
 
     /* RE-PLAN FROM WHAT THE FILESYSTEM ACTUALLY CAME OUT AT, not from
@@ -372,7 +424,7 @@ void install_run(const stage_machine *m)
      * boundary, and a partition entry that ends below its filesystem
      * is a filesystem whose last blocks are outside its partition. */
     if (plan_compute(&old, wi, sr.achieved_bytes, img.root_len,
-                     RECOVERY_BYTES, min_root_bytes(), &L,
+                     RECOVERY_BYTES, rsc_need, min_root_bytes(), &L,
                      why, sizeof why) != 0)
         give_up(why, "The Windows drive is smaller but nothing else has "
                      "changed.", "no-room-after-shrink", 1);
@@ -394,6 +446,7 @@ void install_run(const stage_machine *m)
         give_up(why, "The Windows drive is smaller but still works.",
                 "write-failed", 1);
     step(REC_WRITE_END, NULL);
+    fault_maybe("write-end");
     wr_disarm(&t, WR_ROOT);
 
     /* ── phase 7 ─────────────────────────────────────────────────── */
@@ -429,6 +482,30 @@ void install_run(const stage_machine *m)
     stage_say("Writing the new layout.");
     if (commit_table(&t, &nw, commit_note, NULL, why, sizeof why) != 0)
         give_up(why, NULL, "commit-failed", 1);
+
+    /* A SECOND COPY OF THE WAY BACK, on the machine itself.
+     *
+     * The stick already holds one and is mandatory; this is for the
+     * person who, eighteen months from now, has reused the stick for
+     * holiday photographs and wants Windows back. It is written after
+     * the commit because the partition it goes in does not exist until
+     * then, and a failure here is a WARNING and not a give_up: AurOS
+     * is installed and working at this point, and the copy that
+     * matters -- the one that survives this disk failing -- is on the
+     * stick either way. */
+    stage_say("Keeping a copy of the way back on this computer too.");
+    rescue_payload rp;
+    if (wr_arm(&t, WR_RECOVERY, L.rsc_first * (uint64_t)ss,
+               (L.rsc_last + 1) * (uint64_t)ss, why, sizeof why) != 0 ||
+        rescue_open(&rsc, &rp, why, sizeof why) != 0 ||
+        rescue_mirror(&t, &rsc, &rp, L.rsc_first * (uint64_t)ss,
+                      why, sizeof why) != 0)
+        stage_warn("the copy of the way back could not be kept on this "
+                   "computer (%s). The one on the memory stick is fine; "
+                   "keep the stick.", why);
+    else
+        stage_say("saved    a second copy is on this computer");
+    wr_disarm(&t, WR_RECOVERY);
     wr_close(&t);
 
     /* From here Windows is still bootable -- its partition entry
@@ -446,6 +523,7 @@ void install_run(const stage_machine *m)
     if (st > 0)
         stage_warn("%s", why);
     step(REC_SETTLE_END, NULL);
+    fault_maybe("settle-end");
     step(REC_DONE, NULL);
 
     stage_say("%s", "");
@@ -456,5 +534,124 @@ void install_run(const stage_machine *m)
     if (stage_switch_root(rootdev) != 0)
         give_up("AurOS is installed but did not start.",
                 "Turn this computer off and on again.", "handover-failed", 1);
+    for (;;) pause();
+}
+
+/* A restore that cannot go on stops the same way the installer does:
+ * a sentence, a power-off, and no reboot loop. Separate from the
+ * installer's give_up() because there is no install record to write to
+ * here and nothing below the line to warn about. */
+static void stop_restore(void)
+{
+    stage_say("%s", "");
+    stage_say("Turn this computer off with the power button, and start it");
+    stage_say("again with the AurOS memory stick plugged in.");
+    sync();
+    for (;;) pause();
+}
+
+/* ── "Put Windows back" ──────────────────────────────────────────────
+ *
+ * The other half of rule 2. This runs in the same staging environment
+ * as the install, started by `aurstage.restore` on the kernel command
+ * line, which is what the button in the AurOS settings panel arms
+ * before it restarts the machine. It does NOT run inside AurOS: see
+ * the header of rescue.h for why an in-place restore cannot be safe.
+ *
+ * WHICH SAVED COPY, when there are normally two. The stick's and the
+ * machine's own are byte-identical when both are healthy, so the
+ * choice only matters when one of them is not -- and the one most
+ * likely not to be is the copy sitting on the disk that has gone
+ * wrong. So the stick is preferred, every candidate is opened and
+ * fully verified before any of them is used, and a machine with a
+ * damaged stick and a good on-disk copy still gets its Windows back.
+ */
+static void restore_say(const char *line, void *ud)
+{ (void)ud; stage_say("%s", line); }
+
+void restore_run(const stage_machine *m)
+{
+    char why[400];
+    stage_say("%s", "");
+    stage_say("── putting Windows back ────────────────────────────────");
+
+    rescue_area areas[STAGE_MAX_DISK * 2];
+    int n = rescue_find_n(m, areas, (int)(sizeof areas / sizeof areas[0]));
+    if (n == 0) {
+        stage_warn("there is no saved copy of this computer's Windows "
+                   "startup, on this computer or on any drive plugged "
+                   "into it.");
+        stage_say("         Plug in the AurOS memory stick and try again.");
+        stage_say("aurstage-report v1 verdict=restore-nothing-saved "
+                  "record=none -");
+        stop_restore();
+    }
+
+    /* Open every candidate, and work out which disk each describes.
+     * Nothing is written until one of them has been read end to end
+     * and every hash in it has matched. */
+    int best = -1, best_disk = -1, best_on_target = 1;
+    for (int i = 0; i < n; i++) {
+        rescue_payload p;
+        if (rescue_open(&areas[i], &p, why, sizeof why) != 0) {
+            stage_warn("a saved copy on %s could not be read: %s",
+                       areas[i].dev, why);
+            continue;
+        }
+        int di = -1;
+        for (int k = 0; k < m->n_disks; k++) {
+            const stage_disk *d = &m->disk[k];
+            if (p.serial[0] && d->serial[0]) {
+                if (!strcmp(p.serial, d->serial)) { di = k; break; }
+            } else if (d->bytes == p.disk_bytes && !d->removable) {
+                di = k;
+            }
+        }
+        if (di < 0) {
+            stage_warn("a saved copy on %s is of a different computer's "
+                       "disk; ignoring it", areas[i].dev);
+            continue;
+        }
+        char target[80];
+        snprintf(target, sizeof target, "/dev/%s", m->disk[di].name);
+        int on_target = strcmp(target, areas[i].dev) == 0;
+        /* Prefer a copy that is NOT on the disk being rescued. */
+        if (best < 0 || (best_on_target && !on_target)) {
+            best = i; best_disk = di; best_on_target = on_target;
+        }
+    }
+    if (best < 0) {
+        stage_warn("no readable saved copy of this computer's Windows "
+                   "startup could be found.");
+        stage_say("aurstage-report v1 verdict=restore-no-usable-copy "
+                  "record=none -");
+        stop_restore();
+    }
+
+    char diskdev[80];
+    snprintf(diskdev, sizeof diskdev, "/dev/%s", m->disk[best_disk].name);
+    stage_say("using the saved copy on %s%s", areas[best].dev,
+              best_on_target ? " (this computer's own disk)"
+                             : " (the memory stick)");
+    stage_say("restoring %s", diskdev);
+
+    rescue_outcome oc;
+    if (rescue_restore(diskdev, &areas[best], restore_say, NULL, &oc,
+                       why, sizeof why) != 0) {
+        stage_warn("%s", why);
+        stage_say("aurstage-report v1 verdict=restore-failed record=none "
+                  "table=%d esp=%d", oc.table_restored, oc.esp_restored);
+        stop_restore();
+    }
+    stage_say("%s", "");
+    stage_say("aurstage-report v1 verdict=restored record=done "
+              "disk=%s table=%d esp=%d grown=%d small=%d mbr=%d",
+              m->disk[best_disk].name, oc.table_restored, oc.esp_restored,
+              oc.volumes_grown, oc.volumes_left_small, oc.mbr_restored);
+    stage_say("%s", "");
+    stage_say("Windows is back. This computer will switch itself off;");
+    stage_say("take the memory stick out and start it again.");
+    sync();
+    reboot(RB_POWER_OFF);
     for (;;) pause();
 }

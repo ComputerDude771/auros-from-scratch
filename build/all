@@ -1,0 +1,318 @@
+#!/bin/bash
+# ═══════════════════════════════════════════════════════════════════
+#  all — build every profile on a machine that cannot hold them
+#
+#  THE PROBLEM THIS EXISTS FOR, in numbers from this build machine:
+#
+#    a forged rootfs      3.1 GB
+#    its squashfs         1.6 GB
+#    the bootable image   3.2 GB
+#    ─────────────────────────────
+#    one profile          7.9 GB
+#
+#  Five profiles is forty gigabytes of intermediates on a builder with
+#  fifteen free. Nothing about the images is wrong; there are simply
+#  five of them and one disk. The usual answer -- "get a bigger
+#  builder" -- is not an answer for somebody who wants to rebuild AurOS
+#  for their school on the laptop they have.
+#
+#  So: one profile at a time, and the moment an image is finished it is
+#  hashed, recorded, compressed, checked by DECOMPRESSING IT AGAIN, and
+#  the 6.4 GB of intermediates behind it are given back. A compressed
+#  image is about 1.2 GB, so five of them fit in the space one
+#  uncompressed build takes.
+#
+#  THREE RULES IT WILL NOT BREAK
+#
+#    1. Nothing is deleted until what replaces it has been verified.
+#       A compressed image that has not been decompressed and hashed
+#       back to the original digest is a rumour, and this deletes the
+#       original only after that has happened.
+#    2. A profile that cannot be built is a STOP, not a skip. A driver
+#       that quietly leaves one out produces a run that looks like five
+#       successes and is four.
+#    3. Running out of room is a refusal that says the number. "No
+#       space left on device" halfway through a debootstrap is an hour
+#       wasted and a confusing log; this measures first and says "this
+#       profile needs 9 GB and there are 6".
+#
+#    build/all                       every profile, compressed
+#    build/all desktop school-kiosk  just these, in this order
+#    build/all --keep=raw            leave the images uncompressed
+#    build/all --keep=none           keep only the manifests
+#    build/all --force               rebuild even what is already done
+#    build/all --list                what is built, and what it cost
+# ═══════════════════════════════════════════════════════════════════
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PROFILE_DIR="$ROOT/profiles"
+WORK="$ROOT/work/forge"
+OUT="$ROOT/out"
+MAN="$OUT/manifests"
+
+C_OK=$'\033[38;2;125;211;192m'; C_ERR=$'\033[38;2;242;120;141m'
+C_DIM=$'\033[38;2;110;120;134m'; C_WRN=$'\033[38;2;240;186;104m'
+C_RST=$'\033[0m'
+say()  { printf '%s::%s %s\n' "$C_OK"  "$C_RST" "$*"; }
+step() { printf '\n%s▸%s %s\n' "$C_OK" "$C_RST" "$*"; }
+note() { printf '%s   %s%s\n' "$C_DIM" "$*" "$C_RST"; }
+warn() { printf '%s!!%s %s\n' "$C_WRN" "$C_RST" "$*" >&2; }
+die()  { printf '%s::%s %s\n' "$C_ERR" "$C_RST" "$*" >&2; exit 1; }
+
+KEEP=compressed
+FORCE=0
+LIST=0
+WANT=()
+for a in "$@"; do
+    case "$a" in
+        --keep=raw|--keep=compressed|--keep=none) KEEP="${a#--keep=}" ;;
+        --force) FORCE=1 ;;
+        --list)  LIST=1 ;;
+        -*) die "unknown option: $a" ;;
+        *)  WANT+=("$a") ;;
+    esac
+done
+
+# ── how much room is there, really ─────────────────────────────────
+#
+# In MEGABYTES, from the filesystem the work tree is actually on --
+# not from $ROOT, which can be a different mount. `df --output=avail`
+# because parsing the human-readable columns of df is how a builder
+# ends up comparing "15G" against "9000".
+free_mb() {
+    local d="$1"
+    while [ ! -d "$d" ]; do d=$(dirname "$d"); done
+    df -P -BM --output=avail "$d" 2>/dev/null | tail -1 | tr -dc '0-9'
+}
+mb() { printf '%s MB' "$1"; }
+gb() { printf '%.1f GB' "$(echo "$1" | awk '{print $1/1024}')"; }
+
+# WHAT ONE PROFILE COSTS, and where the number comes from.
+#
+# Measured, when this profile has been built before -- the manifest
+# records the peak. Estimated from the desktop build otherwise, with a
+# margin, because the first build of a new profile has no history and
+# refusing it for lack of one would make this driver useless on exactly
+# the machine it is for. The estimate is deliberately generous: being
+# wrong in the direction of "wait, free up some room first" costs a
+# minute, and being wrong the other way costs an hour and a half-built
+# rootfs.
+NEED_DEFAULT_MB=9500
+need_for() {
+    local id="$1" f="$MAN/$id.json" v
+    if [ -f "$f" ]; then
+        v=$(sed -n 's/.*"peak_mb"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/p' "$f" | head -1)
+        [ -n "$v" ] && [ "$v" -gt 0 ] && { printf '%s' "$(( v + 1024 ))"; return; }
+    fi
+    printf '%s' "$NEED_DEFAULT_MB"
+}
+
+sha() { sha256sum "$1" | cut -d' ' -f1; }
+
+# The profile file's own content hash, so that "already built" means
+# "built from THIS profile", not "built from a file with this name".
+# Every file in the inherit chain, in order.
+profile_hash() {
+    local cur="$1" chain="" f depth=0
+    while [ -n "$cur" ]; do
+        f="$PROFILE_DIR/$cur.profile"
+        [ -f "$f" ] || die "no such profile: $cur"
+        # Parents first, so the hash is of the chain in the order forge
+        # reads it and not in the order this walked it.
+        chain="$f${chain:+ }$chain"
+        cur=$(sed -n 's/^[[:space:]]*inherit="\{0,1\}\([A-Za-z0-9_-]*\)"\{0,1\}.*/\1/p' "$f" | head -1)
+        depth=$((depth+1)); [ "$depth" -gt 8 ] && die "inherit chain too deep at $cur"
+    done
+    # shellcheck disable=SC2086
+    cat $chain | sha256sum | cut -d' ' -f1
+}
+
+# ── the ledger ─────────────────────────────────────────────────────
+#
+# One small JSON file per profile, written only after the artifact it
+# describes has been hashed. It is what makes a second run resumable
+# and what makes `--keep=none` honest: after the images are gone, this
+# is the record that they existed and what they were.
+manifest_write() { # id profile_hash artifact artifact_sha raw_sha raw_bytes peak_mb
+    mkdir -p "$MAN"
+    cat > "$MAN/$1.json" <<EOJ
+{
+  "profile": "$1",
+  "profile_sha256": "$2",
+  "artifact": "$3",
+  "artifact_sha256": "$4",
+  "image_sha256": "$5",
+  "image_bytes": $6,
+  "peak_mb": $7,
+  "built_unix": $(date +%s),
+  "built_by": "build/all"
+}
+EOJ
+}
+
+manifest_ok() { # id profile_hash  -> 0 if this profile is already done
+    local f="$MAN/$1.json"
+    [ -f "$f" ] || return 1
+    grep -q "\"profile_sha256\": \"$2\"" "$f" || return 1
+    local art
+    art=$(sed -n 's/.*"artifact"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$f" | head -1)
+    # --keep=none records no artifact, and that is a complete record.
+    if [ -z "$art" ] || [ "$art" = "none" ]; then return 0; fi
+    [ -f "$OUT/$art" ] || return 1
+    local want got
+    want=$(sed -n 's/.*"artifact_sha256"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$f" | head -1)
+    got=$(sha "$OUT/$art")
+    [ "$want" = "$got" ]
+}
+
+if [ "$LIST" = 1 ]; then
+    printf '\n  %-16s %-12s %-10s %s\n' profile built size artifact
+    for f in "$MAN"/*.json; do
+        [ -f "$f" ] || continue
+        id=$(basename "$f" .json)
+        art=$(sed -n 's/.*"artifact"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$f")
+        when=$(sed -n 's/.*"built_unix"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/p' "$f")
+        sz="-"; [ -f "$OUT/$art" ] && sz=$(du -h "$OUT/$art" | cut -f1)
+        printf '  %-16s %-12s %-10s %s\n' "$id" \
+               "$(date -d "@$when" +%Y-%m-%d 2>/dev/null || echo "$when")" \
+               "$sz" "${art:-none}"
+    done
+    printf '\n'
+    exit 0
+fi
+
+# ── which profiles ─────────────────────────────────────────────────
+if [ "${#WANT[@]}" -eq 0 ]; then
+    for f in "$PROFILE_DIR"/*.profile; do
+        [ -f "$f" ] || continue
+        WANT+=("$(basename "$f" .profile)")
+    done
+fi
+[ "${#WANT[@]}" -gt 0 ] || die "there are no profiles in $PROFILE_DIR"
+
+[ "$(id -u)" = 0 ] || die "forge needs root to build a rootfs. Run this with sudo."
+for t in zstd sha256sum du df awk; do
+    command -v "$t" >/dev/null 2>&1 || die "$t is not installed, and $0 needs it"
+done
+
+say "building ${#WANT[@]} profile(s): ${WANT[*]}"
+note "keeping: $KEEP   free now: $(gb "$(free_mb "$ROOT")")"
+
+built=(); skipped=(); total_kept=0
+
+for id in "${WANT[@]}"; do
+    step "$id"
+    ph=$(profile_hash "$id")
+
+    if [ "$FORCE" = 0 ] && manifest_ok "$id" "$ph"; then
+        note "already built from this profile, and the artifact still hashes right"
+        skipped+=("$id")
+        continue
+    fi
+
+    # ── room, measured before anything is started ──────────────────
+    need=$(need_for "$id")
+    have=$(free_mb "$ROOT")
+    if [ "$have" -lt "$need" ]; then
+        # Before refusing, give back what is plainly rubbish: a work
+        # tree from a profile that is already finished and recorded.
+        for other in "$WORK"/*; do
+            [ -d "$other" ] || continue
+            oid=$(basename "$other")
+            [ "$oid" = "$id" ] && continue
+            if manifest_ok "$oid" "$(profile_hash "$oid" 2>/dev/null || echo x)"; then
+                note "reclaiming the finished work tree for $oid"
+                rm -rf "$other"
+            fi
+        done
+        have=$(free_mb "$ROOT")
+    fi
+    if [ "$have" -lt "$need" ]; then
+        printf '\n'
+        die "there is not enough room to build $id.
+     It needs about $(gb "$need") and this disk has $(gb "$have") free.
+     Either free that up, or run with --keep=none so that the images
+     already built are replaced by their manifests:
+
+         build/all --keep=none
+
+     Nothing has been started, and nothing has been deleted."
+    fi
+    note "needs about $(gb "$need"), $(gb "$have") free"
+
+    # ── build ──────────────────────────────────────────────────────
+    "$ROOT/build/forge" build "$id" || die "$id did not build"
+    "$ROOT/build/mkimage" "$id"     || die "$id did not produce an image"
+
+    img="$OUT/auros-$id.img"
+    [ -f "$img" ] || die "$id built but there is no image at $img"
+
+    # The high-water mark, for the next run's estimate. Measured after
+    # the image exists and before anything is reclaimed, which is the
+    # moment this profile occupies the most disk it ever will.
+    mbof() { local t=0 x; for x in "$@"; do
+                 [ -e "$x" ] && t=$(( t + $(du -sm "$x" | cut -f1) ))
+             done; printf '%s' "$t"; }
+    peak=$(( $(mbof "$WORK/$id") + $(mbof "$img") \
+             + $(mbof "$OUT/$id-"*.squashfs) ))
+    raw_sha=$(sha "$img")
+    raw_bytes=$(stat -c %s "$img")
+    note "image $(du -h "$img" | cut -f1), sha256 ${raw_sha:0:16}…"
+
+    # ── keep what was asked for, and prove it before deleting ──────
+    case "$KEEP" in
+      raw)
+        manifest_write "$id" "$ph" "auros-$id.img" "$raw_sha" \
+                       "$raw_sha" "$raw_bytes" "$peak"
+        art="auros-$id.img"
+        ;;
+      compressed)
+        note "compressing (this takes a few minutes and is why five fit)"
+        zstd -q -19 --long=27 -T0 -f -o "$img.zst" "$img" \
+            || die "$id: the image could not be compressed"
+        # THE CHECK THAT MAKES THE DELETE SAFE. Decompress the thing
+        # just written and hash it back to the original digest. A
+        # compressed artifact nobody decompressed is a rumour, and the
+        # next line removes the only other copy.
+        back=$(zstd -dc --long=27 "$img.zst" | sha256sum | cut -d' ' -f1)
+        [ "$back" = "$raw_sha" ] \
+            || die "$id: the compressed image does not decompress to the image
+     it was made from. Keeping both; nothing has been deleted."
+        note "compressed $(du -h "$img.zst" | cut -f1), and it decompresses back to the same bytes"
+        manifest_write "$id" "$ph" "auros-$id.img.zst" "$(sha "$img.zst")" \
+                       "$raw_sha" "$raw_bytes" "$peak"
+        rm -f "$img"
+        art="auros-$id.img.zst"
+        ;;
+      none)
+        manifest_write "$id" "$ph" "none" "" "$raw_sha" "$raw_bytes" "$peak"
+        rm -f "$img"
+        art="none"
+        ;;
+    esac
+
+    # ── give the intermediates back ────────────────────────────────
+    #
+    # The rootfs and the squashfs are reproducible from the profile and
+    # are 4.7 GB of the 7.9. They go as soon as the image that came out
+    # of them is recorded. `forge clean` rather than rm -rf, because
+    # the work tree has bind mounts in it during a build and the only
+    # code that knows how to take them down lives there.
+    "$ROOT/build/forge" clean "$id" >/dev/null 2>&1 || rm -rf "${WORK:?}/$id"
+    rm -f "$OUT/$id-"*.squashfs
+    kept=0
+    if [ -f "$OUT/$art" ]; then kept=$(du -sm "$OUT/$art" | cut -f1); fi
+    total_kept=$(( total_kept + kept ))
+    say "$id done — kept $(gb "$kept"), $(gb "$(free_mb "$ROOT")") free again"
+    built+=("$id")
+done
+
+printf '\n'
+step "all of it"
+note "built:   ${built[*]:-none}"
+note "skipped: ${skipped[*]:-none} (already done)"
+note "kept:    $(gb "$total_kept") in $OUT"
+note "free:    $(gb "$(free_mb "$ROOT")")"
+printf '\n'
+say "$(( ${#built[@]} + ${#skipped[@]} )) of ${#WANT[@]} profiles are built and recorded."

@@ -29,6 +29,7 @@
 #include "fde.h"
 #include "health.h"
 #include "install.h"
+#include "fault.h"
 
 /* What the kernel was told to do with us, out of /proc/cmdline. */
 
@@ -493,6 +494,16 @@ int main(void)
 
     stage_say("AurOS staging environment");
     stage_say("this is the one restart; nothing has been changed yet");
+    /* AND IF THIS IS A TEST IMAGE, IT SAYS SO BEFORE ANYTHING ELSE.
+     * A fault-injection image can be told to stop dead in the middle
+     * of rewriting a partition table. One must never be mistaken for a
+     * real one, and the cheapest guard against that is that it
+     * announces itself in the first three lines of every boot. */
+    if (fault_build()) {
+        stage_warn("THIS IS A FAULT-INJECTION BUILD. It can be told to stop");
+        stage_warn("in the middle of writing to a disk. Never give it to");
+        stage_warn("anybody, and never point it at a computer you care about.");
+    }
 
     if (!stage_mount_pseudo())
         stage_warn("some of the kernel's own filesystems are missing; "
@@ -548,6 +559,14 @@ int main(void)
      * the dry run and the install look at the machine identically,
      * and the only difference is whether anything is allowed to
      * happen afterwards. */
+    /* PUT WINDOWS BACK. Checked before the installer, deliberately:
+     * a machine arriving here with both flags set is a machine
+     * somebody is trying to rescue, and the rescue wins. */
+    if (stage_cmdline_has("aurstage.restore")) {
+        restore_run(&m);
+        stop_here("the restore stopped unexpectedly");
+    }
+
     if (stage_cmdline_has("aurstage.install")) {
         install_run(&m);
         /* install_run never returns. */

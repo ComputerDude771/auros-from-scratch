@@ -53,6 +53,17 @@ typedef struct {
 
     uint64_t root_first, root_last;
     uint64_t rec_first,  rec_last;
+    /* THE WAY BACK GETS ITS OWN PARTITION, and not a file in the one
+     * above it. The recovery partition is an EFI System partition, so
+     * it carries a FAT filesystem that firmware can launch out of;
+     * putting the captured copy of somebody's Windows in a FILE on
+     * that filesystem means mounting FAT read-write in an initramfs,
+     * on the one path whose whole purpose is surviving a machine that
+     * has gone wrong. A raw extent has no metadata to corrupt, is one
+     * contiguous run by construction, and is found by its type GUID
+     * whatever state the rest of the disk is in -- the same three
+     * reasons record.h gives for the same decision. */
+    uint64_t rsc_first,  rsc_last;
 } stage_layout;
 
 /* Work out the layout.
@@ -70,7 +81,8 @@ typedef struct {
  * Returns 0 and fills `out`, or -1 with one sentence in `why`. */
 int plan_compute(const gpt_table *t, int win_idx,
                  uint64_t win_new_bytes, uint64_t root_src_bytes,
-                 uint64_t rec_bytes, uint64_t min_root_bytes,
+                 uint64_t rec_bytes, uint64_t rsc_bytes,
+                 uint64_t min_root_bytes,
                  stage_layout *out, char *why, size_t n);
 
 /* Every bound, checked against the TABLE.
@@ -80,7 +92,8 @@ int plan_compute(const gpt_table *t, int win_idx,
  * when it was made and wrong by the time it is used. */
 int plan_check(const gpt_table *t, const stage_layout *L,
                uint64_t root_src_bytes, uint64_t rec_bytes,
-               uint64_t min_root_bytes, char *why, size_t n);
+               uint64_t rsc_bytes, uint64_t min_root_bytes,
+               char *why, size_t n);
 
 /* Human-readable, for the log and for a support engineer reading a
  * thousand of them. */

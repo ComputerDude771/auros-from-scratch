@@ -10,6 +10,7 @@
 #include <time.h>
 
 #include "commit.h"
+#include "rescue.h"
 
 int commit_build(const gpt_table *old, const stage_layout *L,
                  gpt_table *out, char *why, size_t n)
@@ -29,6 +30,13 @@ int commit_build(const gpt_table *old, const stage_layout *L,
      * has to work for. */
     if (gpt_add(out, GPT_TYPE_LINUX_ROOT, "AUROS-ROOT",
                 L->root_first, L->root_last, NULL, why, n) < 0)
+        return -1;
+    /* The saved copy of this machine's Windows startup. A RAW extent
+     * with our own type GUID and no filesystem in it -- see the note
+     * on rsc_first in plan.h for why it is not a file inside the
+     * partition below. */
+    if (gpt_add(out, RESCUE_TYPE_GUID, "AUROS-SAVED",
+                L->rsc_first, L->rsc_last, NULL, why, n) < 0)
         return -1;
     /* The recovery partition is an EFI System partition: it has to be
      * launchable by firmware without anything else on the disk being

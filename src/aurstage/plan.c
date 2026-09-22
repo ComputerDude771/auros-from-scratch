@@ -13,7 +13,8 @@ static uint64_t align_dn(uint64_t v, uint64_t a)
 
 int plan_compute(const gpt_table *t, int win_idx,
                  uint64_t win_new_bytes, uint64_t root_src_bytes,
-                 uint64_t rec_bytes, uint64_t min_root_bytes,
+                 uint64_t rec_bytes, uint64_t rsc_bytes,
+                 uint64_t min_root_bytes,
                  stage_layout *L, char *why, size_t n)
 {
     memset(L, 0, sizeof *L);
@@ -70,10 +71,29 @@ int plan_compute(const gpt_table *t, int win_idx,
         snprintf(why, n, "the recovery area was given no size");
         return -1;
     }
+    uint64_t rsc_blocks = align_up((rsc_bytes + ss - 1) / ss, align);
+    if (rsc_blocks == 0) {
+        snprintf(why, n, "the copy of the way back was given no size");
+        return -1;
+    }
+    /* Carved from the far end inwards, so that the root -- the one
+     * thing a person notices the size of -- is what absorbs whatever
+     * is left over, and the two small partitions stay where the boot
+     * entry and the type GUID say they are. gap_end is exclusive, and
+     * both align_dn calls are the reason this cannot be written as one
+     * subtraction: rounding each start down to a megabyte moves it,
+     * and the next one down has to start from where it landed. */
     uint64_t rec_first = align_dn(gap_end - rec_blocks, align);
+    if (rec_first < L->gap_first || rec_first < rsc_blocks) {
+        snprintf(why, n,
+                 "there is not enough room on this computer for AurOS and a "
+                 "way back to Windows");
+        return -1;
+    }
+    uint64_t rsc_first = align_dn(rec_first - rsc_blocks, align);
     uint64_t root_first = align_up(L->gap_first, align);
 
-    if (rec_first <= root_first) {
+    if (rsc_first <= root_first) {
         snprintf(why, n,
                  "there is not enough room on this computer for AurOS and a "
                  "way back to Windows");
@@ -81,15 +101,19 @@ int plan_compute(const gpt_table *t, int win_idx,
     }
     L->rec_first = rec_first;
     L->rec_last  = gap_end - 1;
+    L->rsc_first = rsc_first;
+    L->rsc_last  = rec_first - 1;
     L->root_first = root_first;
-    L->root_last  = rec_first - 1;
+    L->root_last  = rsc_first - 1;
 
-    return plan_check(t, L, root_src_bytes, rec_bytes, min_root_bytes, why, n);
+    return plan_check(t, L, root_src_bytes, rec_bytes, rsc_bytes,
+                      min_root_bytes, why, n);
 }
 
 int plan_check(const gpt_table *t, const stage_layout *L,
                uint64_t root_src_bytes, uint64_t rec_bytes,
-               uint64_t min_root_bytes, char *why, size_t n)
+               uint64_t rsc_bytes, uint64_t min_root_bytes,
+               char *why, size_t n)
 {
     uint32_t ss = L->sector;
     if (!t->valid || ss == 0) {
@@ -105,7 +129,9 @@ int plan_check(const gpt_table *t, const stage_layout *L,
     if (!(L->win_first <= L->win_last_new &&
           L->win_last_new < L->root_first &&
           L->root_first <= L->root_last &&
-          L->root_last < L->rec_first &&
+          L->root_last < L->rsc_first &&
+          L->rsc_first <= L->rsc_last &&
+          L->rsc_last < L->rec_first &&
           L->rec_first <= L->rec_last)) {
         snprintf(why, n, "the pieces of the new layout are out of order");
         return -1;
@@ -134,6 +160,13 @@ int plan_check(const gpt_table *t, const stage_layout *L,
                  "partition %d", hit + 1);
         return -1;
     }
+    hit = gpt_overlaps(t, L->rsc_first, L->rsc_last, L->win_idx);
+    if (hit >= 0) {
+        snprintf(why, n,
+                 "the space the saved copy of Windows would use is already "
+                 "taken by partition %d", hit + 1);
+        return -1;
+    }
     /* And the shrunk Windows entry must not reach into either. */
     if (L->win_last_new >= L->root_first) {
         snprintf(why, n, "the Windows drive would overlap AurOS");
@@ -142,6 +175,13 @@ int plan_check(const gpt_table *t, const stage_layout *L,
 
     uint64_t root_bytes = (L->root_last - L->root_first + 1) * (uint64_t)ss;
     uint64_t rec_have   = (L->rec_last  - L->rec_first  + 1) * (uint64_t)ss;
+    uint64_t rsc_have   = (L->rsc_last  - L->rsc_first  + 1) * (uint64_t)ss;
+    if (rsc_have < rsc_bytes) {
+        snprintf(why, n,
+                 "there is not enough room to keep a copy of this computer's "
+                 "Windows startup on it");
+        return -1;
+    }
 
     if (root_bytes < root_src_bytes) {
         snprintf(why, n,
@@ -184,5 +224,6 @@ void plan_say(const stage_layout *L)
     stage_say("the new layout, in %u-byte blocks:", L->sector);
     say_span("windows",  L->win_first,  L->win_last_new, L->sector);
     say_span("auros",    L->root_first, L->root_last,    L->sector);
+    say_span("saved",    L->rsc_first,  L->rsc_last,     L->sector);
     say_span("way back", L->rec_first,  L->rec_last,     L->sector);
 }
