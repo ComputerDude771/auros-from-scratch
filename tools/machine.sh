@@ -33,7 +33,7 @@ P2S=206848;  P2E=2303999      # Windows, 1 GiB
 P3S=5500000; P3E=6291422      # WinRE, at the very end
 
 mach_need() {
-    for t in qemu-system-x86_64 sgdisk mkfs.ext4 cpio python3; do
+    for t in qemu-system-x86_64 sgdisk mkfs.ext4 mkfs.vfat cpio python3 blkid; do
         command -v "$t" >/dev/null 2>&1 || { echo "need $t"; exit 2; }
     done
     [ -d "$RFS" ] || { echo "no rootfs at $RFS"; exit 2; }
@@ -138,15 +138,29 @@ print(struct.unpack_from('<Q', b, 0x28)[0], b[0x0d])
 EOPY
 }
 
-# → AIMG, ROFF, RLEN
+# → AIMG, ROFF, RLEN, EOFF, ELEN, AUROS_UUID
+#
+# A WHOLE IMAGE, INCLUDING THE PART THAT STARTS A COMPUTER.
+#
+# This used to make a 16 MiB EFI partition and put nothing in it,
+# which was fine while the installer only ever copied the root extent.
+# loader.c copies the image's ESP onto the machine and the firmware
+# starts from it, so a fixture with an empty ESP would let the whole
+# of that pass while proving nothing. What goes in here is what
+# build/mkimage puts in the real one, out of the same rootfs: the
+# dual-signed shim, Canonical's signed grub, the fallback CSV, and a
+# grub.cfg that finds the root by UUID.
 mach_image() {
     AIMG="$MTMP/auros.img"
-    truncate -s 320M "$AIMG"
+    truncate -s 384M "$AIMG"
     sgdisk --zap-all "$AIMG" >/dev/null 2>&1
-    sgdisk -n 1:2048:+16M -t 1:ef00 -c 1:"AUROS-ESP"  "$AIMG" >/dev/null 2>&1
+    sgdisk -n 1:2048:+48M -t 1:ef00 -c 1:"AUROS-ESP"  "$AIMG" >/dev/null 2>&1
     sgdisk -n 2:0:0       -t 2:8304 -c 2:"AUROS-ROOT" "$AIMG" >/dev/null 2>&1
+    ES=$(sgdisk -i 1 "$AIMG" | sed -n 's/^First sector: \([0-9]*\).*/\1/p')
+    EE=$(sgdisk -i 1 "$AIMG" | sed -n 's/^Last sector: \([0-9]*\).*/\1/p')
     RS=$(sgdisk -i 2 "$AIMG" | sed -n 's/^First sector: \([0-9]*\).*/\1/p')
     RE=$(sgdisk -i 2 "$AIMG" | sed -n 's/^Last sector: \([0-9]*\).*/\1/p')
+    EOFF=$((ES*512)); ELEN=$(((EE-ES+1)*512))
     ROFF=$((RS*512)); RLEN=$(((RE-RS+1)*512))
 
     cat > "$MTMP/init.c" <<'EOC'
@@ -158,23 +172,120 @@ int main(void){ puts("\nINSTALLTEST-AUROS-STARTED"); fflush(stdout);
 EOC
     cc -static -O2 -o "$MTMP/init" "$MTMP/init.c" 2>/dev/null \
         || { echo "  no cc"; exit 2; }
+    # The one that says the FIRMWARE started this system -- a different
+    # sentence from the one switch_root prints, because the two runs
+    # prove different things and a shared marker would let either of
+    # them pass for the other.
+    sed 's/INSTALLTEST-AUROS-STARTED/AUROS-STARTED-FROM-FIRMWARE/' \
+        "$MTMP/init.c" > "$MTMP/finit.c"
+    cc -static -O2 -o "$MTMP/finit" "$MTMP/finit.c" 2>/dev/null \
+        || { echo "  no cc"; exit 2; }
+    # ...packed as an initramfs, so that what grub loads is a kernel
+    # and an initrd rather than a kernel and a promise. The image's
+    # root has no /etc and no shared libraries; a generic kernel's ext4
+    # is a module, so a root= boot would not mount anything.
+    mkdir -p "$MTMP/fi"; cp "$MTMP/finit" "$MTMP/fi/init"
+    ( cd "$MTMP/fi" && find . -print0 \
+        | cpio --null -o --format=newc --quiet ) | gzip -9 > "$MTMP/finitrd.img"
+    rm -rf "$MTMP/fi"
 
     dd if=/dev/zero of="$MTMP/root.img" bs=1M count=$((RLEN/1048576)) status=none
     mkfs.ext4 -q -L AUROS-ROOT "$MTMP/root.img"
+    AUROS_UUID=$(blkid -o value -s UUID "$MTMP/root.img")
+    [ -n "$AUROS_UUID" ] || { echo "  the image root has no UUID"; exit 2; }
     # A REAL MODULE TREE. Phase 7 mounts this filesystem and loads ITS
     # drivers, and an image with an empty /lib/modules is correctly
     # reported as our fault rather than the machine's.
     KVER=$(ls work/staging/lib/modules 2>/dev/null | head -1)
     [ -n "$KVER" ] || { echo "  no built module tree to put in the image"; exit 2; }
+    KERN=$(ls out/auros-staging-vmlinuz 2>/dev/null) \
+        || { echo "  no kernel to put in the image"; exit 2; }
     mount -o loop "$MTMP/root.img" "$MTMP/m" && {
         mkdir -p "$MTMP/m/sbin" "$MTMP/m/proc" "$MTMP/m/sys" "$MTMP/m/dev" \
-                 "$MTMP/m/run" "$MTMP/m/lib/modules"
+                 "$MTMP/m/run" "$MTMP/m/lib/modules" "$MTMP/m/boot/grub"
         cp "$MTMP/init" "$MTMP/m/sbin/init"
         cp -a "work/staging/lib/modules/$KVER" "$MTMP/m/lib/modules/" 2>/dev/null
+        cp "$KERN" "$MTMP/m/boot/vmlinuz"
+        cp "$MTMP/finitrd.img" "$MTMP/m/boot/initrd.img"
+        # The same two-step build/mkimage uses: the ESP's grub.cfg
+        # finds the root and hands over to THIS file, which is where
+        # the menu actually lives.
+        cat > "$MTMP/m/boot/grub/grub.cfg" <<EOG
+set default=0
+set timeout=1
+serial --unit=0 --speed=115200
+terminal_input  console serial
+terminal_output console serial
+menuentry 'AurOS' --id auros {
+    linux  /boot/vmlinuz console=ttyS0,115200n8
+    initrd /boot/initrd.img
+}
+EOG
         sync; umount "$MTMP/m"
     }
     dd if="$MTMP/root.img" of="$AIMG" bs=1M seek=$((ROFF/1048576)) \
        conv=notrunc status=none
+    mach_image_esp
+}
+
+# The image's EFI partition, built the way build/mkimage builds the
+# real one and out of the same files.
+#
+# mtools, NOT mount. The container these tests run in has no vfat in
+# its kernel, which is a property of the test machine and not of the
+# product -- the machines AurOS installs on never mount this
+# filesystem either, because loader.c copies it as bytes. mkfs.vfat
+# and mcopy both work on a plain file, so the fixture needs neither a
+# loop device nor a mount for it.
+mach_image_esp() {
+    SHIM=""
+    for c in shimx64.efi.dualsigned shimx64.efi.signed.latest shimx64.efi.signed; do
+        [ -f "$RFS/usr/lib/shim/$c" ] && { SHIM="$RFS/usr/lib/shim/$c"; break; }
+    done
+    [ -n "$SHIM" ] || { echo "  no signed shim in $RFS"; exit 2; }
+    GRUBEFI="$RFS/usr/lib/grub/x86_64-efi-signed/grubx64.efi.signed"
+    [ -f "$GRUBEFI" ] || { echo "  no signed grub in $RFS"; exit 2; }
+
+    E="$MTMP/esp.img"
+    rm -f "$E"; truncate -s "$ELEN" "$E"
+    mkfs.vfat -F32 -n AUROS-ESP "$E" >/dev/null 2>&1 \
+        || { echo "  the image ESP would not format"; exit 2; }
+
+    D="$MTMP/espdir"
+    rm -rf "$D"; mkdir -p "$D/EFI/BOOT" "$D/EFI/AurOS" "$D/EFI/ubuntu"
+    cp "$SHIM"    "$D/EFI/BOOT/BOOTX64.EFI"
+    cp "$GRUBEFI" "$D/EFI/BOOT/grubx64.efi"
+    cp "$RFS/usr/lib/shim/mmx64.efi" "$D/EFI/BOOT/mmx64.efi" 2>/dev/null
+    cp "$RFS/usr/lib/shim/fbx64.efi" "$D/EFI/BOOT/fbx64.efi" 2>/dev/null
+    cp "$SHIM"    "$D/EFI/AurOS/shimx64.efi"
+    cp "$GRUBEFI" "$D/EFI/AurOS/grubx64.efi"
+    cp "$RFS/usr/lib/shim/mmx64.efi" "$D/EFI/AurOS/mmx64.efi" 2>/dev/null
+    printf 'shimx64.efi,AurOS,,AurOS\n' | iconv -f UTF-8 -t UTF-16LE \
+        > "$D/EFI/AurOS/BOOTX64.CSV"
+    for d in ubuntu AurOS BOOT; do
+        cat > "$D/EFI/$d/grub.cfg" <<EOG
+search --no-floppy --fs-uuid --set=root $AUROS_UUID
+set prefix=(\$root)/boot/grub
+configfile (\$root)/boot/grub/grub.cfg
+EOG
+    done
+
+    export MTOOLS_SKIP_CHECK=1
+    ( cd "$D" && find . -type d ! -name . -printf '%P\n' ) | while read -r d; do
+        mmd -i "$E" "::/$d" >/dev/null 2>&1
+    done
+    ( cd "$D" && find . -type f -printf '%P\n' ) | while read -r f; do
+        mcopy -i "$E" -o "$D/$f" "::/$f" || { echo "  mcopy failed for $f"; exit 2; }
+    done
+    # AND IT HAD BETTER BE IN THERE. mcopy inside a `while read` is in
+    # a subshell, so its exit does not reach this function; without
+    # this the fixture would go on with an empty ESP and the loader
+    # test would fail somewhere it cannot explain.
+    mdir -i "$E" ::/EFI/AurOS 2>/dev/null | grep -q 'shimx64' \
+        || { echo "  nothing was copied into the image ESP"; exit 2; }
+
+    dd if="$E" of="$AIMG" bs=1M seek=$((EOFF/1048576)) conv=notrunc status=none
+    rm -rf "$D"
 }
 
 # → STICK.  mach_stick [corrupt]
@@ -224,6 +335,73 @@ f.seek(pl*ss); print(hashlib.sha256(h[:hs]+f.read(n*e)).hexdigest())
 EOPY
 }
 
+# One partition of an image, by the name in its GPT entry.
+#   mach_part IMAGE NAME  ->  "number first_lba last_lba unique_guid type_guid"
+# Nothing is printed if there is no such partition, which is how a
+# caller tells "not there" from "there and wrong".
+mach_part() { python3 - "$1" "$2" <<'EOPY'
+import sys, struct, uuid
+ss = 512
+f = open(sys.argv[1], 'rb'); f.seek(ss); h = f.read(ss)
+if h[:8] != b'EFI PART': raise SystemExit(0)
+pl = struct.unpack_from('<Q', h, 72)[0]
+n  = struct.unpack_from('<I', h, 80)[0]
+e  = struct.unpack_from('<I', h, 84)[0]
+f.seek(pl * ss); arr = f.read(n * e); f.close()
+for i in range(n):
+    ent = arr[i*e:(i+1)*e]
+    if ent[:16] == b'\0' * 16: continue
+    if ent[56:128].decode('utf-16-le', 'replace').rstrip('\0') != sys.argv[2]:
+        continue
+    first, last = struct.unpack_from('<QQ', ent, 32)
+    print(i + 1, first, last,
+          str(uuid.UUID(bytes_le=ent[16:32])), str(uuid.UUID(bytes_le=ent[0:16])))
+    break
+EOPY
+}
+
+# Start the machine the way its owner would.
+#
+# NO -kernel AND NO -initrd. Everything else in these tests hands QEMU
+# a kernel directly, which is the right thing when what is being tested
+# is the staging environment -- and which skips, entirely, the question
+# of whether the machine can start anything by itself. This one gives
+# the firmware a disk and the NVRAM the installer left in
+# $MTMP/vars.fd, and nothing else. There is no memory stick plugged in
+# either: a machine that only starts with the stick in it has not been
+# installed.
+#
+#   mach_boot_firmware DISKIMG MARKER [TIMEOUT] [CODE.fd] [VARS.fd] [EXTRA]
+#
+# leaves the console in $MTMP/fout.txt and returns 0 if the marker
+# appeared.
+mach_boot_firmware() {
+    _fdisk=$1; _fmarker=$2; _fto=${3:-900}
+    _fcode=${4:-/usr/share/OVMF/OVMF_CODE_4M.fd}
+    _fvars=${5:-$MTMP/vars.fd}
+    _fextra=${6:-}
+    : > "$MTMP/fout.txt"
+    # shellcheck disable=SC2086
+    qemu-system-x86_64 -machine q35,accel=tcg -m 1536 -smp 2 $_fextra \
+        -drive if=pflash,format=raw,unit=0,readonly=on,file="$_fcode" \
+        -drive if=pflash,format=raw,unit=1,file="$_fvars" \
+        -no-reboot \
+        -drive file="$_fdisk",format=raw,if=none,id=d0 \
+        -device virtio-blk-pci,drive=d0,serial=AUROSTEST \
+        -display none -serial stdio > "$MTMP/fout.txt" 2>&1 &
+    _fqp=$!
+    _fseen=0; _fi=0
+    while [ "$_fi" -lt "$_fto" ]; do
+        kill -0 "$_fqp" 2>/dev/null || break
+        if [ "$_fseen" -eq 0 ] && grep -aq "$_fmarker" "$MTMP/fout.txt" 2>/dev/null; then
+            _fseen=1; _fi=$(( _fto - 5 ))
+        fi
+        sleep 1; _fi=$((_fi+1))
+    done
+    kill -9 "$_fqp" 2>/dev/null; wait "$_fqp" 2>/dev/null
+    grep -aq "$_fmarker" "$MTMP/fout.txt"
+}
+
 # → JNL, the cpio AurBridge would have left in the initramfs
 mach_journal() {
     GPT=$(mach_gpthash "$DISK")
@@ -254,7 +432,12 @@ mach_boot() {
     cp --sparse=always "$_disk"  "$MTMP/run.img"
     cp --sparse=always "$_stick" "$MTMP/stk.img"
     cat "$_img" "$JNL" > "$MTMP/initrd.img"
-    cp /usr/share/OVMF/OVMF_VARS_4M.fd "$MTMP/vars.fd"
+    # The NVRAM this machine starts with. Pristine unless a caller has
+    # arranged otherwise -- the loader test starts from one that
+    # already holds the entry the Windows half would have written, so
+    # that "the installer tidied it away" is a thing a test can see
+    # rather than a claim in a comment.
+    cp "${MACH_VARS:-/usr/share/OVMF/OVMF_VARS_4M.fd}" "$MTMP/vars.fd"
     : > "$MTMP/out.txt"
     _kern="${_img%.img}-vmlinuz"
     qemu-system-x86_64 -machine q35,accel=tcg -m 1536 -smp 2 \

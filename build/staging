@@ -162,28 +162,35 @@ if ! nvcode=$(gcc -fpreprocessed -dD -E "$ROOT/src/aurstage/$NVWRITER" 2>/dev/nu
     die "$NVWRITER could not be read as C, so the NVRAM gate could not
      look at it."
 fi
-# 1. It still writes something, or this gate is guarding nothing and
+# THE ORDER OF THESE IS THE ORDER OF THEIR MESSAGES, and it matters.
+# The read-write check was last, so a file that had swapped O_WRONLY
+# for O_RDWR -- which is the dangerous change, the one that turns the
+# NVRAM writer into something that can open a disk -- was refused by
+# check 3 with "no longer writes anything". A true sentence about the
+# wrong thing sends the next reader looking in the wrong place.
+#
+# 1. It opens nothing read-write, which is the flag a block device is
+#    opened with everywhere in this tree.
+case "$nvcode" in
+  *O_RDWR*) die "$NVWRITER opens something read-write; only $WRITER may" ;;
+esac
+# 2. It never names a device. A file that may open things writably and
+#    can also name /dev/sda is the first gate undone by the second.
+case "$nvcode" in
+  */dev/*) die "$NVWRITER names a device. Only $WRITER may touch one." ;;
+esac
+# 3. It still writes something, or this gate is guarding nothing and
 #    the writes have moved somewhere unwatched.
 case "$nvcode" in
   *O_WRONLY*) ;;
   *) die "$NVWRITER no longer writes anything; where did the boot entry go?" ;;
 esac
-# 2. It writes EFI variables and nothing else: the only path it may
+# 4. It writes EFI variables and nothing else: the only path it may
 #    build is under the efivarfs mount point.
 case "$nvcode" in
   *"/sys/firmware/efi/efivars"*) ;;
   *) die "$NVWRITER does not name the efivarfs mount point; it may write
      nothing else, so it must say where it writes" ;;
-esac
-# 3. It never names a device. A file that may open things writably and
-#    can also name /dev/sda is the first gate undone by the second.
-case "$nvcode" in
-  */dev/*) die "$NVWRITER names a device. Only $WRITER may touch one." ;;
-esac
-# 4. And it opens nothing read-write, which is the flag a block device
-#    is opened with everywhere in this tree.
-case "$nvcode" in
-  *O_RDWR*) die "$NVWRITER opens something read-write; only $WRITER may" ;;
 esac
 
 # Every .c in the directory, not a list that has to be remembered: a

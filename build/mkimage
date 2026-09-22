@@ -199,6 +199,26 @@ menuentry 'AurOS (recovery shell)' --class recovery --id auros-recovery {
     linux  /boot/vmlinuz-$KVER root=UUID=$ROOT_UUID ro single init=/bin/bash console=tty0 console=ttyS0,115200n8
     initrd /boot/initrd.img-$KVER
 }
+
+# WINDOWS, WHEN THERE IS ONE, AND NOTHING WHEN THERE IS NOT.
+#
+# AurOS installs alongside Windows and does not remove it, so after
+# phase 10 makes AurOS the default this is the only way back to it that
+# does not involve a firmware key nobody remembers. It is found rather
+# than configured: `search --file` looks for the Windows boot manager
+# on every partition the firmware can see, which needs no knowledge of
+# the machine at build time -- and the whole entry is inside the `if`,
+# so an image booted on a computer with no Windows on it does not
+# offer a menu line that fails when chosen.
+if search --no-floppy --file --set=winesp /EFI/Microsoft/Boot/bootmgfw.efi ; then
+menuentry 'Windows' --class windows --id windows {
+    insmod part_gpt
+    insmod fat
+    insmod chain
+    search --no-floppy --file --set=root /EFI/Microsoft/Boot/bootmgfw.efi
+    chainloader /EFI/Microsoft/Boot/bootmgfw.efi
+}
+fi
 EOF
 
 # grub needs its modules on the root filesystem at the prefix the ESP

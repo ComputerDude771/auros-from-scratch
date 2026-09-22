@@ -11,7 +11,6 @@
 #include <unistd.h>
 
 #include "nvram.h"
-#include "aurstage.h"
 
 /* Overridable ONLY at compile time, and only by the unit test, which
  * builds this file on its own against a directory it made. There is

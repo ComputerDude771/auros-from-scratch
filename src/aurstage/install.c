@@ -162,6 +162,21 @@ static void dots_write(int pct)
     if (pct == 25) fault_maybe("write-mid");
 }
 
+/* And the same again for the boot partition.
+ *
+ * A SEPARATE FUNCTION FOR A SEPARATE PHASE, for the reason dots_write
+ * gives: one fault point shared between two long steps means "halfway
+ * through whichever of them ran first", which is not an instant
+ * anybody can aim at. This one cuts the machine with the copy of the
+ * image's EFI partition half written into space the table does not
+ * mention yet -- the case the "first megabyte last" rule exists for on
+ * this partition as well as on the root. */
+static void dots_boot(int pct)
+{
+    dots(pct);
+    if (pct == 25) fault_maybe("boot-mid");
+}
+
 static void commit_note(int n, void *ud)
 {
     (void)ud;
@@ -500,7 +515,7 @@ void install_run(const stage_machine *m)
     stage_say("Making this computer able to start AurOS.");
     step(REC_BOOT_BEGIN, NULL);
     fprintf(stderr, "aurstage: ");
-    if (loader_write_boot(&t, &img, &L, ss, dots, why, sizeof why) != 0)
+    if (loader_write_boot(&t, &img, &L, ss, dots_boot, why, sizeof why) != 0)
         give_up(why, "The Windows drive is smaller but still works.",
                 "boot-write-failed", 1);
     fprintf(stderr, "\n");

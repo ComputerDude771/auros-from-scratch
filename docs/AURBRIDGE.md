@@ -49,8 +49,11 @@
  7  PROBE        mount the new root read-only, load ITS drivers and
                  firmware, test WiFi/backlight/audio on the real
                  machine. Abort here changes nothing.
- 8  COMMIT       the new GPT: backup header, then primary, one flush.
-                 Then partx, resize2fs, recovery partition, switch_root.
+ 8a BOOT         the image's OWN EFI partition, copied whole into a
+                 partition of ours, still before the commit
+ 8  COMMIT       the new GPT: the primary entry array, then LBA 1, then
+                 the backup. Then the boot entry, partx, resize2fs, the
+                 saved copy of Windows, switch_root.
 
  AUROS
  9  FIRSTBOOT    desktop; user confirms "this works"
@@ -281,6 +284,102 @@ Two things must happen right at the end, in this order:
 
 `BootOrder` is only rewritten in phase 10, after the user confirms.
 
+## Making the machine able to start AurOS (phase 8a)
+
+The phases above shrink Windows, write AurOS, verify it, commit a new
+partition table and hand over to the installed system in the same boot.
+For a long time that was the whole of it, and it was not enough: nothing
+wrote a bootloader, so the machine lost AurOS at the next restart. Every
+test passed on a computer that could not start what had just been
+installed on it.
+
+**AurOS is started from an EFI System partition of its own, never from
+the machine's.** R12 says an OEM ESP holds vendor boot files and
+firmware capsules beside `\EFI\Microsoft\Boot` and is never mounted by
+this product; a read-write mount of it is a write to the one partition
+whose loss means Windows never starts again. Writing FAT structures into
+it by hand instead means understanding somebody else's filesystem well
+enough to extend it, which is a bigger thing to be wrong about than
+anything else in the installer. UEFI launches whatever a `Boot####`
+entry names and does not care which EFI System partition that is, so the
+planner's `rec` extent — which existed already, typed `ef00`, and was
+written by nothing — became `AUROS-BOOT`, and the machine's own ESP is
+still a partition this installer has only ever read. The end-to-end test
+asserts exactly that: an md5 of the machine's ESP before and after.
+
+**What goes in it is the image's own ESP, copied whole.** Not assembled.
+`build/mkimage` already builds a complete Secure Boot chain inside the
+image — Canonical's dual-signed shim, their signed grub, the
+`BOOTX64.CSV` that lets shim's fallback create a real NVRAM entry, and
+`grub.cfg` in the three directories that need it — and that is the ESP
+QEMU boots in the build. Copying its bytes means the artifact that was
+tested and the artifact on the user's machine are the same object, which
+is `image.h`'s own argument for shipping a whole-disk image rather than a
+bare root filesystem. It also means there is no FAT-writing code
+anywhere in the installer: no directory entries, no cluster allocator,
+no long-name encoder, and nowhere for any of them to be subtly wrong on
+a machine nobody can reach.
+
+The copy goes down **before** the commit, into the gap, while the old
+table is still in force — so rule 4 still holds, the layout still
+changes at one sector write, and a machine cut here is the "write and
+verify" row of the table above. The first megabyte is written last, for
+the reason the root extent's is: until the end there is no BPB at the
+start of the partition, so an interrupted copy is a partition the
+firmware will not mount at all rather than one it mounts and reads half
+a shim out of.
+
+**The boot partition is as big as what goes in it**, measured from the
+image, not a constant. It was 600 MiB, chosen when that partition was
+going to hold a rescue kernel and a copy of this machine's Windows
+startup as well; both of those moved elsewhere. A constant that
+disagrees with the thing being copied is either gigabytes of somebody's
+Windows taken for nothing or an install that fails after the shrink.
+
+### The boot entry, and the second gate
+
+`src/aurstage/nvram.c` is the only file in the staging environment that
+may write an EFI variable, and `build/staging` enforces that the way it
+enforces `wr.c`'s monopoly on disk writes — by name, with checks, not by
+widening a pattern. Writing a `Boot####` needs `O_WRONLY|O_CREAT` on a
+file under efivarfs, and the three honest options were to loosen the
+existing gate, to fold NVRAM into `wr.c`, or to add a second gate. The
+first is the exception nobody reviewed; the second makes `wr.c`'s single
+sentence — every disk write is in this file — false.
+
+So `nvram.c` is allowed the writable open every other file is refused,
+and pays four checks for it: it must open nothing read-write, it must
+never name a device, it must still write something, and it must name the
+efivarfs mount point. **NVRAM deserves a gate more than the disk does.**
+A wrong byte on a disk costs a partition; a wrong `Boot####` costs a
+machine that starts nothing at all, with no error message, on hardware
+whose firmware setup screen the owner has never seen.
+
+`BootOrder` is not written, and there is deliberately no function in
+that file that writes it — the way a rule like this gets broken is
+somebody finding a function that already does the thing. Windows stays
+the machine's default until phase 10. What phase 8 arms is `BootNext`,
+one-shot and cleared by the firmware as it is used, so the first restart
+after an install reaches AurOS and a machine that cannot start AurOS
+comes back to Windows by itself with nobody doing anything.
+
+The entry the Windows half wrote to get here — "AurOS Installer" — is
+deleted once "AurOS" exists. Leaving it means a boot menu with two AurOS
+lines in it, one of which restarts an installer that will correctly
+refuse, to somebody who did not ask for an installer.
+
+### What proves it
+
+`tools/loadertest.sh` installs, and then starts the machine **the way
+its owner would**: firmware, one disk, no memory stick, and no `-kernel`
+on the QEMU command line. Every other end-to-end test in the tree hands
+QEMU a kernel directly, which is right when what is being tested is the
+staging environment and is also why none of them had ever asked this
+question. It then does it again against `OVMF_CODE_4M.ms.fd` with
+Microsoft's own keys enrolled and Secure Boot enforcing, which is the
+only way to find out whether the signed chain in the image is a chain
+this firmware actually trusts.
+
 ## BitLocker: refused, and why it stays refused
 
 **There is no shrink path for a BitLocker-protected volume, online or
@@ -402,7 +501,7 @@ row.
 | 0-3 (Windows side) | untouched | yes, automatically |
 | 4 verification | untouched | yes, automatically |
 | **4 the resize itself** | **NTFS possibly inconsistent** | **only via the recovery USB and chkdsk; worst case, data loss** |
-| 5-7 write and verify | NTFS smaller, old GPT in force, garbage in free space | yes — `BootOrder` still points at Windows Boot Manager and the ESP is untouched |
+| 5-8a write, verify, boot partition | NTFS smaller, old GPT in force, garbage in free space | yes — `BootOrder` still points at Windows Boot Manager and the ESP is untouched |
 | 8 GPT commit | one sector write; the backup header is already correct | yes, via recovery restore |
 | 9-10 | new layout, Windows partition intact and bootable | yes |
 
