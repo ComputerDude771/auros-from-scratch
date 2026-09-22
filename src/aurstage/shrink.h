@@ -35,6 +35,33 @@ typedef struct {
  * where the last immovable extent sits. */
 void shrink_ask(const char *dev, shrink_plan *out);
 
+/* ── the one irreversible step ───────────────────────────────────── */
+
+typedef struct {
+    int      ok;
+    uint64_t achieved_bytes;    /* read back out of $Boot afterwards  */
+    int      started;           /* it began moving data               */
+    char     why[240];
+} shrink_result;
+
+/* Resize the FILESYSTEM. Not the partition entry -- that is a
+ * separate, later, atomic write, and the gap between them is what
+ * makes an abort here still boot Windows: a partition larger than its
+ * filesystem mounts and boots normally.
+ *
+ * `--force` IS STILL UNREACHABLE. ntfsresize asks "Are you sure you
+ * want to proceed (y/[n])?" on stdin and takes the answer there, so
+ * the confirmation does not need a flag -- which was worth finding
+ * out, because reaching for -f to silence a prompt is exactly how
+ * R9's protection gets switched off by somebody who only wanted the
+ * program to stop asking.
+ *
+ * `started` is the field that matters after a failure: a child that
+ * died before printing anything never touched the volume, and telling
+ * that user their drive is damaged is a lie. */
+void shrink_do(const char *dev, uint64_t target_bytes,
+               void (*progress)(int percent), shrink_result *out);
+
 /* Read every sector of a region and report the first one that will
  * not come back.
  *

@@ -89,6 +89,19 @@ typedef struct {
  * mounts nothing, writes nothing. Always fills `out`. */
 void ntfs_read_state(const char *dev, ntfs_state *out);
 
+/* The volume's size in bytes, out of its own boot sector.
+ *
+ * NAMED, because the first stage C design said "plan_compute again,
+ * from the size the filesystem actually came out at" and named no
+ * function that produces that number. The only candidates in the tree
+ * were shrink_ask() -- which is ntfsresize --info, i.e. the new
+ * MINIMUM, not the new size -- and reading the boot sector, which is
+ * this. Getting it wrong by taking the minimum permanently truncates
+ * the Windows partition entry below its own filesystem.
+ *
+ * Returns 0 and fills `out`, or -1. */
+int ntfs_volume_bytes(const char *dev, uint64_t *out);
+
 /* A short, stable name for a verdict -- for logs and for the one
  * machine-readable line the dry run prints. Never translated. */
 const char *ntfs_verdict_name(ntfs_verdict v);

@@ -155,21 +155,15 @@ const char *journal_verdict_name(journal_verdict v)
     return "unknown";
 }
 
+/* read_sys() used to live here. It is gone because journal_check no
+ * longer asks sysfs for the disk's serial: the survey already asked
+ * every place a disk publishes one -- see the note in disks.c about
+ * SATA publishing it in none of the obvious ones -- and asking the
+ * same question twice in two different ways is how two answers to it
+ * appear. */
+
 /* ── does the machine still match? ───────────────────────────────── */
 
-static int read_sys(const char *dir, const char *leaf, char *out, size_t n)
-{
-    char path[512];
-    snprintf(path, sizeof path, "/sys/class/block/%s/%s", dir, leaf);
-    int fd = open(path, O_RDONLY | O_CLOEXEC);
-    if (fd < 0) return -1;
-    ssize_t k = read(fd, out, n - 1);
-    close(fd);
-    if (k < 0) return -1;
-    out[k] = 0;
-    while (k > 0 && (out[k-1] == '\n' || out[k-1] == ' ')) out[--k] = 0;
-    return 0;
-}
 
 /* Far enough back that Windows has had time to move things. Not a
  * guess about how long an update takes -- it is how long an armed

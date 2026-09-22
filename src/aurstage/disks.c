@@ -161,10 +161,23 @@ static uint64_t le64_at(const unsigned char *p);
 static int name_fits(const char *name)
 { return strlen(name) > 0 && strlen(name) < STAGE_NAME; }
 
+/* Build a /sys path, REFUSING rather than truncating. A truncated path
+ * names a different file, and this program is about to decide from it
+ * which disk to resize. The callers all check name_fits() first, but
+ * the property should be true of this function on its own: a guard you
+ * have to hold in your head while reading three call sites is a guard
+ * that stops being true when somebody adds a fourth. */
+static int sys_path(char *out, size_t n, const char *name, const char *leaf)
+{
+    int k = leaf ? snprintf(out, n, "/sys/class/block/%s/%s", name, leaf)
+                 : snprintf(out, n, "/sys/class/block/%s", name);
+    return (k > 0 && (size_t)k < n) ? 0 : -1;
+}
+
 static int is_whole_disk(const char *name)
 {
     char dir[64 + STAGE_NAME];
-    snprintf(dir, sizeof dir, "/sys/class/block/%s/device", name);
+    if (sys_path(dir, sizeof dir, name, "device") != 0) return 0;
     struct stat st;
     if (stat(dir, &st) != 0) {
         /* No device link: either a partition, or something virtual.
@@ -173,7 +186,7 @@ static int is_whole_disk(const char *name)
          * with those. */
         return 0;
     }
-    snprintf(dir, sizeof dir, "/sys/class/block/%s/partition", name);
+    if (sys_path(dir, sizeof dir, name, "partition") != 0) return 0;
     return stat(dir, &st) != 0;
 }
 
@@ -243,13 +256,14 @@ static void survey_parts(stage_disk *d)
         if (!e->d_name[dl]) continue;                  /* the disk itself */
         if (!name_fits(e->d_name)) continue;
         char dir[64 + STAGE_NAME];
-        snprintf(dir, sizeof dir, "/sys/class/block/%s", e->d_name);
+        if (sys_path(dir, sizeof dir, e->d_name, NULL) != 0) continue;
         char tmp[64];
         if (slurp(dir, "partition", tmp, sizeof tmp) < 0) continue;
 
         stage_part *p = &d->part[d->n_parts];
         memset(p, 0, sizeof *p);
-        snprintf(p->name, sizeof p->name, "%s", e->d_name);
+        if ((size_t)snprintf(p->name, sizeof p->name, "%s", e->d_name)
+                >= sizeof p->name) continue;
         p->start_lba = (uint64_t)slurp_ll(dir, "start", 0);
         p->sectors   = (uint64_t)slurp_ll(dir, "size", 0);
         /* /sys reports sizes in 512-byte units WHATEVER the device's
@@ -282,10 +296,11 @@ int stage_survey(stage_machine *m)
 
         stage_disk *d = &m->disk[m->n_disks];
         memset(d, 0, sizeof *d);
-        snprintf(d->name, sizeof d->name, "%s", e->d_name);
+        if ((size_t)snprintf(d->name, sizeof d->name, "%s", e->d_name)
+                >= sizeof d->name) continue;
 
         char dir[64 + STAGE_NAME];
-        snprintf(dir, sizeof dir, "/sys/class/block/%s", d->name);
+        if (sys_path(dir, sizeof dir, d->name, NULL) != 0) continue;
         d->bytes = (uint64_t)slurp_ll(dir, "size", 0) * 512ull;
         d->removable = (int)slurp_ll(dir, "removable", 0);
 

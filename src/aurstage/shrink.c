@@ -12,7 +12,18 @@
 #include <time.h>
 
 #include "shrink.h"
+#include "ntfs.h"
 #include "aurstage.h"
+
+/* WHERE ntfsresize IS, and why this is a #define rather than an
+ * argument. The path has to be fixed for the same reason the argument
+ * vector is fixed -- a caller that can choose the program can choose a
+ * different program -- but the tests need to run against the copy in
+ * the profile's rootfs rather than one installed on the build host.
+ * A compile-time constant is still not something a caller can reach. */
+#ifndef NTFSRESIZE_PATH
+#define NTFSRESIZE_PATH "/sbin/ntfsresize"
+#endif
 
 /* ── running ntfsresize and reading what it said ─────────────────── */
 
@@ -155,7 +166,7 @@ void shrink_ask(const char *dev, shrink_plan *out)
      * whole safety of stage B rests on this process not writing, and a
      * reader checking that should not have to know which flag implies
      * which. */
-    const char *argv[] = { "/sbin/ntfsresize", "--info", "--no-action",
+    const char *argv[] = { NTFSRESIZE_PATH, "--info", "--no-action",
                            dev, NULL };
 
     /* HALF AN HOUR, not five minutes. `--info` reads $Bitmap and walks
@@ -204,6 +215,135 @@ void shrink_ask(const char *dev, shrink_plan *out)
         return;
     }
     out->ok = 1;
+}
+
+/* ── the one irreversible step ───────────────────────────────────── */
+
+/* Run ntfsresize for real, feeding it the confirmation it asks for and
+ * reading its progress back out.
+ *
+ * Unlike capture() above this streams: the caller gets a percentage
+ * while it happens, because on a 5400 rpm disk with five years of
+ * Windows on it this runs for forty minutes and the person is
+ * watching a screen that says the one thing that cannot be undone is
+ * happening. A progress bar is not decoration there. */
+void shrink_do(const char *dev, uint64_t target_bytes,
+               void (*progress)(int percent), shrink_result *out)
+{
+    memset(out, 0, sizeof *out);
+
+    char size[32];
+    snprintf(size, sizeof size, "%llu", (unsigned long long)target_bytes);
+
+    /* FIXED, AS ABOVE, AND WITHOUT --force. See shrink.h. */
+    const char *argv[] = { NTFSRESIZE_PATH, "--size", size, dev, NULL };
+
+    int in[2], outp[2];
+    if (pipe(in) < 0) {
+        snprintf(out->why, sizeof out->why,
+                 "the tool that resizes the Windows drive could not be started");
+        return;
+    }
+    if (pipe(outp) < 0) {
+        close(in[0]); close(in[1]);
+        snprintf(out->why, sizeof out->why,
+                 "the tool that resizes the Windows drive could not be started");
+        return;
+    }
+    pid_t pid = fork();
+    if (pid < 0) {
+        close(in[0]); close(in[1]); close(outp[0]); close(outp[1]);
+        snprintf(out->why, sizeof out->why,
+                 "this computer would not start the resizing tool");
+        return;
+    }
+    if (pid == 0) {
+        close(in[1]); close(outp[0]);
+        dup2(in[0], 0);
+        dup2(outp[1], 1); dup2(outp[1], 2);
+        if (in[0] > 2) close(in[0]);
+        if (outp[1] > 2) close(outp[1]);
+        setenv("LC_ALL", "C", 1);
+        execv(argv[0], (char *const *)argv);
+        _exit(127);
+    }
+    close(in[0]); close(outp[1]);
+
+    /* It asks once, near the beginning. Answering immediately is safe:
+     * the question is always the same one and the answer is always the
+     * same, and we have already decided -- twice, in stage B and again
+     * at the gate -- that this volume may be resized. */
+    ssize_t ign = write(in[1], "y\n", 2); (void)ign;
+    close(in[1]);
+
+    char line[512];
+    size_t ln = 0;
+    int last_pct = -1;
+    char tail[1024]; size_t tn = 0;
+    for (;;) {
+        char c;
+        ssize_t k = read(outp[0], &c, 1);
+        if (k <= 0) break;
+        /* Keep the last kilobyte for the message on failure, and
+         * assemble lines for the percentage. */
+        tail[tn % sizeof tail] = c; tn++;
+        if (c == '\r' || c == '\n') {
+            line[ln] = 0;
+            /* "  12.34 percent completed" */
+            const char *pc = strstr(line, "percent completed");
+            if (pc) {
+                out->started = 1;
+                int pct = (int)strtod(line, NULL);
+                if (pct != last_pct && progress) { progress(pct); last_pct = pct; }
+            } else if (strstr(line, "Relocating") || strstr(line, "Shrinking") ||
+                       strstr(line, "Updating")) {
+                out->started = 1;
+            }
+            ln = 0;
+        } else if (ln + 1 < sizeof line) {
+            line[ln++] = c;
+        }
+    }
+    close(outp[0]);
+
+    int st = 0;
+    if (waitpid(pid, &st, 0) != pid) {
+        snprintf(out->why, sizeof out->why,
+                 "the resizing tool disappeared");
+        return;
+    }
+    int code = WIFEXITED(st) ? WEXITSTATUS(st) : -1;
+
+    if (code != 0) {
+        /* THE DISTINCTION THAT MATTERS. A child that never started
+         * moving data did not touch the volume, and telling that user
+         * their drive is damaged is a lie -- the likeliest cause is
+         * our own image missing a library, which has happened here
+         * before and was found only inside QEMU. */
+        if (!out->started)
+            snprintf(out->why, sizeof out->why,
+                     "AurOS could not run the tool that resizes the Windows "
+                     "drive. Nothing on this computer has been changed.");
+        else
+            snprintf(out->why, sizeof out->why,
+                     "The Windows drive could not be resized.");
+        return;
+    }
+
+    /* WHAT IT ACTUALLY CAME OUT AT, read from the volume's own boot
+     * sector rather than assumed to be what we asked for. ntfsresize
+     * rounds to its own cluster boundary, and the partition entry
+     * must never end below the filesystem inside it. */
+    if (ntfs_volume_bytes(dev, &out->achieved_bytes) != 0 ||
+        out->achieved_bytes == 0) {
+        snprintf(out->why, sizeof out->why,
+                 "The Windows drive was resized but will not say how big it "
+                 "now is.");
+        return;
+    }
+    out->ok = 1;
+    snprintf(out->why, sizeof out->why, "the Windows drive is now %.1f GiB",
+             (double)out->achieved_bytes / (1024.0*1024.0*1024.0));
 }
 
 /* ── the surface test ────────────────────────────────────────────── */

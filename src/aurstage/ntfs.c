@@ -612,6 +612,33 @@ out:
  * line the dry run prints. Stable is the whole point: `why` is English
  * and will be rewritten and translated, and a table keyed on English
  * is a table that breaks when somebody improves a sentence. */
+int ntfs_volume_bytes(const char *dev, uint64_t *out)
+{
+    if (out) *out = 0;
+    int fd = open(dev, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return -1;
+    unsigned char b[512];
+    int rc = -1;
+    if (read_at(fd, b, sizeof b, 0) != 0) goto done;
+    /* BitLocker first, as everywhere: every field below would be a
+     * number invented by reading ciphertext. */
+    if (ntfs_is_bitlocker(b)) goto done;
+    if (memcmp(b + 3, "NTFS    ", 8) != 0) goto done;
+    uint32_t bps = le16(b + 0x0B);
+    if (bps < 256 || bps > 4096 || (bps & (bps - 1))) goto done;
+    uint64_t sec = le64(b + 0x28);
+    /* total_sectors counts the sectors of the volume EXCLUDING the
+     * backup boot sector at the end, which is the convention NTFS
+     * uses and the one ntfsresize reports against. The partition must
+     * hold one more. */
+    if (!sec || sec > (1ull << 48)) goto done;
+    if (out) *out = (sec + 1) * bps;
+    rc = 0;
+done:
+    close(fd);
+    return rc;
+}
+
 const char *ntfs_verdict_name(ntfs_verdict v)
 {
     switch (v) {

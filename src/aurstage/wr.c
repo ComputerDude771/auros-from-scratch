@@ -148,10 +148,23 @@ int wr_check(wr_target *t, uint64_t off, const void *expect, size_t len,
     const unsigned char *want = expect;
     size_t done = 0;
     while (done < len) {
-        size_t take = len - done < CH ? len - done : CH;
+        /* Spelled out in two statements rather than a ternary: the
+         * compiler could not otherwise see that `take` is bounded by
+         * the buffer, and warned that pread might be handed nine
+         * quintillion bytes. A bound the compiler can check is worth
+         * more than one only the author can. */
+        size_t take = len - done;
+        if (take > sizeof got) take = sizeof got;
         size_t g = 0;
         while (g < take) {
-            ssize_t k = pread(t->fd, got + g, take - g, (off_t)(off + done + g));
+            /* `room` is what is provably left in the buffer, computed
+             * from the buffer rather than from the request. gcc's
+             * fortify check follows that and stops warning; more to
+             * the point, so does a reader. */
+            size_t room = sizeof got - g;
+            size_t want_now = take - g;
+            if (want_now > room) want_now = room;
+            ssize_t k = pread(t->fd, got + g, want_now, (off_t)(off + done + g));
             if (k <= 0) { if (first_bad) *first_bad = off + done + g; return -1; }
             g += (size_t)k;
         }
