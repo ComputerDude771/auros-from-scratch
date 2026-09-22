@@ -313,7 +313,14 @@ void fmt_manifest(uint8_t out[FMT_MANIFEST_BYTES],
     p64(out + 24, root_len);
     p32(out + 32, image_sector);
     memcpy(out + 36, root_sha, 32);
-    snprintf((char *)out + 68, 63, "%s", profile ? profile : "");
+    /* 64, THE FIELD'S WIDTH, and it was 63 -- so the manifest kept 62
+     * characters where the journal keeps 63. Harmless while
+     * image_find() was passed NULL and compared nothing; the moment
+     * the journal started naming a profile it became a stick that
+     * refuses itself, thirty seconds after the same run wrote both
+     * halves, on the far side of the restart. The buffer is memset
+     * above, so a shorter profile is still NUL-padded. */
+    snprintf((char *)out + 68, 64, "%s", profile ? profile : "");
     p64(out + 132, esp_off);
     p64(out + 140, esp_len);
     if (esp_sha) memcpy(out + 148, esp_sha, 32);
@@ -450,7 +457,13 @@ static void esc(char *out, size_t n, const char *in)
 size_t fmt_journal_json(const fmt_journal *j, char *out, size_t n)
 {
     char e_serial[300], e_model[300], e_part[32], e_gpt[160];
-    char e_stage[64], e_boot[64], e_prof[140];
+    /* esc() can double every byte, so the escaped form of a field of
+     * W bytes needs 2*(W-1)+1. Written as the expression rather than
+     * as 140, because the day profile's width changes a constant here
+     * silently truncates the journal's copy and the stick then
+     * disagrees with itself. */
+    char e_stage[64], e_boot[64];
+    char e_prof[2 * sizeof j->profile];
     esc(e_serial, sizeof e_serial, j->disk_serial);
     esc(e_model,  sizeof e_model,  j->disk_model);
     esc(e_part,   sizeof e_part,   j->win_part);

@@ -199,9 +199,39 @@ void install_run(const stage_machine *m)
      * written, so the resume ladder always decides "start fresh" --
      * and starting fresh after an interrupted shrink means running
      * ntfsresize again on a volume that may be halfway through one. */
+    /* A FILE THAT IS THERE AND WILL NOT PARSE IS NOT THE SAME AS NO
+     * FILE, which journal.h has said at length since the day it was
+     * written -- and nothing, anywhere, read the flag that says which.
+     *
+     * `a() || b()` was the whole of it, and journal_read() begins with
+     * memset, so the second call erased the `corrupt` the first had
+     * set. A half-written journal -- which is exactly what a power cut
+     * during the Windows phase leaves -- came out of this as
+     * have=0, corrupt=0 and the person was told "This looks like a
+     * memory stick that was left plugged in." about her own computer,
+     * after the restart, with the installer's own damaged note sitting
+     * on the EFI partition.
+     *
+     * The two are different machines and they get different sentences.
+     * Neither touches the disk: a record that will not parse cannot be
+     * checked against this machine, and an install that cannot be
+     * checked does not happen. */
     journal j;
-    int have = journal_read("/aurbridge/journal.json", &j) ||
-               journal_read("/run/aurbridge/journal.json", &j);
+    int corrupt = 0;
+    int have = journal_read("/aurbridge/journal.json", &j);
+    if (!have) {
+        corrupt = j.corrupt;
+        have = journal_read("/run/aurbridge/journal.json", &j);
+        if (!have && j.corrupt) corrupt = 1;
+    }
+    if (!have && corrupt) {
+        refuse("The note the installer left on this computer is damaged, so "
+               "AurOS cannot tell whether this is the computer it was "
+               "prepared for.",
+               "Nothing has been changed. Start the computer again and it "
+               "will come back to Windows; then run the installer once more.",
+               "record-damaged");
+    }
     if (!have) {
         refuse("Nothing on this computer asked for AurOS to be installed.",
                "This looks like a memory stick that was left plugged in.",
@@ -332,15 +362,19 @@ void install_run(const stage_machine *m)
 
     /* The image, found and hashed BEFORE anything is touched. */
     image_src img;
-    /* THE PROFILE THE JOURNAL NAMES, not the first image on the stick.
+    /* THE PROFILE THE JOURNAL NAMES, not the first image it comes to.
      *
      * This argument was `j.stage[0] ? NULL : NULL` -- NULL either way,
      * written to look like a decision. image_find() has been able to
      * insist on a profile since it was written; there was nothing on
-     * this side of the restart that knew which one, so it was never
-     * asked to. Now the journal carries it. A journal from before that
-     * has an empty profile, and an empty profile asks for no check,
-     * which is exactly what happened before. */
+     * this side of the restart that knew which one, so it never was.
+     * Now the journal carries it, and image_find walks every disk in
+     * the machine, so a second AurOS stick left plugged in no longer
+     * decides this by being reached first.
+     *
+     * A journal from before that has an empty profile, and an empty
+     * profile asks for no check, which is exactly what happened
+     * before. */
     if (image_find(m, j.profile, &img, why, sizeof why) != 0)
         refuse(why, NULL, "no-image");
     stage_say("image    %s, %.1f GiB", img.profile,

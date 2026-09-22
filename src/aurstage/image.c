@@ -263,6 +263,23 @@ int image_find(const stage_machine *m, const char *want_profile,
             memcpy(c.profile, man + 68, 63);
             c.profile[63] = 0;
 
+            /* IS THIS EVEN THE ONE WE WERE SENT FOR? Asked here, above
+             * the checks below, and the order is deliberate.
+             *
+             * It used to be asked last, after two checks that `return
+             * -1` rather than move on -- so with two AurOS sticks in
+             * the machine, a malformed manifest on the stick the
+             * journal did NOT name aborted the whole search and the
+             * right one was never reached. Those checks exist to catch
+             * a stick that lies about its own extents; they are not a
+             * reason to refuse over an image nobody asked about.
+             *
+             * An empty want_profile asks nothing, which is what a
+             * journal written before the profile existed produces. */
+            if (want_profile && want_profile[0] &&
+                strcmp(want_profile, c.profile) != 0)
+                continue;          /* somebody else's stick, or an older one */
+
             /* image_bytes came off the stick too, so it is not a
              * bound until something makes it one. An image that claims
              * to be larger than the partition holding it makes every
@@ -286,10 +303,6 @@ int image_find(const stage_machine *m, const char *want_profile,
                          "not fit inside itself");
                 return -1;
             }
-            if (want_profile && want_profile[0] &&
-                strcmp(want_profile, c.profile) != 0)
-                continue;          /* somebody else's stick, or an older one */
-
             if (cross_check(&c, why, n) != 0) return -1;
             *out = c;
             return 0;

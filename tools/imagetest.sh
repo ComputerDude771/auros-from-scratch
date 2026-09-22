@@ -107,6 +107,59 @@ f.close()
 EOPY
 }
 
+# TWO IMAGES ON ONE STICK, which is the whole reason image_find takes
+# a profile at all -- and which no fixture in this repository could
+# produce until now, so "given two, pick the one the journal names" was
+# tested by nothing. Two AurOS sticks in the same machine reach
+# image_find the same way: it walks every disk, and every AUROS-IMAGE
+# partition on each.
+#
+# The wanted one is deliberately SECOND, so a search that stops at the
+# first candidate fails this. `$3` damages the first partition's
+# manifest, because a check that aborts on a sibling it was not asked
+# about is the other half of the same bug.
+mkstick2() { # out  first-profile  second-profile  [break-first]
+    S="$1"; P1="$2"; P2="$3"; BREAK="${4:-}"
+    rm -f "$S"; truncate -s 300M "$S"
+    sgdisk --zap-all "$S" >/dev/null 2>&1
+    sgdisk -n 1:2048:+140M -t 1:A12A5E9C-AB6E-4E4D-9F35-5B1C0A2E7D41 \
+           -c 1:"AUROS-IMAGE" "$S" >/dev/null 2>&1
+    sgdisk -n 2:0:+140M     -t 2:A12A5E9C-AB6E-4E4D-9F35-5B1C0A2E7D41 \
+           -c 2:"AUROS-IMAGE" "$S" >/dev/null 2>&1
+    for nn in 1 2; do
+        PS=$(sgdisk -i $nn "$S" | sed -n 's/^First sector: \([0-9]*\).*/\1/p')
+        if [ "$nn" = 1 ]; then PP="$P1"; BB="$BREAK"; else PP="$P2"; BB=""; fi
+        python3 - "$S" "$IMG" "$((PS * 512))" "$ROFF" "$RLEN" "$PP" \
+                     "$BB" "$EOFF" "$ELEN" <<'EOPY'
+import sys, struct, hashlib
+stick, img, pstart, roff, rlen, prof, brk, eoff, elen = sys.argv[1:10]
+pstart, roff, rlen = int(pstart), int(roff), int(rlen)
+eoff, elen = int(eoff), int(elen)
+data = bytearray(open(img, 'rb').read())
+sha  = hashlib.sha256(bytes(data[roff:roff + rlen])).digest()
+esha = hashlib.sha256(bytes(data[eoff:eoff + elen])).digest()
+man = bytearray(4096)
+man[0:8] = b'AURIMG01'
+# `brk` makes this manifest claim an image larger than the partition
+# holding it -- one of the two checks that used to `return -1` for any
+# candidate, before anybody asked whose it was.
+struct.pack_into('<Q', man, 8, (1 << 40) if brk else len(data))
+struct.pack_into('<Q', man, 16, roff)
+struct.pack_into('<Q', man, 24, rlen)
+struct.pack_into('<I', man, 32, 512)
+man[36:68] = sha
+man[68:68+len(prof)] = prof.encode()
+struct.pack_into('<Q', man, 132, eoff)
+struct.pack_into('<Q', man, 140, elen)
+man[148:180] = esha
+f = open(stick, 'r+b')
+f.seek(pstart);        f.write(man)
+f.seek(pstart + 4096); f.write(bytes(data))
+f.close()
+EOPY
+    done
+}
+
 cat > "$TMP/i.c" <<'EOC'
 #define _GNU_SOURCE
 #include <stdio.h>
@@ -217,6 +270,51 @@ case "$(printf '%s\n' "$OUT" | G why)" in
   *"different version"*) ok "...and says so" ;;
   *) bad "...and says so" "it said: $(printf '%s\n' "$OUT" | G why)" ;;
 esac
+
+# AND A JOURNAL THAT NAMES NOTHING TAKES WHAT IT FINDS, which is the
+# only protection every stick made before the journal carried a profile
+# has, and which was claimed in four files and tested in none.
+OUT=$("$TMP/i" find "$NAME" "$TMP/stick.img" "" 2>/dev/null)
+[ "$(printf '%s\n' "$OUT" | G find)" = "0" ] \
+  && ok "a journal from before profiles were recorded still installs" \
+  || bad "a journal from before profiles were recorded still installs" \
+        "$(printf '%s\n' "$OUT" | G why)"
+losetup -d "$L"
+
+# ── two images on one stick ─────────────────────────────────────────
+echo
+echo "  and when the stick holds more than one"
+mkstick2 "$TMP/two.img" office desktop
+L=$(attach "$TMP/two.img"); NAME=$(basename "$L")
+OUT=$("$TMP/i" find "$NAME" "$TMP/two.img" desktop 2>/dev/null)
+[ "$(printf '%s\n' "$OUT" | G find)" = "0" ] \
+  && ok "the one the journal names is the one that is found" \
+  || bad "the one the journal names is the one that is found" \
+        "$(printf '%s\n' "$OUT" | G why)"
+[ "$(printf '%s\n' "$OUT" | G profile)" = "desktop" ] \
+  && ok "...and it is the second one, so the search did not stop at the first" \
+  || bad "...and it is the second one, so the search did not stop at the first" \
+        "got $(printf '%s\n' "$OUT" | G profile)"
+losetup -d "$L"
+
+# A BROKEN MANIFEST ON THE ONE NOBODY ASKED ABOUT. The two structural
+# checks above the profile comparison used to `return -1` for any
+# candidate, so a damaged sibling refused the whole machine and the
+# image the journal named was never reached.
+mkstick2 "$TMP/twobad.img" office desktop break-first
+L=$(attach "$TMP/twobad.img"); NAME=$(basename "$L")
+OUT=$("$TMP/i" find "$NAME" "$TMP/twobad.img" desktop 2>/dev/null)
+[ "$(printf '%s\n' "$OUT" | G find)" = "0" ] \
+  && ok "a damaged image nobody asked for does not refuse the one they did" \
+  || bad "a damaged image nobody asked for does not refuse the one they did" \
+        "$(printf '%s\n' "$OUT" | G why)"
+# ...and it is still caught when it IS the one asked for.
+OUT=$("$TMP/i" find "$NAME" "$TMP/twobad.img" office 2>/dev/null)
+[ "$(printf '%s\n' "$OUT" | G find)" = "-1" ] \
+  && ok "...and is still refused when it is" \
+  || bad "...and is still refused when it is"
+losetup -d "$L"
+L=$(attach "$TMP/stick.img"); NAME=$(basename "$L")
 
 echo
 echo "  checking it"

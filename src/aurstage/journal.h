@@ -64,11 +64,17 @@ typedef struct {
      * simply restarted, so the sentence has to be "take it out first"
      * rather than "switch it on again". */
     char     boot_from[JOURNAL_STR];
-    /* Which AurOS the person chose, before the restart. A stick can
-     * hold more than one image; this is how the staging environment
-     * knows which of them she asked for rather than installing the
-     * first one it comes to. Empty in a journal written before this
-     * field existed, and an empty one asks for no check at all. */
+    /* Which AurOS was asked for, before the restart. image_find()
+     * walks every disk and every AUROS-IMAGE partition on it, so a
+     * second AurOS stick left plugged in is a second candidate; this
+     * is how the staging environment knows which of them was meant
+     * rather than installing the first one it comes to. Empty in a
+     * journal written before this field existed, and an empty one
+     * asks for no check at all.
+     *
+     * NB: the wizard has no profile picker yet and writes a constant,
+     * so on today's shipped build this compares a constant with
+     * itself. The wire is here; the picker is not. */
     char     profile[JOURNAL_STR];
     uint64_t run_id;              /* this install attempt             */
     uint64_t written_unix;        /* when Windows wrote this          */

@@ -393,9 +393,43 @@ static int find_stick(const ab_choice *c, ab_machine *m, char *why, size_t n)
  * with its encryption key in the clear while the screen said nothing
  * had been changed. None of these questions needs consent to have been
  * given, so none of them is asked after it. */
+/* THE PROFILE ID HAS TO SURVIVE BOTH CHANNELS UNCHANGED.
+ *
+ * It goes onto the stick twice: raw, in the manifest, and through
+ * JSON, in the journal. fmt_journal_json's esc() replaces every byte
+ * outside printable ASCII with a space, so a profile id with an
+ * accent or a tab in it arrives on the two sides DIFFERENT -- and the
+ * staging environment then refuses a stick the same run wrote, on the
+ * far side of the restart, saying it is for a different version of
+ * AurOS. The manifest field is 64 bytes including its terminator.
+ *
+ * Every profile this repository has is lower-case ASCII with a dash
+ * in it, so this refuses nothing that exists. It is here so that the
+ * day somebody adds one it cannot pass, rather than passing as far as
+ * the reboot. */
+static int profile_ok(const char *p, char *why, size_t n)
+{
+    size_t len = p ? strlen(p) : 0;
+    if (len == 0 || len > 63) {
+        snprintf(why, n, "the version of AurOS to install was not named "
+                         "in a way the installer can record.");
+        return -1;
+    }
+    for (size_t i = 0; i < len; i++) {
+        unsigned char ch = (unsigned char)p[i];
+        if (ch < 0x20 || ch > 0x7E || ch == '"' || ch == '\\') {
+            snprintf(why, n, "the version of AurOS to install was not named "
+                             "in a way the installer can record.");
+            return -1;
+        }
+    }
+    return 0;
+}
+
 static int prepare_possible(const ab_choice *c, ab_machine *m,
                             char *why, size_t n)
 {
+    if (profile_ok(c->profile, why, n) != 0) return -1;
     if (find_stick(c, m, why, n) != 0) return -1;
     if (!m->stick_sector) {
         /* The same refusal the system disk gets, for the same reason.

@@ -285,13 +285,22 @@ Two things must happen right at the end, in this order:
    the machine against `journal.json` — disk serial, GPT hash, NTFS
    start LBA and sector count — and aborts on any mismatch.
 
-`journal.json` also carries the **profile** the user chose. A memory
-stick can hold more than one AurOS image — somebody who made one for
-Office in March and re-made it for the plain desktop in October has a
-stick that still answers to both — and without the choice written down,
-the staging environment installs whichever image it comes to first.
-`image_find()` has been able to insist on a profile since it was
-written; for a while its one caller passed `NULL`, so it never did.
+`journal.json` also carries the **profile**. `image_find()` walks every
+disk in the machine and every `AUROS-IMAGE` partition on each, so a
+second AurOS stick left plugged in — one made last spring for a
+different profile — is a second candidate; without a name to ask for,
+the staging environment installs whichever it reaches first. It has been
+able to insist on a profile since it was written, and for a while its
+one caller passed `NULL`, so it never did.
+
+Two things this is **not**, both of which an earlier draft of this
+paragraph claimed. A stick AurBridge makes holds exactly one image:
+phase 2 rewrites the whole GPT with three partitions, so re-making a
+stick replaces the image rather than adding a second. And the wizard has
+no profile picker yet — it writes the constant `desktop` — so on today's
+shipped build this compares a constant with itself. The wire is here and
+the refusal is real the moment there is more than one image within
+reach; the picker is on the list, not in the tree.
 
 `BootOrder` is only rewritten in phase 10, after the user confirms.
 

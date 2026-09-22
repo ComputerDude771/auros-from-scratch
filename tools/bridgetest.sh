@@ -146,7 +146,7 @@ if [ -f "$T/journal.json" ]; then
     miss=""
     for k in disk_serial disk_model disk_bytes logical_sector win_part \
              win_start_lba win_sectors win_ntfs_serial gpt_sha256 stage \
-             boot_from run_id written_unix; do
+             boot_from profile run_id written_unix; do
         grep -q "\"$k\"" "$T/journal.json" || miss="$miss $k"
     done
     [ -z "$miss" ] && ok "and it carries every field the reader looks for" \

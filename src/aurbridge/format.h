@@ -140,18 +140,39 @@ typedef struct {
     /* WHICH AUROS THE PERSON CHOSE, and the reason it is written down
      * rather than inferred after the restart.
      *
-     * A memory stick can hold more than one image, and a person who
-     * made one for Office in March and re-made it for Revive in
-     * October has a stick that still answers to both. The staging
-     * environment used to take the first image it found on it and
-     * install that -- image_find() has taken a wanted profile since
-     * the day it was written, and the one caller passed NULL, because
-     * there was nothing on this side of the restart to pass.
+     * image_find() walks EVERY disk in the machine and every
+     * AUROS-IMAGE partition on each. Two AurOS sticks in the same
+     * computer -- one made last spring for a different profile, still
+     * in the drawer, still plugged in -- are two candidates, and
+     * without a name to ask for, the staging environment installs
+     * whichever it reaches first.
      *
-     * So the wizard's choice travels with the rest of the record. An
-     * older journal has no profile, the field is empty, and the check
-     * does not happen: the same behaviour as before, for a stick made
-     * before this existed. */
+     * Two corrections to what this comment said when it was written,
+     * because both were repeated into five files. A stick AurBridge
+     * makes holds exactly ONE image: phase 2 rewrites the whole GPT
+     * with three partitions, so re-making a stick replaces the image
+     * rather than adding one. And the wizard has no profile picker
+     * yet -- src/aurbridge/wizard.c writes the constant "desktop" and
+     * says so -- so on a shipped build this compares a constant with
+     * itself. What the person picks today is the shell archetype,
+     * which travels separately. This is the wire ready for the
+     * picker, and the refusal is real the moment there is more than
+     * one image within reach.
+     *
+     * An older journal has no profile, the field is empty, and the
+     * check does not happen: the same behaviour as before, for a
+     * stick made before this existed. */
+    /* 64 AND NOT 128, which is the rule three fields up -- and the
+     * exception is deliberate, so here is the reason.
+     *
+     * The other strings are bounded by src/aurstage/journal.h's
+     * JOURNAL_STR. This one is bounded by the MANIFEST, whose profile
+     * field is 64 bytes including its terminator
+     * (`68  64  profile id`, above) and which is the other half of the
+     * comparison: a profile the journal could hold and the manifest
+     * could not would be a stick that refuses itself. 64 is the
+     * narrower of the two, so 64 is the width, and phases.c refuses a
+     * longer one before anything is written. */
     char     profile[64];
     uint64_t run_id;
     uint64_t written_unix;

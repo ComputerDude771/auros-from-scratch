@@ -130,13 +130,18 @@ run "a damaged boot chain on the stick: refused" \
 # otherwise have used is the one with a damaged boot chain.
 mkstick
 
-# AND A STICK FOR A DIFFERENT AUROS. A stick can hold more than one
-# image -- somebody who made one for Office in March and re-made it for
-# the plain desktop in October has a stick that answers to both -- and
-# the staging environment used to install whichever it came to first.
-# image_find() has taken a wanted profile since the day it was written
-# and the one caller passed NULL, written as `j.stage[0] ? NULL : NULL`
-# so that it looked like a decision. The journal carries the choice now.
+# AND A STICK FOR A DIFFERENT AUROS. image_find() walks every disk in
+# the machine and every AUROS-IMAGE partition on each, so a second
+# AurOS stick left plugged in is a second candidate and the staging
+# environment used to install whichever it reached first. It has taken
+# a wanted profile since the day it was written; the one caller passed
+# NULL, written as `j.stage[0] ? NULL : NULL` so that it looked like a
+# decision. The journal names it now.
+#
+# The stick here holds one image, so what this case proves is the
+# comparison and the refusal. That the RIGHT one of several is chosen
+# is tools/imagetest.sh's two-image fixture, which is where a stick
+# with two AUROS-IMAGE partitions can actually be built.
 mach_journal office
 run "a stick for a different AurOS: refused" \
     "aurstage.install aurstage.min_gb=1" \

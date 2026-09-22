@@ -114,6 +114,16 @@ chroot_done() {
     # profile (forge list), where RFS is unset.
     [ -n "${RFS:-}" ] || return 0
     rm -f "$RFS/usr/sbin/policy-rc.d"
+    # AND THE BUILD HOST'S RESOLVER, which chroot_prep copied in so
+    # that apt could reach the archive. It was never removed, and
+    # stage_squash squashes $RFS as it finds it -- so all five images
+    # shipped this builder's /etc/resolv.conf as a static file
+    # (`nameserver 8.8.8.8`) instead of letting the machine's own
+    # network manager write one. On a school or office network that
+    # only answers DNS from its own resolver -- which is the network
+    # school-kiosk exists for -- that is a machine that connects and
+    # then cannot look anything up.
+    rm -f "$RFS/etc/resolv.conf"
     for m in dev/pts dev sys proc; do
         mountpoint -q "$RFS/$m" && umount -lf "$RFS/$m" || true
     done
@@ -127,6 +137,39 @@ inchroot() {
         ${http_proxy:+http_proxy="$http_proxy"} \
         ${https_proxy:+https_proxy="$https_proxy"} \
         /bin/bash -c "$*"
+}
+
+# AND AN ENABLE MUST WORK. `|| true` on a `systemctl enable` is what
+# let the ordering bug in stage_overlay live for as long as it did: an
+# image that boots to a console and an image that never asks whether
+# AurOS works both build cleanly and say nothing.
+#
+# Two checks, because one is not enough either way round. systemctl
+# exits non-zero for a unit it cannot find, which is the common case --
+# but it exits ZERO for a unit with no [Install] section and does
+# nothing at all, so the link itself is looked for afterwards.
+#
+# -L AND NOT -e. The link systemd writes is absolute and root-relative
+# -- `/etc/systemd/system/auros-hold.service` -- so from out here `-e`
+# resolves it against the BUILD HOST's root and finds nothing. The
+# first version of this check used -e and would have failed every
+# build on its first unit, with a message saying the opposite of what
+# had happened. Which is the joke: a check written to catch silence,
+# that would itself have lied.
+#
+# .wants OR .requires, because which one it is belongs to the unit's
+# [Install] section and not to this call site.
+enable_unit() { # unit  target
+    err=$(inchroot "systemctl enable $1 2>&1 >/dev/null") \
+        || die "systemctl enable $1 failed. The image would boot without it.
+     $err"
+    for _d in wants requires; do
+        if [ -L "$RFS/etc/systemd/system/$2.$_d/$1" ] ||
+           [ -e "$RFS/etc/systemd/system/$2.$_d/$1" ]; then return 0; fi
+    done
+    die "$1 was enabled and nothing appeared in $2.wants or $2.requires.
+     A unit with no [Install] section enables successfully and does
+     nothing; the image would boot without it."
 }
 
 # ── stage 1: bootstrap the base ────────────────────────────────────
@@ -766,26 +809,46 @@ stage_overlay() {
     # cp -a preserves modes, so an executable in the tree arrives
     # executable; the explicit chmod below is for the one file whose
     # mode matters enough to state twice.
-    if [ -d "$ROOT/rootfs" ]; then
-        cp -a "$ROOT/rootfs/." "$RFS/" || die "could not lay down rootfs/"
-        note "rootfs overlay: $(cd "$ROOT/rootfs" && find . -type f | wc -l) files"
-    fi
+    [ -d "$ROOT/rootfs" ] || die "there is no rootfs/ to lay down. Every
+     unit file, the PAM stack and firstboot.sh live in it, and an image
+     without them boots to nothing."
+    # NOT `cp -a`, WHICH WOULD SHIP THE CHECKOUT'S OWNERSHIP.
+    #
+    # cp -a preserves owner AND rewrites the attributes of destination
+    # directories that already exist -- so $RFS/etc, $RFS/etc/pam.d and
+    # $RFS/etc/systemd/system take whatever uid owns the repository. On
+    # this machine that is root and nothing happens. A developer who
+    # clones as themselves and runs `sudo build/forge build desktop`
+    # ships an image whose /etc/pam.d and /etc/systemd/system are owned
+    # by uid 1000 -- which on the image is the default user, who can
+    # then rewrite the PAM stack and aurshell.service and be root.
+    #
+    # Modes are still preserved, which is what the executables in the
+    # tree need; only ownership is dropped, and root is what the
+    # umask-free copy then gives them.
+    cp -a --no-preserve=ownership "$ROOT/rootfs/." "$RFS/" \
+        || die "could not lay down rootfs/"
+    # AND NOTHING THROUGH A MOUNT. This copy now runs inside the
+    # chroot_prep window, where $RFS/dev is a bind mount of the build
+    # host's /dev and /proc and /sys are mounted -- so a rootfs/dev/
+    # entry added one day would be written into the HOST's /dev, and a
+    # rootfs/proc/ placeholder would change the mode of a mount point
+    # this build is using. There is nothing like that in the tree and
+    # this is how it stays that way.
+    for _d in dev proc sys run; do
+        # An `if`, not `[ ] && die`: under `set -e` a false test at the
+        # end of an AND-list ends the build with no message -- which is
+        # the trap this same function's aurshell guard already carries
+        # a comment about, and which I walked straight into here.
+        if [ -e "$ROOT/rootfs/$_d" ]; then
+            die "rootfs/$_d exists. The overlay is copied while /dev,
+     /proc and /sys are mounted inside the image, so anything under
+     those names would be written to the build host."
+        fi
+    done
+    note "rootfs overlay: $(cd "$ROOT/rootfs" && find . -type f | wc -l) files"
     chmod 755 "$RFS/usr/lib/auros/firstboot.sh" 2>/dev/null || true
 
-    # AND THEY MUST WORK. `|| true` on all three is what let the
-    # ordering bug above live: an image that boots to a console and an
-    # image that never asks whether AurOS works both build cleanly and
-    # say nothing. systemctl enable exits non-zero for a unit it cannot
-    # find, so the exit status is the check -- and the enable symlink
-    # is looked for afterwards, because `systemctl enable` on a unit
-    # with no [Install] section succeeds and does nothing.
-    enable_unit() { # unit  wants-dir
-        inchroot "systemctl enable $1 >/dev/null 2>&1" \
-            || die "systemctl enable $1 failed. The image would boot without it."
-        [ -e "$RFS/etc/systemd/system/$2.wants/$1" ] \
-            || die "$1 was enabled and no $2 want appeared. The image would
-     boot without it."
-    }
     enable_unit auros-firstboot.service multi-user.target
     # Phases 9 and 10. The hold runs on every boot until somebody has
     # answered; the path unit is how the desktop asks for the three
@@ -911,8 +974,14 @@ stage_overlay() {
         }
     done
 
-    install -d "$RFS/etc/auros/services"
-    cp "$ROOT/rootfs/etc/auros/services"/*.service "$RFS/etc/auros/services/" 2>/dev/null || true
+    # The six aurinit service files used to be copied again here, by
+    # name, from the directory the overlay above already brought over
+    # whole -- with `2>/dev/null || true`, so a renamed source
+    # directory would have been silent. That is the exact pattern the
+    # overlay's own comment exists to condemn. Gone; one copy, of the
+    # whole tree, that fails loudly.
+    [ -d "$RFS/etc/auros/services" ] || die "the overlay did not bring
+     etc/auros/services. aurinit would start nothing."
     note "aurinit, aurctl, aurwall, aurora, aurfirst, ferry installed"
 }
 
@@ -1450,7 +1519,7 @@ ALGO=${zram_algorithm:-zstd}
 PERCENT=$zram_percent
 PRIORITY=100
 EOZ
-            inchroot "systemctl enable zramswap.service >/dev/null 2>&1" || true
+            enable_unit zramswap.service multi-user.target
             note "zram: ${zram_percent}% of RAM, ${zram_algorithm:-zstd}"
         else
             warn "the profile asks for zram and zram-tools is not installed;
@@ -1467,7 +1536,7 @@ EOZ
 # things whose death would take the session with them.
 EARLYOOM_ARGS="-m $earlyoom_min_free_percent -r 0 --avoid '(^|/)(aurshell|systemd|Xwayland)$' --prefer '(^|/)(firefox|chrome|chromium|soffice)'"
 EOE
-            inchroot "systemctl enable earlyoom.service >/dev/null 2>&1" || true
+            enable_unit earlyoom.service multi-user.target
             note "earlyoom: steps in below ${earlyoom_min_free_percent}% free"
         else
             warn "the profile asks for earlyoom and it is not installed;
