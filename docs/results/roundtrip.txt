@@ -1,0 +1,58 @@
+
+Does it actually install AurOS, and leave Windows intact?
+
+  a 3 GiB machine: ESP, a 1 GiB Windows with 7 files, WinRE at the end
+  a stick with a 302 MiB AurOS image, a record area and room for the way back
+
+  refusals, with the disk untouched
+    no stick in the computer: refused                          ok
+    ...and the disk is byte-for-byte unchanged                 ok
+    a damaged image on the stick: refused                      ok
+    ...and the disk is byte-for-byte unchanged                 ok
+
+  and then installing, for real
+    it installs and the new system starts                      ok
+
+  and what it left behind
+    another tool agrees the new table is valid                 ok
+    the disk now has 6 partitions                              ok
+      p1 2048..206847 EFI
+      p2 206848..223256 Windows
+      p3 5498880..6291422 WinRE
+      p4 225280..4063231 AUROS-ROOT
+      p5 4063232..4270079 AUROS-SAVED
+      p6 4270080..5498879 AUROS-RECOVERY
+    Windows is smaller than it was                             ok
+    the Windows volume still mounts                            ok
+    and all 7 files in it are byte-for-byte what they were     ok
+    the installer reported success                             ok
+
+  and then putting Windows back, from the memory stick
+    it restores and says so                                    ok
+    and it used the copy on the stick, not the one on the computer ok
+    from the stick: the table is valid again                   ok
+    from the stick: the three original partitions are back     ok
+    from the stick: Windows is its full size again             ok
+    from the stick: the EFI partition is byte-for-byte what it was ok
+    from the stick: the Windows FILESYSTEM is its full size again ok
+    from the stick: and the installer says so itself           ok
+    from the stick: all 7 files in Windows are exactly what they were ok
+
+  and again with no stick at all, from the copy on the computer
+    it restores from the copy it left on this computer         ok
+    and it used the copy on the computer, the stick being absent ok
+    from the computer: the table is valid again                ok
+    from the computer: the three original partitions are back  ok
+    from the computer: Windows is its full size again          ok
+    from the computer: the EFI partition is byte-for-byte what it was ok
+    from the computer: the Windows FILESYSTEM is its full size again ok
+    from the computer: and the installer says so itself        ok
+    from the computer: all 7 files in Windows are exactly what they were ok
+
+  and a refusal, with the disk untouched
+    a damaged saved copy: refused, disk untouched              ok
+    ...and the disk is byte-for-byte unchanged                 ok
+    ...and it did not quietly restore anyway                   ok
+
+32 checks: it installs AurOS, starts it, puts Windows back
+again, and every file in Windows is exactly what it was.

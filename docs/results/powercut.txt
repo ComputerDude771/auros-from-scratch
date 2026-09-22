@@ -1,0 +1,155 @@
+
+If the power goes at the worst possible instant, does Windows come back?
+
+  a 3 GiB machine with 7 files in Windows, and an AurOS stick
+
+  first, one ordinary install, so there is something to undo
+    it installs                                                ok
+
+  the power goes during the install
+
+  ── gate
+    the machine stops dead at gate                             ok
+    the disk is byte-for-byte untouched                        ok
+
+  ── capture-mid
+    the machine stops dead at capture-mid                      ok
+    the disk is byte-for-byte untouched                        ok
+    a half-written saved copy is refused                       ok
+
+  ── shrink-begin
+    the machine stops dead at shrink-begin                     ok
+    the disk is byte-for-byte untouched                        ok
+
+  ── shrink-end
+    the machine stops dead at shrink-end                       ok
+    after the cut: every file in Windows is still exactly what it was ok
+    and Windows can be put back                                ok
+    after shrink-end: the table is valid again                 ok
+    after shrink-end: the three original partitions are back   ok
+    after shrink-end: Windows is its full size again           ok
+    after shrink-end: the EFI partition is byte-for-byte what it was ok
+    after shrink-end: the Windows FILESYSTEM is its full size again ok
+    after shrink-end: and the installer says so itself         ok
+
+  ── write-mid
+    the machine stops dead at write-mid                        ok
+    after the cut: every file in Windows is still exactly what it was ok
+    and Windows can be put back                                ok
+    after write-mid: the table is valid again                  ok
+    after write-mid: the three original partitions are back    ok
+    after write-mid: Windows is its full size again            ok
+    after write-mid: the EFI partition is byte-for-byte what it was ok
+    after write-mid: the Windows FILESYSTEM is its full size again ok
+    after write-mid: and the installer says so itself          ok
+
+  ── write-end
+    the machine stops dead at write-end                        ok
+    after the cut: every file in Windows is still exactly what it was ok
+    and Windows can be put back                                ok
+    after write-end: the table is valid again                  ok
+    after write-end: the three original partitions are back    ok
+    after write-end: Windows is its full size again            ok
+    after write-end: the EFI partition is byte-for-byte what it was ok
+    after write-end: the Windows FILESYSTEM is its full size again ok
+    after write-end: and the installer says so itself          ok
+
+  ── commit-array
+    the machine stops dead at commit-array                     ok
+    after the cut: every file in Windows is still exactly what it was ok
+    and Windows can be put back                                ok
+    after commit-array: the table is valid again               ok
+    after commit-array: the three original partitions are back ok
+    after commit-array: Windows is its full size again         ok
+    after commit-array: the EFI partition is byte-for-byte what it was ok
+    after commit-array: the Windows FILESYSTEM is its full size again ok
+    after commit-array: and the installer says so itself       ok
+
+  ── commit-sector
+    the machine stops dead at commit-sector                    ok
+    after the cut: every file in Windows is still exactly what it was ok
+    and Windows can be put back                                ok
+    after commit-sector: the table is valid again              ok
+    after commit-sector: the three original partitions are back ok
+    after commit-sector: Windows is its full size again        ok
+    after commit-sector: the EFI partition is byte-for-byte what it was ok
+    after commit-sector: the Windows FILESYSTEM is its full size again ok
+    after commit-sector: and the installer says so itself      ok
+
+  ── commit-backup
+    the machine stops dead at commit-backup                    ok
+    after the cut: every file in Windows is still exactly what it was ok
+    and Windows can be put back                                ok
+    after commit-backup: the table is valid again              ok
+    after commit-backup: the three original partitions are back ok
+    after commit-backup: Windows is its full size again        ok
+    after commit-backup: the EFI partition is byte-for-byte what it was ok
+    after commit-backup: the Windows FILESYSTEM is its full size again ok
+    after commit-backup: and the installer says so itself      ok
+
+  ── settle-end
+    the machine stops dead at settle-end                       ok
+    after the cut: every file in Windows is still exactly what it was ok
+    and Windows can be put back                                ok
+    after settle-end: the table is valid again                 ok
+    after settle-end: the three original partitions are back   ok
+    after settle-end: Windows is its full size again           ok
+    after settle-end: the EFI partition is byte-for-byte what it was ok
+    after settle-end: the Windows FILESYSTEM is its full size again ok
+    after settle-end: and the installer says so itself         ok
+
+  the power goes during the restore, which is the worse half
+
+  ── restore-array
+    the machine stops dead at restore-array                    ok
+    running it again finishes the job                          ok
+    after restore-array: the table is valid again              ok
+    after restore-array: the three original partitions are back ok
+    after restore-array: Windows is its full size again        ok
+    after restore-array: the EFI partition is byte-for-byte what it was ok
+    after restore-array: the Windows FILESYSTEM is its full size again ok
+    after restore-array: and the installer says so itself      ok
+
+  ── restore-sector
+    the machine stops dead at restore-sector                   ok
+    running it again finishes the job                          ok
+    after restore-sector: the table is valid again             ok
+    after restore-sector: the three original partitions are back ok
+    after restore-sector: Windows is its full size again       ok
+    after restore-sector: the EFI partition is byte-for-byte what it was ok
+    after restore-sector: the Windows FILESYSTEM is its full size again ok
+    after restore-sector: and the installer says so itself     ok
+
+  ── restore-backup
+    the machine stops dead at restore-backup                   ok
+    running it again finishes the job                          ok
+    after restore-backup: the table is valid again             ok
+    after restore-backup: the three original partitions are back ok
+    after restore-backup: Windows is its full size again       ok
+    after restore-backup: the EFI partition is byte-for-byte what it was ok
+    after restore-backup: the Windows FILESYSTEM is its full size again ok
+    after restore-backup: and the installer says so itself     ok
+
+  ── restore-esp-mid
+    the machine stops dead at restore-esp-mid                  ok
+    running it again finishes the job                          ok
+    after restore-esp-mid: the table is valid again            ok
+    after restore-esp-mid: the three original partitions are back ok
+    after restore-esp-mid: Windows is its full size again      ok
+    after restore-esp-mid: the EFI partition is byte-for-byte what it was ok
+    after restore-esp-mid: the Windows FILESYSTEM is its full size again ok
+    after restore-esp-mid: and the installer says so itself    ok
+
+  ── restore-grow
+    the machine stops dead at restore-grow                     ok
+    running it again finishes the job                          ok
+    after restore-grow: the table is valid again               ok
+    after restore-grow: the three original partitions are back ok
+    after restore-grow: Windows is its full size again         ok
+    after restore-grow: the EFI partition is byte-for-byte what it was ok
+    after restore-grow: the Windows FILESYSTEM is its full size again ok
+    after restore-grow: and the installer says so itself       ok
+
+111 checks: the power can go at any named instant of the
+install or the restore, and Windows comes back with every file
+in it exactly as it was.

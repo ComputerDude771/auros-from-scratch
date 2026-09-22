@@ -1,0 +1,19 @@
+
+Which computers would AurOS touch, and which would it refuse?
+
+  ordinary machines
+    512-byte blocks, 100 MiB EFI, WinRE at the end       ok
+    4Kn: blocks are 4096 bytes, not 512                  ok
+    an OEM 1 GiB EFI partition                           ok
+    the first partition at LBA 34, as disks were made before 2010 ok
+
+  machines it must refuse
+    a BitLocker-encrypted Windows drive                  ok
+    Windows is asleep, not shut down                     ok
+    a disk divided up the old way (MBR)                  ok
+    a computer that starts up the old way (no EFI)       ok
+    two Windows drives and nothing saying which          ok
+    a computer with no room to spare                     ok
+
+10 machines: every geometry it should take, it takes, and
+every one it must refuse, it refuses.
