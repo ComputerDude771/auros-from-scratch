@@ -124,10 +124,21 @@ static void dots(int pct)
     last = pct;
     fprintf(stderr, " %d%%", pct);
     if (pct >= 100) fprintf(stderr, "\n");
-    /* Halfway through whatever long thing is running. One name for
-     * all of them: which one it is is decided by where the run got to,
-     * and a test asks for one long step at a time. */
-    if (pct >= 50 && pct < 55) fault_maybe("halfway");
+}
+
+/* The same bar, with a fault point in it.
+ *
+ * `dots` is used by four different long steps, so a single fault point
+ * inside it would mean "halfway through whichever of them got there
+ * first" -- which is the image check, before the line, on every run. A
+ * named instant that cannot be aimed at is not one. This one belongs to
+ * the image write and to nothing else: a machine cut here has a root
+ * partition half written, into space that is not in the partition table
+ * yet, which is the case the "first megabyte last" rule exists for. */
+static void dots_write(int pct)
+{
+    dots(pct);
+    if (pct >= 50 && pct < 55) fault_maybe("write-mid");
 }
 
 static void commit_note(int n, void *ud)
@@ -442,7 +453,7 @@ void install_run(const stage_machine *m)
     stage_say("Copying AurOS onto this computer.");
     step(REC_WRITE_BEGIN, NULL);
     fprintf(stderr, "aurstage: ");
-    if (image_write_root(&t, &img, root_off, dots, why, sizeof why) != 0)
+    if (image_write_root(&t, &img, root_off, dots_write, why, sizeof why) != 0)
         give_up(why, "The Windows drive is smaller but still works.",
                 "write-failed", 1);
     step(REC_WRITE_END, NULL);

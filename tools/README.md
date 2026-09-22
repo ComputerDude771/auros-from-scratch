@@ -16,6 +16,12 @@ exit non-zero when they fail.
 | `bttest.c` | What `bluetoothctl` prints becomes what she reads. The "Connected" and "Used before" tags come from two flags **nothing in the program ever set** — the function that reads them was written and called from nowhere. Also: a device that has never announced a name prints its address twice, and a list of six rows reading `FC-58-FA-21-03-9C` is a list she cannot choose from. |
 | `wlhostile.c` | Fifteen clients that misbehave on purpose, each the shortest sequence that used to break something, against a real compositor. It **measures** as well as survives: a case fails if one dispatch takes over 300ms or peak memory grows by more than 64MB, because a compositor frozen for nine seconds used to pass the old "is it still serving?" question — the freeze was over by the time it was asked. Two cases invert the assertion: the point of *copying to the clipboard twice* is that the CLIENT must live, and the harness focuses the window first, because an offer only ever reaches the focused client and without that the case tested nothing. |
 | `stagetest.sh` | The staging environment — where the one restart lands and where every destructive step will happen. Builds a synthetic machine (ESP + a **real NTFS filesystem**, made by the image's own `mkntfs` + an ext4 root), boots the initramfs in QEMU, and **hashes the whole disk before and after every case**, including both abort paths. `docs/AURBRIDGE.md` says an abort must leave the machine bootable into Windows, "tested, not a goal" — the hash is what makes that a fact rather than an intention. |
+| `installtest.sh` | **The whole product, both directions, on one synthetic machine.** A 3 GiB disk with an EFI partition, a real NTFS Windows holding seven files with recorded md5sums, and an OEM recovery partition at the far end so the space a shrink creates is a *gap* and not room at the end. It installs for real — shrink, write by offset, verify, probe, one-sector commit, grow, `switch_root` — and the new system prints from inside itself. Then it puts Windows back, twice: once from the memory stick and once from the copy on the computer with no stick plugged in, asserting each time *which* copy was used. Afterwards: the three original partitions at their original sectors, the EFI partition byte-for-byte, the Windows **filesystem** its full size again (not merely the partition entry — checking only the table let a restore pass with the filesystem still at 16408 sectors out of 2097151), and every file identical to the md5sums taken before anything was touched. Every refusal case hashes the whole disk and requires it byte-for-byte unchanged. |
+| `powercuttest.sh` | **R4 and R6, made to happen.** The installer names its own dangerous instants (`src/aurstage/fault.h`) and a fault-injection build stops dead at exactly one of them, so every run is the same run and a failure is reproducible by its name — which killing a VM at a wall-clock moment is not. Fourteen instants, nine during the install and five during the restore; the restore half matters more, because a machine running it is already one something has gone wrong with. Above the line the disk must be byte-for-byte untouched; below it the user's files must survive the cut *before* any restore is attempted, and then the restore must bring the machine back. What it does **not** prove is in its own header: one firmware, one virtual disk's cache behaviour, nothing about a real power supply. |
+| `matrixtest.sh` | **The hardware we cannot buy.** Ten machines synthesised in QEMU and put through the dry run, which writes nothing: 4Kn (built through a loop device with `--sector-size 4096`, because `sgdisk` on a plain file always writes 512-byte LBAs and a 4Kn machine cannot be made any other way), an OEM gigabyte EFI partition, a first partition at LBA 34 as disks were made before 2010, MBR, BIOS, BitLocker, a hibernated Windows, two Windows volumes with nothing to choose by, and a machine with no room. Each row is a shape of computer somebody actually owns. |
+| `bridgetest.sh` | **Do the two halves agree about the bytes?** AurBridge writes on Windows; the staging environment reads after the restart and refuses the install if it does not recognise what it finds. They are separate programs in separate toolchains and nothing in either build would notice a renamed field. This links the *real* writer (`src/aurbridge/format.c`) and the *real* reader (`src/aurstage/journal.c`) into one program and makes the second read what the first wrote, field by field — then hands the cpio to `cpio`, the gzip to `gzip` and the stick's partition table to `sgdisk`, because the things that read these formats on a user's machine are the kernel and the firmware. The partition-table hash is checked against a third implementation in python that follows the words in `aurstage.h` and shares no code with either side. |
+| `gpttest.sh` · `wrtest.sh` · `committest.sh` | The three files that can destroy a disk, each on its own. `gpttest` checks CRC32 against a published vector and the table against `sgdisk`; `wrtest` injects faults into the write gate and requires every out-of-window write to be a **refusal and not a clamp**; `committest` snapshots the disk after each flush and asks an independent tool what a reader would see at that instant — which is how the commit order was found to be backwards. |
+| `healthtest.sh` · `shrinktest.sh` · `imagetest.sh` · `probetest.sh` · `ntfstest.sh` | The gates, one at a time: AC power and SMART; what `ntfsresize` will actually say and what it does when it is lying; finding and hashing the image on the stick; the hardware probe; and the NTFS reader, against volumes built to be in each bad state. |
 | `hittest.c` | Two things. **Clicks land where the archetype paints** — sweeps `click()` across four resolutions and checks each consumed click against a mask of what was actually drawn. **Nothing highlights that cannot be clicked** — wherever hovering changes the frame, clicking must change it further. |
 
 ```sh
@@ -513,3 +519,25 @@ installed, and calls out the `.deb` association on its own -- that one
 is the whole "download things like on any other Linux distro" path. It
 exits 2, rather than passing, when the packages are not installed
 locally, because an empty search is not a clean bill of health.
+
+## The installer's tests, and what they cost to run
+
+```sh
+# the whole round trip, ~25 minutes, needs root and QEMU with OVMF
+sudo sh tools/installtest.sh
+
+# every geometry, through the dry run, which writes nothing, ~20 minutes
+sudo sh tools/matrixtest.sh
+
+# what AurBridge writes against what reads it. Seconds, no root, no QEMU.
+sh tools/bridgetest.sh
+
+# R4/R6. Needs a fault-injection image first, and takes about an hour.
+sudo AURSTAGE_FAULT=1 ./build/staging
+sudo sh tools/powercuttest.sh
+```
+
+`build/staging` refuses to pack an ordinary image that contains the
+fault-injection flag, and refuses to pack a fault-injection one that
+does not — the check is on the linked binary, because what ships is the
+binary.

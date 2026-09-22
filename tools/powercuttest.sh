@@ -130,7 +130,7 @@ echo
 echo "  the power goes during the install"
 PRISTINE=$(md5sum "$DISK" | cut -d' ' -f1)
 
-for pt in gate capture-mid shrink-begin shrink-end write-end \
+for pt in gate capture-mid shrink-begin shrink-end write-mid write-end \
           commit-array commit-sector commit-backup settle-end; do
     printf '\n  ── %s\n' "$pt"
     if mach_boot "$IMG" "$DISK" "$STICK" \
