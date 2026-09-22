@@ -1,0 +1,37 @@
+
+With the power off and the stick out, does it come back up in AurOS?
+
+  a 3 GiB machine: ESP, a 1 GiB Windows with 7 files, WinRE at the end
+  an AurOS image with a real signed boot chain in its 48 MiB EFI partition
+  and firmware that already has an "AurOS Installer" entry in it
+
+  the install
+    it installs and hands over in the same boot                ok
+    and says it put AurOS in the start-up menu                 ok
+
+  the partition it starts from
+    there is an AUROS-BOOT partition                           ok
+    and the firmware will recognise it (EFI System)            ok
+    and it is the image's EFI partition, byte for byte         ok
+    and it was made big enough for it                          ok
+
+  and the computer's own EFI partition
+    is byte-for-byte what it was (R12: never mounted, never written) ok
+
+  the boot entry
+    there is one, and it is called AurOS                       ok
+    it starts the signed shim                                  ok
+    as a Hard Drive node, then a File node, then End           ok
+    and the partition it names is the one on the disk          ok
+    with the number, the start and the length it really has    ok
+    BootNext is armed at it -- one-shot, so a failure self-reverts ok
+    and BootOrder was left alone -- Windows is still the default ok
+    the installer's own entry was tidied away                  ok
+
+  starting it the way its owner would
+    firmware, one disk, no stick, no -kernel: AurOS starts     ok
+
+  and with Secure Boot on, against Microsoft's own keys
+    the signed chain boots on firmware that enforces signatures ok
+
+  17 checked, 0 failed

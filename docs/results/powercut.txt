@@ -54,6 +54,28 @@ If the power goes at the worst possible instant, does Windows come back?
     after write-end: the Windows FILESYSTEM is its full size again ok
     after write-end: and the installer says so itself          ok
 
+  ── boot-mid
+    the machine stops dead at boot-mid                         ok
+    after the cut: every file in Windows is still exactly what it was ok
+    and Windows can be put back                                ok
+    after boot-mid: the table is valid again                   ok
+    after boot-mid: the three original partitions are back     ok
+    after boot-mid: Windows is its full size again             ok
+    after boot-mid: the EFI partition is byte-for-byte what it was ok
+    after boot-mid: the Windows FILESYSTEM is its full size again ok
+    after boot-mid: and the installer says so itself           ok
+
+  ── boot-end
+    the machine stops dead at boot-end                         ok
+    after the cut: every file in Windows is still exactly what it was ok
+    and Windows can be put back                                ok
+    after boot-end: the table is valid again                   ok
+    after boot-end: the three original partitions are back     ok
+    after boot-end: Windows is its full size again             ok
+    after boot-end: the EFI partition is byte-for-byte what it was ok
+    after boot-end: the Windows FILESYSTEM is its full size again ok
+    after boot-end: and the installer says so itself           ok
+
   ── commit-array
     the machine stops dead at commit-array                     ok
     after the cut: every file in Windows is still exactly what it was ok
@@ -86,6 +108,17 @@ If the power goes at the worst possible instant, does Windows come back?
     after commit-backup: the EFI partition is byte-for-byte what it was ok
     after commit-backup: the Windows FILESYSTEM is its full size again ok
     after commit-backup: and the installer says so itself      ok
+
+  ── boot-entry
+    the machine stops dead at boot-entry                       ok
+    after the cut: every file in Windows is still exactly what it was ok
+    and Windows can be put back                                ok
+    after boot-entry: the table is valid again                 ok
+    after boot-entry: the three original partitions are back   ok
+    after boot-entry: Windows is its full size again           ok
+    after boot-entry: the EFI partition is byte-for-byte what it was ok
+    after boot-entry: the Windows FILESYSTEM is its full size again ok
+    after boot-entry: and the installer says so itself         ok
 
   ── settle-end
     the machine stops dead at settle-end                       ok
@@ -150,6 +183,6 @@ If the power goes at the worst possible instant, does Windows come back?
     after restore-grow: the Windows FILESYSTEM is its full size again ok
     after restore-grow: and the installer says so itself       ok
 
-111 checks: the power can go at any named instant of the
+138 checks: the power can go at any named instant of the
 install or the restore, and Windows comes back with every file
 in it exactly as it was.
