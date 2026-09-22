@@ -112,8 +112,10 @@ grep -qi 'NOT timestamped' "$TMP/out.txt" \
 
 # SHA-1 HAS BEEN REFUSED BY WINDOWS SINCE 2016, and a tool's default is
 # not a promise.
+# THE DIGEST FIELD, not anywhere in the output: a certificate's
+# sha256WithRSAEncryption appearing elsewhere would make this vacuous.
 osslsigncode verify -CAfile "$TMP/ca.pem" -ignore-timestamp -in "$EXE" 2>&1 \
-  | grep -qi 'sha256\|SHA-256' \
+  | grep -i 'message digest algorithm' | grep -qi 'sha256\|SHA-256' \
   && ok "with a SHA-256 digest, not SHA-1" \
   || bad "with a SHA-256 digest, not SHA-1" \
          "$(osslsigncode verify -CAfile "$TMP/ca.pem" -ignore-timestamp -in "$EXE" 2>&1 | grep -i 'message digest\|algorithm' | head -3)"
@@ -130,13 +132,20 @@ head -c 2 "$EXE" | grep -q 'MZ' \
 
 echo
 echo "  and the things that would make it worthless"
-# Signing twice must REPLACE, not stack.
+# SIGNING TWICE MUST REPLACE, NOT STACK -- and "it still verifies" is
+# not that check: a nested double signature verifies perfectly well.
+# The number of signers is the property, and it was being computed and
+# then used only in a failure message that could no longer print.
+N1=$(osslsigncode verify -CAfile "$TMP/ca.pem" -ignore-timestamp -in "$EXE" 2>&1 \
+     | grep -ci 'Signer #' || true)
 sh build/sign "$EXE" >/dev/null 2>&1
-N=$(osslsigncode verify -CAfile "$TMP/ca.pem" -ignore-timestamp -in "$EXE" 2>&1 \
-    | grep -ci 'Signer #\|Number of signers' || true)
-sh build/sign --check "$EXE" >/dev/null 2>&1 \
-  && ok "signing twice leaves a binary that still verifies" \
-  || bad "signing twice leaves a binary that still verifies" "signers: $N"
+N2=$(osslsigncode verify -CAfile "$TMP/ca.pem" -ignore-timestamp -in "$EXE" 2>&1 \
+     | grep -ci 'Signer #' || true)
+if [ "$N1" = "$N2" ] && sh build/sign --check "$EXE" >/dev/null 2>&1; then
+    ok "signing twice replaces rather than stacks"
+else
+    bad "signing twice replaces rather than stacks" "signers $N1 -> $N2"
+fi
 
 # A byte changed after signing must break it. If it does not, the
 # signature is not covering the program.
@@ -156,8 +165,16 @@ sh build/sign --check "$TMP/tampered.exe" >/dev/null 2>&1 \
 
 echo
 echo "  and a release that has nothing to sign with"
+# THE SIGNING GATE, REACHED. build/aurbridge checks the payload, then
+# the image address, then signing -- so with no AUROS_IMAGE_URL set
+# this died two gates early and never exercised the one this file is
+# about. It was failing for that reason when a review ran it.
 OUT=$( unset AUROS_SIGN_CERT AUROS_SIGN_KEY
-       AUROS_RELEASE=1 sh build/aurbridge 2>&1 || true )
+       AUROS_RELEASE=1 \
+       AUROS_IMAGE_URL=http://example.invalid/auros.img \
+       AUROS_IMAGE_SHA256=0000000000000000000000000000000000000000000000000000000000000000 \
+       AUROS_IMAGE_BYTES=1 \
+       sh build/aurbridge 2>&1 || true )
 case "$OUT" in
   *"not signed"*|*"nothing to sign with"*|*"refusing to publish"*)
     ok "a release build refuses to publish an unsigned installer" ;;

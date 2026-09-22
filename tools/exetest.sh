@@ -35,7 +35,9 @@ bad() { checked=$((checked+1)); fail=$((fail+1)); printf '    %-58s %s\n' "$1" "
         shift; for m in "$@"; do printf '      %s\n' "$m"; done; }
 
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/exetest.XXXXXX")
-trap 'kill %1 2>/dev/null; rm -rf "$TMP"' EXIT
+# `kill %1` is a job spec and this runs under /bin/sh with job
+# control off, so the trap never killed anything.
+trap 'kill "${SRV:-0}" 2>/dev/null; rm -rf "$TMP"' EXIT
 
 echo
 echo "Is it one file, and does it carry what it says it does?"
@@ -78,13 +80,23 @@ if [ -f "$EXE" ] && [ -f out/auros-staging-vmlinuz ] && [ -f out/auros-staging.i
             -subj "/CN=AurOS Test CA" -keyout "$TMP/ca.key" -out "$TMP/ca.pem" \
             >/dev/null 2>&1
         cp "$EXE" "$TMP/signed.exe"
-        AUROS_SIGN_CERT="$TMP/ca.pem" AUROS_SIGN_KEY="$TMP/ca.key" \
-        AUROS_SIGN_CAFILE="$TMP/ca.pem" AUROS_SIGN_NO_TS=1 \
-            sh build/sign "$TMP/signed.exe" >/dev/null 2>&1
-        python3 tools/pe_payload.py get "$TMP/signed.exe" 2 "$TMP/after.img" 2>/dev/null
-        cmp -s "$TMP/after.img" out/auros-staging.img \
-          && ok "and signing it does not disturb what it carries" \
-          || bad "and signing it does not disturb what it carries"
+        # THE SIGN HAS TO HAVE HAPPENED. build/sign only moves the
+        # signed file over the target on success, so a failed sign
+        # leaves a byte-identical copy and the comparison below
+        # degrades to "copying a file does not disturb it".
+        if AUROS_SIGN_CERT="$TMP/ca.pem" AUROS_SIGN_KEY="$TMP/ca.key" \
+           AUROS_SIGN_CAFILE="$TMP/ca.pem" AUROS_SIGN_NO_TS=1 \
+               sh build/sign "$TMP/signed.exe" >"$TMP/sign.log" 2>&1 &&
+           AUROS_SIGN_CAFILE="$TMP/ca.pem" AUROS_SIGN_NO_TS=1 \
+               sh build/sign --check "$TMP/signed.exe" >/dev/null 2>&1; then
+            python3 tools/pe_payload.py get "$TMP/signed.exe" 2 "$TMP/after.img" 2>/dev/null
+            cmp -s "$TMP/after.img" out/auros-staging.img \
+              && ok "and signing it does not disturb what it carries" \
+              || bad "and signing it does not disturb what it carries"
+        else
+            bad "and signing it does not disturb what it carries" \
+                "the test could not sign the .exe" "$(tail -3 "$TMP/sign.log")"
+        fi
     else
         echo "    (no osslsigncode; the signing interaction was not checked)"
     fi
@@ -140,22 +152,48 @@ class H(http.server.BaseHTTPRequestHandler):
     def log_message(self, *a): pass
     def do_GET(self):
         rng = self.headers.get('Range')
+        # WRITTEN DOWN, because "the file came out right" is satisfied
+        # identically by a client that threw the partial away and
+        # downloaded all of it again -- which is the same assertion as
+        # the whole-download check three lines above it, and would keep
+        # printing ok after a regression that dropped the header.
+        with open(sys.argv[3] + '.req', 'a') as f:
+            f.write('Range=%s\n' % rng)
         start = 0
         if rng:
             m = re.match(r'bytes=(\d+)-', rng)
             if m: start = int(m.group(1))
         if MODE == 'ignore-range' or not rng or start == 0:
             # A server that answers 200 where a 206 was asked for.
-            body = BODY if MODE != 'ignore-range' or start == 0 else BODY
+            body = BODY
             self.send_response(200)
             self.send_header('Content-Length', str(len(body)))
             self.end_headers()
             self.wfile.write(body)
             return
         if MODE == 'cut':
-            body = BODY[start:start + 100 * 1024]
-        else:
-            body = BODY[start:]
+            # Says it is sending the rest and then stops. A client that
+            # reports this as a finished download is one whose next
+            # complaint will be about the hash.
+            self.send_response(206)
+            self.send_header('Content-Length', str(len(BODY) - start))
+            self.send_header('Content-Range',
+                             'bytes %d-%d/%d' % (start, len(BODY) - 1, len(BODY)))
+            self.end_headers()
+            self.wfile.write(BODY[start:start + 100 * 1024])
+            return
+        if MODE == 'wrongrange':
+            # 206, and the body starts at zero whatever was asked for.
+            # A mis-tuned CDN edge, and the reason the status code is
+            # not enough to decide where bytes go.
+            self.send_response(206)
+            self.send_header('Content-Length', str(len(BODY)))
+            self.send_header('Content-Range', 'bytes 0-%d/%d'
+                             % (len(BODY) - 1, len(BODY)))
+            self.end_headers()
+            self.wfile.write(BODY)
+            return
+        body = BODY[start:]
         self.send_response(206)
         self.send_header('Content-Length', str(len(body)))
         self.send_header('Content-Range',
@@ -209,11 +247,16 @@ fi
 # difference between somebody finishing and somebody giving up.
 if serve whole; then
     head -c 400000 "$TMP/payload.bin" > "$TMP/part.bin"
+    rm -f "$TMP/ready.req"
     out/aurbridge-sim fetch http://127.0.0.1:$PORT/x.img "$TMP/part.bin" >/dev/null 2>&1
     [ "$(sha256sum "$TMP/part.bin" | cut -d' ' -f1)" = "$WANT" ] \
-      && ok "a half-finished one is continued and comes out right" \
-      || bad "a half-finished one is continued and comes out right" \
+      && ok "a half-finished one comes out right" \
+      || bad "a half-finished one comes out right" \
              "$(ls -l "$TMP/part.bin")"
+    grep -q 'Range=bytes=400000-' "$TMP/ready.req" \
+      && ok "...because it was CONTINUED, not started again" \
+      || bad "...because it was CONTINUED, not started again" \
+             "$(cat "$TMP/ready.req" 2>/dev/null | tr '\n' ' ')"
     stopserve
 fi
 
@@ -253,6 +296,40 @@ if serve cut; then
           || bad "and the try after that finishes it"
         stopserve
     fi
+fi
+
+echo
+echo "  and one that answers the wrong part of the file"
+# 206 with a body that starts at zero whatever was asked for. Reading
+# only the status code put its byte zero at our offset and produced a
+# file longer than the image, reported as a successful download -- a
+# review made exactly that happen before this was fixed.
+if serve wrongrange; then
+    head -c 400000 "$TMP/payload.bin" > "$TMP/wr.bin"
+    out/aurbridge-sim fetch http://127.0.0.1:$PORT/x.img "$TMP/wr.bin" >/dev/null 2>&1
+    SZ=$(stat -c%s "$TMP/wr.bin")
+    WSZ=$(stat -c%s "$TMP/payload.bin")
+    [ "$SZ" = "$WSZ" ] && [ "$(sha256sum "$TMP/wr.bin" | cut -d' ' -f1)" = "$WANT" ] \
+      && ok "its bytes go where IT says, not where we asked" \
+      || bad "its bytes go where IT says, not where we asked" \
+             "$SZ bytes, wanted $WSZ"
+    stopserve
+fi
+
+echo
+echo "  and one that says more is coming and then stops"
+if serve cut; then
+    # A PARTIAL, so the server takes its 206 path: with nothing already
+    # downloaded the request is `bytes=0-` and every mode answers 200
+    # with the whole file, which tests nothing.
+    head -c 200000 "$TMP/payload.bin" > "$TMP/short.bin"
+    out/aurbridge-sim fetch http://127.0.0.1:$PORT/x.img "$TMP/short.bin" \
+        >"$TMP/cutout.txt" 2>&1
+    grep -q 'verdict=failed' "$TMP/cutout.txt" \
+      && ok "a transfer that stops short is not a finished one" \
+      || bad "a transfer that stops short is not a finished one" \
+             "$(cat "$TMP/cutout.txt")"
+    stopserve
 fi
 
 echo

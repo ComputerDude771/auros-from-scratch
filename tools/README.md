@@ -11,7 +11,7 @@ exit non-zero when they fail.
 | `kerning.c` | How much kerning the engine actually applies, per font. The answer used to be "none" for almost every modern typeface. |
 | `contrast.c` | Can the person this is for actually read it? WCAG relative-luminance contrast for every meaningful colour pair, in every theme. A floor, not a target: clearing it does not make a design good, failing it makes one unusable. |
 | `contactsheet.c` | All six archetypes for one theme, in one image, at a real panel size. A design decision is not judged one screen at a time — what separates a system from a look is whether it survives six different interaction models. |
-| `modaltest.c` | A panel is modal, and stays modal. **Only one covers the desktop at a time** (every pair, both orders). **Nothing behind it answers** — main.c is read as text and every guard must ask `SHELL_PANEL_OPEN`, because four hand-written lists of "which panels are open" had drifted to three, four, three and two entries. **There is a way out without a mouse** — Escape, and the keyboard's choice of power action must be the same one a click on that rectangle makes. |
+| `modaltest.c` | A panel is modal, and stays modal. **Only one covers the desktop at a time** (every pair, both orders). **Nothing behind it answers** — main.c is read as text and every guard must ask `SHELL_PANEL_OPEN`, because four hand-written lists of "which panels are open" had drifted to three, four, three and two entries. **There is a way out without a mouse** — Escape, and the keyboard's choice of power action must be the same one a click on that rectangle makes. The macro's own coverage is taken from `shell.h` rather than from a list in the test: every `int something_open;` in the context struct must be named by `SHELL_PANEL_OPEN`, the macro must name nothing the struct has not, and the count must match the test's own — so a seventh panel fails this by name instead of being tested by six. |
 | `notifytest.c` | The notification server, driven over a **real session bus started by the test** with real clients — `gdbus` for well-formed calls, and **raw libdbus for malformed ones, because `gdbus` introspects first and refuses to send them** (the check that used to use it would have passed against a server with no type checking at all). It asserts the **text on the card**, not just the count: `Saved <report 2024>.pdf` must survive, `<b>` must not, a long line in a non-Latin script must never be cut through a character. It proves what a sending program may decide (that its message looks urgent) and may not (that it never goes away, that it pushes the battery warning off the screen, that it takes an id already in use, that it puts up a card too small a screen cannot draw). Every malformed call must be **answered** — one that is silently dropped hangs the caller for libdbus's 25-second default. |
 | `bttest.c` | What `bluetoothctl` prints becomes what she reads. The "Connected" and "Used before" tags come from two flags **nothing in the program ever set** — the function that reads them was written and called from nowhere. Also: a device that has never announced a name prints its address twice, and a list of six rows reading `FC-58-FA-21-03-9C` is a list she cannot choose from. |
 | `welcometest.c` | **Phase 9: the only place anybody can say AurOS works, or say no to it.** It appears only while the question is open — not on a machine that answered yesterday, not on one AurOS was installed onto directly — and each button asks for exactly one word. The checks that matter are the negative ones: escape and a press on the background close it or do nothing and **answer nothing**; a second press while a request is in flight does not replace it; a result file caught half written is not an answer; and one press leaves exactly one new file behind, which is the request. The panel's entire privilege is writing that word into its own user's runtime directory. |
@@ -73,13 +73,17 @@ cc -O2 -std=gnu11 -o /tmp/bttest tools/bttest.c src/aurshell/bt.c \
 
 # The welcome question. WELCOME_RUN and WELCOME_STATE are redirected so
 # the test never writes into a running desktop's runtime directory.
+# The three -D paths are a directory the test makes and fills; it must
+# not be the binary's own path, which is what this recipe used to say
+# -- the first run created /tmp/welcometest as a directory and every
+# link after it failed with "Is a directory".
 cc -O2 -std=gnu11 -o /tmp/welcometest tools/welcometest.c \
    src/aurshell/welcome.c src/aurshell/foot.c src/aurshell/draw.c \
    src/aurshell/shellcommon.c src/aurshell/anim.c src/aurshell/layouts/*.c \
    src/common/theme.c src/common/font.c -I src/aurshell -I src/common -lm \
-   -DWELCOME_RUN='"/tmp/welcometest"' \
-   -DWELCOME_STATE='"/tmp/welcometest/first.state"' \
-   -DWELCOME_FOUND='"/tmp/welcometest/found.json"' && /tmp/welcometest
+   -DWELCOME_RUN='"/tmp/welcometest.d"' \
+   -DWELCOME_STATE='"/tmp/welcometest.d/first.state"' \
+   -DWELCOME_FOUND='"/tmp/welcometest.d/found.json"' && /tmp/welcometest
 
 sh tools/signtest.sh       # needs osslsigncode + openssl
 sh tools/exetest.sh        # needs mingw + python3; starts a local server

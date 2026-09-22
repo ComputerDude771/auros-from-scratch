@@ -35,8 +35,8 @@ static void ok(const char *what, int good)
 static void wipe(void)
 {
     unlink(WELCOME_RUN "/answer");
-    unlink(WELCOME_RUN "/answer.result");
-    unlink(WELCOME_RUN "/import.log");
+    unlink(WELCOME_ANSWER "/result");
+    unlink(WELCOME_ANSWER "/import.log");
     unlink(WELCOME_STATE);
     unlink(WELCOME_FOUND);
 }
@@ -100,7 +100,6 @@ static int press(shell_ctx *c, int page, int can_import, const char *want)
 int main(void)
 {
     mkdir(WELCOME_RUN, 0700);
-    mkdir("/tmp/welcometest-state", 0755);
     wipe();
 
     printf("\nThe question, and what each answer asks for\n\n");
@@ -170,7 +169,7 @@ int main(void)
             if (slurp(WELCOME_RUN "/answer", got, sizeof got) > 0) asked = 1;
         }
         ok("with no Windows on the disk, nothing offers to import from it",
-           !asked);
+           n > 0 && !asked);
     }
 
     printf("\n  letting go without answering\n");
@@ -188,6 +187,15 @@ int main(void)
     ok("...and is still consumed, so it cannot reach what is behind it",
        welcome_click(&c, 4, 4) == 1);
 
+    /* A DIFFERENT BUTTON, and this check could not fail until it was.
+     *
+     * It pressed b[0], which for this page IS "Yes, it all works" --
+     * so the assertion held whether the in-flight request had been
+     * preserved or overwritten with an identical "confirm". A review
+     * changed ask_for's O_EXCL to O_TRUNC, so a second press really
+     * did replace the request, and this still printed ok. Pressing
+     * "No, go back to Windows" and requiring "confirm" to survive is
+     * the same check with something to catch. */
     printf("\n  and one request at a time\n");
     unlink(WELCOME_RUN "/answer");
     press(&c, W_ASK, 0, "confirm");
@@ -196,12 +204,14 @@ int main(void)
     {
         welcome_view v = { W_ASK, 0 };
         rect b[16];
-        welcome_targets(&c, c.screen_w, c.screen_h, &v, b, 16);
-        welcome_click(&c, b[0].x + b[0].w / 2, b[0].y + b[0].h / 2);
+        int n = welcome_targets(&c, c.screen_w, c.screen_h, &v, b, 16);
+        int last = n > 0 ? n - 1 : 0;      /* A_NO, the last of the three */
+        welcome_click(&c, b[last].x + b[last].w / 2,
+                      b[last].y + b[last].h / 2);
         char got[64];
-        slurp(WELCOME_RUN "/answer", got, sizeof got);
+        int k = slurp(WELCOME_RUN "/answer", got, sizeof got);
         ok("a second press while one is in flight does not replace it",
-           !strcmp(got, "confirm"));
+           n >= 2 && k > 0 && !strcmp(got, "confirm"));
     }
 
     printf("\n  reading the answer back\n");
@@ -210,7 +220,7 @@ int main(void)
     c.welcome_open = 1;
     ok("nothing moves while there is no answer yet",
        welcome_step(&c) == 0 && welcome_page() == W_WORKING);
-    put(WELCOME_RUN "/answer.result", "request=confirm\nresult=ok\n");
+    put(WELCOME_ANSWER "/result", "request=confirm\nresult=ok\n");
     ok("an answer moves it on", welcome_step(&c) == 1);
     ok("...to the screen that offers to bring her files",
        welcome_page() == W_CONFIRMED);
@@ -218,7 +228,7 @@ int main(void)
     unlink(WELCOME_RUN "/answer");
     press(&c, W_ASK, 0, "decline");
     c.welcome_open = 1;
-    put(WELCOME_RUN "/answer.result", "request=decline\nresult=ok\n");
+    put(WELCOME_ANSWER "/result", "request=decline\nresult=ok\n");
     welcome_step(&c);
     ok("saying no reaches the screen that says Windows is next",
        welcome_page() == W_DECLINED);
@@ -226,7 +236,7 @@ int main(void)
     unlink(WELCOME_RUN "/answer");
     press(&c, W_ASK, 0, "confirm");
     c.welcome_open = 1;
-    put(WELCOME_RUN "/answer.result",
+    put(WELCOME_ANSWER "/result",
         "request=confirm\nresult=failed\nnote=this computer would not take it\n");
     welcome_step(&c);
     ok("a refusal reaches the screen that says so, not the one that lies",
@@ -239,7 +249,7 @@ int main(void)
     unlink(WELCOME_RUN "/answer");
     press(&c, W_ASK, 0, "confirm");
     c.welcome_open = 1;
-    put(WELCOME_RUN "/answer.result", "request=confirm\n");
+    put(WELCOME_ANSWER "/result", "request=confirm\n");
     ok("a half-written answer is not an answer",
        welcome_step(&c) == 0 && welcome_page() == W_WORKING);
 
@@ -249,7 +259,7 @@ int main(void)
     printf("\n  and the panel never needs to be root\n");
     {
         unlink(WELCOME_RUN "/answer");
-        unlink(WELCOME_RUN "/answer.result");
+        unlink(WELCOME_ANSWER "/result");
         DIR *d = opendir(WELCOME_RUN);
         int before = 0;
         struct dirent *e;
@@ -270,6 +280,23 @@ int main(void)
         ok("one press leaves one new file behind, and it is the request",
            after == before + 1 && only_answer);
     }
+
+    /* AN ANSWER TO ANOTHER QUESTION IS NOT AN ANSWER. The panel did
+     * not used to remember what it asked, so a result left over from
+     * a previous session -- or one a second request produced -- was
+     * acted on, and a confirm of unknown outcome showed "Your files
+     * are here. Open Files to see them." */
+    printf("\n  and an answer to something it did not ask\n");
+    unlink(WELCOME_RUN "/answer");
+    press(&c, W_ASK, 0, "confirm");
+    c.welcome_open = 1;
+    put(WELCOME_ANSWER "/result", "request=import\nresult=ok\n");
+    ok("a result for another request is left alone",
+       welcome_step(&c) == 0 && welcome_page() == W_WORKING);
+    put(WELCOME_ANSWER "/result", "request=confirm\nresult=zzz\n");
+    welcome_step(&c);
+    ok("and a result nothing recognises is trouble, not silence",
+       welcome_page() == W_TROUBLE);
 
     wipe();
     printf("\n");

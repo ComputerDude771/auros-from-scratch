@@ -24,7 +24,10 @@ bad() { checked=$((checked+1)); fail=$((fail+1)); printf '    %-56s %s\n' "$1" "
         shift; for m in "$@"; do printf '      %s\n' "$m"; done; }
 
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/wrtest.XXXXXX")
-trap 'rm -rf "$TMP"' EXIT
+# The gate tests sabotage two files in the tree. Restoring them is not
+# optional and not conditional on reaching the end.
+trap 'if [ -f "$TMP/disks.bak" ]; then cp "$TMP/disks.bak" src/aurstage/disks.c; fi
+      rm -f src/aurstage/evade.h; rm -rf "$TMP"' EXIT
 
 echo
 echo "Can anything write to a disk except the one file that may?"
@@ -196,6 +199,31 @@ else
     bad "a writable open in another file stops the build" "could not stage the fault"
 fi
 cp "$TMP/disks.bak" src/aurstage/disks.c
+
+# AND THROUGH A HEADER, which is the door the gate used to have.
+#
+# `gcc -fpreprocessed` deliberately does not process #include, so a
+# file that opens /dev/sda with O_RDWR through two macros in a header
+# of its own named neither the flag nor the device and passed every
+# check. Expanding the includes properly is not the answer -- libc's
+# headers declare fopen and popen and contain _PC_NO_TRUNC, so the
+# gate would refuse the whole tree -- so what is OURS is what is
+# scanned.
+cat > src/aurstage/evade.h <<'EOH'
+#define EVADE_FLAGS (O_RDWR | O_CREAT)
+#define EVADE_DEV   "/dev/sda"
+EOH
+sed -i 's|#include "aurstage.h"|#include "aurstage.h"\n#include "evade.h"\nint evade_me(void) { return open(EVADE_DEV, EVADE_FLAGS, 0644); }|' \
+    src/aurstage/disks.c
+if ./build/staging desktop 2>&1 | grep -q 'only wr.c may write'; then
+    ok "a writable open hidden in a header stops the build too"
+else
+    bad "a writable open hidden in a header stops the build too" \
+        "the build allowed it"
+fi
+cp "$TMP/disks.bak" src/aurstage/disks.c
+rm -f src/aurstage/evade.h
+
 ./build/staging desktop >/dev/null 2>&1 && ok "...and the real tree still builds" \
                                         || bad "...and the real tree still builds"
 

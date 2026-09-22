@@ -124,11 +124,40 @@ for f in "$ROOT"/src/aurstage/*.c; do
      could not look at it. Refusing to build an image containing a file
      nothing has checked."
     fi
+    # THE STDIO FAMILY TOO. A gate that lists only the open(2) flags is
+    # a gate `fopen(dev, "r+b")` walks through.
+    #
+    # And the /dev/null exception is the exact call rather than the
+    # whole line: `grep -v '/dev/null'` dropped every line containing
+    # it, so `open(p[0] ? p : "/dev/null", O_RDWR|O_CREAT, 0644)` was
+    # accepted -- an exception a regular expression granted, which is
+    # the thing the paragraph above says must never happen.
     hit=$(printf '%s\n' "$code" \
-          | grep -nE 'O_RDWR|O_WRONLY|O_CREAT|O_TRUNC|O_APPEND|creat\(|openat\(' \
-          | grep -v '/dev/null' || true)
+          | grep -nE 'O_RDWR|O_WRONLY|O_CREAT|O_TRUNC|O_APPEND|creat\(|openat\(|fopen\(|freopen\(|fdopen\(|popen\(|ftruncate\(' \
+          | grep -vE 'open *\( *"/dev/null"' || true)
     [ -n "$hit" ] && BAD="$BAD
 $(basename "$f"): $hit"
+done
+# AND THE HEADERS, because `-fpreprocessed` does not process #include
+# and that is a door.
+#
+# A review walked through it: two macros in a header of its own --
+# `#define NV_OPEN_FLAGS (O_RDWR|O_CREAT)` and `#define NV_DEV
+# "/dev/sda"` -- and a .c that names neither flag nor device passed
+# every check above. Expanding the includes properly is not the answer
+# either: libc's own headers DECLARE fopen and popen and contain
+# _PC_NO_TRUNC, so the gate would refuse the whole tree. What is ours
+# is what is scanned: no header in this directory has any business
+# naming an open flag, so any that does is the refusal.
+for h in "$ROOT"/src/aurstage/*.h; do
+    if ! hcode=$(gcc -fpreprocessed -dD -E -x c "$h" 2>/dev/null); then
+        die "$(basename "$h") could not be read as C, so the write gate
+     could not look at it."
+    fi
+    hhit=$(printf '%s\n' "$hcode" \
+           | grep -nE 'O_RDWR|O_WRONLY|O_CREAT|O_TRUNC|O_APPEND' || true)
+    [ -n "$hhit" ] && BAD="$BAD
+$(basename "$h"): $hhit"
 done
 if [ -n "$BAD" ]; then
     printf '%s\n' "$BAD" >&2

@@ -231,6 +231,113 @@ static void a_way_out(void)
 
 /* ── 3. nothing behind it answers ───────────────────────────────── */
 
+/* shell.h, read as text: every `int something_open;` field in the
+ * context struct, and the body of the SHELL_PANEL_OPEN macro. The
+ * first is the truth about how many ways the desktop can be covered;
+ * the second is what the shell believes about it. */
+#define MAX_OPEN 32
+static int open_fields(char names[MAX_OPEN][64], char *macro, size_t mn)
+{
+    FILE *f = fopen("src/aurshell/shell.h", "r");
+    if (!f) f = fopen("../src/aurshell/shell.h", "r");
+    if (!f) return -1;
+
+    char line[1024];
+    int n = 0, in_macro = 0;
+    size_t used = 0;
+    macro[0] = 0;
+
+    while (fgets(line, sizeof line, f)) {
+        if (in_macro) {
+            size_t l = strlen(line);
+            if (used + l < mn) { memcpy(macro + used, line, l); used += l;
+                                 macro[used] = 0; }
+            if (!strstr(line, "\\")) in_macro = 0;
+            continue;
+        }
+        if (strstr(line, "#define SHELL_PANEL_OPEN")) {
+            size_t l = strlen(line);
+            if (used + l < mn) { memcpy(macro + used, line, l); used += l;
+                                 macro[used] = 0; }
+            if (strstr(line, "\\")) in_macro = 1;
+            continue;
+        }
+        /* `    int   help_open;` -- and nothing else. The macro body
+         * itself contains `_open` too, which is why it is consumed
+         * above rather than fallen through to here. */
+        const char *p = line;
+        while (*p == ' ' || *p == '\t') p++;
+        if (strncmp(p, "int", 3) != 0) continue;
+        p += 3;
+        if (*p != ' ' && *p != '\t') continue;
+        while (*p == ' ' || *p == '\t') p++;
+        const char *start = p;
+        while ((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') ||
+               (*p >= '0' && *p <= '9') || *p == '_') p++;
+        if (*p != ';') continue;
+        size_t l = (size_t)(p - start);
+        if (l < 6 || l >= 64) continue;
+        if (strncmp(start + l - 5, "_open", 5) != 0) continue;
+        if (n >= MAX_OPEN) { fclose(f); return -2; }
+        memcpy(names[n], start, l); names[n][l] = 0;
+        n++;
+    }
+    fclose(f);
+    return n;
+}
+
+static void panel_flags_are_covered(void)
+{
+    char names[MAX_OPEN][64], macro[2048];
+    int n = open_fields(names, macro, sizeof macro);
+
+    if (n == -1) { printf("    (run me from the top of the repository)            SKIP\n");
+                   return; }
+    if (n < 0 || n == 0 || !macro[0]) {
+        ok("shell.h names the panel flags and the macro", 0);
+        return;
+    }
+
+    /* Each field is named by the macro. */
+    int missing = 0;
+    for (int i = 0; i < n; i++) {
+        char want[80];
+        snprintf(want, sizeof want, "->%.62s", names[i]);
+        if (!strstr(macro, want)) {
+            printf("      SHELL_PANEL_OPEN does not cover %s\n", names[i]);
+            missing++;
+        }
+    }
+    ok("SHELL_PANEL_OPEN names every *_open field in shell.h", !missing);
+
+    /* And nothing the struct does not have -- a renamed field that
+     * stayed in the macro would otherwise pass the check above while
+     * covering nothing. */
+    int stray = 0;
+    for (const char *p = strstr(macro, "->"); p; p = strstr(p + 2, "->")) {
+        const char *q = p + 2;
+        const char *s = q;
+        while ((*q >= 'a' && *q <= 'z') || (*q >= 'A' && *q <= 'Z') ||
+               (*q >= '0' && *q <= '9') || *q == '_') q++;
+        size_t l = (size_t)(q - s);
+        if (l == 0 || l >= 64) continue;
+        char got[64];
+        memcpy(got, s, l); got[l] = 0;
+        int found = 0;
+        for (int i = 0; i < n; i++) if (!strcmp(got, names[i])) found = 1;
+        if (!found) { printf("      SHELL_PANEL_OPEN names %s, which shell.h has not\n", got);
+                      stray++; }
+    }
+    ok("and names nothing shell.h does not have", !stray);
+
+    /* And this test knows about all of them. N_FLAGS and flag_any()
+     * are hand-written here; if shell.h grows a seventh panel, the
+     * loop below would silently keep testing six. */
+    char w[96];
+    snprintf(w, sizeof w, "and this test covers all %d of them", n);
+    ok(w, n == N_FLAGS);
+}
+
 /* The input loop, read as text. Every place that decides whether an
  * event reaches what is behind a panel must ask SHELL_PANEL_OPEN, not
  * name panels. Four of them named panels, and all four were wrong. */
@@ -293,8 +400,23 @@ static void nothing_behind(void)
     else printf("    %-58s %s\n",
                 "every guard in main.c asks SHELL_PANEL_OPEN", "ok");
 
-    /* And the macro itself covers every flag there is. A sixth panel
-     * added to shell_ctx and forgotten here is the next drift. */
+    /* And the macro itself covers every flag there is.
+     *
+     * This used to be a loop over the six flags named below and a
+     * comment claiming the macro was therefore complete, which it did
+     * not check at all: flag_any() is a hand-written list, so a
+     * SEVENTH panel forgotten there would have been exactly as
+     * invisible as the sixth was before somebody noticed it. A test
+     * whose coverage comes from the same hand that wrote the thing
+     * under test is a test that agrees with itself.
+     *
+     * So the list is taken from shell.h instead -- every `int
+     * something_open;` in the context struct -- and three things are
+     * insisted on: the macro names each one, the macro names nothing
+     * else, and the count matches N_FLAGS below. Add a panel and
+     * forget the macro, and this fails by name. */
+    panel_flags_are_covered();
+
     shell_ctx c;
     for (int i = 0; i < N_FLAGS; i++) {
         fresh(&c);

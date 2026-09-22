@@ -30,7 +30,8 @@ starts at +60 either way -- and lengths in the billions, so the walk
 finds its first variable, reports a plausible name, and then falls off
 the end of the store. A parser that fails LOUDLY would have been
 easier; this one has to be checked against a file somebody else wrote,
-which is what --self-test does.
+which is what --self-test does: it parses the OVMF store
+Microsoft's keys ship in and asserts what has to be in it.
 
 State is a byte whose bits are CLEARED as a variable moves through its
 life. EDK2 accepts 0x3f (added) and 0x3e (added, in deleted
@@ -194,7 +195,45 @@ def make_load_option(desc, path):
     return struct.pack('<IH', 1, len(dp)) + d + dp
 
 
+def self_test():
+    """Parse a store somebody else wrote and assert what is in it.
+
+    A parser checked only against files this program's own siblings
+    produced is a parser that agrees with itself. OVMF's shipped
+    Microsoft-keyed variable store is written by edk2 and by
+    virt-fw-vars, contains the four Secure Boot variables, and holds
+    BootOrder several times over -- which is the property that made the
+    walk's superseded-entry handling worth having.
+    """
+    path = '/usr/share/OVMF/OVMF_VARS_4M.ms.fd'
+    try:
+        vars_ = read_store(path)
+    except SystemExit as e:
+        print('cannot read %s: %s' % (path, e))
+        return 2
+    names = [n for n, _g, _a, _d in vars_]
+    bad = 0
+    for want in ('PK', 'KEK', 'db', 'dbx'):
+        if want not in names:
+            print('FAIL  %s is not in %s' % (want, path)); bad = 1
+    boots = [n for n in names if n.startswith('Boot') and len(n) == 8]
+    if not boots:
+        print('FAIL  no Boot#### entries found'); bad = 1
+    for name, _g, _a, data in vars_:
+        if name in boots:
+            if load_option(data) is None:
+                print('FAIL  %s does not decode as a load option' % name)
+                bad = 1
+    if not bad:
+        print('ok  %d variables, including %s and %d boot entries'
+              % (len(vars_), ', '.join(n for n in ('PK', 'KEK', 'db', 'dbx')),
+                 len(boots)))
+    return bad
+
+
 def main():
+    if len(sys.argv) == 2 and sys.argv[1] == '--self-test':
+        raise SystemExit(self_test())
     path = sys.argv[1]
     what = sys.argv[2] if len(sys.argv) > 2 else 'list'
     vars_ = read_store(path)

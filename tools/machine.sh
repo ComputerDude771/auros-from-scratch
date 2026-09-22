@@ -33,7 +33,8 @@ P2S=206848;  P2E=2303999      # Windows, 1 GiB
 P3S=5500000; P3E=6291422      # WinRE, at the very end
 
 mach_need() {
-    for t in qemu-system-x86_64 sgdisk mkfs.ext4 mkfs.vfat cpio python3 blkid; do
+    for t in qemu-system-x86_64 sgdisk mkfs.ext4 mkfs.vfat cpio python3 blkid \
+             mcopy mmd mdir iconv; do
         command -v "$t" >/dev/null 2>&1 || { echo "need $t"; exit 2; }
     done
     [ -d "$RFS" ] || { echo "no rootfs at $RFS"; exit 2; }
@@ -281,8 +282,18 @@ EOG
     # a subshell, so its exit does not reach this function; without
     # this the fixture would go on with an empty ESP and the loader
     # test would fail somewhere it cannot explain.
+    # EVERY DIRECTORY THE TEST USES, not one of them. Section 6 of
+    # loadertest boots the REMOVABLE path, which is /EFI/BOOT -- so a
+    # guard that only looked at /EFI/AurOS would have let that section
+    # fail somewhere it could not explain.
     mdir -i "$E" ::/EFI/AurOS 2>/dev/null | grep -q 'shimx64' \
         || { echo "  nothing was copied into the image ESP"; exit 2; }
+    mdir -i "$E" ::/EFI/BOOT 2>/dev/null | grep -qi 'BOOTX64' \
+        || { echo "  the image ESP has no removable-path loader"; exit 2; }
+    for d in ubuntu AurOS BOOT; do
+        mdir -i "$E" "::/EFI/$d" 2>/dev/null | grep -qi 'grub' \
+            || { echo "  the image ESP has no grub.cfg in /EFI/$d"; exit 2; }
+    done
 
     dd if="$E" of="$AIMG" bs=1M seek=$((EOFF/1048576)) conv=notrunc status=none
     rm -rf "$D"

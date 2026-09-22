@@ -60,6 +60,27 @@ MACH_VARS="$MTMP/start-vars.fd"; export MACH_VARS
 echo "  and firmware that already has an \"AurOS Installer\" entry in it"
 echo
 
+# ── 0. the instrument ───────────────────────────────────────────────
+# EVERY FIRMWARE CLAIM BELOW IS THIS DECODER'S WORD. It reads OVMF's
+# variable store with offsets taken from EDK2's headers, and it got
+# them wrong once already -- NameSize and DataSize read from +48
+# instead of +36 and +40, which yielded one plausible-looking variable
+# and then garbage. A decoder that silently finds nothing turns "the
+# installer left BootOrder alone" and "the installer's own entry was
+# tidied away" into two checks that pass by not looking.
+#
+# So it is made to read a store it did not write -- the untouched
+# OVMF_VARS the distribution ships, whose PK, KEK, db and dbx were put
+# there by EDK2 -- before anything here trusts it.
+echo "  the instrument"
+if python3 tools/efivarstore.py --self-test >"$MTMP/st.txt" 2>&1
+then ok "the variable-store reader still reads a store it did not write"
+else bad "the variable-store reader still reads a store it did not write" \
+         "$(tail -4 "$MTMP/st.txt")"
+     echo; echo "  $checked checked, $fail failed"; exit 1
+fi
+echo
+
 # ── 1. install it ───────────────────────────────────────────────────
 echo "  the install"
 if mach_boot out/auros-staging.img "$DISK" "$STICK" \
@@ -91,6 +112,13 @@ if [ -n "$SET" ]; then
 else
     bad "there is an AUROS-BOOT partition" "$(sgdisk -p "$DISKAFTER" | tail -8)"
     BNUM=0; BFIRST=0; BLAST=0; BGUID=; BTYPE=
+    # THE TWO BELOW ARE SKIPPED, AND SAYING SO IS THE POINT. They used
+    # to vanish with no ok, no FAIL and no output -- only the final
+    # count moved, and only if somebody was counting.
+    bad "and it is the image's EFI partition, byte for byte" \
+        "skipped: there is no AUROS-BOOT partition to look at"
+    bad "and it was made big enough for it" \
+        "skipped: there is no AUROS-BOOT partition to look at"
 fi
 
 [ "$BTYPE" = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b" ] \
@@ -180,16 +208,37 @@ BN=$(python3 tools/efivarstore.py "$VARS" bootnext 2>/dev/null)
 # R3 AND THE WHOLE OF PHASE 10: Windows stays this machine's default
 # until somebody has seen AurOS work and said so.
 ORDER=$(python3 tools/efivarstore.py "$VARS" bootorder 2>/dev/null)
-case " $ORDER " in
-  *" $ENUM "*) bad "and BootOrder was left alone -- Windows is still the default" \
-                   "BootOrder is '$ORDER' and our entry $ENUM is in it" ;;
-  *) ok "and BootOrder was left alone -- Windows is still the default" ;;
-esac
+# NEITHER MAY BE EMPTY. With no entry number the pattern became `*"  "*`
+# and matched nothing; with no BootOrder there was nothing to search.
+# Both read as "left alone" while nothing had been looked at.
+if [ -z "$ENUM" ] || [ -z "$ORDER" ]; then
+    bad "and BootOrder was left alone -- Windows is still the default" \
+        "entry='$ENUM' BootOrder='$ORDER' -- one of them could not be read"
+else
+    case " $ORDER " in
+      *" $ENUM "*) bad "and BootOrder was left alone -- Windows is still the default" \
+                       "BootOrder is '$ORDER' and our entry $ENUM is in it" ;;
+      *) ok "and BootOrder was left alone -- Windows is still the default" ;;
+    esac
+fi
 
-python3 tools/efivarstore.py "$VARS" entry "AurOS Installer" >/dev/null 2>&1 \
-  && bad "the installer's own entry was tidied away" \
-         "\"AurOS Installer\" is still in the menu" \
-  || ok "the installer's own entry was tidied away"
+# EXIT 1 AND NOTHING ON STDERR. The decoder exits 1 for "no such
+# entry" AND for a missing file, a store it cannot parse, a traceback,
+# or no python3 at all -- and 2>/dev/null hid which. Every one of those
+# read as "it was tidied away".
+python3 tools/efivarstore.py "$VARS" entry "AurOS Installer" \
+    >/dev/null 2>"$MTMP/ev.err"
+evrc=$?
+if [ "$evrc" -eq 1 ] && [ ! -s "$MTMP/ev.err" ]; then
+    ok "the installer's own entry was tidied away"
+elif [ "$evrc" -eq 0 ]; then
+    bad "the installer's own entry was tidied away" \
+        "\"AurOS Installer\" is still in the menu"
+else
+    bad "the installer's own entry was tidied away" \
+        "the variable store could not be read: exit $evrc" \
+        "$(head -3 "$MTMP/ev.err")"
+fi
 
 # ── 5. the question ─────────────────────────────────────────────────
 echo

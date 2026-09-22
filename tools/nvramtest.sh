@@ -30,7 +30,13 @@ bad() { checked=$((checked+1)); fail=$((fail+1)); printf '    %-56s %s\n' "$1" "
         shift; for m in "$@"; do printf '      %s\n' "$m"; done; }
 
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/nvramtest.XXXXXX")
-trap 'rm -rf "$TMP"' EXIT
+# THE BACKUP LIVES OUTSIDE $TMP AND THE TRAP PUTS IT BACK. The gate
+# below sabotages nvram.c and restores it; interrupted during a build
+# -- which takes minutes -- the old arrangement left a sabotaged
+# working tree and deleted the only copy of the original.
+BAK="${TMPDIR:-/tmp}/nvramtest-nvram.c.$$"
+trap 'if [ -f "$BAK" ]; then cp "$BAK" src/aurstage/nvram.c; rm -f "$BAK"; fi
+      rm -rf "$TMP"' EXIT
 VD="$TMP/efivars"
 G=8be4df61-93ca-11d2-aa0d-00e098032b8c
 
@@ -216,11 +222,16 @@ R=$("$TMP/n" set)
 [ "$(echo "$R" | cut -d' ' -f2)" = "0003" ] \
   && ok "it takes the lowest gap and steps over what is in use" \
   || bad "it takes the lowest gap and steps over what is in use" "$R"
+before=$fail
 for i in 0000 0001 0002 0004; do
     [ "$(cat "$VD/Boot$i-$G")" = "xxxxyyyy" ] || \
         bad "and does not touch anything already there" "Boot$i changed"
 done
-ok "and does not touch anything already there"
+# ONLY IF THE LOOP FOUND NOTHING. It printed ok unconditionally, so a
+# run could show this green and a FAIL with a different label three
+# lines above it, from the same property.
+[ "$fail" = "$before" ] && ok "and does not touch anything already there"
+
 
 # An entry we wrote before is ours to reuse -- and it is found by its
 # description, not by "the ones we do not recognise", which also
@@ -259,11 +270,21 @@ EOPY
 # write gate fell into: nvram.c explains in a comment that BootOrder
 # and BootNext start with the same four letters, and a plain grep read
 # that as the file writing BootOrder.
-gcc -fpreprocessed -dD -E src/aurstage/nvram.c 2>/dev/null \
-    | grep -q 'BootOrder' \
-  && bad "nothing in this file can write BootOrder" \
-         "nvram.c names BootOrder in its code" \
-  || ok "nothing in this file can write BootOrder"
+# AND A PREPROCESSOR THAT FAILED IS NOT AN EMPTY ANSWER. gcc exiting
+# non-zero -- a lexical error, a moved file, no compiler -- gave an
+# empty string, the grep failed, and this printed ok. build/staging
+# guards exactly this case and says why; the test that exists to make
+# that gate fire did not.
+if nvcode=$(gcc -fpreprocessed -dD -E src/aurstage/nvram.c 2>/dev/null) \
+   && [ -n "$nvcode" ]; then
+    case "$nvcode" in
+      *BootOrder*) bad "nothing in this file can write BootOrder" \
+                       "nvram.c names BootOrder in its code" ;;
+      *) ok "nothing in this file can write BootOrder" ;;
+    esac
+else
+    bad "nothing in this file can write BootOrder" "nvram.c would not preprocess"
+fi
 
 # ── forgetting ──────────────────────────────────────────────────────
 echo
@@ -298,12 +319,28 @@ R=$("$TMP/n" forget "AurOS")
 # ── the gate ────────────────────────────────────────────────────────
 echo
 echo "  and the build refuses an nvram.c that has stopped being one"
-cp src/aurstage/nvram.c "$TMP/nvram.bak"
+cp src/aurstage/nvram.c "$BAK"
+TMP_bak="$TMP/nvram.bak"; cp "$BAK" "$TMP/nvram.bak"
+# A SED THAT MATCHED NOTHING IS NOT A TEST, and a build that printed
+# the message without failing is not a gate.
+#
+# Both were true here. The "no longer writes anything" script was
+# `s@O_WRONLY | O_CREAT, 0644@...@`, and the day nvram.c gained
+# O_TRUNC and O_CLOEXEC it matched nothing at all -- so the whole image
+# built, succeeded, and this reported that the gate had allowed
+# something it was never shown. The file's own comment two paragraphs
+# up says this exact class of bug already bit it once.
 gate() { # description  sed-script  expected-message
     cp "$TMP/nvram.bak" src/aurstage/nvram.c
     sed -i "$2" src/aurstage/nvram.c
-    if ./build/staging desktop 2>&1 | grep -q "$3"; then ok "$1"
-    else bad "$1" "the build allowed it"; fi
+    if cmp -s "$TMP/nvram.bak" src/aurstage/nvram.c; then
+        bad "$1" "the sed matched nothing; the gate was never shown anything"
+        cp "$TMP/nvram.bak" src/aurstage/nvram.c
+        return
+    fi
+    if ! ./build/staging desktop >"$TMP/g.log" 2>&1 && grep -q "$3" "$TMP/g.log"
+    then ok "$1"
+    else bad "$1" "the build allowed it" "$(tail -3 "$TMP/g.log")"; fi
     cp "$TMP/nvram.bak" src/aurstage/nvram.c
 }
 if [ -d work/forge/desktop/rootfs ]; then
@@ -318,7 +355,8 @@ if [ -d work/forge/desktop/rootfs ]; then
     gate "one that opens something read-write" \
          's@O_WRONLY | O_CREAT@O_RDWR | O_CREAT@' 'read-write'
     gate "one that no longer writes anything" \
-         's@O_WRONLY | O_CREAT, 0644@O_RDONLY, 0644@' 'no longer writes'
+         's@O_WRONLY | O_CREAT | O_TRUNC@O_RDONLY | O_TRUNC@' \
+         'no longer writes'
     gate "one that writes somewhere else" \
          's@/sys/firmware/efi/efivars@/run/auros/vars@' \
          'does not name the efivarfs mount point'
