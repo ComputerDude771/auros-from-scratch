@@ -110,6 +110,32 @@ for exe in "$OUT/aurbridge.exe" "$OUT/aurbridge-wizard.exe"; do
 done
 note "neither shipped binary contains the simulation"
 
+# ── the name on the front ──────────────────────────────────────────
+#
+# SmartScreen puts a full-screen panel in front of an unsigned
+# executable downloaded from the internet, and its only visible button
+# says "Don't run". For this product that is not a rough edge: it is
+# the people it was built for being unable to start it, and the people
+# who get past it having just been taught to ignore a warning before
+# handing a program their whole disk.
+#
+# So a release does not get built without a signature. A developer
+# build says what is missing and carries on, because requiring a
+# hardware token to compile is how nobody compiles.
+step "signing"
+if sh "$ROOT/build/sign" --configured 2>/dev/null; then
+    sh "$ROOT/build/sign" "$OUT/aurbridge.exe" "$OUT/aurbridge-wizard.exe" \
+        || die "the installer could not be signed"
+elif [ "${AUROS_RELEASE:-0}" = 1 ]; then
+    die "this is a release build and there is nothing to sign with, so
+     refusing to publish an unsigned installer. Windows will put a
+     full-screen warning in front of it whose only visible button says
+     Don't run. See docs/SIGNING.md for what has to be bought."
+else
+    note "not signed: no signing material configured (see docs/SIGNING.md)"
+    note "a release build -- AUROS_RELEASE=1 -- will refuse to finish this way"
+fi
+
 if [ "${1:-}" = "test" ]; then
     step "self-test"
     # WHAT WINE CAN AND CANNOT SAY. It has no real disks, no BitLocker,

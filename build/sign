@@ -1,0 +1,195 @@
+#!/bin/sh
+# ═══════════════════════════════════════════════════════════════════
+#  sign — put a name on the thing a stranger is about to double-click
+#
+#  WHY THIS EXISTS, AND WHY IT IS NOT OPTIONAL
+#
+#  The whole product is one .exe that a non-technical person downloads
+#  and double-clicks. Windows SmartScreen puts a full-screen blue panel
+#  in front of an unsigned executable from the internet -- "Windows
+#  protected your PC" -- whose only visible button is "Don't run". The
+#  way past it is a small "More info" link most people never press.
+#
+#  So an unsigned AurBridge is not a product with a rough edge. It is a
+#  product that the people it was built for cannot start, and that the
+#  people who CAN get past the warning have just been taught to ignore
+#  a warning before handing a program their whole disk.
+#
+#  WHAT THIS SCRIPT DOES AND DOES NOT DO
+#
+#  It does the signing, the timestamping and -- the part usually left
+#  out -- the verification afterwards. A signature nothing checked is
+#  a signature that might be a file with some extra bytes in it.
+#
+#  It does not obtain a certificate, because that is a purchase and a
+#  legal identity check, not a build step. docs/SIGNING.md says exactly
+#  what has to be bought and why the cheap options are not options.
+#
+#  HOW IT IS CONFIGURED: THE ENVIRONMENT, NEVER A FILE IN THE TREE
+#
+#  A signing key in a repository is a signing key on every laptop that
+#  ever cloned it. Since June 2023 the CA/Browser Forum requires code
+#  signing keys to live on FIPS 140-2 Level 2 hardware anyway, so the
+#  real configuration is a PKCS#11 token or a cloud HSM and there is no
+#  key file to leak -- but the software paths exist for a test.
+#
+#    AUROS_SIGN_PKCS11_MODULE   the token's PKCS#11 .so
+#    AUROS_SIGN_PKCS11_CERT     its certificate, as a pkcs11: URI or file
+#    AUROS_SIGN_PKCS11_KEY      its key, as a pkcs11: URI
+#      -- or --
+#    AUROS_SIGN_PKCS12          a .p12, for a test or a cloud HSM bridge
+#      -- or --
+#    AUROS_SIGN_CERT            a PEM certificate   } software keys.
+#    AUROS_SIGN_KEY             a PEM private key   } TEST ONLY.
+#
+#    AUROS_SIGN_PASS_FILE       a file holding the passphrase or PIN
+#    AUROS_SIGN_TS              an RFC 3161 timestamp server
+#    AUROS_SIGN_NO_TS=1         sign WITHOUT a timestamp. Test builds
+#                               only, and it says so on every run.
+#
+#    build/sign FILE...         sign, timestamp and verify each
+#    build/sign --check FILE... verify only; 0 if every file is signed
+#    build/sign --configured    0 if there is anything to sign with
+# ═══════════════════════════════════════════════════════════════════
+set -eu
+
+C_OK=$(printf '\033[38;2;125;211;192m'); C_DIM=$(printf '\033[38;2;110;120;134m')
+C_ERR=$(printf '\033[38;2;242;120;141m'); C_WARN=$(printf '\033[38;2;242;184;128m')
+C_RST=$(printf '\033[0m')
+step() { printf '\n%s▸%s %s\n' "$C_OK" "$C_RST" "$*"; }
+note() { printf '%s   %s%s\n' "$C_DIM" "$*" "$C_RST"; }
+warn() { printf '%s:: %s%s\n' "$C_WARN" "$*" "$C_RST" >&2; }
+die()  { printf '%s::%s %s\n' "$C_ERR" "$C_RST" "$*" >&2; exit 1; }
+
+# A default timestamp server, because forgetting one is the mistake
+# that does not show up until the certificate expires -- at which point
+# every copy of the installer ever downloaded stops being signed, all
+# at once. A timestamped signature keeps validating for ever.
+TS="${AUROS_SIGN_TS:-http://timestamp.digicert.com}"
+
+SIGN_TOOL="${OSSLSIGNCODE:-osslsigncode}"
+
+have_material() {
+    [ -n "${AUROS_SIGN_PKCS11_MODULE:-}" ] && return 0
+    [ -n "${AUROS_SIGN_PKCS12:-}" ] && return 0
+    [ -n "${AUROS_SIGN_CERT:-}" ] && [ -n "${AUROS_SIGN_KEY:-}" ] && return 0
+    return 1
+}
+
+# The arguments that name the key, whichever kind it is.
+key_args() {
+    if [ -n "${AUROS_SIGN_PKCS11_MODULE:-}" ]; then
+        printf '%s' "-pkcs11module ${AUROS_SIGN_PKCS11_MODULE}"
+        [ -n "${AUROS_SIGN_PKCS11_CERT:-}" ] && \
+            printf ' -certs %s' "${AUROS_SIGN_PKCS11_CERT}"
+        [ -n "${AUROS_SIGN_PKCS11_KEY:-}" ] && \
+            printf ' -key %s' "${AUROS_SIGN_PKCS11_KEY}"
+    elif [ -n "${AUROS_SIGN_PKCS12:-}" ]; then
+        printf '%s' "-pkcs12 ${AUROS_SIGN_PKCS12}"
+    else
+        printf '%s' "-certs ${AUROS_SIGN_CERT} -key ${AUROS_SIGN_KEY}"
+    fi
+}
+
+verify_one() {
+    _f=$1
+    # -CAfile when the caller has one (the test does; a release does
+    # not need it, because what is being asked is "is this file signed
+    # by the key we just used", not "does Windows trust it" -- only
+    # Windows can answer that).
+    _ca=""
+    [ -n "${AUROS_SIGN_CAFILE:-}" ] && _ca="-CAfile ${AUROS_SIGN_CAFILE}"
+    _ts=""
+    [ "${AUROS_SIGN_NO_TS:-0}" = 1 ] && _ts="-ignore-timestamp"
+    # shellcheck disable=SC2086
+    "$SIGN_TOOL" verify $_ca $_ts -in "$_f" >"$TMPD/verify.log" 2>&1
+}
+
+case "${1:-}" in
+  --configured)
+    have_material && exit 0 || exit 1 ;;
+esac
+
+command -v "$SIGN_TOOL" >/dev/null 2>&1 \
+    || die "no $SIGN_TOOL. Install osslsigncode (Debian/Ubuntu: osslsigncode)."
+
+TMPD=$(mktemp -d "${TMPDIR:-/tmp}/aurossign.XXXXXX")
+trap 'rm -rf "$TMPD"' EXIT
+
+MODE=sign
+if [ "${1:-}" = "--check" ]; then MODE=check; shift; fi
+[ $# -gt 0 ] || die "usage: build/sign [--check] FILE..."
+
+if [ "$MODE" = check ]; then
+    bad=0
+    for f in "$@"; do
+        if verify_one "$f"; then
+            note "$(basename "$f"): signed"
+        else
+            printf '%s::%s %s is NOT signed\n' "$C_ERR" "$C_RST" "$(basename "$f")" >&2
+            sed -n '1,6p' "$TMPD/verify.log" >&2
+            bad=1
+        fi
+    done
+    exit $bad
+fi
+
+have_material || die "nothing to sign with.
+     Set AUROS_SIGN_PKCS11_MODULE (a hardware token or cloud HSM),
+     AUROS_SIGN_PKCS12, or AUROS_SIGN_CERT and AUROS_SIGN_KEY.
+     docs/SIGNING.md says what has to be bought and why."
+
+TSARG="-ts $TS"
+if [ "${AUROS_SIGN_NO_TS:-0}" = 1 ]; then
+    TSARG=""
+    warn "signing WITHOUT a timestamp. Every copy of this binary stops"
+    warn "being signed the day the certificate expires. Test builds only."
+fi
+
+PASSARG=""
+[ -n "${AUROS_SIGN_PASS_FILE:-}" ] && PASSARG="-readpass ${AUROS_SIGN_PASS_FILE}"
+
+for f in "$@"; do
+    [ -f "$f" ] || die "no such file: $f"
+    step "signing $(basename "$f")"
+
+    # SIGNED FROM A CLEAN COPY, NEVER IN PLACE. osslsigncode appends a
+    # signature; run twice on the same file it produces a binary with
+    # two of them, which is not what anybody meant by "re-sign" and is
+    # a thing some verifiers refuse outright. Any existing signature is
+    # stripped first, so signing is idempotent -- which matters because
+    # a build that is re-run is a build that is re-run.
+    "$SIGN_TOOL" remove-signature -in "$f" -out "$TMPD/clean.exe" \
+        >/dev/null 2>&1 || cp "$f" "$TMPD/clean.exe"
+
+    # SHA-256 AND NOTHING ELSE. Windows has refused SHA-1 Authenticode
+    # signatures on anything signed after 2016; osslsigncode's default
+    # has been sha256 for years, and naming it is how it stays that way
+    # across a version bump.
+    # shellcheck disable=SC2086
+    "$SIGN_TOOL" sign \
+        $(key_args) $PASSARG \
+        -h sha256 \
+        -n "AurOS Installer" \
+        -i "https://auros.example/" \
+        $TSARG \
+        -in "$TMPD/clean.exe" -out "$TMPD/signed.exe" \
+        >"$TMPD/sign.log" 2>&1 \
+        || { sed -n '1,12p' "$TMPD/sign.log" >&2
+             die "$(basename "$f") could not be signed"; }
+
+    # AND THEN READ IT BACK, which is the step everybody leaves out.
+    # A signature nothing has verified is a file with some extra bytes
+    # in it, and the first person to find out otherwise is a stranger
+    # looking at a blue screen.
+    cp "$TMPD/signed.exe" "$TMPD/check.exe"
+    if ! ( f=$TMPD/check.exe; verify_one "$f" ); then
+        sed -n '1,12p' "$TMPD/verify.log" >&2
+        die "$(basename "$f") was signed and the signature does not verify"
+    fi
+
+    mv "$TMPD/signed.exe" "$f"
+    note "signed, $( [ -n "$TSARG" ] && echo "timestamped," || echo "NOT timestamped," ) and verified"
+done
+
+printf '\n%s::%s %d file(s) signed.\n' "$C_OK" "$C_RST" "$#"
