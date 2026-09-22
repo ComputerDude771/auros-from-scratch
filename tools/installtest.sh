@@ -336,6 +336,14 @@ fi
 #  ones taken before anything was touched.
 # ════════════════════════════════════════════════════════════════════
 cp --sparse=always "$TMP/run.img" "$TMP/installed.img"
+# AND THE STICK AS THE INSTALL LEFT IT, which is not the same object.
+#
+# run() copies the fixture stick for every boot, so the first version of
+# this handed the restore a FRESH stick with nothing saved on it -- and
+# the restore quietly fell back to the copy on the computer and passed.
+# Two checks that said "from the stick" were both testing the same thing
+# as the two below them, and the stick path was not exercised at all.
+cp --sparse=always "$TMP/stk.img" "$TMP/stick-after.img"
 SRCDISK="$TMP/installed.img"
 
 check_back() { # label
@@ -405,13 +413,26 @@ check_back() { # label
 
 echo
 echo "  and then putting Windows back, from the memory stick"
-run "it restores and says so" "aurstage.restore" "verdict=restored"
+run "it restores and says so" "aurstage.restore" "verdict=restored" \
+    "$TMP/stick-after.img"
+if grep -aq "using the saved copy on /dev/vdb" "$TMP/out.txt"; then
+    ok "and it used the copy on the stick, not the one on the computer"
+else
+    bad "and it used the copy on the stick, not the one on the computer" \
+        "$(grep -a 'using the saved copy' "$TMP/out.txt" | tail -1)"
+fi
 check_back "from the stick"
 
 echo
 echo "  and again with no stick at all, from the copy on the computer"
 run "it restores from the copy it left on this computer" \
     "aurstage.restore" "verdict=restored" "$TMP/blank.img"
+if grep -aq "using the saved copy on /dev/vda" "$TMP/out.txt"; then
+    ok "and it used the copy on the computer, the stick being absent"
+else
+    bad "and it used the copy on the computer, the stick being absent" \
+        "$(grep -a 'using the saved copy' "$TMP/out.txt" | tail -1)"
+fi
 check_back "from the computer"
 
 echo
@@ -430,7 +451,7 @@ for line in p.splitlines():
         f_ = open(sys.argv[1],"r+b"); f_.seek(int(f[1])*512)
         f_.write(b"\0" * 4096); f_.close()
 EOPY
-cp --sparse=always "$STICK" "$TMP/badstick.img"
+cp --sparse=always "$TMP/stick-after.img" "$TMP/badstick.img"
 python3 - "$TMP/badstick.img" <<'EOPY'
 import sys, subprocess
 p = subprocess.run(["sgdisk","-p",sys.argv[1]],capture_output=True,text=True).stdout

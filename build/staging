@@ -166,17 +166,34 @@ file init 2>/dev/null | grep -q "statically linked" \
 # binary, so the binary is what is searched. `strings` rather than
 # grep: the flag lives in .rodata and grep on a 1 MB static binary
 # matches all sorts of things.
+# NOT A PIPELINE INTO grep -q, FOR THE SECOND TIME IN THIS FILE.
+#
+# Under `set -o pipefail`, grep -q closes its input the moment it
+# matches, `strings` takes a SIGPIPE, and the pipeline reports failure
+# ON SUCCESS. The write gate above carries the same note because it made
+# the same mistake first, and I made it again here twenty lines later.
+#
+# What it cost: the fault-injection build died with "the flag is not in
+# the binary" when the flag was in the binary -- annoying -- and the
+# ordinary build's check could never fire at all, which is the one that
+# stops an image that can be told to stop mid-write from shipping.
+# Captured first, searched second.
+FLAGS=$(strings init 2>/dev/null || true)
+case "$FLAGS" in
+  *aurstage.die_at=*) HAVE_FAULT=1 ;;
+  *)                  HAVE_FAULT=0 ;;
+esac
 if [ -z "$FAULTDEF" ]; then
-    if strings init 2>/dev/null | grep -q 'aurstage\.die_at='; then
-        die "this image can be told to stop in the middle of writing to a
+    [ "$HAVE_FAULT" = 0 ] \
+        || die "this image can be told to stop in the middle of writing to a
      disk, and nobody asked for that. src/aurstage/fault.c is meant to
      compile to nothing without -DAURSTAGE_FAULT. Refusing to pack it."
-    fi
 else
-    strings init 2>/dev/null | grep -q 'aurstage\.die_at=' \
+    [ "$HAVE_FAULT" = 1 ] \
         || die "a fault-injection image was asked for and the flag is not in
      the binary, so every power-cut test would silently pass."
 fi
+unset FLAGS
 note "init $(du -h init | cut -f1)"
 
 # ── the programs it shells out to ──────────────────────────────────

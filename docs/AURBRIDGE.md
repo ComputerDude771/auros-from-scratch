@@ -144,43 +144,116 @@ before the shrink, because the shrink is what creates the space. Free
 space *inside* the C: filesystem is a different quantity entirely, and
 measuring that one instead is how this mistake survives review.
 
-So the payload lives in two places that need no partition:
+**Rule 2 now reads:** a complete, verified copy of this machine's
+Windows start-up exists on removable media before the first destructive
+byte; a second copy exists on the machine itself before the install is
+finished.
 
-- the mandatory **recovery USB**, and
-- a **file on the Windows volume** (`C:\AurOS\recovery\`), which
-  survives the shrink because `ntfsresize` relocates files rather than
-  destroying them.
+### Who makes it, and where it lives — both changed during stage D
 
-The recovery *partition* is created in phase 8, from space that by then
-exists, and the payload is copied into it and hash-checked against the
-USB copy.
+The design said AurBridge would build the payload on Windows, in phase
+2, "where it is running on Windows with a filesystem", and that stage C
+would copy it into the recovery partition. Building it produced two
+corrections:
 
-**Rule 2 now reads:** a complete, verified recovery payload exists on
-removable media and on the Windows volume before the first destructive
-byte; a bootable recovery partition exists before the partition table is
-committed.
+**Stage C makes the capture, not AurBridge.** The only reason to do it
+on the Windows side was that Windows has a filesystem to write files
+into — and the stick does not need one. Everything on it is a raw
+partition found by type GUID, so the capture can be made from the
+staging environment, before phase 4, by the same code that will later
+put it back. One implementation instead of two, in one language, and no
+class of "Windows wrote it, Linux must parse it" bugs at all. AurBridge
+still *makes room* for it in phase 2: the size is dominated by this
+machine's EFI partition, which is 100 MB on one laptop and a gigabyte on
+the next, so the stick's layout is computed from the machine.
 
-The payload, wherever it lives:
+**It is not a file on a FAT partition.** It gets its own raw extent —
+`AUROS-SAVED`, with its own type GUID — on the stick and again on the
+disk. The recovery partition beside it is an EFI System partition,
+because firmware has to be able to launch it; putting somebody's
+captured Windows in a *file* on that FAT filesystem would mean mounting
+FAT read-write, from an initramfs, on the one path whose entire purpose
+is surviving a machine that has already gone wrong. A raw extent has no
+metadata to corrupt and is one contiguous run by construction — the same
+three reasons `record.h` gives for the same decision.
 
-| Contents | Why |
+**And it is not a file on C: either.** The old design put a second copy
+in `C:\AurOS\recovery\` on the grounds that `ntfsresize` relocates
+files rather than destroying them. True, and irrelevant: the copy exists
+to survive the case where C: is what went wrong.
+
+### The payload
+
+One blob, `AURRSC01`, whose 4096-byte header is specified byte by byte
+in `src/aurstage/rescue.h` so that a support tool five years from now
+can read a stick without reading our source. Every section carries its
+own SHA-256 and the payload carries one over all of them; the header is
+written **last**, after everything it describes is on the stick and
+flushed, so a capture interrupted by a power cut has no magic at its
+start and is refused rather than half-believed.
+
+| Section | Why |
 |---|---|
-| `bootx64.efi` + rescue kernel/initramfs | bootable without external media once the partition exists |
-| `parttable.bin` — original GPT, primary + backup | exact restore |
-| `esp-backup.tar` — the entire ESP as found | R12: never lose `\EFI\Microsoft\Boot` |
-| `bcd-backup.bin` — Windows BCD store | restores the Windows boot path |
-| `ntfs-boot.bin` — `$Boot`, the volume's first 16 sectors | without it a restored GPT describes a filesystem that is no longer there |
-| `ntfs-backup-boot.bin` + original sector count | the backup boot sector moves when the volume is resized, and nothing else records how big C: used to be |
-| `journal.json` — transactional install log | a resumed installer knows which step it died in |
-| `machine.json` — full preflight snapshot | support can see the machine without the machine |
+| the protective MBR, one sector | never restored unless it differs; captured because a machine that boots nothing at all is usually missing exactly this |
+| the primary GPT header, LBA 1 | the sector the restore commits with |
+| the primary entry array, **at the header's own `PartitionEntryLBA`, for `NumberOfPartitionEntries × SizeOfPartitionEntry` bytes** | not 32 sectors, not 2048 — see below |
+| the backup header, at the header's own `AlternateLBA` | |
+| the backup entry array, **at the BACKUP header's own `PartitionEntryLBA`** | which is not derivable from the primary's and is not always `AlternateLBA − 32` |
+| the entire ESP, raw, by offset | R12: OEM EFI partitions hold vendor boot files and firmware capsules as well as `\EFI\Microsoft\Boot`. Never mounted — a read-write mount is a write, and mounting is unavailable in precisely the case this exists for |
+| per NTFS volume: `$Boot` | without it a restored GPT describes a filesystem that is no longer there |
+| per NTFS volume: the backup boot sector, and the sector count the filesystem claimed | the backup boot sector *moves* when a volume is resized, and nothing else on the disk records how big C: used to be |
 
-"Put Windows back" restores the partition table, the ESP and the BCD,
-**and `ntfsresize`s the volume back up to its recorded original size** —
-expansion being the direction `ntfsresize` documents as restart-safe.
-Restoring the GPT alone leaves the user with Windows and a permanently
-smaller C:, which is a worse outcome than a clean refusal.
+A BitLocker volume is captured deliberately as *nothing*: its geometry
+is never changed by this product, so there is nothing about it to put
+back — and copying 8 KiB of somebody's ciphertext onto a memory stick is
+a thing to not do.
 
-The partition covers "AurOS won't boot"; the USB covers "the disk's
-partition table is gone". Both are needed; neither substitutes.
+### Putting it back
+
+`aurstage.restore` on the kernel command line, in the same staging
+environment the install ran in. **"Put Windows back" in AurOS does not
+restore anything itself** — it arms a flag and restarts. A restore
+rewrites the partition table of the disk it is running from, and doing
+that from inside AurOS means rewriting the table under a mounted root
+and growing a volume inside a partition whose entry has just changed
+under a kernel that has not re-read it.
+
+Order, each step idempotent so the whole thing can simply be run again:
+
+1. **the partition table**, committed in one sector — primary array,
+   then LBA 1, then the backup, exactly as the install commits, for the
+   reason `commit.h` sets out at length;
+2. **the EFI partition**, whole;
+3. **each NTFS volume grown back** to the size it claimed.
+
+The grow is last because it is the only step that is both long and
+documented-restartable, and because a machine interrupted after step 2
+boots Windows with a smaller C: — a machine somebody can use, back up
+from, and finish the restore on. There is an unavoidable window where
+the machine boots nothing: the restore's job is to delete the partition
+AurOS is on, and no ordering makes both systems bootable throughout.
+That window is what the stick is for.
+
+### Two things a shell prototype got wrong, kept here so they stay wrong
+
+**Never restore a fixed sector count.** `src/recovery/mkrecovery`
+restored 2048 sectors from LBA 0. The first partition on a 4Kn disk
+starts at LBA 256 and on plenty of 512e OEM layouts at 34, 40 or 63, so
+that writes a megabyte — eight megabytes on 4Kn — of capture-time bytes
+over live filesystem data. Capture and restore exactly what the captured
+header's own fields describe, and nothing else.
+
+**Never grow with `--force` without reading the volume's state first,**
+and then only for one named condition. `--force` suppresses the refusal
+on untrustworthy metadata, which is the only thing standing between the
+restore and R9. But `ntfsresize` marks a volume dirty after every
+successful resize *and then refuses to touch a dirty volume without
+`-f`* — so the volume our own installer shrank is, by construction, one
+that cannot be grown back unless somebody decides the dirty bit is ours.
+`rescue.c` decides it, narrowly: the only thing wrong is the dirty bit,
+the log is clean, nothing is hibernated, none of the three is UNSURE,
+and the volume's NTFS serial is the one the capture recorded. Everything
+else is still a refusal with "run chkdsk from Windows and try again".
 
 ## Boot handoff (phase 3)
 
@@ -421,12 +494,26 @@ unrunnable.
 
 ## Still to build
 
-Phase 0 (preflight) is implemented and builds as a native `.exe`. The
-wizard is implemented to its last screen; every phase on the progress
-page calls a `stub_phase_*` that logs what the real phase would do and
-returns success. Nothing in `wizard.c` opens a handle to a disk, a
-volume or a boot entry, and nothing should be added there — the phase
-engine belongs in its own translation unit with its own tests.
+Phase 0 (preflight) is implemented and builds as a native `.exe`. So is
+the phase engine: `src/aurbridge/phases.{h,c}` runs phases 0–3 in order,
+and `wizard.c` starts it on a worker thread and reads two numbers on its
+timer. **Nothing in `wizard.c` opens a handle to a disk, a volume or a
+boot entry, and nothing should be added there** — everything that leaves
+the program goes through `plat.h`, which has two implementations:
+`plat_win.c`, the real one, and `plat_sim.c`, a computer made of
+ordinary files.
+
+That second one is the only reason any of this is testable.
+`out/aurbridge-sim` runs the whole engine against a synthetic machine,
+so the memory stick and the journal the installer is tested with are the
+ones AurBridge produces rather than ones a test wrote to match. What it
+cannot exercise is named in `plat_sim.c`'s own header: raw handles
+Windows will not always give, `SetFirmwareEnvironmentVariableExW`,
+`manage-bde`. Those are what `plat_win.c` is, and they meet a real
+machine for the first time on the first machine they meet.
+
+`build/aurbridge` refuses to publish a Windows binary that contains the
+simulated platform.
 
 Build order, and nothing from a later stage before an earlier one:
 
@@ -551,13 +638,44 @@ checked the answer:
 its own to build a hardware matrix before anyone's disk is at risk.
 
 **C — destructive, one step at a time, each with its own kill-the-power
-test.** Filesystem-only shrink. Write by offset. Read-back verify.
-Probe from the freshly written root. GPT commit. `partx`, `resize2fs`,
-`switch_root`.
+test.** ✅ **Done.** Filesystem-only shrink, write by offset, read-back
+verify, probe from the freshly written root, the one-sector GPT commit,
+`BLKRRPART`, `e2fsck`, `resize2fs`, `switch_root`.
+`src/aurstage/{gpt,plan,wr,health,image,probe,commit,record,install}.{h,c}`,
+and one file — `wr.c` — that the build proves is the only one in the
+directory allowed to open a device writably.
 
-**D — the way back.** Recovery partition from the freed space. "Put
-Windows back", including the `ntfsresize` expansion. Then the R4 test:
-deliberately fail at each step of C and prove Windows comes back, on
-real hardware, including one power-pull per step.
+**D — the way back.** ✅ **Done.** `src/aurstage/rescue.{h,c}` and
+`aurstage.restore`. `tools/installtest.sh` does the whole round trip on
+a synthetic machine: install, start AurOS, put Windows back from the
+stick, put it back again from the copy on the computer with no stick
+plugged in, and refuse a damaged copy with the disk byte-for-byte
+untouched — checking afterwards that the three original partitions are
+at their original sectors, the EFI partition is byte-for-byte what it
+was, the Windows *filesystem* is its full size again, and every file in
+it has the md5sum it had before anything was touched.
 
-Nothing destructive ships until D is done.
+**The R4 test.** `tools/powercuttest.sh`. The design said "on real
+hardware, including one power-pull per step", and that is still the
+thing to do before this ships to anybody. What is available instead is
+better than nothing and better in one respect than a cord and a
+stopwatch: the installer names its own dangerous instants (`fault.h`)
+and a fault-injection build can be told to stop dead at exactly one of
+them, so every run is the same run and a failure is reproducible by its
+name. Fourteen of them — nine during the install and five during the
+restore — each followed by a restore and a byte-for-byte comparison
+against the machine as it was.
+
+What that does **not** prove is written down rather than glossed: a
+particular drive lying about having flushed; one firmware that is not
+OVMF; anything about the electrical behaviour of a real power supply.
+`tools/matrixtest.sh` covers the geometries — 4Kn, a gigabyte OEM EFI
+partition, a first partition at LBA 34, MBR, BIOS, BitLocker,
+hibernated, two Windows volumes, no room — and firmware variety is the
+one thing in this list that cannot be synthesised at all. The mitigation
+for it is the dry run: it writes nothing, prints one machine-readable
+line, and is worth shipping on its own to build a hardware matrix before
+anyone's disk is at risk.
+
+Nothing destructive ships until the fault matrix is green on every named
+instant and the dry run has been through a fleet.

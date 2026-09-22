@@ -262,3 +262,82 @@ the power — can be driven in QEMU against a synthetic machine, and that
 is worth doing and is what the harness does. It is not the same as a
 power cut on a 2013 Toshiba with a volatile write cache, and this
 document does not pretend otherwise.
+
+---
+
+## Stage D, as built
+
+The design notes for stage D are above, next to the things they killed.
+This is what the code does, and the three places it departs from those
+notes.
+
+### It is C, and it runs in the staging environment
+
+`src/recovery/mkrecovery` was a good shell tool and is still in the tree
+as an independent second opinion. It could not be the product, for one
+reason that has nothing to do with taste: **a restore rewrites the
+partition table of the disk it is running from.** From inside AurOS that
+means rewriting the table under a mounted root, and growing the Windows
+filesystem means growing a volume inside a partition whose entry has
+just changed under a kernel that has not re-read it. The only safe
+environment is the one where nothing on that disk is mounted — the
+staging initramfs — and that environment has no shell.
+
+So "Put Windows back" in AurOS arms a flag and restarts into the same
+environment the install ran in, and `aurstage.restore` does the work
+with the same `wr.c`, the same windows, the same commit order.
+
+### The capture is stage C's, not AurBridge's
+
+The notes said AurBridge would build the per-machine container on the
+USB in phase 2, "where it is running on Windows with a filesystem".
+The filesystem was the whole reason, and the stick does not need one:
+everything on it is a raw partition found by type GUID. So the capture
+is made from the staging environment, before phase 4, by the same code
+that will later put it back. One implementation, one language, and no
+class of "Windows wrote it, Linux must parse it" bugs.
+
+AurBridge still sizes the space for it in phase 2, because the size is
+dominated by this machine's EFI partition and that is 100 MB on one
+laptop and a gigabyte on the next.
+
+### The saved copy has its own partition
+
+The notes said the payload goes in the recovery partition. It gets its
+own instead — `AUROS-SAVED`, a raw extent with its own type GUID, on
+the stick and again on the disk. The recovery partition beside it is an
+EFI System partition, because firmware has to be able to launch it, so a
+file in it is a file on FAT; writing one means mounting FAT read-write
+from an initramfs on the one path whose purpose is surviving a machine
+that has already gone wrong.
+
+### What the round trip found that no unit test could
+
+**The restore could never grow the filesystem back.** `ntfsresize` marks
+a volume dirty after every successful resize — correct, and wanted, so
+Windows checks it at the next start — and then refuses to touch a dirty
+volume without `--force`. The volume our own installer shrank is by
+construction one that cannot be grown back. Without the fix the
+partition entry went back to its full size and the filesystem inside it
+stayed at 16408 sectors out of 2097151, on every machine, for ever, and
+the install test passed because it was checking the partition table.
+
+The fix does not undo the review that took `--force` out of the shrink.
+The guard is moved somewhere narrower than `ntfsresize`'s own:
+`rescue.c` reads the volume's state itself and forces only when the
+single thing wrong is the dirty bit, the log is clean, nothing is
+hibernated, none of the three is UNSURE, and the volume's NTFS serial is
+the one the capture recorded. `shrink_do()` passes 0 and always will.
+
+**An exact size match was never reachable.** `mkntfs` sets
+`total_sectors` to one less than the partition, which is not a multiple
+of the cluster size; `ntfsresize` can only land on
+`(floor(size / cluster) − 1) × sectors_per_cluster`. A correct restore
+comes back to within one cluster. Both the code and the test say so in
+those words, and the test still fails on anything looser — which is how
+the bug above was caught.
+
+**The grow target was off by one sector**, because `$Boot`'s
+`total_sectors` excludes the backup boot sector and `ntfs_volume_bytes()`
+and `ntfsresize` both include it. A perfectly restored volume looked one
+sector short for ever.
