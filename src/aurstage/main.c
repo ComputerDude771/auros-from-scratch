@@ -27,6 +27,7 @@
 #include "shrink.h"
 #include "journal.h"
 #include "fde.h"
+#include "health.h"
 
 /* What the kernel was told to do with us, out of /proc/cmdline. */
 static int cmdline_has(const char *word)
@@ -322,6 +323,43 @@ static void dry_run(const stage_machine *m)
         return;
     }
 
+    /* 3c. THE DRIVE'S OWN OPINION OF ITSELF, before anything reads it
+     *     hard. R5: "read SMART first... Refuse on any
+     *     pending/uncorrectable sectors, no override."
+     *
+     *     This is the one check whose output is worth more to her than
+     *     the install. She came here to put Linux on an old laptop and
+     *     she is leaving knowing her drive is dying, while her
+     *     photographs are still readable. A user told "your hard drive
+     *     is failing, back up now" is a user we saved. */
+    smart_state sm;
+    char smdev[80];
+    snprintf(smdev, sizeof smdev, "/dev/%s", on->name);
+    smart_read(smdev, &sm);
+    if (sm.verdict == SMART_FAILING) {
+        stage_warn("%s", sm.why);
+        stage_say("         %s", sm.remedy);
+        stage_say("a real run would stop here, having changed nothing");
+        verdict_line("drive-failing", smart_verdict_name(sm.verdict));
+        return;
+    }
+    stage_say("drive    %s", sm.why);
+    if (sm.remedy[0]) stage_say("         %s", sm.remedy);
+
+    /* 3d. AND WHETHER IT WOULD SURVIVE BEING OPERATED ON. R6: "Refuse
+     *     on battery <50% or not on AC." A dry run does not refuse --
+     *     nothing here can be interrupted into a bad state -- but the
+     *     answer goes in the row, because a machine that would be
+     *     refused for being on battery is not a machine the fleet
+     *     numbers should count as ready. */
+    power_state pw;
+    char pwhy[200];
+    power_read(NULL, &pw);
+    int pw_ok = power_ok(&pw, pwhy, sizeof pwhy);
+    stage_say("power    %s", pwhy);
+    if (!pw_ok)
+        stage_say("         A real run would wait until it was plugged in.");
+
     /* 4. THE SECTOR SIZE, said out loud even when it is the ordinary
      *    512. Shrink takes sectors, partition tables take bytes, and
      *    assuming 512 on a 4Kn disk makes the partition eight times
@@ -449,11 +487,12 @@ static void dry_run(const stage_machine *m)
     char how[200];
     snprintf(how, sizeof how,
              "disk=%s part=%s sector=%d/%d cluster=%u free_mib=%llu "
-             "need_gb=%llu sure=%s",
+             "need_gb=%llu drive=%s power=%s sure=%s",
              on->name, win->name,
              on->logical_sector, on->physical_sector, ns.bytes_per_cluster,
              (unsigned long long)(freeable / (1024 * 1024)),
              (unsigned long long)(need / 1000000000ull),
+             smart_verdict_name(sm.verdict), pw_ok ? "ok" : "battery",
              (!fde_unsure && ns.dirty == NTFS_NO &&
               ns.hibernated == NTFS_NO && ns.log_dirty == NTFS_NO)
                  ? "yes" : "no");
