@@ -41,6 +41,10 @@
 #    build/all --keep=raw            leave the images uncompressed
 #    build/all --keep=none           keep only the manifests
 #    build/all --force               rebuild even what is already done
+#    build/all --keep-work=NAME      do not reclaim NAME's work tree;
+#                                    the default is desktop, because
+#                                    build/staging and every end-to-end
+#                                    test take their tools out of it
 #    build/all --list                what is built, and what it cost
 # ═══════════════════════════════════════════════════════════════════
 set -euo pipefail
@@ -63,10 +67,21 @@ die()  { printf '%s::%s %s\n' "$C_ERR" "$C_RST" "$*" >&2; exit 1; }
 KEEP=compressed
 FORCE=0
 LIST=0
+# THE WORK TREE build/staging AND THE TESTS READ FROM.
+#
+# Reclaiming a rootfs is the whole point of this driver, and reclaiming
+# THIS one breaks the staging image, tools/installtest.sh,
+# tools/matrixtest.sh and tools/powercuttest.sh -- all of which take
+# mkntfs, ntfs-3g, ntfsresize and the kernel modules out of it. Losing
+# it is an hour of rebuild and a confusing failure ("no rootfs at
+# work/forge/desktop/rootfs") in four unrelated places.
+KEEPWORK="${AUROS_KEEP_WORK:-desktop}"
 WANT=()
 for a in "$@"; do
     case "$a" in
         --keep=raw|--keep=compressed|--keep=none) KEEP="${a#--keep=}" ;;
+        --keep-work=*) KEEPWORK="${a#--keep-work=}" ;;
+        --keep-work)   KEEPWORK="" ;;
         --force) FORCE=1 ;;
         --list)  LIST=1 ;;
         -*) die "unknown option: $a" ;;
@@ -253,6 +268,7 @@ for id in "${WANT[@]}"; do
             [ -d "$other" ] || continue
             oid=$(basename "$other")
             [ "$oid" = "$id" ] && continue
+            [ "$oid" = "$KEEPWORK" ] && continue
             if manifest_ok "$oid" "$(profile_hash "$oid" 2>/dev/null || echo x)"; then
                 note "reclaiming the finished work tree for $oid"
                 # `forge clean`, NEVER a bare rm -rf. forge bind-mounts
@@ -333,6 +349,16 @@ for id in "${WANT[@]}"; do
     esac
 
     # ── give the intermediates back ────────────────────────────────
+    if [ "$id" = "$KEEPWORK" ]; then
+        note "keeping $id's work tree: build/staging and the end-to-end"
+        note "tests take their tools and modules out of it"
+        kept=0
+        if [ -f "$OUT/$art" ]; then kept=$(du -sm "$OUT/$art" | cut -f1); fi
+        total_kept=$(( total_kept + kept ))
+        say "$id done — kept $(gb "$kept") and its work tree"
+        built+=("$id")
+        continue
+    fi
     #
     # The rootfs and the squashfs are reproducible from the profile and
     # are 4.7 GB of the 7.9. They go as soon as the image that came out
