@@ -740,7 +740,18 @@ int rescue_mirror(wr_target *t, const rescue_area *area,
             snprintf(why, n, "the way back could not be read off the stick.");
             return -1;
         }
-        if (wr_bytes(t, WR_RECOVERY, dst_off + at, buf, chunk, why, n) != 0) {
+        /* WR_MIRROR. THIS SAID WR_RECOVERY, and the caller arms
+         * WR_MIRROR -- so wr.c refused every byte, the install printed
+         * a warning that is deliberately not fatal, and carried on.
+         *
+         * The commit that split these two apart renamed the arm and
+         * not the write, which is the "one window with two names"
+         * inversion wr.h's own comment for WR_MIRROR describes, made
+         * by the change that added that comment. The gate worked
+         * exactly as designed; nothing was written where it had not
+         * been armed to write. What was missing was anybody asking
+         * whether the copy arrived. */
+        if (wr_bytes(t, WR_MIRROR, dst_off + at, buf, chunk, why, n) != 0) {
             close(fd);
             return -1;
         }

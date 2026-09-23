@@ -222,7 +222,11 @@ int rescue_verify(const rescue_area *area, const rescue_payload *p,
 
 /* Copy the payload, byte for byte, into the AurOS recovery partition
  * at `dst_off`, then read it back and compare against the stick.
- * `t` must have WR_RECOVERY armed over the destination. */
+ * `t` must have WR_MIRROR armed over the destination -- its own
+ * window, not the boot partition's, because they are two extents and
+ * the sentence a refusal prints comes from the name. This line said
+ * WR_RECOVERY while the caller armed WR_MIRROR, and between them the
+ * second copy was written to no machine at all. */
 int rescue_mirror(wr_target *t, const rescue_area *area,
                   const rescue_payload *p, uint64_t dst_off,
                   char *why, size_t n);

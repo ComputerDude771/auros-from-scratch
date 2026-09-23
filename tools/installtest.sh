@@ -153,6 +153,22 @@ echo
 echo "  and then installing, for real"
 run "it installs and the new system starts" \
     "aurstage.install aurstage.min_gb=1" "INSTALLTEST-AUROS-STARTED"
+# AND THE SECOND COPY OF THE WAY BACK, ASSERTED HERE.
+#
+# Failing to keep it is deliberately a warning and not a give_up --
+# AurOS is installed and working by then, and the copy that matters is
+# on the stick. So when rescue_mirror started writing through a window
+# nobody had armed, the install still said it had succeeded, and what
+# noticed was a restore case six checks further down whose message was
+# about a memory stick that was not even plugged in.
+#
+# The install says whether it kept the copy. This reads that sentence.
+if grep -aq "a second copy is on this computer" "$TMP/out.txt"; then
+    ok "...and kept a second copy of the way back on the computer"
+else
+    bad "...and kept a second copy of the way back on the computer" \
+        "$(grep -a 'way back' "$TMP/out.txt" | tail -2)"
+fi
 
 echo
 echo "  and what it left behind"

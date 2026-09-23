@@ -74,9 +74,29 @@ echo
 # machine cannot be made by partitioning the file directly -- it has to
 # go through a loop device opened with --sector-size 4096, which is
 # also the only way to find out whether our own reader gets it right.
+# HOW BIG THESE MACHINES ARE, and why it is not arbitrary.
+#
+# Every `could-convert` row asks whether a SHAPE is convertible --
+# sector size, ESP size, where the first partition starts. The shape is
+# the claim; the capacity is not. But the installer answers one
+# question, and it includes "does AurOS fit", so a fixture too small to
+# hold AurOS makes the row demand a `yes` that would be a lie.
+#
+# That is what happened. Windows was 1024 MiB, of which about 1018 is
+# reclaimable, and at `aurstage.min_gb=1` an install needs that
+# gigabyte PLUS the 512 MiB partition AurOS starts from PLUS a copy of
+# this machine's own ESP: a little over 1.6 GB. Four rows went red and
+# the installer was right every time.
+#
+# 4096 MiB of Windows on an 8 GiB disk leaves about 4 GiB reclaimable,
+# which clears that by more than a factor of two -- so the rows go back
+# to testing geometry, which is what they are for, and a future floor
+# would have to more than double before they are about capacity again.
+# The files are sparse; the disk this builds on does not feel the
+# difference.
 build() { # out  sector  esp_start  esp_mib  win_mib  extra
     _o=$1; _ss=$2; _es=$3; _emib=$4; _wmib=$5; _extra=${6:-}
-    rm -f "$_o"; truncate -s 4G "$_o"
+    rm -f "$_o"; truncate -s 8G "$_o"
     _l=$(losetup --find --show --sector-size "$_ss" "$_o") || return 1
     sgdisk --zap-all "$_l" >/dev/null 2>&1
     _eb=$(( _emib * 1024 * 1024 / _ss ))
@@ -183,18 +203,18 @@ row() { # label  want-verdict  image  blockprops  firmware
 
 # ── the rows ────────────────────────────────────────────────────────
 echo "  ordinary machines"
-build "$T/base.img" 512 2048 100 1024 winre || { echo "  cannot build"; exit 2; }
+build "$T/base.img" 512 2048 100 4096 winre || { echo "  cannot build"; exit 2; }
 row "512-byte blocks, 100 MiB EFI, WinRE at the end" could-convert \
     "$T/base.img" "" uefi
 
-build "$T/k4.img" 4096 256 100 1024 winre || { echo "  cannot build 4Kn"; exit 2; }
+build "$T/k4.img" 4096 256 100 4096 winre || { echo "  cannot build 4Kn"; exit 2; }
 row "4Kn: blocks are 4096 bytes, not 512" could-convert \
     "$T/k4.img" ",logical_block_size=4096,physical_block_size=4096" uefi
 
-build "$T/bigesp.img" 512 2048 1024 1024 winre || { echo "  cannot build"; exit 2; }
+build "$T/bigesp.img" 512 2048 1024 4096 winre || { echo "  cannot build"; exit 2; }
 row "an OEM 1 GiB EFI partition" could-convert "$T/bigesp.img" "" uefi
 
-build "$T/old.img" 512 34 100 1024 winre || { echo "  cannot build"; exit 2; }
+build "$T/old.img" 512 34 100 4096 winre || { echo "  cannot build"; exit 2; }
 row "the first partition at LBA 34, as disks were made before 2010" \
     could-convert "$T/old.img" "" uefi
 
