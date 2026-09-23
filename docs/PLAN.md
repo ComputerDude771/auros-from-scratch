@@ -245,12 +245,15 @@ that no amount of code replaces.
    before the first public download — and the entity is the same one
    the code-signing certificate is issued to, so it is on the
    critical path twice.
-6. **No Firefox from this builder.** The network these images were
-   built on answers `403` for every Mozilla and Launchpad host, so
-   all five ship Epiphany. `build/forge` now tries three routes and
-   refuses to substitute quietly, which is the check that was missing
-   — but the fix is a network, not a commit. See
-   `docs/results/images.md`.
+6. **No Firefox from this builder.** The network these images are
+   built on answers `403` for every Mozilla and Launchpad host
+   (`packages.mozilla.org`, `ppa.launchpadcontent.net`,
+   `ftp.mozilla.org`, `download.mozilla.org`), so all five ship
+   Epiphany. `build/forge` tries three routes and refuses to
+   substitute quietly — `ALLOW_BROWSER_FALLBACK=1` is the deliberate
+   override, recorded in every manifest and in
+   `/etc/auros/build-warnings` — but the fix is a network policy, not
+   a commit. See `docs/results/images.md`.
 7. **Nowhere to download the image from.** The installer fetches it,
    resumably, against a hash baked in at build time
    (`tools/exetest.sh`, 14 checks) — and `AUROS_IMAGE_URL` is empty,
@@ -280,18 +283,20 @@ What proves it, and the numbers are the current transcripts in
 
 | | |
 |---|---|
-| `installtest.sh` | 32 — install, start, put Windows back twice, refuse a damaged copy |
-| `loadertest.sh` | 17 — and does it come back up in AurOS with the stick out, including under Secure Boot |
+| `installtest.sh` | 37 — install, start, put Windows back twice, refuse a damaged copy, refuse a stick for another AurOS |
+| `loadertest.sh` | 18 — and does it come back up in AurOS with the stick out, including under Secure Boot |
 | `powercuttest.sh` | 138 — the power goes at each of seventeen named instants |
 | `matrixtest.sh` | 10 — shapes of computer that cannot be bought |
+| `imagetest.sh` | 23 — the image is found by what is on it, including on a stick holding two |
 | `bridgetest.sh` | 13 — the two halves agree about the bytes |
-| `aurfirsttest.sh` | 31 — BootOrder is untouched until somebody says so |
+| `aurfirsttest.sh` | 46 — BootOrder is untouched until somebody says so, and nothing is ever dropped from it |
 | `nvramtest.sh` | 25 — the boot entry, decoded by something that did not write it |
-| `exetest.sh` | 14 — one file, and a download that resumes |
+| `wrtest.sh` | 23 — writes land only where they were armed to |
+| `exetest.sh` | 17 — one file, and a download that resumes |
 | `signtest.sh` | 12 — it signs, and a changed byte breaks it |
-| `welcometest.c` | 25 — the question, and what each answer asks for |
+| `welcometest.c` | 27 — the question, and what each answer asks for |
 | `targets.c` | 10021 — everything she has to press, at every text size |
-| `modaltest.c` | 50 — a panel covers the desktop and can always be left |
+| `modaltest.c` | 53 — a panel covers the desktop and can always be left |
 
 **What is left is not code.** A certificate. A host for the image. A
 network that allows Firefox. A legal entity. And the thing none of the

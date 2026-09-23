@@ -5,6 +5,9 @@ With the power off and the stick out, does it come back up in AurOS?
   an AurOS image with a real signed boot chain in its 48 MiB EFI partition
   and firmware that already has an "AurOS Installer" entry in it
 
+  the instrument
+    the variable-store reader still reads a store it did not write ok
+
   the install
     it installs and hands over in the same boot                ok
     and says it put AurOS in the start-up menu                 ok
@@ -34,4 +37,4 @@ With the power off and the stick out, does it come back up in AurOS?
   and with Secure Boot on, against Microsoft's own keys
     the signed chain boots on firmware that enforces signatures ok
 
-  17 checked, 0 failed
+  18 checked, 0 failed
