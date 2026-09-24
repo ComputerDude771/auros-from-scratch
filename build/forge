@@ -1612,8 +1612,58 @@ EOL
 }
 
 # ── stage 6: squashfs ──────────────────────────────────────────────
+# WHAT MUST BE TRUE OF A ROOTFS BEFORE IT BECOMES AN IMAGE.
+#
+# enable_unit checks each link at the moment it makes it. This checks
+# they are all still there at the last moment before the rootfs is
+# sealed -- after the apt purge, after stage 4's configure, after the
+# theme. Two different questions: "did the enable work" and "did
+# anything undo it", and only the second survives a stage added later
+# that resets /etc/systemd/system.
+#
+# -L, not -e. The link is absolute and root-relative, so -e resolves it
+# against the BUILD HOST and finds nothing. I have now written that bug
+# twice -- once in enable_unit and once in the script that was supposed
+# to verify the images afterwards, where it reported four units missing
+# from five builds that had enabled them correctly. Hence this living
+# here, in the build, instead of in a shell script beside it.
+squash_preconditions() {
+    local missing=""
+    local f
+    for f in usr/sbin/aurfirst \
+             usr/bin/aurshell \
+             usr/lib/auros/answer.sh \
+             usr/lib/auros/firstboot.sh \
+             etc/systemd/system/auros-hold.service \
+             etc/systemd/system/auros-answer.path \
+             etc/systemd/system/auros-answer.service \
+             etc/systemd/system/auros-firstboot.service \
+             etc/auros/services; do
+        [ -e "$RFS/$f" ] || missing="$missing
+       $f"
+    done
+    # The enables, by the link systemd actually writes.
+    for f in multi-user.target.wants/auros-hold.service \
+             multi-user.target.wants/auros-answer.path \
+             multi-user.target.wants/auros-firstboot.service \
+             graphical.target.wants/aurshell.service; do
+        [ -L "$RFS/etc/systemd/system/$f" ] ||
+        [ -e "$RFS/etc/systemd/system/$f" ] || missing="$missing
+       etc/systemd/system/$f  (enabled?)"
+    done
+    if [ -n "$missing" ]; then
+        die "this rootfs is not ready to become an image. Missing:$missing
+     Phases 9 and 10 -- the question AurOS asks on first boot, the
+     confirmation, and the gate in front of Ferry -- are those units.
+     An image without them installs and then never asks whether it
+     worked, and BootOrder is never handed over."
+    fi
+    note "phases 9 and 10 are in this rootfs and enabled"
+}
+
 stage_squash() {
     step "stage 6/7  compress"
+    squash_preconditions
     mkdir -p "$OUT"
     local sq="$OUT/$profile_id-$os_version.squashfs"
     rm -f "$sq"
