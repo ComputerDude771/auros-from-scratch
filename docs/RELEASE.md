@@ -207,6 +207,15 @@ would have stopped the first real install:
   Microsoft-signed shim, which starts Canonical's grub, which starts the
   kernel; `tools/nosticktest.sh` boots it from firmware with Microsoft's
   keys and Secure Boot enforcing, and shows the old entry being refused.
+- **An NVMe laptop would have been refused after its restart, about
+  its own disk.** The staging environment matched the disk by the
+  serial AurBridge read on Windows, exactly, and on NVMe Windows
+  reports an identifier like `0025_3886_81B7_8F17.` where Linux reports
+  the drive's serial. It now also accepts the serial written
+  differently, and failing that the one disk whose partition table has
+  the recorded hash (which includes the disk's own GUID); two such
+  disks are a refusal. `tools/nosticktest.sh` installs with the two
+  serials deliberately different.
 - **The last button undid the install.** After phase 3 the only button
   said *Close*, and closing the window takes the one-shot start-up
   setting back by design. It says *Restart now* and restarts, keeping

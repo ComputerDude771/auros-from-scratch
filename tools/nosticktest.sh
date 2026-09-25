@@ -270,7 +270,14 @@ if [ -f "$MSCODE" ] && [ -f "$MSVARS" ]; then
     SIM2="$TMP/sim2"
     mkdir -p "$SIM2/esp" "$SIM2/payload"
     : > "$SIM2/efivars.txt"
-    cp "$SIM/disks.txt" "$SIM2/disks.txt"
+    # AND THE SERIAL AS WINDOWS WRITES IT FOR NVME, which is not the one
+    # Linux reads: an identifier like "0025_3886_81B7_8F17." where the
+    # kernel reports the drive's own serial (here, AUROSTEST). Matched
+    # exactly, as it used to be, this machine is refused after its
+    # restart about the right disk; the staging environment has to know
+    # the disk by its partition table instead, and say so.
+    printf '0\t%s\t%s\t512\t0025_3886_81B7_8F17.\tQEMU\t0\n' "$DISK" \
+        "$(stat -c%s "$DISK")" > "$SIM2/disks.txt"
     cp out/auros-staging-shimx64.efi "$SIM2/payload/staging-shim"
     cp out/auros-staging-grubx64.efi "$SIM2/payload/staging-grub"
     cp out/auros-staging-mmx64.efi   "$SIM2/payload/staging-mokmgr" 2>/dev/null
@@ -343,6 +350,10 @@ e.plant(sys.argv[1], 'BootNext', '8be4df61-93ca-11d2-aa0d-00e098032b8c', b'\x09\
         bad "through shim and grub it installs, and AurOS starts" \
             "$(grep -aE 'aurstage|Security|shim|grub|error' "$TMP/fout.txt" | tail -8)"
     fi
+    grep -aq "known by its partition table" "$TMP/fout.txt" \
+        && ok "...knowing the disk by its partition table, not the serial" \
+        || bad "...knowing the disk by its partition table, not the serial" \
+               "$(grep -a 'record ' "$TMP/fout.txt" | tail -2)"
     grep -aq "verdict=installed" "$TMP/fout.txt" \
         && ok "...and the installer reported success" \
         || bad "...and the installer reported success" \
