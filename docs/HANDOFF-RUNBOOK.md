@@ -86,7 +86,7 @@ out/aurbridge-sim MACHINE-DIR PROFILE STICK-SERIAL IMAGE KERNEL INITRD
 `disks.txt` (index, path, bytes, sector, serial, model, removable;
 tab-separated), `esp/` (stands in for the EFI partition),
 `efivars.txt`, `payload/` (`staging-shim`, `staging-grub`,
-`staging-mokmgr`)), and for Secure Boot `secureboot` (`1`/`0`),
+`staging-mokmgr`), and for Secure Boot `secureboot` (`1`/`0`),
 `db.bin`, `dbx.bin`. Environment: `AURBRIDGE_LANGUAGE`, `_KEYBOARD`,
 `_TIMEZONE`, `_THEME`, `_SHELL` (the personalize choices);
 `AURBRIDGE_STAGING_KARGS` (extra kernel arguments, tests only).
