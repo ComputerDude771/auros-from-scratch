@@ -175,6 +175,9 @@ int  stage_switch_root(const char *root_dev);
 int  stage_cmdline_has(const char *word);
 int  stage_cmdline_value(const char *key, char *out, size_t n);
 
+/* MemAvailable, in bytes; 0 if the kernel will not say. */
+uint64_t stage_mem_available(void);
+
 /* ── saying things ───────────────────────────────────────────────── */
 
 /* Everything this environment says goes through here: to the console

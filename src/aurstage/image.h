@@ -69,6 +69,12 @@ typedef struct {
      * there yet" from the destructive path. */
     char     dev[72];           /* the DISK holding it                */
     uint64_t part_off;          /* where its partition starts, bytes  */
+    /* Where the image ITSELF starts in `dev`: past the 4096-byte
+     * manifest on a stick, and 0 when `dev` is a file that is nothing
+     * but the image (the no-stick mode, see image_find_file). Every
+     * offset "inside the image" is measured from here. */
+    uint64_t img_base;
+    int      from_file;         /* `dev` is a file on the Windows drive */
     char     profile[64];
     uint64_t image_bytes;
     uint64_t root_off;          /* the root extent, INSIDE the image  */
@@ -105,6 +111,15 @@ typedef struct {
  * discovering it after the irreversible shrink. */
 int image_find(const stage_machine *m, const char *want_profile,
                image_src *out, char *why, size_t n);
+
+/* THE NO-STICK MODE. The image is `img_path`, a file on the Windows
+ * drive mounted READ-ONLY, and its manifest -- the same 4096 bytes a
+ * stick carries in front of the image -- is the file `man_path` beside
+ * it. Every check image_find makes is made here too, against the file's
+ * size instead of a partition's. */
+int image_find_file(const char *img_path, const char *man_path,
+                    const char *want_profile, image_src *out,
+                    char *why, size_t n);
 
 /* Hash the root extent where it lies and compare against the build's.
  * Done BEFORE the shrink, always: every question this answers is

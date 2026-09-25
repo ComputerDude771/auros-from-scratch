@@ -24,6 +24,7 @@
 #include "rescue.h"
 #include "loader.h"
 #include "fault.h"
+#include "winvol.h"
 
 #define MIN_ROOT_DEFAULT (24ull * 1000 * 1000 * 1000)
 
@@ -47,6 +48,19 @@ static uint64_t min_root_bytes(void)
 static rec_target g_rec;
 static int        g_rec_ok;
 static int        g_from_usb;
+/* THE NO-STICK MODE: the journal says the image is on the Windows
+ * drive and there is no memory stick at all. See winvol.h for what
+ * that changes and image.h for why it is not the design. */
+static int        g_nostick;
+
+/* Whatever else happens on the way out, the Windows drive is not left
+ * mounted behind a refusal. */
+static void let_go_of_windows(void)
+{
+    char w[160];
+    if (winvol_mounted() && winvol_umount(w, sizeof w) != 0)
+        stage_warn("%s", w);
+}
 
 /* WHAT TO DO NEXT, and it depends on how this machine booted.
  *
@@ -72,6 +86,7 @@ static void say_what_happens_next(void)
 /* A refusal ABOVE the line: nothing has been touched. */
 static void refuse(const char *why, const char *remedy, const char *verdict)
 {
+    let_go_of_windows();
     stage_warn("%s", why);
     if (remedy && remedy[0]) stage_say("         %s", remedy);
     if (g_rec_ok) {
@@ -89,6 +104,7 @@ static void refuse(const char *why, const char *remedy, const char *verdict)
 static void give_up(const char *why, const char *remedy, const char *verdict,
                     int windows_still_boots)
 {
+    let_go_of_windows();
     stage_warn("%s", why);
     if (remedy && remedy[0]) stage_say("         %s", remedy);
     if (g_rec_ok) {
@@ -238,8 +254,27 @@ void install_run(const stage_machine *m)
                "no-record");
     }
     g_from_usb = !strcmp(j.boot_from, "usb");
+    g_nostick  = !strcmp(j.image_on, "windows");
+    if (j.image_on[0] && !g_nostick && strcmp(j.image_on, "stick") != 0)
+        refuse("The note the installer left says the copy of AurOS is "
+               "somewhere this version of AurOS does not know how to look.",
+               "Run the installer in Windows again.", "image-on-unknown");
+    if (g_nostick && !j.profile[0])
+        refuse("The note the installer left does not say which AurOS to "
+               "install.", "Run the installer in Windows again.",
+               "no-profile");
 
-    g_rec_ok = (rec_open(&g_rec, m, j.run_id, why, sizeof why) == 0);
+    /* NO STICK, NO RECORD. The record lives in a raw partition on the
+     * stick (record.h says why not on the ESP), so the no-stick mode has
+     * none and does not go looking: rec_open would otherwise write this
+     * run's notes onto whatever old AurOS stick happens to be plugged
+     * in. The cost is the one record.h names -- an interrupted install
+     * starts over -- and starting over is safe here because every step
+     * up to the commit leaves the old table in force, and NTFS itself
+     * says when a shrink was interrupted (ntfsresize marks the volume
+     * dirty, and the gate below refuses a dirty volume). */
+    g_rec_ok = g_nostick ? 0
+             : (rec_open(&g_rec, m, j.run_id, why, sizeof why) == 0);
     rec_entry last;
     int had_last = g_rec_ok && rec_last(&g_rec, &last) == 0;
     int resume_from = REC_NONE;
@@ -252,7 +287,10 @@ void install_run(const stage_machine *m)
          * is not this attempt's progress. */
         stage_say("record   an older attempt is on the stick; ignoring it");
     }
-    if (!g_rec_ok)
+    if (g_nostick)
+        stage_say("record   no memory stick: an interrupted install will "
+                  "start again from the beginning");
+    else if (!g_rec_ok)
         stage_warn("AurOS cannot write down what it is doing; going on, "
                    "but an interrupted install will not be resumable");
 
@@ -375,11 +413,24 @@ void install_run(const stage_machine *m)
      * A journal from before that has an empty profile, and an empty
      * profile asks for no check, which is exactly what happened
      * before. */
-    if (image_find(m, j.profile, &img, why, sizeof why) != 0)
+    char winroot[64] = "";
+    if (g_nostick) {
+        /* READ-ONLY, and for as short a time as possible: mounted to
+         * find and hash the image, unmounted again before the shrink. */
+        if (winvol_mount(windev, winroot, sizeof winroot, why, sizeof why) != 0)
+            refuse(why, NULL, "windows-unreadable");
+        char ip[160], mp[176];
+        snprintf(ip, sizeof ip, "%s/AurOS/auros-%s.img", winroot, j.profile);
+        snprintf(mp, sizeof mp, "%s.manifest", ip);
+        if (image_find_file(ip, mp, j.profile, &img, why, sizeof why) != 0)
+            refuse(why, "Run the installer in Windows again.", "no-image");
+    } else if (image_find(m, j.profile, &img, why, sizeof why) != 0) {
         refuse(why, NULL, "no-image");
+    }
     stage_say("image    %s, %.1f GiB", img.profile,
               (double)img.root_len / (1024.0*1024.0*1024.0));
-    stage_say("checking the copy of AurOS on the memory stick");
+    stage_say(g_nostick ? "checking the copy of AurOS on the Windows drive"
+                        : "checking the copy of AurOS on the memory stick");
     fprintf(stderr, "aurstage: ");
     if (image_verify(&img, dots, why, sizeof why) != 0)
         refuse(why, NULL, "image-damaged");
@@ -399,6 +450,10 @@ void install_run(const stage_machine *m)
     uint64_t boot_need = 0;
     if (loader_bytes_needed(&img, &boot_need, why, sizeof why) != 0)
         refuse(why, NULL, "no-boot-area");
+    /* Everything this run needs from the Windows drive's FILES has been
+     * read and checked; from here to the copy, it is closed. */
+    if (g_nostick && winvol_umount(why, sizeof why) != 0)
+        refuse(why, NULL, "windows-still-open");
 
     /* ── THE WAY BACK, AND IT IS NOT OPTIONAL ──────────────────────
      *
@@ -410,16 +465,39 @@ void install_run(const stage_machine *m)
      * on one laptop and a gigabyte on the next. The copy itself is
      * made last, further down. */
     rescue_area rsc;
-    if (rescue_find(m, disk->name, &rsc, why, sizeof why) != 0)
-        refuse(why, "Make the AurOS memory stick again and start over.",
-               "no-rescue-area");
+    memset(&rsc, 0, sizeof rsc);
     uint64_t rsc_need = 0;
-    if (rescue_size_needed(disk, &rsc_need, why, sizeof why) != 0)
-        refuse(why, NULL, "cannot-size-rescue");
-    if (rsc_need > rsc.part_bytes)
-        refuse("The AurOS memory stick does not have room to save this "
-               "computer's Windows startup.",
-               "Make the stick again on a larger drive.", "rescue-too-small");
+    if (g_nostick) {
+        /* NO STICK: THE COPY IS HELD IN MEMORY until the shrink has made
+         * room for it on this disk, and written there before anything
+         * else is. It is taken HERE, before the shrink, because the
+         * shrink rewrites the Windows volume's own boot sector -- a copy
+         * made afterwards would remember the smaller size, and "put
+         * Windows back" would put back a smaller Windows. */
+        if (rescue_size_needed(disk, &rsc_need, why, sizeof why) != 0)
+            refuse(why, NULL, "cannot-size-rescue");
+        uint64_t avail = stage_mem_available();
+        if (!avail || rsc_need + (256ull << 20) > avail)
+            refuse("This computer does not have enough memory to hold a copy "
+                   "of its Windows startup while AurOS is installed without "
+                   "a memory stick.",
+                   "Install with a memory stick instead.", "no-memory");
+        snprintf(rsc.dev, sizeof rsc.dev, "/run/aurstage/saved.bin");
+        rsc.part_off = 0;
+        rsc.part_bytes = rsc_need;
+        if (wr_scratch(rsc.dev, rsc_need, why, sizeof why) != 0)
+            refuse(why, "Install with a memory stick instead.", "no-memory");
+    } else {
+        if (rescue_find(m, disk->name, &rsc, why, sizeof why) != 0)
+            refuse(why, "Make the AurOS memory stick again and start over.",
+                   "no-rescue-area");
+        if (rescue_size_needed(disk, &rsc_need, why, sizeof why) != 0)
+            refuse(why, NULL, "cannot-size-rescue");
+        if (rsc_need > rsc.part_bytes)
+            refuse("The AurOS memory stick does not have room to save this "
+                   "computer's Windows startup.",
+                   "Make the stick again on a larger drive.", "rescue-too-small");
+    }
 
     /* The table, and the plan. */
     int dfd = open(diskdev, O_RDONLY | O_CLOEXEC);
@@ -528,6 +606,34 @@ void install_run(const stage_machine *m)
         give_up(why, NULL, "disk-not-writable", 1);
     uint64_t root_off = L.root_first * (uint64_t)ss;
     uint64_t root_end = (L.root_last + 1) * (uint64_t)ss;
+    /* NO STICK: THE WAY BACK GOES ONTO THIS DISK FIRST, before a single
+     * byte of AurOS, into the space the shrink has just freed and the
+     * commit will make a partition of. Until it is there and read back
+     * there is no copy of this machine's startup anywhere but in memory
+     * -- which is why a failure here stops the install rather than
+     * warning about it, as the stick mode's second copy does. */
+    if (g_nostick) {
+        stage_say("%s", "");
+        stage_say("Keeping the way back on this computer, before anything "
+                  "else is written.");
+        rescue_payload rp0;
+        if (wr_arm(&t, WR_MIRROR, L.rsc_first * (uint64_t)ss,
+                   (L.rsc_last + 1) * (uint64_t)ss, why, sizeof why) != 0 ||
+            rescue_open(&rsc, &rp0, why, sizeof why) != 0 ||
+            rescue_mirror(&t, &rsc, &rp0, L.rsc_first * (uint64_t)ss,
+                          why, sizeof why) != 0)
+            give_up(why, "The Windows drive is smaller but still works.",
+                    "saved-copy-failed", 1);
+        wr_disarm(&t, WR_MIRROR);
+        stage_say("saved    the way back is on this computer, read back and "
+                  "checked");
+        fault_maybe("mirror-end");
+        /* And the Windows drive again, read-only, to copy AurOS out of
+         * it into space outside it. */
+        if (winvol_mount(windev, winroot, sizeof winroot, why, sizeof why) != 0)
+            give_up(why, "The Windows drive is smaller but still works.",
+                    "windows-unreadable", 1);
+    }
     if (wr_arm(&t, WR_ROOT, root_off, root_end, why, sizeof why) != 0)
         give_up(why, NULL, "cannot-arm", 1);
 
@@ -560,6 +666,9 @@ void install_run(const stage_machine *m)
     fprintf(stderr, "\n");
     step(REC_BOOT_END, NULL);
     fault_maybe("boot-end");
+    if (g_nostick && winvol_umount(why, sizeof why) != 0)
+        give_up(why, "The Windows drive is smaller but still works.",
+                "windows-still-open", 1);
 
     /* ── phase 7 ─────────────────────────────────────────────────── */
     stage_say("%s", "");
@@ -665,19 +774,23 @@ void install_run(const stage_machine *m)
      * is installed and working at this point, and the copy that
      * matters -- the one that survives this disk failing -- is on the
      * stick either way. */
-    stage_say("Keeping a copy of the way back on this computer too.");
-    rescue_payload rp;
-    if (wr_arm(&t, WR_MIRROR, L.rsc_first * (uint64_t)ss,
-               (L.rsc_last + 1) * (uint64_t)ss, why, sizeof why) != 0 ||
-        rescue_open(&rsc, &rp, why, sizeof why) != 0 ||
-        rescue_mirror(&t, &rsc, &rp, L.rsc_first * (uint64_t)ss,
-                      why, sizeof why) != 0)
-        stage_warn("the copy of the way back could not be kept on this "
-                   "computer (%s). The one on the memory stick is fine; "
-                   "keep the stick.", why);
-    else
-        stage_say("saved    a second copy is on this computer");
-    wr_disarm(&t, WR_MIRROR);
+    /* In the no-stick mode it is already there: it went down before
+     * the image did, and was the only copy until then. */
+    if (!g_nostick) {
+        stage_say("Keeping a copy of the way back on this computer too.");
+        rescue_payload rp;
+        if (wr_arm(&t, WR_MIRROR, L.rsc_first * (uint64_t)ss,
+                   (L.rsc_last + 1) * (uint64_t)ss, why, sizeof why) != 0 ||
+            rescue_open(&rsc, &rp, why, sizeof why) != 0 ||
+            rescue_mirror(&t, &rsc, &rp, L.rsc_first * (uint64_t)ss,
+                          why, sizeof why) != 0)
+            stage_warn("the copy of the way back could not be kept on this "
+                       "computer (%s). The one on the memory stick is fine; "
+                       "keep the stick.", why);
+        else
+            stage_say("saved    a second copy is on this computer");
+        wr_disarm(&t, WR_MIRROR);
+    }
     wr_close(&t);
 
     /* From here Windows is still bootable -- its partition entry

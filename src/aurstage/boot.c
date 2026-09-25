@@ -65,6 +65,25 @@ int stage_cmdline_value(const char *key, char *out, size_t n)
     return i ? 0 : -1;
 }
 
+/* How much memory the kernel says could be had, in bytes, out of
+ * /proc/meminfo's MemAvailable. 0 when it will not say, which every
+ * caller treats as "not enough": the one that asks is about to hold a
+ * copy of this machine's startup in memory and nowhere else. */
+uint64_t stage_mem_available(void)
+{
+    int fd = open("/proc/meminfo", O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return 0;
+    char buf[4096];
+    ssize_t k = read(fd, buf, sizeof buf - 1);
+    close(fd);
+    if (k <= 0) return 0;
+    buf[k] = 0;
+    const char *p = strstr(buf, "MemAvailable:");
+    if (!p) return 0;
+    unsigned long long kb = strtoull(p + 13, NULL, 10);
+    return (uint64_t)kb * 1024;
+}
+
 /* ── saying things ───────────────────────────────────────────────── */
 
 static int log_fd = -1;

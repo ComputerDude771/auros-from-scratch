@@ -473,6 +473,12 @@ note "$n_lib libraries"
 # find a block device is a small fraction of that, and the budget is
 # an ESP that is commonly 100 MB and nearly full.
 #
+# ntfs3 is in it for ONE path: the no-stick mode reads the AurOS image
+# out of \AurOS\ on the Windows drive, through a read-only mount made
+# by src/aurstage/winvol.c and nowhere else. boot.c still never loads
+# it; a module that is only ever loaded on purpose is not mounted by
+# accident.
+#
 # VMD is in this list for a specific reason: on Intel RST machines the
 # disk is invisible without it, and "this computer has no disk" is the
 # worst possible thing to tell somebody about a computer they are
@@ -491,6 +497,7 @@ kernel/drivers/virtio
 kernel/fs/ext4
 kernel/fs/fat
 kernel/fs/nls
+kernel/fs/ntfs3
 kernel/lib
 kernel/crypto
 "

@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/stat.h>
 
 #include "image.h"
 #include "gpt.h"
@@ -88,7 +89,7 @@ static int img_part_by_type(const image_src *s, const uint8_t type[16],
         snprintf(why, n, "the AurOS image describes an impossible disk");
         goto out;
     }
-    if (read_at(fd, h, ss, s->part_off + MAN_BYTES + ss) != 0 ||
+    if (read_at(fd, h, ss, image_base_off(s) + ss) != 0 ||
         memcmp(h, "EFI PART", 8) != 0) {
         snprintf(why, n, "the AurOS image does not look like an AurOS image");
         goto out;
@@ -113,7 +114,7 @@ static int img_part_by_type(const image_src *s, const uint8_t type[16],
     uint8_t *arr = malloc((size_t)num * esz);
     if (!arr) { snprintf(why, n, "out of memory reading the AurOS image"); goto out; }
     if (read_at(fd, arr, (size_t)num * esz,
-                s->part_off + MAN_BYTES + plba * ss) != 0) {
+                image_base_off(s) + plba * ss) != 0) {
         free(arr);
         snprintf(why, n, "the AurOS image's own table could not be read");
         goto out;
@@ -179,7 +180,7 @@ static int cross_check(const image_src *s, char *why, size_t n)
 }
 
 uint64_t image_base_off(const image_src *s)
-{ return s->part_off + MAN_BYTES; }
+{ return s->img_base; }
 
 int image_esp_extent(const image_src *s, uint64_t *off, uint64_t *len,
                      char *why, size_t n)
@@ -249,6 +250,7 @@ int image_find(const stage_machine *m, const char *want_profile,
                     >= sizeof c.dev)
                 continue;               /* refused, not truncated */
             c.part_off = poff;
+            c.img_base = poff + MAN_BYTES;
             c.image_bytes  = rd64(man + 8);
             c.root_off     = rd64(man + 16);
             c.root_len     = rd64(man + 24);
@@ -325,6 +327,111 @@ int image_find(const stage_machine *m, const char *want_profile,
     return -1;
 }
 
+/* ── THE NO-STICK MODE: the image is a file on the Windows drive ─────
+ *
+ * image.h says at length why the image lives on the stick and not on
+ * C:, and every word of it is still true. This is for the person who
+ * has no stick and has been told what that costs: AurBridge downloads
+ * the image to \AurOS\ on the Windows drive, writes the same 4096-byte
+ * manifest beside it as a file of its own, and the staging environment
+ * reads both through a READ-ONLY mount of that drive (winvol.c).
+ *
+ * Nothing about what is checked changes. The manifest is the same
+ * bytes, its offsets are cross-checked against the image's own table
+ * the same way, and the root and boot extents are hashed before the
+ * shrink exactly as they are on a stick. What changes is where the
+ * bytes come from, which is why this is a second finder and not a
+ * branch inside the first one. */
+int image_find_file(const char *img_path, const char *man_path,
+                    const char *want_profile, image_src *out,
+                    char *why, size_t n)
+{
+    memset(out, 0, sizeof *out);
+    int mf = open(man_path, O_RDONLY | O_CLOEXEC);
+    if (mf < 0) {
+        snprintf(why, n, "the copy of AurOS the installer left on the Windows "
+                         "drive is not there any more.");
+        return -1;
+    }
+    uint8_t man[MAN_BYTES];
+    int ok = read_at(mf, man, sizeof man, 0) == 0;
+    close(mf);
+    if (!ok || memcmp(man, MAN_MAGIC, 8) != 0) {
+        snprintf(why, n, "the description of the copy of AurOS on the Windows "
+                         "drive is damaged.");
+        return -1;
+    }
+    int f = open(img_path, O_RDONLY | O_CLOEXEC);
+    if (f < 0) {
+        snprintf(why, n, "the copy of AurOS the installer left on the Windows "
+                         "drive is not there any more.");
+        return -1;
+    }
+    struct stat st;
+    int have_st = fstat(f, &st) == 0 && S_ISREG(st.st_mode);
+    close(f);
+    if (!have_st) {
+        snprintf(why, n, "the copy of AurOS on the Windows drive could not be "
+                         "measured.");
+        return -1;
+    }
+
+    image_src c;
+    memset(&c, 0, sizeof c);
+    if ((size_t)snprintf(c.dev, sizeof c.dev, "%s", img_path) >= sizeof c.dev) {
+        snprintf(why, n, "the copy of AurOS on the Windows drive has a name "
+                         "too long to use safely.");
+        return -1;
+    }
+    c.from_file    = 1;
+    c.part_off     = 0;
+    c.img_base     = 0;
+    c.image_bytes  = rd64(man + 8);
+    c.root_off     = rd64(man + 16);
+    c.root_len     = rd64(man + 24);
+    c.image_sector = rd32(man + 32);
+    memcpy(c.root_sha, man + 36, 32);
+    c.have_sha = 1;
+    c.esp_off = rd64(man + 132);
+    c.esp_len = rd64(man + 140);
+    memcpy(c.esp_sha, man + 148, 32);
+    for (int q = 0; q < 32; q++)
+        if (c.esp_sha[q]) { c.have_esp_sha = 1; break; }
+    memcpy(c.profile, man + 68, 63);
+    c.profile[63] = 0;
+
+    if (want_profile && want_profile[0] && strcmp(want_profile, c.profile) != 0) {
+        snprintf(why, n, "the copy of AurOS on the Windows drive is for a "
+                         "different version of AurOS.");
+        return -1;
+    }
+    /* THE FILE IS THE BOUND here, the way the partition is on a stick.
+     * A manifest that claims more image than the file holds is a
+     * half-finished download that somebody renamed, or ours, wrong. */
+    if (c.image_bytes == 0 || c.image_bytes > (uint64_t)st.st_size) {
+        snprintf(why, n, "the copy of AurOS on the Windows drive is "
+                         "incomplete. Run the installer in Windows again and "
+                         "it will finish downloading it.");
+        return -1;
+    }
+    if (!c.root_len || c.root_off > c.image_bytes ||
+        c.root_len > c.image_bytes - c.root_off) {
+        snprintf(why, n, "the copy of AurOS on the Windows drive describes an "
+                         "image that does not fit inside itself.");
+        return -1;
+    }
+    if (cross_check(&c, why, n) != 0) return -1;
+    *out = c;
+    return 0;
+}
+
+/* Where the bytes are, in the words a refusal uses. */
+static const char *src_words(const image_src *s)
+{
+    return s->from_file ? "the copy of AurOS on the Windows drive"
+                        : "the AurOS memory stick";
+}
+
 /* Hash a region of a file. */
 static int hash_region(const char *dev, uint64_t off, uint64_t len,
                        unsigned char out[32], void (*progress)(int))
@@ -359,18 +466,27 @@ int image_verify(const image_src *s, void (*progress)(int), char *why, size_t n)
         return -1;
     }
     unsigned char got[32];
-    if (hash_region(s->dev, s->part_off + MAN_BYTES + s->root_off,
+    if (hash_region(s->dev, image_base_off(s) + s->root_off,
                     s->root_len, got,
                     progress) != 0) {
-        snprintf(why, n,
-                 "the AurOS memory stick could not be read all the way "
-                 "through. It may be faulty, or it may have been unplugged.");
+        if (s->from_file)
+            snprintf(why, n, "%s could not be read all the way through.",
+                     src_words(s));
+        else
+            snprintf(why, n,
+                     "the AurOS memory stick could not be read all the way "
+                     "through. It may be faulty, or it may have been unplugged.");
         return -1;
     }
     if (memcmp(got, s->root_sha, 32) != 0) {
-        snprintf(why, n,
-                 "the copy of AurOS on the memory stick is damaged. It will "
-                 "need to be written again.");
+        if (s->from_file)
+            snprintf(why, n, "%s is damaged. Delete the AurOS folder on the "
+                             "Windows drive and run the installer again.",
+                     src_words(s));
+        else
+            snprintf(why, n,
+                     "the copy of AurOS on the memory stick is damaged. It will "
+                     "need to be written again.");
         return -1;
     }
 
@@ -398,17 +514,15 @@ int image_verify(const image_src *s, void (*progress)(int), char *why, size_t n)
                  "Make it again.");
         return -1;
     }
-    if (hash_region(s->dev, s->part_off + MAN_BYTES + s->esp_off,
+    if (hash_region(s->dev, image_base_off(s) + s->esp_off,
                     s->esp_len, got, NULL) != 0) {
-        snprintf(why, n,
-                 "the AurOS memory stick could not be read all the way "
-                 "through. It may be faulty, or it may have been unplugged.");
+        snprintf(why, n, "%s could not be read all the way through.",
+                 src_words(s));
         return -1;
     }
     if (memcmp(got, s->esp_sha, 32) != 0) {
-        snprintf(why, n,
-                 "the part of the memory stick that starts a computer is "
-                 "damaged. It will need to be written again.");
+        snprintf(why, n, "the part of %s that starts a computer is damaged. "
+                         "It will need to be made again.", src_words(s));
         return -1;
     }
     return 0;
@@ -424,11 +538,11 @@ int image_write_root(wr_target *t, const image_src *s, uint64_t dst_off,
     }
     int fd = open(s->dev, O_RDONLY | O_CLOEXEC);
     if (fd < 0) {
-        snprintf(why, n, "the AurOS memory stick could not be read");
+        snprintf(why, n, "%s could not be read", src_words(s));
         return -1;
     }
     static unsigned char src[CH];
-    uint64_t base = s->part_off + MAN_BYTES + s->root_off;
+    uint64_t base = image_base_off(s) + s->root_off;
     int rc = -1;
     int last = -1;
 
@@ -443,9 +557,8 @@ int image_write_root(wr_target *t, const image_src *s, uint64_t dst_off,
     for (uint64_t at = HOLD; at < s->root_len; ) {
         size_t take = s->root_len - at > CH ? CH : (size_t)(s->root_len - at);
         if (read_at(fd, src, take, base + at) != 0) {
-            snprintf(why, n,
-                     "the AurOS memory stick stopped responding partway "
-                     "through. Nothing on the Windows drive has been touched.");
+            snprintf(why, n, "%s stopped responding partway through.",
+                     src_words(s));
             goto out;
         }
         if (wr_bytes(t, WR_ROOT, dst_off + at, src, take, why, n) != 0) goto out;
@@ -470,14 +583,14 @@ int image_write_root(wr_target *t, const image_src *s, uint64_t dst_off,
     /* The first megabyte is not there yet, so the hash takes it from
      * the source; the verification below covers it when it lands. */
     if (read_at(fd, src, HOLD, base) != 0) {
-        snprintf(why, n, "the AurOS memory stick stopped responding");
+        snprintf(why, n, "%s stopped responding", src_words(s));
         goto out;
     }
     sha256_feed(&h, src, HOLD);
     for (uint64_t at = HOLD; at < s->root_len; ) {
         size_t take = s->root_len - at > CH ? CH : (size_t)(s->root_len - at);
         if (read_at(fd, src, take, base + at) != 0) {
-            snprintf(why, n, "the AurOS memory stick stopped responding");
+            snprintf(why, n, "%s stopped responding", src_words(s));
             goto out;
         }
         uint64_t bad = 0;
@@ -511,7 +624,7 @@ int image_write_root(wr_target *t, const image_src *s, uint64_t dst_off,
     /* 4. AND ONLY NOW THE FIRST MEGABYTE. After this the region is a
      *    filesystem. */
     if (read_at(fd, src, HOLD, base) != 0) {
-        snprintf(why, n, "the AurOS memory stick stopped responding");
+        snprintf(why, n, "%s stopped responding", src_words(s));
         goto out;
     }
     if (wr_bytes(t, WR_ROOT, dst_off, src, HOLD, why, n) != 0) goto out;

@@ -115,6 +115,7 @@ int journal_read(const char *path, journal *j)
             STR("stage",        stage)
             STR("boot_from",    boot_from)
             STR("profile",      profile)
+            STR("image_on",     image_on)
             #undef STR
         } else {
             char *end = NULL;
