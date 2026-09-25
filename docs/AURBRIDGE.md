@@ -302,6 +302,14 @@ shipped build this compares a constant with itself. The wire is here and
 the refusal is real the moment there is more than one image within
 reach; the picker is on the list, not in the tree.
 
+**And what she chose.** Phase 3 also writes `\EFI\AurOS\choices.conf`
+-- the language, keyboard, time zone, look and desktop from the
+personalize page, as values (`ab_choice` in `phases.h` has the forms) --
+and AurOS's first boot applies it (`rootfs/usr/lib/auros/choices.sh`).
+The EFI partition is the one place both sides of the restart can reach
+that the install leaves as it found it. A value the installed system
+does not have is reported and skipped; the file is never sourced.
+
 `BootOrder` is only rewritten in phase 10, after the user confirms.
 
 ## Making the machine able to start AurOS (phase 8a)

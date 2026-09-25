@@ -305,11 +305,9 @@ image. A network that allows Firefox. A legal entity. And the thing none
 of the above can substitute for: a real, old, dusty PC with a real
 firmware and a real disk that lies about having flushed.
 
-It is not *only* not code, and this paragraph used to say it was. Five
+It is not *only* not code, and this paragraph used to say it was. Four
 things in the product are still missing or wrong, and `docs/RELEASE.md`
 lists them with the rest: the wizard has no screen-reader support; it
 has no page to choose a memory stick on, so today it installs only in
 the no-stick mode; "Put Windows back" works but nothing a person can
-press starts it; the language, keyboard, time zone, theme and desktop
-chosen in the wizard do not reach the installed system; and the Windows
-half has never run on Windows.
+press starts it; and the Windows half has never run on Windows.

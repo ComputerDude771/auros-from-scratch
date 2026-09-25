@@ -186,10 +186,12 @@ true on this commit:
   copy on the disk), but no menu entry and no button in AurOS starts
   it. The wizard no longer promises one; it needs a start-up menu
   entry and a settings button.
-- **The wizard's choices do not reach the installed system.** Language,
-  keyboard, time zone, theme and desktop layout are asked for and then
-  dropped: the journal carries only the profile. (Ferry does bring the
-  keyboard and time zone across from Windows at first boot.)
+- **AurOS's own text is English only.** The language chosen in the
+  installer now reaches the installed system (below), and sets the
+  locale -- dates, numbers, sorting -- and every application that ships
+  its own translations. The shell's own words, and applications whose
+  translations Ubuntu moves into separate language packs, stay English
+  until those packs are installed.
 - **The staging environment has no screen of its own.** It speaks on
   the console, which is readable but is not the progress display the
   design calls for.
@@ -216,6 +218,16 @@ would have stopped the first real install:
   the recorded hash (which includes the disk's own GUID); two such
   disks are a refusal. `tools/nosticktest.sh` installs with the two
   serials deliberately different.
+- **Nothing chosen on the personalize page reached AurOS.** Language,
+  keyboard, time zone and look were words on chips with no values
+  behind them, and the language went through as the constant `en`. Each
+  chip now carries a value; phase 3 writes them to
+  `\EFI\AurOS\choices.conf`; first boot applies them
+  (`rootfs/usr/lib/auros/choices.sh`) and records them so Ferry does
+  not overwrite them. On the way: no image had the `locales` package, so
+  `LANG=en_US.UTF-8` named a locale that did not exist, and Ferry wrote
+  the keyboard and language it imported from Windows to files nothing
+  reads. `tools/choicestest.sh`, `tools/choicesboottest.sh`.
 - **The last button undid the install.** After phase 3 the only button
   said *Close*, and closing the window takes the one-shot start-up
   setting back by design. It says *Restart now* and restarts, keeping
