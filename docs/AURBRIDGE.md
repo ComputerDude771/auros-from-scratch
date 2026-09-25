@@ -312,6 +312,52 @@ does not have is reported and skipped; the file is never sourced.
 
 `BootOrder` is only rewritten in phase 10, after the user confirms.
 
+### Secure Boot stays on
+
+Nobody is asked to open a firmware screen on an ordinary PC. The
+restart goes **Boot#### "AurOS Installer" → `\EFI\AurOS\shimx64.efi`**
+(Ubuntu's shim, signed by Microsoft) **→ `grubx64.efi`** (Canonical's,
+verified by shim) **→ the staging kernel** (Canonical's, verified by
+grub), with `\EFI\AurOS\grub.cfg` beside grub giving it
+`aurstage.install`. Nothing is enrolled: there is no MOK, no blue
+screen, and no key of AurOS's own anywhere in the chain.
+
+**Only under `\EFI\AurOS` (R12).** Canonical's grub has `/EFI/ubuntu`
+baked in as its prefix, and an earlier build wrote its configuration
+there too -- and refused any PC where a real Ubuntu already kept one.
+Neither was needed: loaded from `\EFI\AurOS`, that grub reads the
+`grub.cfg` beside itself first, even with a real `\EFI\ubuntu\grub.cfg`
+present. `tools/nosticktest.sh` puts one there (pointing at a partition
+that does not exist, so reading it would stop the install) and installs
+under Secure Boot anyway, leaving it byte-for-byte alone.
+
+**Does this PC trust the key?** Almost every PC sold with Windows
+trusts the key shim is signed with, **Microsoft Corporation UEFI CA
+2011**. Two kinds do not, and on them the firmware would refuse shim at
+the restart, spend `BootNext`, and start Windows with nothing installed
+and nothing said. So preflight reads the firmware's `db` and `dbx` from
+Windows (`GetFirmwareEnvironmentVariable`, what `Get-SecureBootUEFI`
+reads) and asks (`src/aurbridge/sbdb.c`):
+
+| What the firmware lists | What the installer says |
+|---|---|
+| the key shim is signed with | nothing needs changing (PASS) |
+| no third-party key at all -- some Secured-core PCs (Surface, Lenovo) | **stop**, before anything changes: *This PC is set to start only Windows*, with the way into the firmware from Windows and a drawing of the one setting, **Allow Microsoft 3rd Party UEFI CA** (Surface: *Microsoft & 3rd party CA*; Dell: *Enable Microsoft UEFI CA*). Secure Boot stays on. |
+| Microsoft's **2023** third-party key but not the 2011 one, or the 2011 key revoked in `dbx` | **stop**: *This PC needs a newer AurOS installer*. There is no setting to change; Ubuntu's "dualsigned" shim carries Canonical's signature and Microsoft's 2011 one, not the 2023 one. |
+| could not be read | an INFO line, not a stop: such a PC almost always trusts the key, and one that does not starts Windows again with the drive untouched |
+
+The name of the key is not written in the source. `build/aurbridge`
+reads it off the shim it embeds (`sbverify --list`) and bakes it in, so a
+shim signed with Microsoft's 2023 key is checked for that key.
+
+**Under lockdown.** With Secure Boot on, the Ubuntu kernel locks itself
+down: unsigned modules are refused and some ways into kernel memory
+are shut. The staging environment prints `secure   Secure Boot on;
+kernel lockdown integrity` on its first screen, and
+`tools/nosticktest.sh` asks what actually happened under it: the NTFS
+reader (a module) loaded, the disk was written raw, and EFI variables
+were written (AurOS's entry in, the installer's out).
+
 ## Making the machine able to start AurOS (phase 8a)
 
 The phases above shrink Windows, write AurOS, verify it, commit a new

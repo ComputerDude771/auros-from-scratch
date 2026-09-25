@@ -778,6 +778,54 @@ int plat_boot_next_clear(char *why, size_t wn)
     return 0;
 }
 
+/* ── Secure Boot ─────────────────────────────────────────────────── */
+
+int plat_secure_boot(void)
+{
+    HKEY k;
+    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE,
+                      "SYSTEM\\CurrentControlSet\\Control\\SecureBoot\\State",
+                      0, KEY_READ | KEY_WOW64_64KEY, &k) != ERROR_SUCCESS)
+        return -1;
+    DWORD v = 0, type = 0, sz = sizeof v;
+    LONG rc = RegQueryValueExA(k, "UEFISecureBootEnabled", NULL, &type,
+                               (BYTE *)&v, &sz);
+    RegCloseKey(k);
+    if (rc != ERROR_SUCCESS || type != REG_DWORD) return -1;
+    return v ? 1 : 0;
+}
+
+/* db and dbx live under EFI_IMAGE_SECURITY_DATABASE_GUID, not the
+ * global GUID the boot variables use: what Get-SecureBootUEFI db reads.
+ * A real one is a few kilobytes (dbx can reach twenty); the caller's
+ * buffer is 64. */
+int plat_efi_sigdb(const char *name, unsigned char *buf, size_t cap,
+                   size_t *got, char *why, size_t wn)
+{
+    *got = 0;
+    const wchar_t *wname = !strcmp(name, "db")  ? L"db"
+                         : !strcmp(name, "dbx") ? L"dbx" : NULL;
+    if (!wname) {
+        snprintf(why, wn, "no such list");
+        return -1;
+    }
+    if (enable_env_privilege() != 0) {
+        snprintf(why, wn, "Windows would not let the installer read the "
+                          "firmware's settings");
+        return -1;
+    }
+    DWORD k = GetFirmwareEnvironmentVariableW(
+        wname, L"{d719b2cb-3d3a-4596-a3bc-dad00e67656f}", buf,
+        cap > 0xFFFFFFFFu ? 0xFFFFFFFFu : (DWORD)cap);
+    if (k == 0) {
+        why_of(why, wn, "the firmware's list of trusted keys could not be "
+                        "read", GetLastError());
+        return -1;
+    }
+    *got = k;
+    return 0;
+}
+
 /* ── the EFI device path, built by hand ──────────────────────────── */
 /*
  * SHORT-FORM HARD DRIVE, THEN FILE, THEN END, which is what

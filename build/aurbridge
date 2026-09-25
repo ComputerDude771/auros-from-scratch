@@ -125,6 +125,37 @@ BAKED="$OUT/aurbridge-baked.h"
     fi
     printf '    ""\n'
 } > "$BAKED"
+
+# ── which Microsoft key the shim is signed with ────────────────────
+#
+# Preflight asks the firmware's db whether it trusts that key before
+# anything is changed (src/aurbridge/sbdb.h): a Secured-core PC that
+# trusts only Windows would otherwise refuse shim at the restart and
+# install nothing. The names are read off the shim itself, so a shim
+# signed with Microsoft's 2023 key is checked for that key.
+SHIM_CAS=""
+if [ -f "$SHIMEFI" ] && command -v sbverify >/dev/null 2>&1; then
+    SHIM_CAS=$(sbverify --list "$SHIMEFI" 2>/dev/null |
+        sed -n 's|^ *- subject: .*/CN=\(Microsoft[^/]*UEFI CA[^/]*\)$|\1|p' | sort -u)
+fi
+if [ -n "$SHIM_CAS" ] && printf '%s\n' "$SHIM_CAS" | LC_ALL=C grep -q '[^A-Za-z0-9 .-]'; then
+    die "the shim's signer has a name this build will not put into C: $SHIM_CAS"
+fi
+{
+    printf '#define AUROS_SHIM_CAS \\\n'
+    printf '%s\n' "$SHIM_CAS" | while IFS= read -r ca; do
+        [ -n "$ca" ] && printf '    "%s\\n" \\\n' "$ca"
+    done
+    printf '    ""\n'
+} >> "$BAKED"
+if [ -n "$SHIM_CAS" ]; then
+    note "Secure Boot: preflight checks the firmware trusts $(printf '%s' "$SHIM_CAS" | tr '\n' ',' | sed 's/,$//')"
+elif [ "${AUROS_RELEASE:-0}" = 1 ]; then
+    die "cannot tell which Microsoft key $SHIMEFI is signed with (is sbverify
+     installed?), so preflight could not check a Secure Boot PC trusts it"
+else
+    note "Secure Boot: no signed shim to read; a PC with it on is refused"
+fi
 [ -n "${AUROS_IMAGE_PIECES:-}" ] && \
     note "the image is fetched in $(grep -c '^piece ' "$AUROS_IMAGE_PIECES") pieces"
 
@@ -190,7 +221,7 @@ fi
 
 step "aurbridge.exe (console)"
 # shellcheck disable=SC2086
-$CC -O2 $WARN $IMGDEF -o "$OUT/aurbridge.exe" "$SRC/main.c" $LIB $PAYLOAD_OBJ \
+$CC -O2 $WARN $IMGDEF -I "$OUT" -o "$OUT/aurbridge.exe" "$SRC/main.c" $LIB $PAYLOAD_OBJ \
     -lwinhttp \
     || die "the console tool did not build"
 note "$(du -h "$OUT/aurbridge.exe" | cut -f1)"
@@ -215,9 +246,9 @@ step "aurbridge-sim (not shipped)"
 HOSTCC="${HOSTCC:-cc}"
 if command -v "$HOSTCC" >/dev/null 2>&1; then
     SIMLIB=""
-    for f in "$SRC"/format.c "$SRC"/phases.c "$SRC"/inflate.c; do SIMLIB="$SIMLIB $f"; done
+    for f in "$SRC"/format.c "$SRC"/phases.c "$SRC"/inflate.c "$SRC"/sbdb.c; do SIMLIB="$SIMLIB $f"; done
     # shellcheck disable=SC2086
-    $HOSTCC -O2 $WARN -o "$OUT/aurbridge-sim" $SIMLIB $SIMONLY \
+    $HOSTCC -O2 $WARN -I "$OUT" -o "$OUT/aurbridge-sim" $SIMLIB $SIMONLY \
         || die "the simulation did not build"
     note "$(du -h "$OUT/aurbridge-sim" | cut -f1)"
 else

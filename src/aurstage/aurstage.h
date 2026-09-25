@@ -177,6 +177,8 @@ int  stage_cmdline_value(const char *key, char *out, size_t n);
 
 /* MemAvailable, in bytes; 0 if the kernel will not say. */
 uint64_t stage_mem_available(void);
+/* One line: Secure Boot on or off, and the kernel's lockdown mode. */
+void stage_say_secure(void);
 
 /* ── saying things ───────────────────────────────────────────────── */
 

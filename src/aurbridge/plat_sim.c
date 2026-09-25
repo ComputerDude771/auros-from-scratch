@@ -436,6 +436,49 @@ int plat_boot_next_clear(char *why, size_t wn)
     return 0;
 }
 
+/* ── Secure Boot, as a file or two ───────────────────────────────── */
+/* $AURBRIDGE_SIM/secureboot holds "1" or "0"; no file is "not known",
+ * which is what every simulated machine was before this existed.
+ * $AURBRIDGE_SIM/db.bin and dbx.bin are those variables' data, taken
+ * out of an OVMF variable store by tools/efivarstore.py. */
+int plat_secure_boot(void)
+{
+    char p[600];
+    simpath(p, sizeof p, "secureboot");
+    FILE *f = fopen(p, "r");
+    if (!f) return -1;
+    int c = fgetc(f);
+    fclose(f);
+    return c == '1' ? 1 : c == '0' ? 0 : -1;
+}
+
+int plat_efi_sigdb(const char *name, unsigned char *buf, size_t cap,
+                   size_t *got, char *why, size_t wn)
+{
+    char p[600], leaf[16];
+    *got = 0;
+    if (strcmp(name, "db") != 0 && strcmp(name, "dbx") != 0) {
+        snprintf(why, wn, "no such list");
+        return -1;
+    }
+    snprintf(leaf, sizeof leaf, "%s.bin", name);
+    simpath(p, sizeof p, leaf);
+    FILE *f = fopen(p, "rb");
+    if (!f) {
+        snprintf(why, wn, "the firmware would not say (no %s)", leaf);
+        return -1;
+    }
+    size_t k = fread(buf, 1, cap, f);
+    int more = fgetc(f) != EOF;
+    fclose(f);
+    if (more) {
+        snprintf(why, wn, "the firmware's list is longer than expected");
+        return -1;
+    }
+    *got = k;
+    return 0;
+}
+
 /* ── running something else ──────────────────────────────────────── */
 
 int plat_run(const char *cmdline, char *tail, size_t n)

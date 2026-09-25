@@ -7,6 +7,7 @@
 #include "preflight.h"
 #include "phases.h"
 #include "inflate.h"
+#include "sbdb.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -95,7 +96,7 @@ int main(int argc, char **argv)
      * refuse to ship broken. */
     if (!strcmp(cmd, "getimage")) return getimage(argc, argv);
     if (!strcmp(cmd, "selftest")) {
-        int bad = pf_selftest() + gz_selftest();
+        int bad = pf_selftest() + gz_selftest() + sbdb_selftest();
         if (bad == 0) puts("aurbridge selftest: ok");
         else fprintf(stderr, "aurbridge selftest: %d check%s wrong\n",
                      bad, bad == 1 ? "" : "s");

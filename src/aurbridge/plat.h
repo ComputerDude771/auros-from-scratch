@@ -237,6 +237,18 @@ int plat_boot_next(uint16_t num, char *why, size_t wn);
 /* And take it away again, for an abort before the restart. */
 int plat_boot_next_clear(char *why, size_t wn);
 
+/* Secure Boot: -1 not known, 0 off, 1 on. On Windows, what Windows
+ * itself records; in the simulation, the file secureboot ("1"). */
+int plat_secure_boot(void);
+
+/* One of the firmware's signature databases, "db" (the signers Secure
+ * Boot trusts) or "dbx" (what it has revoked), as the variable's data
+ * (src/aurbridge/sbdb.h reads them). Reading only; it needs
+ * SeSystemEnvironmentPrivilege like everything else here. In the
+ * simulation, the files db.bin and dbx.bin. */
+int plat_efi_sigdb(const char *name, unsigned char *buf, size_t cap,
+                   size_t *got, char *why, size_t wn);
+
 /* ── running something else ──────────────────────────────────────── */
 
 /* `tail` gets the last of its output, which is what an error message

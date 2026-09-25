@@ -211,12 +211,16 @@ that no amount of code replaces.
    Microsoft's signature is already on them and no submission is
    needed. `tools/loadertest.sh` proves it against
    `OVMF_CODE_4M.ms.fd` with Microsoft's keys enrolled and Secure
-   Boot enforcing. The shim is *dual*-signed — by the 2011 CA as well
-   as the 2023 one — and the 2011 CA is the one old firmware trusts,
-   which is the whole reason the chain is borrowed: the dual-signing
-   window closed in June 2026, so a distribution applying on its own
-   today gets a 2023-only shim that would not boot on exactly the
-   machines this product exists for. See `docs/SIGNING.md`.
+   Boot enforcing. Ubuntu's "dualsigned" shim is signed by Canonical
+   and by Microsoft's 2011 third-party CA -- not the 2023 one -- and the
+   2011 CA is the one old firmware trusts, which is the whole reason the
+   chain is borrowed: a distribution applying on its own today gets a
+   2023-signed shim that would not boot on exactly the machines this
+   product exists for. The installer itself restarts through the same
+   shim, so **Secure Boot stays on**; a PC whose firmware does not trust
+   that key (a Secured-core PC with third-party keys off, or one listing
+   only the 2023 key) is found from Windows, before anything changes.
+   See `docs/SIGNING.md` and `docs/AURBRIDGE.md`.
 2. **Code signing — still a purchase.** An unsigned `.exe` gets
    SmartScreen's full-screen panel whose only visible button says
    *Don't run*. For an audience defined as non-technical that is

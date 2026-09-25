@@ -52,6 +52,7 @@
 #include <math.h>
 
 #include "preflight.h"
+#include "sbdb.h"
 #include "phases.h"
 
 /* Baked in by build/aurbridge. A build that has not been told where
@@ -890,7 +891,8 @@ CHK[] = {
   { L"Permission to make changes", L"AurBridge must run as an administrator",
     { "not-elevated", NULL } },
   { L"How this PC starts up", L"UEFI start-up, and Secure Boot",
-    { "firmware-uefi", "firmware-bios", "secure-boot-on", NULL } },
+    { "firmware-uefi", "firmware-bios", "secure-boot-on", "secure-boot-off",
+      SBDB_BLOCK_ID, "secure-boot-unsigned-build", NULL } },
   { L"Power", L"Plugged in, with charge to spare",
     { "not-on-ac", "battery-low", NULL } },
   { L"Windows updates", L"Nothing half-installed and waiting for a restart",
@@ -1742,6 +1744,96 @@ static int page_checking(int x, int y, int w)
  *  and the one thing they can do about it. There is no continue button,
  *  no "advanced", no override, and nav_allowed() would refuse one anyway.
  * ═══════════════════════════════════════════════════════════════════ */
+/* THE ONE SETTING, DRAWN. A refusal whose remedy is a screen the
+ * person has never seen needs more than a sentence, so the Secure Boot
+ * card carries a sketch: the way there from Windows, and the firmware's
+ * own screen with the one line to change marked. Every maker's screen
+ * is a little different; the sketch uses the commonest words and the
+ * card's text names the others. draw=0 measures only. */
+static int sb_figure(int x, int y, int w, int draw)
+{
+    static const wchar_t *const way[] = {
+        L"Settings", L"System", L"Recovery", L"Advanced startup: Restart now",
+        L"Troubleshoot", L"Advanced options", L"UEFI Firmware Settings",
+    };
+    const int nway = (int)(sizeof way / sizeof way[0]);
+    int y0 = y;
+    int chip_h = S(26), pad = S(10), gap = S(8);
+    int sep_w = text_w(L"\u203A", g_f_small) + S(10);
+
+    if (draw) text_draw(L"THE WAY THERE, FROM WINDOWS", g_f_tiny, C_WARM,
+                        x, y, w, DT_SINGLELINE);
+    y += S(16) + S(6);
+    int cx = x;
+    for (int i = 0; i < nway; i++) {
+        int cw = text_w(way[i], g_f_small) + pad * 2;
+        if (cx > x && cx + cw > x + w) { cx = x; y += chip_h + gap; }
+        if (draw) {
+            int last = i == nway - 1;
+            fill_rr((float)cx, (float)y, (float)cw, (float)chip_h, (float)S(8),
+                    C_SURFACE, 0.95f);
+            if (last)
+                stroke_rr((float)cx, (float)y, (float)cw, (float)chip_h,
+                          (float)S(8), 1.2f, C_WARM, 0.85f);
+            RECT b = { cx, y, cx + cw, y + chip_h };
+            text_in(way[i], g_f_small, last ? C_WARM : C_FG_HI, b,
+                    DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+            if (i < nway - 1) {
+                RECT sb = { cx + cw, y, cx + cw + sep_w, y + chip_h };
+                text_in(L"\u203A", g_f_small, C_SUBTLE, sb,
+                        DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+            }
+        }
+        cx += cw + sep_w;
+    }
+    y += chip_h + S(18);
+
+    if (draw) text_draw(L"THEN, ON THE PC'S OWN SETTINGS SCREEN", g_f_tiny, C_WARM,
+                        x, y, w, DT_SINGLELINE);
+    y += S(16) + S(6);
+    int row = S(30), sw = w > S(560) ? S(560) : w;
+    int sh = row * 4 + S(10);
+    if (draw) {
+        fill_rr((float)x, (float)y, (float)sw, (float)sh, (float)S(6), C_BG, 1.f);
+        stroke_rr((float)x, (float)y, (float)sw, (float)sh, (float)S(6), 1.f,
+                  C_OVERLAY, 1.f);
+        fill_rr((float)x + 1.f, (float)y + 1.f, (float)sw - 2.f, (float)row,
+                (float)S(5), C_INFO, 0.16f);
+        RECT hb = { x + S(12), y, x + sw - S(12), y + row };
+        text_in(L"Security  \u203A  Secure Boot", g_f_smallb, C_INFO, hb,
+                DT_SINGLELINE | DT_VCENTER);
+        static const struct { const wchar_t *k, *v; int mark; } R[] = {
+            { L"Secure Boot",                        L"[Enabled]   leave it on", 0 },
+            { L"Allow Microsoft 3rd Party UEFI CA",  L"[Disabled]  \u2192  [Enabled]", 1 },
+            { L"Secure Boot Mode",                   L"[Standard]", 0 },
+        };
+        for (int i = 0; i < 3; i++) {
+            int ry = y + row * (i + 1) + S(4);
+            if (R[i].mark) {
+                fill_rr((float)(x + S(6)), (float)ry, (float)(sw - S(12)),
+                        (float)(row - S(2)), (float)S(4), C_WARM, 0.14f);
+                stroke_rr((float)(x + S(6)), (float)ry, (float)(sw - S(12)),
+                          (float)(row - S(2)), (float)S(4), 1.2f, C_WARM, 0.85f);
+            }
+            RECT kb = { x + S(16), ry, x + sw / 2 + S(40), ry + row - S(2) };
+            RECT vb = { x + sw / 2 + S(48), ry, x + sw - S(14), ry + row - S(2) };
+            text_in(R[i].k, R[i].mark ? g_f_smallb : g_f_small,
+                    R[i].mark ? C_FG_HI : C_SUBTLE, kb,
+                    DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+            text_in(R[i].v, R[i].mark ? g_f_smallb : g_f_small,
+                    R[i].mark ? C_WARM : C_SUBTLE, vb, DT_SINGLELINE | DT_VCENTER);
+        }
+    }
+    y += sh + S(10);
+    const wchar_t *cap =
+        L"A sketch: every maker's screen looks a little different. Then choose "
+        L"Save and Exit (often F10), and run this installer again. Secure Boot "
+        L"stays on.";
+    y += draw ? text_draw(cap, g_f_small, C_SUBTLE, x, y, w, DT_WORDBREAK)
+              : text_h(cap, g_f_small, w, DT_WORDBREAK);
+    return y - y0;
+}
+
 static int block_card(const pf_result *r, int x, int y, int w)
 {
     wchar_t title[128], detail[600], remedy[600], risk[16];
@@ -1764,7 +1856,10 @@ static int block_card(const pf_result *r, int x, int y, int w)
     int rh   = remedy[0]
         ? text_h(remedy, g_f_body, bw - rpad * 2, DT_WORDBREAK) + rlab + rpad * 2 + S(4)
         : 0;
-    int h = pad + th + (dh ? dh + S(8) : 0) + (rh ? rh + S(18) : 0) + pad;
+    int fig = !strcmp(r->id, SBDB_BLOCK_ID);
+    int fh  = fig ? sb_figure(tx, 0, bw, 0) : 0;
+    int h = pad + th + (dh ? dh + S(8) : 0) + (rh ? rh + S(18) : 0)
+          + (fh ? fh + S(18) : 0) + pad;
 
     fill_rr((float)x, (float)y, (float)w, (float)h, (float)S(14), C_SURFACE_HI, 0.75f);
     stroke_rr((float)x, (float)y, (float)w, (float)h, (float)S(14), 1.2f, C_ERR, 0.30f);
@@ -1784,7 +1879,9 @@ static int block_card(const pf_result *r, int x, int y, int w)
         text_draw(L"WHAT TO DO", g_f_tiny, C_WARM, tx + rpad, cy + rpad, bw, DT_SINGLELINE);
         text_draw(remedy, g_f_body, C_FG_HI, tx + rpad, cy + rpad + rlab,
                   bw - rpad * 2, DT_WORDBREAK);
+        cy += rh;
     }
+    if (fh) sb_figure(tx, cy + S(18), bw, 1);
     if (risk[0]) {
         int pw = text_w(risk, g_f_tiny) + S(16);
         int px = x + w - pad - pw;
@@ -3418,6 +3515,22 @@ static int shot_run(const char *dir)
     shot_save(dir, "2b-checking-done");
 
     if (g_report.n_block > 0) { g_page = PAGE_BLOCKED; shot_save(dir, "3-blocked"); }
+
+    /* A Secured-core PC, which trusts nothing but Windows: the one
+     * refusal that carries a picture. A fixture, judged by the same
+     * sbdb_judge() preflight calls, and put back afterwards. */
+    {
+        pf_report keep = g_report;
+        memset(&g_report, 0, sizeof g_report);
+        g_report.system_disk = -1;
+        sbdb_judge(&g_report, 1, 0, (const unsigned char *)"", 0, -1, NULL, 0,
+                   "Microsoft Corporation UEFI CA 2011\n");
+        g_page = PAGE_BLOCKED; shot_save(dir, "3b-blocked-secure-boot");
+        g_scroll[PAGE_BLOCKED] = 10000;
+        shot_save(dir, "3c-blocked-secure-boot-picture");
+        g_scroll[PAGE_BLOCKED] = 0;
+        g_report = keep;
+    }
 
     g_page = PAGE_BACKUP;   shot_save(dir, "4a-backup-empty");
     g_ack_backup = g_ack_usb = 1;

@@ -195,11 +195,38 @@ true on this commit:
 - **The staging environment has no screen of its own.** It speaks on
   the console, which is readable but is not the progress display the
   design calls for.
+- **A PC that trusts only Microsoft's 2023 third-party key cannot use
+  this installer with Secure Boot on.** Ubuntu's shim is signed with
+  the 2011 key; preflight finds such a PC from Windows and says the
+  installer is too old for it, before anything changes. What closes it
+  is a shim signed with the 2023 key (Ubuntu's, when it ships one);
+  `build/aurbridge` reads the key off whatever shim it embeds, so
+  nothing else needs to change.
 
 ### Found while making the test build, and fixed
 
 Recorded because each of them passed every test that existed, and each
 would have stopped the first real install:
+
+- **A Secured-core PC would have installed nothing, and said nothing.**
+  Some PCs (some Surface, some Lenovo) ship with Secure Boot trusting
+  Microsoft's Windows key only. The firmware refuses shim at the
+  restart, spends `BootNext` and starts Windows again. Preflight now
+  reads the firmware's `db` and `dbx` from Windows and stops first,
+  with the one setting drawn (`docs/AURBRIDGE.md`, "Secure Boot stays
+  on"). The old warning, which asked for consent to a Secure Boot PC
+  as if something might go wrong, is gone: an ordinary Secure Boot PC
+  now simply passes.
+- **A PC that dual-boots Ubuntu was refused, and every PC got a file in
+  `\EFI\ubuntu`.** The installer wrote grub's configuration where the
+  prefix baked into Canonical's grub points, and refused if a real
+  Ubuntu's was there. Loaded from `\EFI\AurOS`, that grub reads the
+  configuration beside itself first; the installer now writes only
+  under `\EFI\AurOS` (R12), and the test installs with a real Ubuntu's
+  `grub.cfg` on the same partition and leaves it alone.
+- **The documents said the shim was signed with Microsoft's 2011 and
+  2023 keys.** It is signed with Canonical's and Microsoft's 2011 key
+  (`sbverify --list`); "dualsigned" means those two. See §7.
 
 - **The restart would not have started the installer on a PC with
   Secure Boot on** -- nearly every Windows 10 and 11 PC. The boot entry

@@ -299,20 +299,40 @@ if [ -f "$MSCODE" ] && [ -f "$MSVARS" ]; then
     cp out/auros-staging-shimx64.efi "$SIM2/payload/staging-shim"
     cp out/auros-staging-grubx64.efi "$SIM2/payload/staging-grub"
     cp out/auros-staging-mmx64.efi   "$SIM2/payload/staging-mokmgr" 2>/dev/null
+    # SECURE BOOT ON, with the db Microsoft's keys ship in: preflight
+    # reads it (plat_efi_db) and must find the key shim is signed with.
+    echo 1 > "$SIM2/secureboot"
+    python3 tools/efivarstore.py "$MSVARS" get db  "$SIM2/db.bin"
+    python3 tools/efivarstore.py "$MSVARS" get dbx "$SIM2/dbx.bin"
+    # AND SOMEBODY'S UBUNTU. Canonical's grub has /EFI/ubuntu baked in as
+    # its prefix; a real Ubuntu on this PC keeps its grub.cfg there. The
+    # installer must not touch it, must not be refused because of it, and
+    # grub loaded from \EFI\AurOS must not read it -- if it did, this
+    # one would send it looking for a partition that is not there.
+    mkdir -p "$SIM2/esp/EFI/ubuntu"
+    printf "search.fs_uuid 0000-SOMEONE-ELSES root hd0,gpt9\nset prefix=(\$root)'/boot/grub'\nconfigfile \$prefix/grub.cfg\n" \
+        > "$SIM2/esp/EFI/ubuntu/grub.cfg"
+    ubuntu_sum=$(sha256sum < "$SIM2/esp/EFI/ubuntu/grub.cfg")
     AURBRIDGE_STAGING_KARGS="console=ttyS0,115200 aurstage.min_gb=1" \
         out/aurbridge-sim "$SIM2" desktop none "$TMP/win/AurOS/auros-desktop.img" \
         out/auros-staging-vmlinuz out/auros-staging.img \
         > "$TMP/sim2.out" 2> "$TMP/sim2.err"
     grep -q 'verdict=armed' "$TMP/sim2.out" \
-        && ok "AurBridge arms it through shim and grub" \
-        || bad "AurBridge arms it through shim and grub" "$(tail -3 "$TMP/sim2.err")"
+        && ok "AurBridge arms it through shim and grub, having read the db" \
+        || bad "AurBridge arms it through shim and grub, having read the db" \
+               "$(tail -3 "$TMP/sim2.err")"
     grep -q 'AurOS Installer|\\EFI\\AurOS\\shimx64.efi||' "$SIM2/efivars.txt" \
         && ok "...the entry starts shim, with no command line of its own" \
         || bad "...the entry starts shim, with no command line of its own" \
                "$(grep -a Boot "$SIM2/efivars.txt" | head -2)"
-    head -c 11 "$SIM2/esp/EFI/ubuntu/grub.cfg" 2>/dev/null | grep -q '# AurBridge' \
-        && ok "...and grub reads a configuration that says whose it is" \
-        || bad "...and grub reads a configuration that says whose it is"
+    head -c 11 "$SIM2/esp/EFI/AurOS/grub.cfg" 2>/dev/null | grep -q '# AurBridge' \
+        && ok "...and grub's configuration is beside it, saying whose it is" \
+        || bad "...and grub's configuration is beside it, saying whose it is"
+    [ "$(sha256sum < "$SIM2/esp/EFI/ubuntu/grub.cfg")" = "$ubuntu_sum" ] &&
+    [ "$(find "$SIM2/esp" -type f ! -path '*/EFI/AurOS/*' | wc -l)" = 1 ] \
+        && ok "...having written nothing outside \\EFI\\AurOS, and left Ubuntu's alone" \
+        || bad "...having written nothing outside \\EFI\\AurOS, and left Ubuntu's alone" \
+               "$(find "$SIM2/esp" -type f ! -path '*/EFI/AurOS/*')"
 
     # What AurBridge put on the EFI partition, onto this disk's EFI
     # partition -- which on a real machine is where it wrote it.
@@ -332,8 +352,8 @@ if [ -f "$MSCODE" ] && [ -f "$MSVARS" ]; then
         || bad "the start-up files are on the machine's EFI partition"
 
     # The NVRAM the Windows half would have left: the entry, and BootNext.
-    sbboot() { # disk  loader  marker  timeout  -> 0 if marker seen
-        cp "$MSVARS" "$TMP/sbvars.fd"
+    sbboot() { # disk  loader  marker  timeout  [vars]  -> 0 if marker seen
+        cp "${5:-$MSVARS}" "$TMP/sbvars.fd"
         python3 tools/efivarstore.py "$TMP/sbvars.fd" plant Boot0009 \
             "AurOS Installer" "$2" || return 2
         python3 -c "
@@ -376,6 +396,96 @@ e.plant(sys.argv[1], 'BootNext', '8be4df61-93ca-11d2-aa0d-00e098032b8c', b'\x09\
         && ok "...and the installer reported success" \
         || bad "...and the installer reported success" \
                "$(grep -a 'aurstage-report' "$TMP/fout.txt" | tail -1)"
+    [ "$(mtype -i "$TMP/sb.img@@$((P1S*512))" ::/EFI/ubuntu/grub.cfg 2>/dev/null | sha256sum)" = "$ubuntu_sum" ] \
+        && ok "...with a real Ubuntu's grub.cfg on the same partition, untouched" \
+        || bad "...with a real Ubuntu's grub.cfg on the same partition, untouched"
+
+    # UNDER LOCKDOWN. With Secure Boot on, this kernel refuses unsigned
+    # modules and shuts a few ways into its memory. The install above
+    # needed three things lockdown could have stopped; each is asked of
+    # what actually happened, not of the configuration.
+    grep -aqE "secure   Secure Boot on; kernel lockdown (integrity|confidentiality)" "$TMP/fout.txt" \
+        && ok "...with the kernel locked down, as Secure Boot makes it" \
+        || bad "...with the kernel locked down, as Secure Boot makes it" \
+               "$(grep -a 'secure  ' "$TMP/fout.txt" | tail -1)"
+    grep -aq "checking the copy of AurOS on the Windows drive" "$TMP/fout.txt" \
+        && ok "...where the NTFS reader, a module, still loaded" \
+        || bad "...where the NTFS reader, a module, still loaded" \
+               "$(grep -aiE 'ntfs|module|lockdown' "$TMP/fout.txt" | tail -3)"
+    # (the raw writes to the disk are the install itself, above)
+    if grep -aq "is in this computer's start-up menu (entry" "$TMP/fout.txt" &&
+       python3 tools/efivarstore.py "$TMP/sbvars.fd" entry "AurOS" > "$TMP/sbentry.txt" &&
+       grep -qi 'path=.*shimx64.efi' "$TMP/sbentry.txt" &&
+       ! python3 tools/efivarstore.py "$TMP/sbvars.fd" entry "AurOS Installer" >/dev/null; then
+        ok "...and EFI variables could be written: AurOS's entry in, the installer's out"
+    else
+        bad "...and EFI variables could be written: AurOS's entry in, the installer's out" \
+            "$(grep -a 'startup' "$TMP/fout.txt" | tail -2)" "$(cat "$TMP/sbentry.txt" 2>/dev/null)"
+    fi
+
+    # ════════════════════════════════════════════════════════════════
+    #  PCs THAT DO NOT TRUST THE KEY shim is signed with, made out of
+    #  Microsoft's own db by taking certificates out:
+    #
+    #    Secured-core   no third-party key at all -- one firmware
+    #                   setting is off, and the card says which;
+    #    2023 only      Microsoft's newer third-party key but not the
+    #                   2011 one this shim carries -- nothing to switch
+    #                   on, and the card says this installer is too old.
+    #
+    #  Each is asked of the firmware first (it really does refuse shim,
+    #  so the check matters) and then of AurBridge (it knows before it
+    #  changes anything).
+    # ════════════════════════════════════════════════════════════════
+    CA=$(sbverify --list out/auros-staging-shimx64.efi 2>/dev/null |
+         sed -n 's|^ *- subject: .*/CN=\(Microsoft[^/]*UEFI CA[^/]*\)$|\1|p' | head -1)
+    untrusted() { # label  vars  expect-in-refusal
+        echo
+        echo "  a $1 PC, whose firmware does not trust the key shim is signed with"
+        cp --sparse=always "$TMP/sb.img" "$TMP/sbcore.img"
+        sbboot "$TMP/sbcore.img" '\EFI\AurOS\shimx64.efi' "aurstage:" 240 "$2"
+        if grep -aq "aurstage:" "$TMP/fout.txt"; then
+            bad "its firmware refuses shim (so this check matters)" \
+                "the firmware started it anyway; the check below proves nothing"
+        else
+            ok "its firmware refuses shim (so this check matters)"
+        fi
+        SIM3="$TMP/sim3"
+        rm -rf "$SIM3"
+        mkdir -p "$SIM3/esp" "$SIM3/payload"
+        : > "$SIM3/efivars.txt"
+        cp "$SIM2/disks.txt" "$SIM3/disks.txt"
+        cp "$SIM2"/payload/* "$SIM3/payload/"
+        echo 1 > "$SIM3/secureboot"
+        python3 tools/efivarstore.py "$2" get db  "$SIM3/db.bin"
+        python3 tools/efivarstore.py "$2" get dbx "$SIM3/dbx.bin"
+        before=$(sha256sum < "$DISK")
+        out/aurbridge-sim "$SIM3" desktop none "$TMP/win/AurOS/auros-desktop.img" \
+            out/auros-staging-vmlinuz out/auros-staging.img \
+            > "$TMP/sim3.out" 2> "$TMP/sim3.err"
+        grep -q 'verdict=refused' "$TMP/sim3.out" \
+            && ok "AurBridge refuses it at the first check" \
+            || bad "AurBridge refuses it at the first check" "$(tail -2 "$TMP/sim3.out")"
+        grep -q "$3" "$TMP/sim3.out" \
+            && ok "...saying: $3" \
+            || bad "...saying: $3" "$(tail -1 "$TMP/sim3.out")"
+        [ -z "$(find "$SIM3/esp" -type f)" ] && [ ! -s "$SIM3/efivars.txt" ] &&
+        [ "$(sha256sum < "$DISK")" = "$before" ] \
+            && ok "...having written nothing: no files, no variables, the disk unchanged" \
+            || bad "...having written nothing: no files, no variables, the disk unchanged" \
+                   "$(find "$SIM3/esp" -type f | head -3)" "$(head -2 "$SIM3/efivars.txt")"
+    }
+    cp "$MSVARS" "$TMP/core.fd"
+    cp "$MSVARS" "$TMP/new.fd"
+    if [ -n "$CA" ] &&
+       python3 tools/efivarstore.py "$TMP/core.fd" db-without "$CA" &&
+       python3 tools/efivarstore.py "$TMP/core.fd" db-without "Microsoft UEFI CA 2023" &&
+       python3 tools/efivarstore.py "$TMP/new.fd" db-without "$CA"; then
+        untrusted "Secured-core" "$TMP/core.fd" 'Allow Microsoft 3rd Party UEFI CA'
+        untrusted "2023-keys-only" "$TMP/new.fd" 'too old for this PC'
+    else
+        bad "firmwares without the shim's key could be made" "CA='$CA'"
+    fi
 else
     echo "    (no Microsoft-keyed OVMF here; skipped)"
 fi

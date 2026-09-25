@@ -31,6 +31,10 @@ and is not", before starting.
 3. **Install any waiting Windows updates and restart once**, so nothing
    is half-installed.
 
+Leave **Secure Boot on**; AurOS starts with it on. On the rare PC that
+trusts only Windows (some Secured-core laptops), the installer stops at
+*Check this PC* and shows the one firmware setting to switch on.
+
 ## Running it
 
 1. Download `AurOS-Installer-test.exe` and double-click it.

@@ -1557,11 +1557,15 @@ static int phase_handoff(const ab_choice *c, pf_report *r, ab_machine *m,
      * So the entry starts shim -- Canonical's, signed by Microsoft, the
      * same file the installed system boots through -- which starts
      * Canonical's signed grub, which verifies and starts the kernel.
-     * That grub's configuration path is baked into it and covered by
-     * its signature: it reads \EFI\ubuntu\grub.cfg on the partition it
-     * was loaded from. On a machine where that file already exists and
-     * is not ours, another Ubuntu-family system owns it, and this
-     * refuses rather than overwrite somebody else's start-up. */
+     *
+     * ONLY UNDER \EFI\AurOS (R12). That grub has /EFI/ubuntu baked in as
+     * its prefix, and an earlier version of this wrote its configuration
+     * there too -- and refused any PC where a real Ubuntu already had
+     * one. Neither was needed: loaded from \EFI\AurOS, it reads
+     * \EFI\AurOS\grub.cfg first, beside itself, and does so even when a
+     * real \EFI\ubuntu\grub.cfg is present (tools/nosticktest.sh boots
+     * it that way, with Secure Boot on). So \EFI\ubuntu is left alone,
+     * and a PC that dual-boots Ubuntu is not refused. */
     const char *extra = getenv("AURBRIDGE_STAGING_KARGS");  /* tests only */
     char shim[512], grub[512], mokm[512], w2[PLAT_WHY];
     int chain = plat_payload(PAYLOAD_SHIM, shim, sizeof shim, w2, sizeof w2) == 0 &&
@@ -1569,21 +1573,16 @@ static int phase_handoff(const ab_choice *c, pf_report *r, ab_machine *m,
     int have_mm = chain &&
                   plat_payload(PAYLOAD_MOKMGR, mokm, sizeof mokm, w2, sizeof w2) == 0;
     if (chain) {
-        char ucfg[512], back[64];
+        /* A configuration an earlier test build of this installer put in
+         * \EFI\ubuntu is ours to take away, and only that one: it says
+         * so on its first line. Anything else there is somebody's. */
+        char ucfg[512], back[16];
         snprintf(ucfg, sizeof ucfg, "%s/EFI/ubuntu/grub.cfg", esp);
         uint64_t have = 0;
-        if (plat_file_size(ucfg, &have) == 0 && have > 0 &&
-            (plat_file_read(ucfg, 0, back, have < 11 ? (size_t)have : 11,
-                            w2, sizeof w2) != 0 ||
-             have < 11 || memcmp(back, "# AurBridge", 11) != 0)) {
-            snprintf(why, n,
-                     "another Linux system's start-up is already set up on this "
-                     "computer, in the place AurOS would need. AurOS will not "
-                     "overwrite it. Nothing has been changed.");
-            plat_esp_close();
-            plat_payload_free();
-            return -1;
-        }
+        if (plat_file_size(ucfg, &have) == 0 && have >= 11 &&
+            plat_file_read(ucfg, 0, back, 11, w2, sizeof w2) == 0 &&
+            memcmp(back, "# AurBridge", 11) == 0)
+            plat_file_delete(ucfg, w2, sizeof w2);
         char cfg[1024];
         int cl = snprintf(cfg, sizeof cfg,
             "# AurBridge: starts the AurOS installer, once. Written by the\n"
@@ -1610,8 +1609,7 @@ static int phase_handoff(const ab_choice *c, pf_report *r, ab_machine *m,
         if (plat_file_copy(shim, d1, why, n) != 0 ||
             plat_file_copy(grub, d2, why, n) != 0 ||
             (have_mm && plat_file_copy(mokm, d3, why, n) != 0) ||
-            plat_file_put(d4, cfg, (size_t)cl, why, n) != 0 ||
-            plat_file_put(ucfg, cfg, (size_t)cl, why, n) != 0) {
+            plat_file_put(d4, cfg, (size_t)cl, why, n) != 0) {
             plat_esp_close(); plat_payload_free();
             return -1;
         }

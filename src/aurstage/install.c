@@ -255,6 +255,7 @@ void install_run(const stage_machine *m)
     }
     g_from_usb = !strcmp(j.boot_from, "usb");
     g_nostick  = !strcmp(j.image_on, "windows");
+    stage_say_secure();
     if (j.image_on[0] && !g_nostick && strcmp(j.image_on, "stick") != 0)
         refuse("The note the installer left says the copy of AurOS is "
                "somewhere this version of AurOS does not know how to look.",

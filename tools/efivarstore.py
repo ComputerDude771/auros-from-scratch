@@ -182,6 +182,75 @@ def plant(path, name, guid, data):
     open(path, 'wb').write(bytes(blob))
 
 
+def _x509_cn(der):
+    """The subject common name of a DER certificate, by openssl, which
+    is not the code under test (src/aurbridge/sbdb.c is)."""
+    import subprocess
+    r = subprocess.run(['openssl', 'x509', '-inform', 'DER', '-noout',
+                        '-subject', '-nameopt', 'multiline'],
+                       input=der, capture_output=True)
+    for line in r.stdout.decode('utf-8', 'replace').splitlines():
+        line = line.strip()
+        if line.startswith('commonName'):
+            return line.split('=', 1)[1].strip()
+    return None
+
+
+def sig_lists(data):
+    """→ [(type_guid, list_bytes, [cert common names])] of a db value."""
+    X509 = uuid.UUID('a5c059a1-94e4-4aa7-87b5-ab155c2bf072')
+    out, at = [], 0
+    while at + 28 <= len(data):
+        lsz, hsz, ssz = struct.unpack_from('<III', data, at + 16)
+        if lsz < 28 or at + lsz > len(data):
+            raise SystemExit('a signature list runs past the end of db')
+        t = _guid(data[at:at + 16])
+        cns = []
+        if t == X509 and ssz > 16:
+            body = at + 28 + hsz
+            for s in range(body, at + lsz, ssz):
+                cns.append(_x509_cn(bytes(data[s + 16:s + ssz])))
+        out.append((t, bytes(data[at:at + lsz]), cns))
+        at += lsz
+    return out
+
+
+def supersede(path, name, data):
+    """Replace a variable the way the firmware would have: every live
+    copy is marked deleted and a new copy, with the same header
+    (attributes, and for an authenticated variable its timestamp), is
+    appended. For the tests only -- to make a firmware whose db lacks a
+    key, which OVMF will then enforce at the next start."""
+    blob = bytearray(open(path, 'rb').read())
+    hdr_len, hsz, end, free = store_offsets(blob)
+    at = hdr_len + 28
+    last = None
+    while at + hsz <= end:
+        if struct.unpack_from('<H', blob, at)[0] != 0x55AA:
+            break
+        if hsz == 60:
+            name_sz, data_sz = struct.unpack_from('<II', blob, at + 36)
+        else:
+            name_sz, data_sz = struct.unpack_from('<II', blob, at + 8)
+        nm = bytes(blob[at + hsz:at + hsz + name_sz]).decode(
+            'utf-16-le', 'replace').rstrip('\x00')
+        if nm == name and blob[at + 2] in (VAR_ADDED, VAR_IN_TRANSITION):
+            last = bytes(blob[at:at + hsz + name_sz])
+            blob[at + 2] = VAR_ADDED & ~0x02          # deleted
+        at = (at + hsz + name_sz + data_sz + 3) & ~3
+    if last is None:
+        raise SystemExit('%s is not in %s' % (name, path))
+    hdr = bytearray(last[:hsz])
+    hdr[2] = VAR_ADDED
+    struct.pack_into('<I', hdr, 40 if hsz == 60 else 12, len(data))
+    rec = bytes(hdr) + last[hsz:] + data
+    rec += b'\xff' * ((4 - len(rec) % 4) % 4)
+    if free + len(rec) > end:
+        raise SystemExit('no room left in the variable store')
+    blob[free:free + len(rec)] = rec
+    open(path, 'wb').write(bytes(blob))
+
+
 def make_load_option(desc, path):
     """The smallest believable EFI_LOAD_OPTION: a File() node and an
     End node, with no Hard Drive node. Deliberately not the shape the
@@ -275,6 +344,32 @@ def main():
                                         for t, s, _l in lo['nodes']))
             return
         sys.exit(1)
+    if what == 'get':
+        # get VARS.fd NAME OUT: the live value, as Windows would read it
+        live = [d for n, _g, _a, d in vars_ if n == sys.argv[3]]
+        if not live:
+            sys.exit(1)
+        open(sys.argv[4], 'wb').write(live[-1])
+        return
+    if what == 'certs':
+        # certs VARS.fd db: the certificates in a signature database
+        live = [d for n, _g, _a, d in vars_ if n == sys.argv[3]]
+        for _t, _b, cns in sig_lists(live[-1] if live else b''):
+            for cn in cns:
+                print(cn)
+        return
+    if what == 'db-without':
+        # db-without VARS.fd "Common Name": the db, less every list that
+        # holds that certificate -- a Secured-core PC's firmware
+        live = [d for n, _g, _a, d in vars_ if n == 'db']
+        if not live:
+            sys.exit('no db in %s' % path)
+        keep = [b for _t, b, cns in sig_lists(live[-1]) if sys.argv[3] not in cns]
+        new = b''.join(keep)
+        if len(new) == len(live[-1]):
+            sys.exit('%s is not in db' % sys.argv[3])
+        supersede(path, 'db', new)
+        return
     if what == 'plant':
         # plant VARS.fd Boot0007 "Some Description" \\EFI\\x\\y.efi
         slot, desc, loader = sys.argv[3], sys.argv[4], sys.argv[5]

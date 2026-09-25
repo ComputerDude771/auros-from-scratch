@@ -159,12 +159,24 @@ anything to anybody. `tools/loadertest.sh` proves it against
 `OVMF_CODE_4M.ms.fd` with Microsoft's own keys enrolled and Secure Boot
 enforcing.
 
-The shim is **dual-signed**: by the Microsoft UEFI CA 2011 *and* the
-2023 CA. The 2011 CA is the one old firmware trusts, and it is the
-whole reason the chain is borrowed rather than built — the dual-signing
-window closed in June 2026, so a distribution applying to Microsoft on
-its own today can only obtain a 2023-only shim, which would not boot on
-exactly the old PCs this product exists for.
+**What "dualsigned" means, because this file used to get it wrong.**
+Ubuntu's `shimx64.efi.dualsigned` carries two signatures: Canonical's
+own and **Microsoft's, through the Microsoft Corporation UEFI CA 2011**
+(`sbverify --list` shows exactly those two). It is *not* signed with
+Microsoft's 2023 third-party key. The 2011 CA is the one old firmware
+trusts, which is the whole reason the chain is borrowed rather than
+built: a distribution applying to Microsoft on its own today gets a
+2023-signed shim, which would not boot on exactly the old PCs this
+product exists for.
+
+The other side of the same fact: **a PC that lists Microsoft's 2023
+third-party key and not the 2011 one refuses this shim**, and so does a
+Secured-core PC that ships with third-party keys switched off. Neither
+is left to find out at the restart. The installer reads the firmware's
+`db` (and `dbx`) from Windows before it changes anything and asks
+whether it trusts the key the carried shim is signed with -- a name
+`build/aurbridge` reads off the shim itself, so a newer shim is checked
+for its own key. See `docs/AURBRIDGE.md`, "Secure Boot stays on".
 
 If AurOS ever needs its own shim — to carry its own vendor certificate,
 so that kernel modules could be signed by us — that is a submission to

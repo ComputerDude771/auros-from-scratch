@@ -19,6 +19,8 @@
 #include "phases.h"
 #include "plat.h"
 #include "inflate.h"
+#include "sbdb.h"
+#include "aurbridge-baked.h"
 
 static void say(const char *line, void *ud)
 { (void)ud; fprintf(stderr, "aurbridge: %s\n", line); }
@@ -44,7 +46,7 @@ static int one_fetch(int argc, char **argv)
         fprintf(stderr, "usage: aurbridge-sim fetch URL DEST\n");
         return 2;
     }
-    char why[400] = "";
+    char why[1200] = "";
     if (plat_fetch(argv[2], argv[3], NULL, NULL, why, sizeof why) != 0) {
         fprintf(stderr, "aurbridge: %s\n", why);
         printf("fetch verdict=failed why=\"%s\"\n", why);
@@ -83,7 +85,7 @@ static int one_getimage(int argc, char **argv)
     snprintf(c.image_path, sizeof c.image_path, "%s", argv[3]);
     snprintf(c.image_sha256, sizeof c.image_sha256, "%s", argv[4]);
     c.image_expect = strtoull(argv[5], NULL, 10);
-    char why[400] = "";
+    char why[1200] = "";
     if (ab_fetch_image(&c, say, prog, NULL, why, sizeof why) != 0) {
         fprintf(stderr, "aurbridge: %s\n", why);
         printf("getimage verdict=failed why=\"%s\"\n", why);
@@ -101,6 +103,25 @@ int main(int argc, char **argv)
         int bad = gz_selftest();
         printf("gzselftest %s\n", bad ? "FAILED" : "ok");
         return bad ? 1 : 0;
+    }
+    if (argc >= 2 && !strcmp(argv[1], "sbselftest")) {
+        int bad = sbdb_selftest();
+        printf("sbselftest %s\n", bad ? "FAILED" : "ok");
+        return bad ? 1 : 0;
+    }
+    /* `sbdb DB-FILE`: what a real db says, as preflight would judge it,
+     * against the key names this build baked in off its shim. */
+    if (argc == 3 && !strcmp(argv[1], "sbdb")) {
+        static unsigned char db[65536];
+        FILE *f = fopen(argv[2], "rb");
+        if (!f) { perror(argv[2]); return 2; }
+        size_t n = fread(db, 1, sizeof db, f);
+        fclose(f);
+        char seen[1024];
+        int t = sbdb_trusts(db, n, AUROS_SHIM_CAS, seen, sizeof seen);
+        printf("sbdb trusts=%d wants=\"%s\" seen=\"%s\"\n", t,
+               AUROS_SHIM_CAS, seen);
+        return t == 1 ? 0 : 1;
     }
     if (argc < 7) {
         fprintf(stderr,
@@ -155,7 +176,7 @@ int main(int argc, char **argv)
     pf_run(&r);
 
     ab_machine m;
-    char why[400] = "";
+    char why[1200] = "";
     int rc = ab_run(AB_HANDOFF, &c, &r, &m, say, prog, NULL, why, sizeof why);
     if (rc != 0) {
         fprintf(stderr, "aurbridge: REFUSED: %s\n", why);
