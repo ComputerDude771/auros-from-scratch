@@ -61,3 +61,4 @@ Does it actually install AurOS, and leave Windows intact?
 
 37 checks: it installs AurOS, starts it, puts Windows back
 again, and every file in Windows is exactly what it was.
+exit=0
