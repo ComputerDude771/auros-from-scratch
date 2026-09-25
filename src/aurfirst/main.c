@@ -56,6 +56,7 @@ int main(int argc, char **argv)
         printf("writable=%s\n",  say_bool(s.writable));
         printf("converted=%s\n", say_bool(s.have_entry));
         if (s.have_entry) printf("entry=%04X\n", s.entry);
+        if (s.have_entry) printf("entry_by=%s\n", af_entry_by());
         printf("bootorder=%s\n",  say_bool(s.have_order));
         printf("in_order=%s\n",   say_bool(s.in_order));
         printf("is_default=%s\n", say_bool(s.is_default));

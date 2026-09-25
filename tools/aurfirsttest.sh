@@ -49,6 +49,14 @@ gcc -O1 -std=gnu11 -Wall -Wextra \
     -o "$TMP/af" src/aurfirst/*.c -Isrc/aurfirst 2>"$TMP/cc.log" \
     || { echo "  aurfirst did not build:"; sed -n '1,12p' "$TMP/cc.log"; exit 2; }
 AF="$TMP/af"
+# WHICH PARTITION IS "OURS" IS READ FROM THE HOST'S /sys AND /dev, and a
+# unit test must not depend on the disks of the machine it runs on --
+# on an AurOS machine this would find a real AUROS-BOOT and every case
+# below would change meaning. So the choosing is pinned: "none" is
+# "cannot tell", which is the fallback to the first entry called AurOS.
+# The cases that are ABOUT the choosing set it explicitly. The
+# discovery itself is tools/firstboottest.sh's, inside a real boot.
+AF_OWN_BOOT_PARTUUID=none; export AF_OWN_BOOT_PARTUUID
 
 # ── the fixture ─────────────────────────────────────────────────────
 plant() { # slot description [load-option-attributes, default ACTIVE]
@@ -60,6 +68,16 @@ dp = struct.pack('<BBH', 4, 4, 4 + len(f)) + f + struct.pack('<BBH', 0x7F, 0xFF,
 attrs = int(sys.argv[3], 0)
 open(sys.argv[1], 'wb').write(struct.pack('<I', 7) +
                               struct.pack('<IH', attrs, len(dp)) + d + dp)
+EOPY
+}
+plant_hd() { # slot description partition-guid
+    python3 - "$VD/Boot$1-$G" "$2" "$3" <<'EOPY'
+import sys, struct, uuid
+sys.path.insert(0, 'tools')
+from efivarstore import make_hd_load_option
+lo = make_hd_load_option(sys.argv[2], '\\EFI\\AurOS\\shimx64.efi',
+                         3, 5400576, 98304, uuid.UUID(sys.argv[3]).bytes_le)
+open(sys.argv[1], 'wb').write(struct.pack('<I', 7) + lo)
 EOPY
 }
 order() { # 0002 0000 ...
@@ -77,6 +95,10 @@ import sys, struct
 b = open(sys.argv[1], 'rb').read()[4:]
 print(' '.join('%04X' % v for v in struct.unpack('<%dH' % (len(b)//2), b)))
 EOPY
+}
+read_next() {
+    [ -f "$VD/BootNext-$G" ] || { echo "(none)"; return; }
+    python3 -c "import sys,struct; b=open(sys.argv[1],'rb').read()[4:]; print('%04X' % struct.unpack('<H', b)[0])" "$VD/BootNext-$G"
 }
 st() { "$AF" state | sed -n "s/^$1=//p"; }
 fresh() { rm -rf "$VD" "$SD"; mkdir -p "$VD" "$SD"; }
@@ -273,6 +295,75 @@ order 0000 0006
 [ "$(read_order)" = "0002 0000 0006" ] \
   && ok "an existing order is preserved, hidden entry and all" \
   || bad "an existing order is preserved, hidden entry and all" "$(read_order)"
+
+# ── which "AurOS" is ours ───────────────────────────────────────────
+#
+# Try AurOS, say no, put Windows back, try again: "Put Windows back"
+# leaves the firmware's "AurOS" entry behind, pointing at a partition
+# that is gone, and the second install adds its own with a HIGHER
+# number. Taken by description, the dead one wins -- the hold re-arms
+# BootNext to it, the firmware fails it and starts Windows, and
+# confirming puts it first so the next start reaches Windows anyway.
+echo
+echo "  and when there are two entries called AurOS"
+DEAD=5b0c6f2e-9d41-4e0a-8c3a-2f6d1e7b9a40
+LIVE=0e8a4c71-3b6f-4d29-a1e5-7c9f2b8d6e13
+two_aurOS() {
+    fresh
+    plant 0000 "Windows Boot Manager"
+    plant_hd 0001 "AurOS" "$DEAD"       # left behind by "Put Windows back"
+    plant_hd 0005 "AurOS" "$LIVE"       # this install's
+    order 0000 0001
+}
+two_aurOS
+[ "$(AF_OWN_BOOT_PARTUUID=$LIVE st entry)" = "0005" ] \
+  && ok "ours is the one that names this install's partition" \
+  || bad "ours is the one that names this install's partition" \
+        "$(AF_OWN_BOOT_PARTUUID=$LIVE "$AF" state | tr '\n' ' ')"
+[ "$(AF_OWN_BOOT_PARTUUID=$LIVE st entry_by)" = "partition" ] \
+  && ok "...and it says that is how it chose" \
+  || bad "...and it says that is how it chose"
+AF_OWN_BOOT_PARTUUID=$LIVE "$AF" hold >/dev/null 2>&1
+[ "$(read_next)" = "0005" ] \
+  && ok "the one-shot is armed to the live entry, not the dead one" \
+  || bad "the one-shot is armed to the live entry, not the dead one" \
+        "BootNext: $(read_next)"
+AF_OWN_BOOT_PARTUUID=$LIVE "$AF" confirm >/dev/null 2>&1
+[ "$(read_order)" = "0005 0000 0001" ] \
+  && ok "and confirming puts the live one first, dropping nobody" \
+  || bad "and confirming puts the live one first, dropping nobody" "$(read_order)"
+
+# Written in capitals, which is how some tools print a GUID.
+two_aurOS
+UPPER=$(printf '%s' "$LIVE" | tr a-f A-F)
+[ "$(AF_OWN_BOOT_PARTUUID=$UPPER st entry)" = "0005" ] \
+  && ok "the partition is matched however its GUID is written" \
+  || bad "the partition is matched however its GUID is written"
+
+# KNOWING OURS AND NOT FINDING IT: there is no entry for this install,
+# and every AurOS in the menu is somebody else's or dead. Promoting one
+# of them is exactly the bug.
+fresh
+plant 0000 "Windows Boot Manager"
+plant_hd 0001 "AurOS" "$DEAD"
+order 0000 0001
+[ "$(AF_OWN_BOOT_PARTUUID=$LIVE st converted)" = "no" ] \
+  && ok "a menu holding only a dead AurOS has no entry of ours in it" \
+  || bad "a menu holding only a dead AurOS has no entry of ours in it" \
+        "$(AF_OWN_BOOT_PARTUUID=$LIVE "$AF" state | tr '\n' ' ')"
+AF_OWN_BOOT_PARTUUID=$LIVE "$AF" hold >/dev/null 2>&1
+[ ! -f "$VD/BootNext-$G" ] \
+  && ok "...and nothing arms the dead one" \
+  || bad "...and nothing arms the dead one" "BootNext: $(read_next)"
+
+# AND WHEN IT CANNOT TELL, the old rule, said out loud. This is also
+# the proof that the cases above test something: the same machine,
+# chosen by description, takes the dead entry.
+two_aurOS
+[ "$(st entry)" = "0001" ] && [ "$(st entry_by)" = "description" ] \
+  && ok "unable to tell, it falls back to the first -- and says so" \
+  || bad "unable to tell, it falls back to the first -- and says so" \
+        "entry=$(st entry) entry_by=$(st entry_by)"
 
 # ── "it does not" ───────────────────────────────────────────────────
 echo

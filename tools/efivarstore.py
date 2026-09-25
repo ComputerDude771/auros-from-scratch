@@ -44,6 +44,7 @@ import struct, sys, uuid
 
 AUTH_STORE = uuid.UUID('aaf32c78-947b-439a-a180-2e144ec37792')
 PLAIN_STORE = uuid.UUID('ddcf3616-3275-4164-98b6-fe85707ffe7d')
+GLOBAL = '8be4df61-93ca-11d2-aa0d-00e098032b8c'   # EFI_GLOBAL_VARIABLE
 VAR_ADDED = 0x3f
 VAR_IN_TRANSITION = 0x3e
 
@@ -151,16 +152,59 @@ def store_offsets(blob):
     return hdr_len, hsz, end, at
 
 
-def plant(path, name, guid, data):
-    """Append one variable to a store, in place.
+VAR_DELETED = 0x3c
 
-    Only the test uses this, to put a boot entry into NVRAM that the
-    Windows half of the product would have put there -- so that
-    nvram_boot_forget() has something real to remove. Variables are
+
+def retire(blob, name, guid):
+    """Mark every live copy of NAME/GUID deleted, in place.
+
+    WITHOUT THIS, PLANTING A VARIABLE THAT ALREADY EXISTS LEAVES TWO
+    LIVE COPIES, and which one the firmware believes is a property of
+    its variable driver rather than of anything this test controls.
+    Planting BootOrder into a store that already had one produced
+    exactly that. A variable is updated in EDK2 the same way: the old
+    record's State has bits cleared until it reads as deleted, and the
+    new one is appended. 0x3c is fully deleted -- both the
+    in-transition bit and the deleted bit cleared."""
+    hdr_len, hsz, end, _at = store_offsets(blob)
+    at = hdr_len + 28
+    want_g = uuid.UUID(guid).bytes_le
+    n = 0
+    while at + hsz <= end:
+        if struct.unpack_from('<H', blob, at)[0] != 0x55AA:
+            break
+        state = blob[at + 2]
+        if hsz == 60:
+            name_sz, data_sz = struct.unpack_from('<II', blob, at + 36)
+            vg = bytes(blob[at + 44:at + 60])
+        else:
+            name_sz, data_sz = struct.unpack_from('<II', blob, at + 8)
+            vg = bytes(blob[at + 16:at + 32])
+        if name_sz > 1024 or data_sz > (1 << 20):
+            break
+        nm = bytes(blob[at + hsz:at + hsz + name_sz])
+        nm = nm.decode('utf-16-le', 'replace').rstrip('\x00')
+        if state in (VAR_ADDED, VAR_IN_TRANSITION) and nm == name \
+                and vg == want_g:
+            blob[at + 2] = VAR_DELETED
+            n += 1
+        at += hsz + name_sz + data_sz
+        at = (at + 3) & ~3
+    return n
+
+
+def plant(path, name, guid, data):
+    """Put one variable into a store, in place, REPLACING any live copy.
+
+    Only the tests use this: to put a boot entry into NVRAM that the
+    Windows half of the product would have put there, and to set the
+    machine up in the state an install leaves it -- AurOS in the menu,
+    Windows still first, BootNext pointing at AurOS. Variables are
     appended in this format and never rewritten, so adding one is
-    genuinely just writing past the last.
+    writing past the last and retiring whatever it replaces.
     """
     blob = bytearray(open(path, 'rb').read())
+    retire(blob, name, guid)
     _hdr_len, hsz, end, at = store_offsets(blob)
     nm = name.encode('utf-16-le') + b'\x00\x00'
     hdr = bytearray(hsz)
@@ -192,6 +236,46 @@ def make_load_option(desc, path):
     file_node = struct.pack('<BBH', 0x04, 0x04, 4 + len(f)) + f
     end_node = struct.pack('<BBH', 0x7F, 0xFF, 4)
     dp = file_node + end_node
+    return struct.pack('<IH', 1, len(dp)) + d + dp
+
+
+def gpt_partition(image, number):
+    """(first_lba, blocks, unique_guid_bytes_le) of partition NUMBER
+    (1-based) in a GPT disk image, read from the image itself so that
+    the boot entry cannot disagree with the disk it points into."""
+    f = open(image, 'rb')
+    f.seek(512)
+    h = f.read(92)
+    if h[0:8] != b'EFI PART':
+        raise SystemExit('%s has no GPT at LBA 1' % image)
+    ent_lba, n_ent, ent_sz = struct.unpack_from('<QII', h, 72)
+    if not 1 <= number <= n_ent:
+        raise SystemExit('no partition %d' % number)
+    f.seek(ent_lba * 512 + (number - 1) * ent_sz)
+    e = f.read(ent_sz)
+    first, last = struct.unpack_from('<QQ', e, 32)
+    if e[0:16] == b'\x00' * 16:
+        raise SystemExit('partition %d is unused' % number)
+    return first, last - first + 1, bytes(e[16:32])
+
+
+def make_hd_load_option(desc, path, number, first, blocks, part_guid_le):
+    """An EFI_LOAD_OPTION the way the product writes one:
+    HD(number, GPT, partition-GUID, start, size) / File(path) / End.
+
+    A bare File() node -- which is all make_load_option builds -- is
+    answered by the firmware with EFI_NOT_FOUND, because LoadImage has
+    no device to resolve the path against. That was the product's own
+    first bug here and it is not repeated in the test that checks it."""
+    d = desc.encode('utf-16-le') + b'\x00\x00'
+    hd = struct.pack('<BBH', 0x04, 0x01, 42)
+    hd += struct.pack('<IQQ', number, first, blocks)
+    hd += part_guid_le
+    hd += struct.pack('<BB', 0x02, 0x02)     # GPT, GUID signature
+    f = path.encode('utf-16-le') + b'\x00\x00'
+    file_node = struct.pack('<BBH', 0x04, 0x04, 4 + len(f)) + f
+    end_node = struct.pack('<BBH', 0x7F, 0xFF, 4)
+    dp = hd + file_node + end_node
     return struct.pack('<IH', 1, len(dp)) + d + dp
 
 
@@ -278,8 +362,38 @@ def main():
     if what == 'plant':
         # plant VARS.fd Boot0007 "Some Description" \\EFI\\x\\y.efi
         slot, desc, loader = sys.argv[3], sys.argv[4], sys.argv[5]
-        plant(path, slot, '8be4df61-93ca-11d2-aa0d-00e098032b8c',
-              make_load_option(desc, loader))
+        plant(path, slot, GLOBAL, make_load_option(desc, loader))
+        return
+    if what == 'plant-hd':
+        # plant-hd VARS.fd Boot0002 "AurOS" \\EFI\\AurOS\\shimx64.efi DISK.img 1
+        slot, desc, loader = sys.argv[3], sys.argv[4], sys.argv[5]
+        image, number = sys.argv[6], int(sys.argv[7])
+        first, blocks, g = gpt_partition(image, number)
+        plant(path, slot, GLOBAL,
+              make_hd_load_option(desc, loader, number, first, blocks, g))
+        return
+    if what == 'plant-hd-raw':
+        # plant-hd-raw VARS.fd Boot0001 "AurOS" \\EFI\\AurOS\\shimx64.efi \
+        #              NUMBER FIRST BLOCKS PART-GUID
+        # An entry for a partition that is not on any disk here: what
+        # "Put Windows back" leaves in the firmware after it deletes
+        # the partition the entry names.
+        slot, desc, loader = sys.argv[3], sys.argv[4], sys.argv[5]
+        number, first, blocks = (int(sys.argv[6]), int(sys.argv[7]),
+                                 int(sys.argv[8]))
+        g = uuid.UUID(sys.argv[9]).bytes_le
+        plant(path, slot, GLOBAL,
+              make_hd_load_option(desc, loader, number, first, blocks, g))
+        return
+    if what == 'set-order':
+        # set-order VARS.fd 0000 0002
+        nums = [int(x, 16) for x in sys.argv[3:]]
+        plant(path, 'BootOrder', GLOBAL,
+              b''.join(struct.pack('<H', n) for n in nums))
+        return
+    if what == 'set-next':
+        # set-next VARS.fd 0002
+        plant(path, 'BootNext', GLOBAL, struct.pack('<H', int(sys.argv[3], 16)))
         return
     sys.exit('unknown request %s' % what)
 

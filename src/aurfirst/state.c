@@ -1,13 +1,25 @@
 /* state.c — what phase is this machine in, and the three answers. */
 #define _GNU_SOURCE
+#include <dirent.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <errno.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/stat.h>
+#include <sys/sysmacros.h>
 #include <unistd.h>
 
 #include "aurfirst.h"
+
+#ifndef AF_DIR_SYSBLOCK
+#define AF_DIR_SYSBLOCK  "/sys/class/block"
+#endif
+#ifndef AF_DIR_PARTUUID
+#define AF_DIR_PARTUUID  "/dev/disk/by-partuuid"
+#endif
 
 #define MAX_BOOTS 512
 
@@ -44,27 +56,223 @@ static int stamp(const char *path, char *why, size_t n)
     return 0;
 }
 
-/* Our entry, found by its description. The installer wrote it; nothing
- * else on the machine is called that. Never "the entry we do not
- * recognise" -- that also selects the Fedora somebody installed last
- * month. */
+/* ── which "AurOS" is THIS AurOS ─────────────────────────────────── */
+/*
+ * THE FIRST ENTRY CALLED "AurOS" IS NOT NECESSARILY OURS, and the case
+ * where it is not is an ordinary one: somebody tries AurOS, says it
+ * does not work, puts Windows back, and tries again a month later.
+ *
+ * "Put Windows back" deletes the AurOS partitions and leaves the
+ * firmware's "AurOS" entry where it was, pointing at a partition that
+ * no longer exists. The second install cannot reuse it -- the
+ * installer only reuses an entry that names the partition it just made
+ * -- so it adds another, with a HIGHER number. This used to take the
+ * first one by description, which is the dead one. So on the second
+ * install:
+ *
+ *   - the hold re-armed BootNext to the dead entry. The firmware
+ *     failed it, fell through to BootOrder, and started Windows: the
+ *     machine stopped coming back to AurOS after one restart, and the
+ *     question was never asked again.
+ *   - and if she did reach AurOS and said it works, confirm put the
+ *     DEAD entry first in BootOrder. The firmware skipped it and
+ *     started the next one, which was Windows. Right after she said
+ *     AurOS works, the computer stopped starting it.
+ *
+ * The installer had the same bug and was fixed the same way: an entry
+ * is ours when its Hard Drive node names the partition this install
+ * starts from. That is the partition on the same disk as / whose GPT
+ * name is AUROS-BOOT (a conversion) or AUROS-ESP (the image written
+ * directly) -- and its GPT unique GUID is what udev names its
+ * /dev/disk/by-partuuid link after.
+ *
+ * If this cannot be worked out -- no udev, a root on LVM, a container
+ * -- the old rule applies, and says so in the state file: the first
+ * entry called AurOS. That is right on every machine that has only
+ * ever had one AurOS installed, which is almost all of them. */
+
+/* The disk holding `/`, as its sysfs name ("vda", "nvme0n1"). */
+static int root_disk(char *out, size_t n)
+{
+    struct stat st;
+    if (stat("/", &st) != 0) return -1;
+    char link[128], real[PATH_MAX];
+    snprintf(link, sizeof link, "/sys/dev/block/%u:%u",
+             major(st.st_dev), minor(st.st_dev));
+    if (!realpath(link, real)) return -1;
+    /* .../block/vda/vda2 -> the parent directory is the disk. A root
+     * that is not a partition of a disk (dm, md, a loop with no
+     * partition) has no parent that is a block device, and there is
+     * then no "same disk" to look on. */
+    char pp[PATH_MAX];
+    snprintf(pp, sizeof pp, "%s/partition", real);
+    if (access(pp, F_OK) != 0) return -1;
+    char *slash = strrchr(real, '/');
+    if (!slash) return -1;
+    *slash = 0;
+    const char *disk = strrchr(real, '/');
+    if (!disk) return -1;
+    snprintf(out, n, "%s", disk + 1);
+    return 0;
+}
+
+/* The partition on `disk` named `label`, as its sysfs name. */
+static int partition_named(const char *disk, const char *label,
+                           char *out, size_t n)
+{
+    DIR *d = opendir(AF_DIR_SYSBLOCK);
+    if (!d) return -1;
+    struct dirent *e;
+    int found = -1;
+    while ((e = readdir(d))) {
+        if (e->d_name[0] == '.') continue;
+        char p[PATH_MAX], real[PATH_MAX];
+        snprintf(p, sizeof p, "%s/%s/partition", AF_DIR_SYSBLOCK, e->d_name);
+        if (access(p, F_OK) != 0) continue;
+        snprintf(p, sizeof p, "%s/%s", AF_DIR_SYSBLOCK, e->d_name);
+        if (!realpath(p, real)) continue;
+        char *slash = strrchr(real, '/');
+        if (!slash) continue;
+        *slash = 0;
+        const char *parent = strrchr(real, '/');
+        if (!parent || strcmp(parent + 1, disk) != 0) continue;
+        snprintf(p, sizeof p, "%s/%s/uevent", AF_DIR_SYSBLOCK, e->d_name);
+        FILE *f = fopen(p, "r");
+        if (!f) continue;
+        char line[256];
+        int match = 0;
+        while (fgets(line, sizeof line, f)) {
+            line[strcspn(line, "\n")] = 0;
+            if (!strncmp(line, "PARTNAME=", 9) && !strcmp(line + 9, label))
+                match = 1;
+        }
+        fclose(f);
+        if (match) { snprintf(out, n, "%s", e->d_name); found = 0; break; }
+    }
+    closedir(d);
+    return found;
+}
+
+/* The GPT unique GUID of THIS install's boot partition, lower-case
+ * text. 0 found, -1 cannot tell. */
+static int own_boot_partuuid(char *out, size_t n)
+{
+#ifdef AF_ALLOW_ENV_DIRS
+    /* Tests only: the discovery below reads the host's /sys and /dev,
+     * which is what tools/firstboottest.sh exercises inside a booted
+     * image. What aurfirsttest checks is the choosing, and it says
+     * which partition is ours this way. "none" is "cannot tell". */
+    const char *t = getenv("AF_OWN_BOOT_PARTUUID");
+    if (t) {
+        if (!strcmp(t, "none")) return -1;
+        snprintf(out, n, "%s", t);
+        return 0;
+    }
+#endif
+    char disk[64], part[64];
+    if (root_disk(disk, sizeof disk) != 0) return -1;
+    if (partition_named(disk, "AUROS-BOOT", part, sizeof part) != 0 &&
+        partition_named(disk, "AUROS-ESP", part, sizeof part) != 0)
+        return -1;
+    DIR *d = opendir(AF_DIR_PARTUUID);
+    if (!d) return -1;
+    struct dirent *e;
+    int found = -1;
+    while ((e = readdir(d))) {
+        if (e->d_name[0] == '.') continue;
+        char p[PATH_MAX], target[PATH_MAX];
+        snprintf(p, sizeof p, "%s/%s", AF_DIR_PARTUUID, e->d_name);
+        ssize_t k = readlink(p, target, sizeof target - 1);
+        if (k <= 0) continue;
+        target[k] = 0;
+        const char *b = strrchr(target, '/');
+        if (strcmp(b ? b + 1 : target, part) != 0) continue;
+        snprintf(out, n, "%s", e->d_name);
+        for (char *c = out; *c; c++)
+            if (*c >= 'A' && *c <= 'Z') *c = (char)(*c - 'A' + 'a');
+        found = 0;
+        break;
+    }
+    closedir(d);
+    return found;
+}
+
+/* The partition GUID in a load option's Hard Drive node, as text in
+ * the form udev uses. 0 found, -1 no HD node. */
+static int hd_partuuid(const uint8_t *opt, int len, char *out, size_t n)
+{
+    if (len < 6) return -1;
+    int fpl = opt[4] | (opt[5] << 8);
+    int i = 6;
+    while (i + 1 < len && (opt[i] | opt[i + 1])) i += 2;   /* description */
+    i += 2;
+    int end = i + fpl;
+    if (end > len) return -1;
+    while (i + 4 <= end) {
+        int type = opt[i], sub = opt[i + 1];
+        int nl = opt[i + 2] | (opt[i + 3] << 8);
+        if (nl < 4 || i + nl > end) return -1;
+        if (type == 0x7F && sub == 0xFF) return -1;
+        if (type == 0x04 && sub == 0x01 && nl == 42) {
+            const uint8_t *g = opt + i + 24;
+            snprintf(out, n,
+                "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-"
+                "%02x%02x%02x%02x%02x%02x",
+                g[3], g[2], g[1], g[0], g[5], g[4], g[7], g[6],
+                g[8], g[9], g[10], g[11], g[12], g[13], g[14], g[15]);
+            return 0;
+        }
+        i += nl;
+    }
+    return -1;
+}
+
+/* 1 when the entry was chosen by partition, 0 by description alone. */
+static int g_entry_by_partition = 0;
+
+const char *af_entry_by(void)
+{
+    return g_entry_by_partition ? "partition" : "description";
+}
+
+/* Our entry. Never "the entry we do not recognise" -- that also
+ * selects the Fedora somebody installed last month. Among the ones
+ * called AurOS, the one that points at the partition this install
+ * starts from; if that cannot be worked out, the first. */
 static int find_entry(uint16_t *out)
 {
+    char own[64];
+    int know = own_boot_partuuid(own, sizeof own) == 0;
+    g_entry_by_partition = 0;
+
     uint16_t nums[MAX_BOOTS];
     int n = af_boot_numbers(nums, MAX_BOOTS);
+    int first = -1;
     for (int i = 0; i < n; i++) {
         char name[16];
         snprintf(name, sizeof name, "Boot%04X", nums[i]);
-        uint8_t opt[4096];
+        uint8_t opt[AF_OPT_MAX];
         int len = af_var_get(name, opt, sizeof opt);
         if (len < 6) continue;
         char desc[256];
         af_desc_of(opt, len, desc, sizeof desc);
         if (strcmp(desc, AF_ENTRY_DESC) != 0) continue;
-        *out = nums[i];
-        return 1;
+        if (first < 0) first = i;
+        if (!know) break;
+        char g[64];
+        if (hd_partuuid(opt, len, g, sizeof g) == 0 && !strcasecmp(g, own)) {
+            *out = nums[i];
+            g_entry_by_partition = 1;
+            return 1;
+        }
     }
-    return 0;
+    /* KNOWING OURS AND NOT FINDING IT IS AN ANSWER: there is no entry
+     * for this install, and the ones called AurOS are somebody else's
+     * or dead. Promoting one of them is the bug above. */
+    if (know) return 0;
+    if (first < 0) return 0;
+    *out = nums[first];
+    return 1;
 }
 
 /* -1 means "there is no BootOrder"; -2 means "there is one and it is
@@ -141,6 +349,14 @@ void af_publish(const af_state *s)
     fprintf(f, "writable=%s\n", s->writable ? "yes" : "no");
     fprintf(f, "converted=%s\n", s->have_entry ? "yes" : "no");
     if (s->have_entry) fprintf(f, "entry=%04X\n", s->entry);
+    /* HOW it was chosen, because the two ways are not equally sure:
+     * "partition" is the entry that names this install's own boot
+     * partition, "description" is the first one called AurOS, used
+     * only when which partition that is could not be worked out. A
+     * machine that says "description" is one on which a second AurOS
+     * entry could still be mistaken for ours, and a test can see it. */
+    if (s->have_entry)
+        fprintf(f, "entry_by=%s\n", af_entry_by());
     fprintf(f, "is_default=%s\n", s->is_default ? "yes" : "no");
     fprintf(f, "bootnext=%s\n", s->bootnext ? "yes" : "no");
     fprintf(f, "confirmed=%s\n", s->confirmed ? "yes" : "no");

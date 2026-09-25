@@ -221,4 +221,9 @@ void af_desc_of(const uint8_t *opt, int len, char *out, size_t n);
  * not read it" is not evidence against an entry. */
 int  af_boot_bootable(uint16_t num);
 
+/* How af_look() chose our entry: "partition" when it names the boot
+ * partition this install starts from, "description" when that could
+ * not be worked out and the first entry called AurOS was taken. */
+const char *af_entry_by(void);
+
 #endif
