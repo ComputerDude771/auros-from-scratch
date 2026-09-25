@@ -315,6 +315,16 @@ static int   g_sel_lang = 0, g_sel_kbd = 0, g_sel_tz = 0, g_sel_theme = 0;
  * image's profile — it travels in ab_choice.shell_archetype. */
 static int   g_sel_shell = SHELL_DEFAULT;
 
+#define OPT_MAX 10
+/* Each chip is a label she reads AND a value the installed system can
+ * act on, kept side by side. The values used to not exist: the chips
+ * were words, only the words were kept, and nothing she chose here
+ * reached AurOS (choices.conf, written in phase 3, is where they go
+ * now -- see ab_choice in phases.h for the forms). */
+static wchar_t g_langs[OPT_MAX][96]; static char g_lang_v[OPT_MAX][64]; static int g_n_langs;
+static wchar_t g_kbds [OPT_MAX][96]; static char g_kbd_v [OPT_MAX][64]; static int g_n_kbds;
+static wchar_t g_tzs  [OPT_MAX][96]; static char g_tz_v  [OPT_MAX][96]; static int g_n_tzs;
+
 /* detected-from-Windows defaults, filled in at startup */
 static wchar_t g_det_lang[96], g_det_kbd[96], g_det_tz[128];
 
@@ -1162,6 +1172,30 @@ static DWORD WINAPI ab_worker(LPVOID p)
     return 0;
 }
 
+/* WHAT SHE CHOSE ON THE PERSONALIZE AND DESKTOP PAGES, as values the
+ * installed system can act on. Its own function so that --navtest can
+ * pick chips and read back what the engine would be handed; the
+ * language used to be the constant "en" and nothing else travelled. */
+static void choices_from_page(ab_choice *c)
+{
+    _snprintf(c->shell_archetype, sizeof c->shell_archetype - 1, "%s",
+              SHELLS[g_sel_shell].id);
+    _snprintf(c->language, sizeof c->language - 1, "%s", g_lang_v[g_sel_lang]);
+    _snprintf(c->keyboard, sizeof c->keyboard - 1, "%s", g_kbd_v[g_sel_kbd]);
+    _snprintf(c->timezone, sizeof c->timezone - 1, "%s", g_tz_v[g_sel_tz]);
+    /* The theme's id is its file name, which is its display name in
+     * lower case (themes/<id>.theme). */
+    char t[32];
+    int k = WideCharToMultiByte(CP_UTF8, 0, THEMES[g_sel_theme].name, -1,
+                                t, sizeof t, NULL, NULL);
+    c->theme[0] = 0;
+    if (k > 0) {
+        for (char *p = t; *p; p++)
+            if (*p >= 'A' && *p <= 'Z') *p = (char)(*p - 'A' + 'a');
+        _snprintf(c->theme, sizeof c->theme - 1, "%s", t);
+    }
+}
+
 static void install_begin(void)
 {
     ab_lock_init();
@@ -1177,14 +1211,9 @@ static void install_begin(void)
     g_install_finished = 0;
 
     memset(&g_ab_choice, 0, sizeof g_ab_choice);
-    /* The archetype is the one choice with a stable identifier of its
-     * own (shells/<id>.shell), so it is the one that travels as text. */
-    _snprintf(g_ab_choice.shell_archetype,
-              sizeof g_ab_choice.shell_archetype - 1, "%s",
-              SHELLS[g_sel_shell].id);
     _snprintf(g_ab_choice.profile, sizeof g_ab_choice.profile - 1, "%s",
               "desktop");
-    _snprintf(g_ab_choice.language, sizeof g_ab_choice.language - 1, "%s", "en");
+    choices_from_page(&g_ab_choice);
     /* NO MEMORY STICK. See page_backup() and docs/AURBRIDGE.md,
      * "Installing without a memory stick". */
     g_ab_choice.no_stick = 1;
@@ -1290,26 +1319,61 @@ static void install_cancel(void)
 /* ═══════════════════════════════════════════════════════════════════
  *  What Windows already knows about this user
  * ═══════════════════════════════════════════════════════════════════ */
-#define OPT_MAX 10
-static wchar_t g_langs[OPT_MAX][96]; static int g_n_langs;
-static wchar_t g_kbds [OPT_MAX][96]; static int g_n_kbds;
-static wchar_t g_tzs  [OPT_MAX][96];  static int g_n_tzs;
 
-static void opt_push(wchar_t (*list)[96], int *n, const wchar_t *s)
+static void opt_push(wchar_t (*list)[96], char (*vals)[64], int *n,
+                     const wchar_t *label, const char *value)
 {
-    if (!s || !*s || *n >= OPT_MAX) return;
-    for (int i = 0; i < *n; i++) if (!_wcsicmp(list[i], s)) return;
-    wcsncpy(list[*n], s, 95); list[*n][95] = 0; (*n)++;
+    if (!label || !*label || *n >= OPT_MAX) return;
+    for (int i = 0; i < *n; i++) if (!_wcsicmp(list[i], label)) return;
+    wcsncpy(list[*n], label, 95); list[*n][95] = 0;
+    snprintf(vals[*n], 64, "%s", value ? value : "");
+    (*n)++;
 }
+/* The time-zone values are longer ("windows:" and a Windows key name),
+ * so they get their own width. */
+static void tz_push(const wchar_t *label, const char *value)
+{
+    if (!label || !*label || g_n_tzs >= OPT_MAX) return;
+    for (int i = 0; i < g_n_tzs; i++) if (!_wcsicmp(g_tzs[i], label)) return;
+    wcsncpy(g_tzs[g_n_tzs], label, 95); g_tzs[g_n_tzs][95] = 0;
+    snprintf(g_tz_v[g_n_tzs], sizeof g_tz_v[0], "%s", value ? value : "");
+    g_n_tzs++;
+}
+
+typedef DWORD (WINAPI *PFN_GDTZI)(PDYNAMIC_TIME_ZONE_INFORMATION);
 
 static void detect_defaults(void)
 {
+    /* LANGUAGE: Windows' locale name, "en-GB", is a glibc one, en_GB,
+     * with a hyphen for an underscore -- when it has that shape. A name
+     * with a script in it ("zh-Hans-CN") keeps its label and gets no
+     * value: first boot then leaves the language to Ferry, which reads
+     * it out of Windows itself, rather than guessing. */
     wchar_t name[LOCALE_NAME_MAX_LENGTH];
+    char det_lang_v[64] = "";
     if (GetUserDefaultLocaleName(name, LOCALE_NAME_MAX_LENGTH)) {
         if (!GetLocaleInfoEx(name, LOCALE_SLOCALIZEDDISPLAYNAME, g_det_lang, 96))
             wcsncpy(g_det_lang, name, 95);
+        char a[LOCALE_NAME_MAX_LENGTH];
+        if (WideCharToMultiByte(CP_UTF8, 0, name, -1, a, sizeof a, NULL, NULL) > 0) {
+            size_t l = strlen(a);
+            int ok = (l == 5 || l == 6) && a[l - 3] == '-';
+            for (size_t i = 0; ok && i < l; i++) {
+                char ch = a[i];
+                if (i < l - 3) ok = ch >= 'a' && ch <= 'z';
+                else if (i > l - 3) ok = ch >= 'A' && ch <= 'Z';
+            }
+            if (ok) {
+                a[l - 3] = '_';
+                snprintf(det_lang_v, sizeof det_lang_v, "%s.UTF-8", a);
+            }
+        }
     }
+    /* KEYBOARD: the layout's id (KLID), which Ferry's table maps to an
+     * XKB layout on the other side. The label is Windows' own name for
+     * it, out of the registry. */
     wchar_t klid[KL_NAMELENGTH];
+    char det_kbd_v[64] = "";
     if (GetKeyboardLayoutNameW(klid)) {
         wchar_t sub[200];
         _snwprintf(sub, 199,
@@ -1323,42 +1387,62 @@ static void detect_defaults(void)
                 g_det_kbd[0] = 0;
             RegCloseKey(k);
         }
+        char a[16];
+        if (WideCharToMultiByte(CP_UTF8, 0, klid, -1, a, sizeof a, NULL, NULL) > 0 &&
+            strlen(a) == 8)
+            snprintf(det_kbd_v, sizeof det_kbd_v, "klid:%s", a);
     }
-    TIME_ZONE_INFORMATION tzi;
-    memset(&tzi, 0, sizeof tzi);
-    if (GetTimeZoneInformation(&tzi) != TIME_ZONE_ID_INVALID)
-        wcsncpy(g_det_tz, tzi.StandardName, 127);
+    /* TIME ZONE: Windows' key name ("Pacific Standard Time"), which is
+     * what the CLDR table on the other side is keyed by. It is in the
+     * DYNAMIC structure, which is Vista and later, reached by
+     * GetProcAddress so the binary still loads on anything older. */
+    char det_tz_v[96] = "";
+    {
+        TIME_ZONE_INFORMATION tzi;
+        memset(&tzi, 0, sizeof tzi);
+        if (GetTimeZoneInformation(&tzi) != TIME_ZONE_ID_INVALID)
+            wcsncpy(g_det_tz, tzi.StandardName, 127);
+        PFN_GDTZI gd = (PFN_GDTZI)(void (*)(void))GetProcAddress(
+            GetModuleHandleW(L"kernel32.dll"), "GetDynamicTimeZoneInformation");
+        DYNAMIC_TIME_ZONE_INFORMATION d;
+        memset(&d, 0, sizeof d);
+        char a[160];
+        if (gd && gd(&d) != TIME_ZONE_ID_INVALID && d.TimeZoneKeyName[0] &&
+            WideCharToMultiByte(CP_UTF8, 0, d.TimeZoneKeyName, -1, a, sizeof a,
+                                NULL, NULL) > 0)
+            snprintf(det_tz_v, sizeof det_tz_v, "windows:%s", a);
+    }
 
     /* The value Windows is already using goes first and is preselected:
      * the common case should need no clicks at all. */
-    opt_push(g_langs, &g_n_langs, g_det_lang);
-    opt_push(g_langs, &g_n_langs, L"English (United States)");
-    opt_push(g_langs, &g_n_langs, L"English (United Kingdom)");
-    opt_push(g_langs, &g_n_langs, L"Español");
-    opt_push(g_langs, &g_n_langs, L"Français");
-    opt_push(g_langs, &g_n_langs, L"Deutsch");
-    opt_push(g_langs, &g_n_langs, L"Português");
-    opt_push(g_langs, &g_n_langs, L"Italiano");
-    opt_push(g_langs, &g_n_langs, L"Polski");
+    opt_push(g_langs, g_lang_v, &g_n_langs, g_det_lang, det_lang_v);
+    opt_push(g_langs, g_lang_v, &g_n_langs, L"English (United States)", "en_US.UTF-8");
+    opt_push(g_langs, g_lang_v, &g_n_langs, L"English (United Kingdom)", "en_GB.UTF-8");
+    opt_push(g_langs, g_lang_v, &g_n_langs, L"Español", "es_ES.UTF-8");
+    opt_push(g_langs, g_lang_v, &g_n_langs, L"Français", "fr_FR.UTF-8");
+    opt_push(g_langs, g_lang_v, &g_n_langs, L"Deutsch", "de_DE.UTF-8");
+    opt_push(g_langs, g_lang_v, &g_n_langs, L"Português (Brasil)", "pt_BR.UTF-8");
+    opt_push(g_langs, g_lang_v, &g_n_langs, L"Italiano", "it_IT.UTF-8");
+    opt_push(g_langs, g_lang_v, &g_n_langs, L"Polski", "pl_PL.UTF-8");
 
-    opt_push(g_kbds, &g_n_kbds, g_det_kbd);
-    opt_push(g_kbds, &g_n_kbds, L"US");
-    opt_push(g_kbds, &g_n_kbds, L"United Kingdom");
-    opt_push(g_kbds, &g_n_kbds, L"Spanish");
-    opt_push(g_kbds, &g_n_kbds, L"French (AZERTY)");
-    opt_push(g_kbds, &g_n_kbds, L"German (QWERTZ)");
-    opt_push(g_kbds, &g_n_kbds, L"Portuguese (Brazil)");
+    opt_push(g_kbds, g_kbd_v, &g_n_kbds, g_det_kbd, det_kbd_v);
+    opt_push(g_kbds, g_kbd_v, &g_n_kbds, L"US", "xkb:us");
+    opt_push(g_kbds, g_kbd_v, &g_n_kbds, L"United Kingdom", "xkb:gb");
+    opt_push(g_kbds, g_kbd_v, &g_n_kbds, L"Spanish", "xkb:es");
+    opt_push(g_kbds, g_kbd_v, &g_n_kbds, L"French (AZERTY)", "xkb:fr");
+    opt_push(g_kbds, g_kbd_v, &g_n_kbds, L"German (QWERTZ)", "xkb:de");
+    opt_push(g_kbds, g_kbd_v, &g_n_kbds, L"Portuguese (Brazil)", "xkb:br");
 
-    opt_push(g_tzs, &g_n_tzs, g_det_tz);
-    opt_push(g_tzs, &g_n_tzs, L"GMT Standard Time");
-    opt_push(g_tzs, &g_n_tzs, L"Central European Time");
-    opt_push(g_tzs, &g_n_tzs, L"Eastern Time (US & Canada)");
-    opt_push(g_tzs, &g_n_tzs, L"Central Time (US & Canada)");
-    opt_push(g_tzs, &g_n_tzs, L"Pacific Time (US & Canada)");
+    tz_push(g_det_tz, det_tz_v);
+    tz_push(L"London", "iana:Europe/London");
+    tz_push(L"Paris, Berlin, Madrid, Rome", "iana:Europe/Paris");
+    tz_push(L"New York (Eastern)", "iana:America/New_York");
+    tz_push(L"Chicago (Central)", "iana:America/Chicago");
+    tz_push(L"Los Angeles (Pacific)", "iana:America/Los_Angeles");
 
-    if (!g_n_langs) opt_push(g_langs, &g_n_langs, L"English (United States)");
-    if (!g_n_kbds)  opt_push(g_kbds,  &g_n_kbds,  L"US");
-    if (!g_n_tzs)   opt_push(g_tzs, &g_n_tzs, L"GMT Standard Time");
+    if (!g_n_langs) opt_push(g_langs, g_lang_v, &g_n_langs, L"English (United States)", "en_US.UTF-8");
+    if (!g_n_kbds)  opt_push(g_kbds, g_kbd_v, &g_n_kbds, L"US", "xkb:us");
+    if (!g_n_tzs)   tz_push(L"London", "iana:Europe/London");
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -3496,6 +3580,33 @@ static int nav_test(const char *dir)
     nt_check(!nav_allowed(PAGE_PROGRESS), "install refused until the drive is confirmed");
     g_ready_confirm = 1;
     nt_check(nav_allowed(PAGE_PROGRESS), "install reachable at the end of a clean run");
+
+    if (g_nt) fprintf(g_nt, "\n3b. what she picks is what the engine is handed\n");
+    {
+        detect_defaults();
+        int es = -1, kes = -1, lon = -1, moss = -1, tb = -1;
+        for (int i = 0; i < g_n_langs; i++) if (!wcscmp(g_langs[i], L"Español")) es = i;
+        for (int i = 0; i < g_n_kbds; i++)  if (!wcscmp(g_kbds[i], L"Spanish")) kes = i;
+        for (int i = 0; i < g_n_tzs; i++)   if (!wcscmp(g_tzs[i], L"London")) lon = i;
+        for (int i = 0; i < N_THEMES; i++)  if (!wcscmp(THEMES[i].name, L"Moss")) moss = i;
+        for (int i = 0; i < N_SHELLS; i++)  if (!strcmp(SHELLS[i].id, "taskbar")) tb = i;
+        nt_check(es >= 0 && kes >= 0 && lon >= 0 && moss >= 0 && tb >= 0,
+                 "the chips the check picks are all offered");
+        if (es >= 0 && kes >= 0 && lon >= 0 && moss >= 0 && tb >= 0) {
+            g_sel_lang = es; g_sel_kbd = kes; g_sel_tz = lon;
+            g_sel_theme = moss; g_sel_shell = tb;
+            ab_choice c;
+            memset(&c, 0, sizeof c);
+            choices_from_page(&c);
+            nt_check(!strcmp(c.language, "es_ES.UTF-8"), "Español travels as es_ES.UTF-8");
+            nt_check(!strcmp(c.keyboard, "xkb:es"), "the Spanish keyboard travels as xkb:es");
+            nt_check(!strcmp(c.timezone, "iana:Europe/London"), "London travels as Europe/London");
+            nt_check(!strcmp(c.theme, "moss"), "the Moss look travels as moss");
+            nt_check(!strcmp(c.shell_archetype, "taskbar"), "the taskbar desktop travels as taskbar");
+        }
+        g_sel_lang = g_sel_kbd = g_sel_tz = g_sel_theme = 0;
+        g_sel_shell = SHELL_DEFAULT;
+    }
 
     if (g_nt) fprintf(g_nt, "\n4. a block appears after the user answered everything\n");
     nt_fake_report(1);

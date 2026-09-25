@@ -61,6 +61,12 @@ mkdir -p "$SIM/esp" "$TMP/win/AurOS"
 printf '0\t%s\t%s\t512\tAUROSTEST\tQEMU\t0\n' "$DISK" "$(stat -c%s "$DISK")" \
     > "$SIM/disks.txt"
 cp "$AIMG" "$TMP/win/AurOS/auros-desktop.img"
+# And what she chose on the personalize page, the way the wizard hands
+# it over: a Windows keyboard id and time-zone key, which first boot
+# maps with Ferry's tables (tools/choicestest.sh proves that half).
+export AURBRIDGE_LANGUAGE=es_ES.UTF-8 AURBRIDGE_KEYBOARD=klid:0000040A \
+       AURBRIDGE_TIMEZONE="windows:Romance Standard Time" \
+       AURBRIDGE_THEME=moss AURBRIDGE_SHELL=taskbar
 if out/aurbridge-sim "$SIM" desktop none "$TMP/win/AurOS/auros-desktop.img" \
        out/auros-staging-vmlinuz out/auros-staging.img \
        > "$TMP/sim.out" 2> "$TMP/sim.err" && grep -q 'verdict=armed' "$TMP/sim.out"; then
@@ -72,6 +78,18 @@ fi
 [ -f "$TMP/win/AurOS/auros-desktop.img.manifest" ] \
     && ok "...and wrote the image's manifest beside it" \
     || bad "...and wrote the image's manifest beside it"
+CH="$SIM/esp/EFI/AurOS/choices.conf"
+if grep -qx 'language=es_ES.UTF-8' "$CH" 2>/dev/null &&
+   grep -qx 'keyboard=klid:0000040A' "$CH" &&
+   grep -qx 'timezone=windows:Romance Standard Time' "$CH" &&
+   grep -qx 'theme=moss' "$CH" && grep -qx 'shell=taskbar' "$CH"; then
+    ok "...and what she chose, on the EFI partition for first boot"
+else
+    bad "...and what she chose, on the EFI partition for first boot" \
+        "$(cat "$CH" 2>/dev/null || echo 'no choices.conf')"
+fi
+unset AURBRIDGE_LANGUAGE AURBRIDGE_KEYBOARD AURBRIDGE_TIMEZONE \
+      AURBRIDGE_THEME AURBRIDGE_SHELL
 if grep -q 'stick' "$SIM/ran.log" 2>/dev/null; then :; fi
 INITRD="$SIM/esp/EFI/AurOS/staging.img"
 if gzip -dc "$INITRD" 2>/dev/null | cpio -i --to-stdout aurbridge/journal.json 2>/dev/null \

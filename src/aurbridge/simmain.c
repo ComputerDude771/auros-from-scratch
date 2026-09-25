@@ -129,8 +129,22 @@ int main(int argc, char **argv)
     snprintf(c.image_path, sizeof c.image_path, "%s", argv[4]);
     snprintf(c.kernel_path, sizeof c.kernel_path, "%s", argv[5]);
     snprintf(c.initrd_path, sizeof c.initrd_path, "%s", argv[6]);
-    snprintf(c.shell_archetype, sizeof c.shell_archetype, "%s", "familiar");
-    snprintf(c.language, sizeof c.language, "%s", "en");
+    /* The personalize page's answers, from the environment when a test
+     * wants to see them arrive: AURBRIDGE_LANGUAGE, _KEYBOARD, _TIMEZONE,
+     * _THEME, _SHELL. Empty otherwise, which is a choices.conf with
+     * nothing in it -- the image's defaults. */
+    {
+        const struct { const char *env; char *dst; size_t n; } E[] = {
+            { "AURBRIDGE_LANGUAGE", c.language, sizeof c.language },
+            { "AURBRIDGE_KEYBOARD", c.keyboard, sizeof c.keyboard },
+            { "AURBRIDGE_TIMEZONE", c.timezone, sizeof c.timezone },
+            { "AURBRIDGE_THEME",    c.theme,    sizeof c.theme },
+            { "AURBRIDGE_SHELL",    c.shell_archetype, sizeof c.shell_archetype },
+        };
+        for (size_t i = 0; i < sizeof E / sizeof E[0]; i++)
+            if (getenv(E[i].env))
+                snprintf(E[i].dst, E[i].n, "%s", getenv(E[i].env));
+    }
     /* The simulated person agrees. On a real machine nothing but a
      * person sets this, and phase 1 refuses without it -- which
      * ab_selftest checks and this does not, because a test that has to

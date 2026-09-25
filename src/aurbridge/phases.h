@@ -83,7 +83,18 @@ int ab_pieces_parse(const char *text, ab_pieces *out, char *why, size_t n);
 typedef struct {
     char profile[64];          /* "desktop", "school-kiosk"           */
     char shell_archetype[32];  /* shells/<id>.shell                   */
-    char language[16];
+    /* WHAT SHE CHOSE ON THE PERSONALIZE PAGE, as values the installed
+     * system can act on rather than the words on the chips. Written to
+     * \EFI\AurOS\choices.conf in phase 3 and applied at first boot
+     * (rootfs/usr/lib/auros/choices.sh). Any of them may be empty.
+     *   language   a glibc locale:         "es_ES.UTF-8"
+     *   keyboard   "xkb:<layout>[:<var>]"  or "klid:<8 hex>" (Windows')
+     *   timezone   "iana:<Area/City>"      or "windows:<TimeZoneKeyName>"
+     *   theme      themes/<id>.theme       "moss"                        */
+    char language[32];
+    char keyboard[64];
+    char timezone[96];
+    char theme[32];
     char stick_serial[64];     /* the disk she nominated (R4/R11)     */
 
     /* Where the image is, or will be. The wizard fills this in from

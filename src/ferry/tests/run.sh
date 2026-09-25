@@ -172,6 +172,19 @@ case "$TZ" in
     *) bad "timezone mapping failed: $TZ" ;;
 esac
 
+# WHAT SHE CHOSE IN THE INSTALLER WINS. First boot records it in
+# /etc/auros/installer-choices.conf (rootfs/usr/lib/auros/choices.sh);
+# the Windows value is still suggested, but not applied over it.
+rm -rf "$TMP/state3b"
+printf 'timezone=America/New_York\n' > "$TMP/choices.conf"
+OUT=$(FERRY_CHOICES="$TMP/choices.conf" FERRY_STATE="$TMP/state3b" \
+      ferry-settings --root "$WIN" --home "$TMP/h3b" --owner "$(id -un)" \
+      --only timezone --dry-run 2>&1)
+case "$OUT" in
+    *"kept as chosen in the installer"*) ok "a time zone chosen in the installer is not overwritten" ;;
+    *) bad "installer choice overwritten by the Windows timezone: $OUT" ;;
+esac
+
 echo "safety gate:"
 sh "$HERE/mkfakewin.sh" "$TMP/hib" --hibernated >/dev/null
 rm -rf "$TMP/state4"

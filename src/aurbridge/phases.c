@@ -1390,6 +1390,48 @@ static int phase_prepare_nostick(const ab_choice *c, ab_machine *m,
     return 0;
 }
 
+/* ── what she chose, for the installed system ────────────────────── */
+
+/* A value that goes into choices.conf: printable, no '=' ambiguity is
+ * possible because the reader takes everything after the first '=',
+ * and no newline, which is the one character that could make one
+ * answer into two. The installed side checks every value again against
+ * what it actually has; this only keeps the file well-formed. */
+static int choice_value_ok(const char *v)
+{
+    if (!v || !*v) return 0;
+    for (const char *p = v; *p; p++)
+        if ((unsigned char)*p < 0x20 || (unsigned char)*p > 0x7E) return 0;
+    return strlen(v) < 96;
+}
+
+/* \EFI\AurOS\choices.conf. The EFI partition is the one place both
+ * sides of the restart can reach that the install leaves exactly as it
+ * found it, and it is written in both modes, stick or not. A failure
+ * here is a note, not a refusal: AurOS installs with its defaults. */
+static void write_choices(const ab_choice *c, const char *esp,
+                          ab_say say, void *ud)
+{
+    char buf[1024], path[512], w[PLAT_WHY];
+    int k = snprintf(buf, sizeof buf,
+                     "# What was chosen in the AurOS installer. Applied once, at\n"
+                     "# AurOS's first start (/usr/lib/auros/choices.sh).\n");
+    const struct { const char *key, *val; } kv[] = {
+        { "language", c->language }, { "keyboard", c->keyboard },
+        { "timezone", c->timezone }, { "theme",    c->theme },
+        { "shell",    c->shell_archetype },
+    };
+    for (size_t i = 0; i < sizeof kv / sizeof kv[0]; i++)
+        if (choice_value_ok(kv[i].val) && k > 0 && (size_t)k < sizeof buf)
+            k += snprintf(buf + k, sizeof buf - (size_t)k, "%s=%s\n",
+                          kv[i].key, kv[i].val);
+    if (k <= 0 || (size_t)k >= sizeof buf) return;
+    snprintf(path, sizeof path, "%s/EFI/AurOS/choices.conf", esp);
+    if (plat_file_put(path, buf, (size_t)k, w, sizeof w) != 0)
+        talk(say, ud, "your language, keyboard and look could not be written "
+                      "down (%s); AurOS will start with its own", w);
+}
+
 /* ── phase 3: the last thing before the restart ──────────────────── */
 
 static int phase_handoff(const ab_choice *c, pf_report *r, ab_machine *m,
@@ -1584,6 +1626,7 @@ static int phase_handoff(const ab_choice *c, pf_report *r, ab_machine *m,
         talk(say, ud, "NOTE: this build starts the installer directly, which "
                       "only works with Secure Boot off");
     }
+    write_choices(c, esp, say, ud);
     plat_esp_close();
     /* Anything that was unpacked to get here is gone again. The bytes
      * that matter are on the EFI partition now. */
