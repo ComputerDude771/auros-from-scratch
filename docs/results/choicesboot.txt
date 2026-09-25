@@ -1,0 +1,19 @@
+
+Does the real image start up the way the installer was told to?
+
+  booting the image from firmware (this is slow under emulation)
+    first boot finished (after about 210s)                       ok
+
+  what the installed system now says
+    its language is Spanish                                      ok
+    ...and the Spanish locale was generated, not just named      ok
+    its keyboard is Spanish (from Windows' KLID 0000040A)        ok
+    its clock keeps Paris time (from 'Romance Standard Time')    ok
+    it looks like Moss                                           ok
+    it works like the taskbar desktop                            ok
+    and all five are recorded, so Ferry leaves them alone        ok
+    first boot's own log says so                                 ok
+
+9 checks: the real image starts up in the language, keyboard, time
+zone, look and desktop the installer was told.
+exit=0
