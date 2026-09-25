@@ -43,15 +43,32 @@ Does it install AurOS with no memory stick, and leave Windows intact?
     and every file in Windows is exactly what it was             ok
 
   and the restart itself, from firmware, with Secure Boot on
-    AurBridge arms it through shim and grub                      ok
+    AurBridge arms it through shim and grub, having read the db  ok
     ...the entry starts shim, with no command line of its own    ok
-    ...and grub reads a configuration that says whose it is      ok
+    ...and grub's configuration is beside it, saying whose it is ok
+    ...having written nothing outside \EFI\AurOS, and left Ubuntu's alone ok
     the start-up files are on the machine's EFI partition        ok
     the old entry (the kernel itself) is refused under Secure Boot ok
     through shim and grub it installs, and AurOS starts          ok
     ...knowing the disk by its partition table, not the serial   ok
     ...and the installer reported success                        ok
+    ...with a real Ubuntu's grub.cfg on the same partition, untouched ok
+    ...with the kernel locked down, as Secure Boot makes it      ok
+    ...where the NTFS reader, a module, still loaded             ok
+    ...and EFI variables could be written: AurOS's entry in, the installer's out ok
 
-32 checks: with no memory stick, it installs AurOS, starts it,
+  a Secured-core PC, whose firmware does not trust the key shim is signed with
+    its firmware refuses shim (so this check matters)            ok
+    AurBridge refuses it at the first check                      ok
+    ...saying: Allow Microsoft 3rd Party UEFI CA                 ok
+    ...having written nothing: no files, no variables, the disk unchanged ok
+
+  a 2023-keys-only PC, whose firmware does not trust the key shim is signed with
+    its firmware refuses shim (so this check matters)            ok
+    AurBridge refuses it at the first check                      ok
+    ...saying: too old for this PC                               ok
+    ...having written nothing: no files, no variables, the disk unchanged ok
+
+45 checks: with no memory stick, it installs AurOS, starts it,
 puts Windows back from the copy on the disk, and every file in Windows
 is exactly what it was.

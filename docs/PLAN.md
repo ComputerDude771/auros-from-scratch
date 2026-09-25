@@ -289,7 +289,7 @@ What proves it, and the numbers are the current transcripts in
 | | |
 |---|---|
 | `installtest.sh` | 37 — install, start, put Windows back twice, refuse a damaged copy, refuse a stick for another AurOS |
-| `nosticktest.sh` | 31 — the same with no stick at all: image read from inside Windows, the way back kept on the disk, and the restart through shim and grub from firmware with Secure Boot on |
+| `nosticktest.sh` | 45 — the same with no stick at all: image read from inside Windows, the way back kept on the disk, the restart through shim and grub from firmware with Secure Boot on and the kernel locked down, and two firmwares that do not trust shim's key, each refused by AurBridge before anything changes |
 | `loadertest.sh` | 18 — and does it come back up in AurOS with the stick out, including under Secure Boot |
 | `powercuttest.sh` | 138 — the power goes at each of seventeen named instants |
 | `matrixtest.sh` | 10 — shapes of computer that cannot be bought |
