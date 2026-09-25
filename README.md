@@ -43,6 +43,12 @@ branch before running it.
 
 | | |
 |---|---|
-| SHA-256 | `005fe4d888d46e78894a7f3ff8a213f5522bcc172b20ce398fb7a6726b4d8b61` |
-| built from | branch `claude/laughing-cray-ayao6i` |
-| tested | `tools/installtest.sh` 37/37, `tools/nosticktest.sh` 31/31 |
+| SHA-256 | `540a0bf2ac6013084259a1b230cc9a34f894bf630cd9447e905a1b8a7a6a1379` |
+| downloads | the v2 image (`v2/pieces.txt`) |
+| built from | branch `claude/laughing-cray-ayao6i`, commit `43c4db0` |
+| tested | `tools/installtest.sh` 37/37, `tools/nosticktest.sh` 32/32, `tools/choicesboottest.sh` 9/9; downloads and checks v2 from here under Wine |
+
+It keeps what is chosen on its *Make it yours* page: AurOS starts in
+that language, keyboard layout, time zone, look and desktop. The
+previous test installer (SHA-256 `005fe4d8...`) downloaded v1, which
+ignored those choices.
