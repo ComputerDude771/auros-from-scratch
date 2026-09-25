@@ -43,12 +43,21 @@ branch before running it.
 
 | | |
 |---|---|
-| SHA-256 | `540a0bf2ac6013084259a1b230cc9a34f894bf630cd9447e905a1b8a7a6a1379` |
+| SHA-256 | `3e32e929f57c5c2673f4547a09b44c827743d191120d22a57dfc6f28a4f3e875` |
 | downloads | the v2 image (`v2/pieces.txt`) |
-| built from | branch `claude/laughing-cray-ayao6i`, commit `43c4db0` |
-| tested | `tools/installtest.sh` 37/37, `tools/nosticktest.sh` 32/32, `tools/choicesboottest.sh` 9/9; downloads and checks v2 from here under Wine |
+| built from | branch `claude/laughing-cray-ayao6i`, commit `cd437e1` |
+| tested | `tools/installtest.sh` 37/37, `tools/nosticktest.sh` 45/45, `tools/choicesboottest.sh` 9/9; the same piece list downloaded and checked from here under Wine |
 
 It keeps what is chosen on its *Make it yours* page: AurOS starts in
-that language, keyboard layout, time zone, look and desktop. The
-previous test installer (SHA-256 `005fe4d8...`) downloaded v1, which
-ignored those choices.
+that language, keyboard layout, time zone, look and desktop.
+
+**Leave Secure Boot on.** The restart goes through Microsoft-signed
+shim; before changing anything the installer reads the firmware's list
+of trusted keys and, on the rare PC that would refuse shim (some
+Secured-core laptops), stops and shows the one setting to switch on. It
+writes nothing outside `\EFI\AurOS`, so a PC that also has Ubuntu is
+fine.
+
+Earlier test installers: `540a0bf2...` (v2, choices kept; wrote a file
+in `\EFI\ubuntu` and refused PCs with Ubuntu), `005fe4d8...` (v1, ignored
+the choices).
