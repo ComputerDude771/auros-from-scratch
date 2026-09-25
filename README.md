@@ -19,6 +19,21 @@ Deleting this branch removes the image from the installer's reach; any
 installer built against it will then refuse, before changing anything,
 that it cannot download AurOS.
 
+## v2: the installer's choices, and a real locale
+
+`v2/` holds a newer build of the same image: first boot applies the
+language, keyboard, time zone, look and desktop chosen in the installer
+(`/usr/lib/auros/choices.sh`), and the image has the `locales` package,
+so its locale is actually generated. The pieces at the top level are
+v1, kept so that installers built against them keep working.
+
+| | |
+|---|---|
+| image | `auros-desktop.img`, 5,325,717,504 bytes |
+| image SHA-256 | `c361d06d700f90feb9628fd3b486b07eb23e1991aa751605409b163f6ba5a45a` |
+| compressed SHA-256 | `1c93135eb1ad402299d05add705f2da485f25360bd13d0ea0d7753ea5bc328a1` |
+| pieces | `v2/pieces.txt` |
+
 ## The test installer
 
 `AurOS-Installer-test.exe` is the unsigned no-stick test build of the
