@@ -18,3 +18,16 @@ each piece and then the whole image before it uses any of it.
 Deleting this branch removes the image from the installer's reach; any
 installer built against it will then refuse, before changing anything,
 that it cannot download AurOS.
+
+## The test installer
+
+`AurOS-Installer-test.exe` is the unsigned no-stick test build of the
+AurBridge installer that downloads the pieces above. It is for spare
+PCs and virtual machines only; read `docs/TRY-IT.md` on the development
+branch before running it.
+
+| | |
+|---|---|
+| SHA-256 | `005fe4d888d46e78894a7f3ff8a213f5522bcc172b20ce398fb7a6726b4d8b61` |
+| built from | branch `claude/laughing-cray-ayao6i` |
+| tested | `tools/installtest.sh` 37/37, `tools/nosticktest.sh` 31/31 |
