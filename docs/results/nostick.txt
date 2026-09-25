@@ -5,6 +5,7 @@ Does it install AurOS with no memory stick, and leave Windows intact?
   and a 334 MiB AurOS image, which is going to live inside Windows
     AurBridge (no stick) arms the machine                        ok
     ...and wrote the image's manifest beside it                  ok
+    ...and what she chose, on the EFI partition for first boot   ok
     ...and a journal that says the image is on Windows           ok
     the image is inside Windows (9 files there now)              ok
 
@@ -51,7 +52,6 @@ Does it install AurOS with no memory stick, and leave Windows intact?
     ...knowing the disk by its partition table, not the serial   ok
     ...and the installer reported success                        ok
 
-31 checks: with no memory stick, it installs AurOS, starts it,
+32 checks: with no memory stick, it installs AurOS, starts it,
 puts Windows back from the copy on the disk, and every file in Windows
 is exactly what it was.
-exit=0
