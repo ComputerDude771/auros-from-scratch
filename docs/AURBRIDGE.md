@@ -610,6 +610,40 @@ The other order leaves an instant where the machine has stopped
 re-arming and is still armed once, so the next start reaches AurOS just
 after she said it does not work.
 
+### Which "AurOS" is this AurOS
+
+The firmware menu can hold more than one entry called AurOS, and the
+ordinary way it comes to is: try AurOS, say it does not work, put
+Windows back, try again a month later. "Put Windows back" deletes the
+AurOS partitions and **leaves the firmware's entry where it was**,
+pointing at a partition that no longer exists; the second install adds
+its own, with a higher number.
+
+`aurfirst` used to take the first entry called AurOS, which is the dead
+one. The hold then re-armed `BootNext` to it, the firmware failed it and
+started Windows, and the question was never asked again; and confirming
+put the dead entry first, so the next start skipped it and reached
+Windows — right after she said AurOS works.
+
+So an entry is ours when its Hard Drive node names the partition this
+install starts from: the partition on the same disk as `/` whose GPT
+name is `AUROS-BOOT` (a conversion) or `AUROS-ESP` (the image written
+directly), by the GPT unique GUID udev names its `/dev/disk/by-partuuid`
+link after. Knowing ours and finding no entry for it means there is none
+— promoting somebody else's is the bug. When it cannot be worked out at
+all (no udev, root on LVM) the old rule applies, and the state file says
+`entry_by=description` so that it is visible rather than assumed.
+
+**The dead entry is left in the firmware, deliberately.** "Put Windows
+back" is the most safety-critical path in this product and today it
+writes nothing to NVRAM; adding a write there to tidy a menu line is a
+new way for the one operation that must not fail to fail. With the rule
+above the dead entry is inert — nothing arms it, nothing promotes it,
+and the firmware skips it because its partition is gone. What remains is
+cosmetic: a second "AurOS" line in the firmware's own boot menu, on the
+machines of people who tried twice. It is written down here so that it
+is a decision and not a discovery.
+
 ### And then Ferry
 
 Importing somebody's documents is the first thing this product does

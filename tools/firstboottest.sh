@@ -59,7 +59,8 @@ ok()  { checked=$((checked+1)); printf '    %-60s %s\n' "$1" "ok"; }
 bad() { checked=$((checked+1)); fail=$((fail+1)); printf '    %-60s %s\n' "$1" "FAIL"
         shift; for m in "$@"; do printf '      %s\n' "$m"; done; }
 
-for t in qemu-system-x86_64 zstd sgdisk python3 losetup mount runuser; do
+for t in qemu-system-x86_64 zstd sgdisk python3 losetup mount runuser \
+         mkfs.vfat mmd mcopy; do
     command -v "$t" >/dev/null 2>&1 || { echo "need $t"; exit 2; }
 done
 [ -f "$CODE" ] && [ -f "$VARS" ] || { echo "need OVMF"; exit 2; }
@@ -165,7 +166,7 @@ EOU
 
 # ── a machine, fresh: the image, and firmware as an install leaves it ─
 fresh_machine() {
-    DISK="$T/disk.img"; NV="$T/vars.fd"; BOOTN=0
+    DISK="$T/disk.img"; NV="$T/vars.fd"; BOOTN=0; EXTRA_DRIVES=""
     rm -f "$DISK" "$NV"
     if [ -f "out/auros-$PROFILE.img" ]; then
         cp --sparse=always "out/auros-$PROFILE.img" "$DISK"
@@ -198,7 +199,7 @@ power_on() { # mode
         -drive if=pflash,format=raw,unit=0,readonly=on,file="$CODE" \
         -drive if=pflash,format=raw,unit=1,file="$NV" \
         -drive file="$DISK",format=raw,if=none,id=d0 \
-        -device virtio-blk-pci,drive=d0 \
+        -device virtio-blk-pci,drive=d0 ${EXTRA_DRIVES:-} \
         -device virtio-vga -display none -serial file:"$SER" \
         -net none >/dev/null 2>&1 &
     QP=$!
@@ -250,6 +251,7 @@ echo "  in the state an install leaves it: Windows first, AurOS in the"
 echo "  menu, BootNext pointing at AurOS"
 
 # ═══ A. "it works" ══════════════════════════════════════════════════
+if [ -z "${FIRSTBOOT_ONLY:-}" ]; then
 echo
 echo "  somebody switches it on, and says nothing yet"
 fresh_machine || { echo "  could not prepare the machine"; exit 2; }
@@ -346,49 +348,98 @@ started 0002 && bad "and never to AurOS's own entry" "$(bds | tail -4)" \
              || ok "and never to AurOS's own entry"
 [ -z "$(next)" ] && ok "and nothing ever re-arms the one-shot" \
                  || bad "and nothing ever re-arms the one-shot" "BootNext: $(next)"
+fi
 
-# ═══ C. the second try ══════════════════════════════════════════════
+# ═══ C. two entries called AurOS ═══════════════════════════════════════
 #
-# Somebody tried AurOS, said it did not work, put Windows back -- and
-# tries again a month later. "Put Windows back" deletes the AurOS
-# partitions and leaves the firmware's "AurOS" entry behind, pointing
-# at a partition that no longer exists. The new install adds its own
-# entry with a higher number, because the installer only reuses an
-# entry that names the partition it just made.
+# The firmware menu can hold two entries called AurOS, and the ordinary
+# way it comes to is: try AurOS, say no, put Windows back, try again.
+# "Put Windows back" leaves the old entry behind; the new install adds
+# its own with a higher number. Taken by description, the old one wins:
+# the hold re-arms BootNext to it and confirming puts it first.
 #
-# So there are two entries called AurOS, and the dead one comes first.
-# Taken by description, the hold re-arms BootNext to the dead one --
-# the firmware fails it and starts Windows -- and confirming puts the
-# dead one first in BootOrder, so the next start skips it and reaches
-# Windows. Right after she says AurOS works.
+# WHY THE OTHER ENTRY POINTS AT A PARTITION THAT EXISTS. The first
+# version of this case planted an entry for a partition that had been
+# deleted, which is exactly what "Put Windows back" leaves -- and OVMF
+# quietly deleted it at the next boot and reused its number for one of
+# its own, so three checks below passed with no dead entry left to be
+# mistaken for ours. Real firmware usually does not prune like that,
+# which is why dead entries pile up in the wild; but a test that passes
+# because the firmware tidied up is not testing anything.
+#
+# So the other AurOS is on a SECOND DISK, in a real AUROS-BOOT with a
+# file where its entry says: valid by every rule OVMF has, and the other
+# realistic way to have two. aurfirst has to choose by which disk holds
+# /, and a rule that takes the first one called AurOS takes that one.
+other_disk() {
+    OD="$T/other.img"; rm -f "$OD"; truncate -s 96M "$OD"
+    sgdisk --zap-all "$OD" >/dev/null 2>&1
+    sgdisk -n 1:2048:0 -t 1:ef00 -c 1:AUROS-BOOT \
+           -u 1:5b0c6f2e-9d41-4e0a-8c3a-2f6d1e7b9a40 "$OD" >/dev/null 2>&1 \
+        || return 1
+    set -- $(part_of "$OD" AUROS-BOOT)
+    L2=$(losetup --find --show -o $(( $2 * 512 )) \
+                 --sizelimit $(( ($3 - $2 + 1) * 512 )) "$OD") || return 1
+    mkfs.vfat -n AUROSBOOT "$L2" >/dev/null 2>&1 || { losetup -d "$L2"; return 1; }
+    printf 'not a loader\n' > "$T/stub.efi"
+    MTOOLS_SKIP_CHECK=1 mmd -i "$L2" ::/EFI ::/EFI/AurOS 2>/dev/null
+    MTOOLS_SKIP_CHECK=1 mcopy -i "$L2" "$T/stub.efi" ::/EFI/AurOS/shimx64.efi \
+        || { losetup -d "$L2"; return 1; }
+    losetup -d "$L2"
+    EXTRA_DRIVES="-drive file=$OD,format=raw,if=none,id=d1 -device virtio-blk-pci,drive=d1"
+}
+
+if [ -z "${FIRSTBOOT_ONLY:-}" ] || [ "${FIRSTBOOT_ONLY:-}" = C ]; then
 echo
-echo "  a second try, after Windows was put back once"
+echo "  two entries called AurOS, and the other one comes first"
 fresh_machine || { echo "  could not prepare the machine"; exit 2; }
-python3 "$E" "$NV" plant-hd-raw Boot0001 "AurOS" '\EFI\AurOS\shimx64.efi' \
-    3 5400576 98304 5b0c6f2e-9d41-4e0a-8c3a-2f6d1e7b9a40 \
-    || { echo "  could not plant the stale entry"; exit 2; }
+other_disk    || { echo "  could not make the second disk"; exit 2; }
+python3 "$E" "$NV" plant-hd Boot0001 "AurOS" '\EFI\AurOS\shimx64.efi' "$OD" 1 \
+    || { echo "  could not plant the other entry"; exit 2; }
 power_on none; read_back
-started 0002 && ok "the new install starts from its own entry" \
-             || bad "the new install starts from its own entry" "$(why_not)"
+# THE FIXTURE, CHECKED BEFORE ANYTHING IS CONCLUDED FROM IT.
+python3 "$E" "$NV" entry AurOS >/dev/null 2>&1
+other_there=$(python3 - "$NV" <<'EOPY'
+import sys
+sys.path.insert(0, 'tools')
+import efivarstore as ev
+for n, g, a, d in ev.read_store(sys.argv[1]):
+    if n == 'Boot0001':
+        lo = ev.load_option(d)
+        print('yes' if lo and (lo.get('part_guid') or '').lower()
+              == '5b0c6f2e-9d41-4e0a-8c3a-2f6d1e7b9a40' else 'no')
+EOPY
+)
+[ "$other_there" = yes ] \
+    && ok "the other AurOS entry survived the firmware's own tidying" \
+    || bad "the other AurOS entry survived the firmware's own tidying" \
+           "Boot0001 is no longer it; the checks below would test nothing"
+started 0002 && ok "this install starts from its own entry" \
+             || bad "this install starts from its own entry" "$(why_not)"
 st_by=$(sed -n 's/^entry_by=//p' "$R/first.state.$BOOTN" 2>/dev/null)
 st_en=$(sed -n 's/^entry=//p'    "$R/first.state.$BOOTN" 2>/dev/null)
 [ "$st_en" = "0002" ] \
-    && ok "aurfirst takes the live entry for its own, not the dead one" \
-    || bad "aurfirst takes the live entry for its own, not the dead one" \
+    && ok "aurfirst takes its own entry, not the other disk's" \
+    || bad "aurfirst takes its own entry, not the other disk's" \
            "state says entry=${st_en:-none} entry_by=${st_by:-unset}"
 [ "$st_by" = "partition" ] \
     && ok "...by the partition it names, found from inside the running system" \
     || bad "...by the partition it names, found from inside the running system" \
            "entry_by=${st_by:-unset}: it could not tell which partition it booted from"
 [ "$(next)" = "0002" ] \
-    && ok "and the one-shot is re-armed to the live one" \
-    || bad "and the one-shot is re-armed to the live one" \
-           "BootNext is '$(next)'$( [ "$(next)" = 0001 ] && echo ' -- the dead one')"
+    && ok "and the one-shot is re-armed to its own entry" \
+    || bad "and the one-shot is re-armed to its own entry" \
+           "BootNext is '$(next)'$( [ "$(next)" = 0001 ] && echo ' -- the other disk')"
 power_on confirm; read_back
 [ "$(first_in_order)" = "0002" ] \
-    && ok "saying it works puts the LIVE entry first" \
-    || bad "saying it works puts the LIVE entry first" \
-           "BootOrder: $(order)$( [ "$(first_in_order)" = 0001 ] && echo ' -- the dead one is first; the next start reaches Windows')"
+    && ok "saying it works puts ITS entry first" \
+    || bad "saying it works puts ITS entry first" \
+           "BootOrder: $(order)$( [ "$(first_in_order)" = 0001 ] && echo ' -- the other disk is first')"
+case " $(order) " in
+  *" 0001 "*) ok "and the other AurOS is still in the menu" ;;
+  *) bad "and the other AurOS is still in the menu" "BootOrder: $(order)" ;;
+esac
+fi
 
 echo
 if [ "$fail" -eq 0 ]; then
