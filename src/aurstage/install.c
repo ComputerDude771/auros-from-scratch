@@ -323,10 +323,9 @@ void install_run(const stage_machine *m)
     stage_say("record   %s", why);
 
     /* Which disk, and which partition, named by the record. */
-    const stage_disk *disk = NULL;
-    for (int i = 0; i < m->n_disks && !disk; i++)
-        if (m->disk[i].serial[0] && !strcmp(m->disk[i].serial, j.disk_serial))
-            disk = &m->disk[i];
+    /* THE SAME DISK journal_check just matched, found the same way --
+     * not a second, stricter search that could disagree with it. */
+    const stage_disk *disk = journal_disk(&j, m, NULL);
     if (!disk)
         refuse("This is not the computer the installer was prepared for.",
                NULL, "wrong-disk");

@@ -315,8 +315,12 @@ if [ -f "$MSCODE" ] && [ -f "$MSVARS" ]; then
 import sys; sys.path.insert(0, 'tools'); import efivarstore as e
 e.plant(sys.argv[1], 'BootNext', '8be4df61-93ca-11d2-aa0d-00e098032b8c', b'\x09\x00')
 " "$TMP/sbvars.fd" || return 2
+        # WITH A NETWORK CARD. Phase 7 refuses a machine AurOS would have
+        # no network on (R13), and the first run of this section proved
+        # the whole signed chain and then stopped there, correctly, with
+        # verdict=no-network -- on a virtual machine given no card at all.
         mach_boot_firmware "$1" "$3" "$4" "$MSCODE" "$TMP/sbvars.fd" \
-            "-global driver=cfi.pflash01,property=secure,value=on"
+            "-global driver=cfi.pflash01,property=secure,value=on -netdev user,id=n0 -device virtio-net-pci,netdev=n0"
     }
 
     # FIRST, THE OLD WAY, to show the bug was real: the entry names the

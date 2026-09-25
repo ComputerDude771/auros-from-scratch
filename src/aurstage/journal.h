@@ -119,6 +119,13 @@ int journal_read(const char *path, journal *out);
  *
  * `why` gets one sentence naming the difference. */
 #include "aurstage.h"
+/* Which of this machine's disks the record is about: by serial, then by
+ * serial written differently, then as the one disk whose partition
+ * table has the record's hash. NULL if none, or if that last is not
+ * exactly one. `how` says which (1, 2, 3; 0 for none). */
+const stage_disk *journal_disk(const journal *j, const stage_machine *m,
+                               int *how);
+
 journal_verdict journal_check(const journal *j, const stage_machine *m,
                               char *why, size_t n);
 

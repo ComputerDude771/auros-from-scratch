@@ -175,6 +175,82 @@ const char *journal_verdict_name(journal_verdict v)
  * user asked for and starts being a surprise. */
 #define JOURNAL_MAX_AGE_S  (3 * 24 * 60 * 60)
 
+/* Letters and digits only, case ignored: "S4EW NX0N-1234" and
+ * "s4ewnx0n1234" are one serial written by two drivers. */
+static int serial_same(const char *a, const char *b)
+{
+    int used = 0;
+    for (;;) {
+        while (*a && !isalnum((unsigned char)*a)) a++;
+        while (*b && !isalnum((unsigned char)*b)) b++;
+        if (!*a || !*b) break;
+        if (tolower((unsigned char)*a) != tolower((unsigned char)*b)) return 0;
+        a++; b++; used++;
+    }
+    return !*a && !*b && used >= 4;
+}
+
+static int hash_same(const char *now, const char *want)
+{
+    for (int i = 0; i < 64; i++) {
+        char a = now[i], b = want[i];
+        if (b >= 'A' && b <= 'F') b = (char)(b + 32);
+        if (a != b) return 0;
+    }
+    return want[64] == 0;
+}
+
+/* WHICH DISK THE RECORD IS ABOUT, in three tries, strictest first.
+ *
+ * The serial is what AurBridge read on Windows and what disks.c reads
+ * here, and on a real machine those are two different drivers asked
+ * the same question. On NVMe they routinely disagree outright: Windows
+ * reports an identifier formatted like "0025_3886_81B7_8F17." where
+ * Linux reports the drive's own serial number. Matching the serial
+ * exactly and nothing else refused every such machine after its
+ * restart, "this is not the disk the installer was prepared for",
+ * about the right disk.
+ *
+ *   1. The serial, exactly.
+ *   2. The serial with punctuation, spaces and case ignored.
+ *   3. The ONE disk whose partition table hashes to the hash in the
+ *      record, and whose size is the size in the record. That hash
+ *      covers the table's header -- the disk's own GUID -- and every
+ *      partition's GUID, so it names one disk in the world unless the
+ *      disk was cloned; two disks that both match are a refusal, not a
+ *      choice.
+ *
+ * Everything journal_check asks after this is asked of the disk found,
+ * whichever way it was found. */
+const stage_disk *journal_disk(const journal *j, const stage_machine *m,
+                               int *how)
+{
+    if (how) *how = 0;
+    for (int i = 0; i < m->n_disks; i++)
+        if (m->disk[i].serial[0] && !strcmp(m->disk[i].serial, j->disk_serial)) {
+            if (how) *how = 1;
+            return &m->disk[i];
+        }
+    const stage_disk *hit = NULL;
+    int hits = 0;
+    for (int i = 0; i < m->n_disks; i++)
+        if (m->disk[i].serial[0] && serial_same(m->disk[i].serial, j->disk_serial)) {
+            hit = &m->disk[i]; hits++;
+        }
+    if (hits == 1) { if (how) *how = 2; return hit; }
+    if (!j->gpt_sha256[0]) return NULL;
+    hit = NULL; hits = 0;
+    for (int i = 0; i < m->n_disks; i++) {
+        const stage_disk *d = &m->disk[i];
+        if (j->disk_bytes && d->bytes != j->disk_bytes) continue;
+        char now[65];
+        if (stage_gpt_sha256(d, now, sizeof now) != 0) continue;
+        if (hash_same(now, j->gpt_sha256)) { hit = d; hits++; }
+    }
+    if (hits == 1) { if (how) *how = 3; return hit; }
+    return NULL;
+}
+
 journal_verdict journal_check(const journal *j, const stage_machine *m,
                               char *why, size_t n)
 {
@@ -191,10 +267,8 @@ journal_verdict journal_check(const journal *j, const stage_machine *m,
      * identity -- see the note in disks.c about SATA, which publishes
      * it in none of the obvious ones. Asking again here, differently,
      * is how two answers to the same question appear. */
-    const stage_disk *d = NULL;
-    for (int i = 0; i < m->n_disks && !d; i++)
-        if (m->disk[i].serial[0] && !strcmp(m->disk[i].serial, j->disk_serial))
-            d = &m->disk[i];
+    int how = 0;
+    const stage_disk *d = journal_disk(j, m, &how);
     if (!d) {
         /* Say whether we found NO serial at all, or found serials that
          * simply are not this one: they are different problems and
@@ -202,7 +276,7 @@ journal_verdict journal_check(const journal *j, const stage_machine *m,
         int any = 0;
         for (int i = 0; i < m->n_disks; i++)
             if (m->disk[i].serial[0]) any = 1;
-        if (!any) {
+        if (!any && !j->gpt_sha256[0]) {
             snprintf(why, n,
                      "This computer's disk will not say which one it is.");
             return JOURNAL_UNREADABLE;
@@ -315,6 +389,10 @@ journal_verdict journal_check(const journal *j, const stage_machine *m,
             return JOURNAL_STALE;
         }
     }
-    snprintf(why, n, "This is the computer the installer was prepared for.");
+    snprintf(why, n, how == 3
+             ? "This is the computer the installer was prepared for (its disk "
+               "is known by its partition table; the drive reports its serial "
+               "number differently to Windows)."
+             : "This is the computer the installer was prepared for.");
     return JOURNAL_MATCH;
 }
