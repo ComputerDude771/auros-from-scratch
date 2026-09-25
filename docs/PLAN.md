@@ -188,14 +188,14 @@ into space that is already free.
 
 | ID | Stream | Status |
 |----|--------|--------|
-| W1 | Distro core — toolchain, base system, init, package manager | **in progress** |
-| W2 | Desktop shell + theme engine | theme engine done; shell in progress |
-| W3 | Forge — profiles, image builder, lockdown, locale | not started |
-| W4 | AurBridge — the Windows installer | not started |
-| W5 | Ferry — migration engine | research in progress |
-| W6 | Website, signing, update channel | not started |
-| W7 | Safety, hardware matrix, rollback, QA | research in progress |
-| W8 | Documentation and runbooks | this file |
+| W1 | Distro core — base system, init, package manager | **done** on the Ubuntu base; see §2.3 for the line that was drawn |
+| W2 | Desktop shell + theme engine | **done**: six archetypes, six themes, `aurshell` on DRM/KMS |
+| W3 | Forge — profiles, image builder, lockdown, locale | **done**: five profiles build (`docs/results/images.md`) |
+| W4 | AurBridge — the Windows installer | **done on a synthetic machine**; never yet run on a real PC |
+| W5 | Ferry — migration engine | **done**, runs after the person says AurOS works |
+| W6 | Website, signing, update channel | site and signing pipeline done; **certificate, image host and update channel are not** (`docs/RELEASE.md`) |
+| W7 | Safety, hardware matrix, rollback, QA | power-cut and geometry matrices green in QEMU; **real hardware not started** |
+| W8 | Documentation and runbooks | this file, `docs/RELEASE.md` |
 
 ---
 
@@ -224,10 +224,11 @@ that no amount of code replaces.
    worse: they have been taught to click past a security warning
    immediately before handing a program their whole disk. The
    pipeline is written and tested (`build/sign`, `tools/signtest.sh`,
-   12 checks); what is missing is an OV or EV certificate on a
+   12 checks); what is missing is an OV certificate on a
    hardware token or cloud HSM, which since June 2023 is the only
-   form any public CA will issue. `docs/SIGNING.md` says what to buy
-   and why EV is the one worth the difference here.
+   form any public CA will issue -- or Microsoft's Azure Artifact
+   Signing where eligible. `docs/SIGNING.md` says what to buy and why
+   EV is not worth the difference any more.
 3. **BitLocker — refused, permanently.** There is no shrink path for
    a protected volume, online or offline, and suspension does not
    decrypt a sector. Preflight blocks and the remedy says what is
@@ -298,7 +299,16 @@ What proves it, and the numbers are the current transcripts in
 | `targets.c` | 10021 — everything she has to press, at every text size |
 | `modaltest.c` | 53 — a panel covers the desktop and can always be left |
 
-**What is left is not code.** A certificate. A host for the image. A
-network that allows Firefox. A legal entity. And the thing none of the
-above can substitute for: a real, old, dusty PC with a real firmware
-and a real disk that lies about having flushed.
+**What is left is mostly not code.** A certificate. A host for the
+image. A network that allows Firefox. A legal entity. And the thing none
+of the above can substitute for: a real, old, dusty PC with a real
+firmware and a real disk that lies about having flushed.
+
+It is not *only* not code, and this paragraph used to say it was. Five
+things in the product are still missing or wrong, and `docs/RELEASE.md`
+lists them with the rest: the wizard has no screen-reader support; it
+has no page to choose a memory stick on, so today it installs only in
+the no-stick mode; "Put Windows back" works but nothing a person can
+press starts it; the language, keyboard, time zone, theme and desktop
+chosen in the wizard do not reach the installed system; and the Windows
+half has never run on Windows.

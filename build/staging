@@ -532,6 +532,25 @@ SZ=$(du -h "$OUT/auros-staging$SUF.img" | cut -f1)
 # that gets discovered on somebody's laptop.
 cp -a "$RFS/boot/vmlinuz-$KVER" "$OUT/auros-staging$SUF-vmlinuz"
 
+# AND THE SIGNED WAY IN. Started directly, this kernel is refused by any
+# firmware with Secure Boot on: it is signed by Canonical, and firmware
+# trusts Microsoft. AurBridge therefore starts it through the image's own
+# Microsoft-signed shim and Canonical-signed grub -- the same two files
+# build/mkimage copies for the installed system -- and carries them in
+# the installer beside the kernel. Taken from the image, never rebuilt:
+# their signatures are the whole point of them.
+SHIM_SRC=""
+for c in shimx64.efi.dualsigned shimx64.efi.signed.latest shimx64.efi.signed; do
+    [ -f "$RFS/usr/lib/shim/$c" ] && { SHIM_SRC="$RFS/usr/lib/shim/$c"; break; }
+done
+GRUB_SRC="$RFS/usr/lib/grub/x86_64-efi-signed/grubx64.efi.signed"
+[ -n "$SHIM_SRC" ] && [ -f "$GRUB_SRC" ] \
+    || die "no signed shim and grub in $RFS; the installer could not start
+     this environment on a machine with Secure Boot on"
+cp "$SHIM_SRC" "$OUT/auros-staging$SUF-shimx64.efi"
+cp "$GRUB_SRC" "$OUT/auros-staging$SUF-grubx64.efi"
+cp "$RFS/usr/lib/shim/mmx64.efi" "$OUT/auros-staging$SUF-mmx64.efi" 2>/dev/null || true
+
 printf '\n%s::%s %s  (%s, kernel %s)\n' "$C_OK" "$C_RST" \
        "$OUT/auros-staging$SUF.img" "$SZ" "$KVER"
 printf '%s   %s%s\n' "$C_DIM" \

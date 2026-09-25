@@ -125,10 +125,9 @@ static void check_firmware(pf_report *r)
 
     if (r->secure_boot == 1)
         add(r, "secure-boot-on", "R15", PF_WARN, "Secure Boot is enabled",
-            "AurOS boots through a Microsoft-signed shim, but the first boot asks you to "
-            "approve AurOS's key on a blue setup screen.",
-            "No action now. We will show you exactly which buttons to press, with photos, "
-            "before you restart.");
+            "AurOS starts through the same Microsoft-signed start-up files Ubuntu "
+            "uses, so it works with Secure Boot on and nothing needs changing.",
+            "No action needed.");
 }
 
 /* ── R6: power ───────────────────────────────────────────────────── */
@@ -915,8 +914,8 @@ static void check_disks(pf_report *r)
  * free, and ntfsresize needs headroom above the data it relocates.
  * Shrinking to the last free byte is an install that fits and a PC that
  * stops working a month later. */
-#define PF_AUROS_NEED   (28ULL * 1024 * 1024 * 1024)
-#define PF_WINDOWS_KEEP ( 8ULL * 1024 * 1024 * 1024)
+#define PF_AUROS_NEED   PF_AUROS_NEED_BYTES
+#define PF_WINDOWS_KEEP PF_WINDOWS_KEEP_BYTES
 
 static uint64_t shrink_giveable(uint64_t offline_shrinkable)
 {

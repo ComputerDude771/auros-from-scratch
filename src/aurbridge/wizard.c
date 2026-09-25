@@ -66,6 +66,17 @@
 #ifndef AUROS_IMAGE_BYTES
 #define AUROS_IMAGE_BYTES   0ULL
 #endif
+/* WHERE THE IMAGE IS PUBLISHED IN PIECES, baked in by build/aurbridge
+ * from AUROS_IMAGE_PIECES (see phases.h for the format). Empty in a
+ * build that was not given one. */
+#if defined(__has_include)
+# if __has_include("aurbridge-baked.h")
+#  include "aurbridge-baked.h"
+# endif
+#endif
+#ifndef AUROS_PIECES_TEXT
+#define AUROS_PIECES_TEXT   ""
+#endif
 
 /* ── Palette: themes/nocturne.theme, copied exactly ───────────────── */
 #define C_BG          0x0B0E14u   /* bg          */
@@ -933,9 +944,15 @@ static int consent_ok(void)
 {
     return _wcsicmp(g_agree, AGREE_WORD) == 0;
 }
+/* ONLY THE DUAL BOOT EXISTS. "Replace Windows completely" was a card on
+ * the choose page, with its own warning and an "Erase and install"
+ * button, and nothing behind it: g_choice never reached the engine, so
+ * a person who chose to erase this PC -- before giving it away, say --
+ * got AurOS installed beside a Windows that was still there, files and
+ * all. Until an erase exists, choosing one is not possible. */
 static int choice_ok(void)
 {
-    return g_choice == 0 || (g_choice == 1 && g_ack_replace);
+    return g_choice == 0;
 }
 
 static int nav_allowed(page_id p)
@@ -1007,12 +1024,12 @@ static const struct {
    L"Every safety check runs again, right before we start. Nothing is written.", 0 },
  { L"Write down what you agreed to",
    L"Your answers, and a copy of this PC\u2019s unlock key if it has one.", 0 },
- { L"Build a way back",
-   L"The rescue USB stick, with a copy of AurOS on it and room to save this PC\u2019s start-up. Windows is untouched by this step.", 0 },
+ { L"Get AurOS",
+   L"About 5 GB is downloaded into the AurOS folder on this drive, and every byte is checked. Windows is untouched by this step.", 0 },
  { L"Add AurOS to the start-up menu",
    L"AurOS is offered once, at the next start. Windows stays the one that starts by default.", 0 },
  { L"Make room",
-   L"After the restart: the Windows drive is made smaller. Your Windows files stay where they are.", 1 },
+   L"After the restart: the Windows drive is made smaller, and a copy of this PC\u2019s start-up is saved in the room that frees. Your Windows files stay where they are.", 1 },
  { L"Copy AurOS onto the drive",
    L"AurOS is written into the new space, then read back and checked, byte for byte.", 1 },
  { L"Try it out on this PC",
@@ -1160,14 +1177,26 @@ static void install_begin(void)
     _snprintf(g_ab_choice.profile, sizeof g_ab_choice.profile - 1, "%s",
               "desktop");
     _snprintf(g_ab_choice.language, sizeof g_ab_choice.language - 1, "%s", "en");
-    _snprintf(g_ab_choice.stick_serial,
-              sizeof g_ab_choice.stick_serial - 1, "%s",
-              pf_recovery_stick() ? pf_recovery_stick() : "");
-    /* WHERE THE IMAGE GOES, NOT WHERE IT IS. Beside the installer,
-     * because that is where a person would look for it and where a
-     * second run will find it already downloaded. */
-    beside_me(g_ab_choice.image_path,  sizeof g_ab_choice.image_path,
+    /* NO MEMORY STICK. See page_backup() and docs/AURBRIDGE.md,
+     * "Installing without a memory stick". */
+    g_ab_choice.no_stick = 1;
+    g_ab_choice.stick_serial[0] = 0;
+    /* WHERE THE IMAGE GOES: \AurOS\ on the drive Windows started from,
+     * because that is the volume the staging environment will mount
+     * after the restart -- the journal names that partition and no
+     * other. An image already sitting beside the installer is moved
+     * there rather than downloaded again. */
+    {
+        char sd[16] = "C:";
+        DWORD k = GetEnvironmentVariableA("SystemDrive", sd, sizeof sd);
+        if (k == 0 || k >= sizeof sd || sd[1] != ':') snprintf(sd, sizeof sd, "C:");
+        sd[2] = 0;
+        _snprintf(g_ab_choice.image_path, sizeof g_ab_choice.image_path - 1,
+                  "%s\\AurOS\\auros-desktop.img", sd);
+    }
+    beside_me(g_ab_choice.image_alt_path, sizeof g_ab_choice.image_alt_path,
               "auros-desktop.img");
+    g_ab_choice.pieces_text = AUROS_PIECES_TEXT;
     /* WHERE TO GET IT, BAKED IN WHEN THIS WAS BUILT. Empty in a
      * developer build, which then requires the image to be sitting
      * there already -- the arrangement this product had before it was
@@ -1740,16 +1769,20 @@ static int page_backup(int x, int y, int w)
         L"iCloud or Google Drive. Photos and documents first.",
         x, y, narrow, C_ACCENT) + S(14);
 
+    /* NO MEMORY STICK IN THIS BUILD. The second box used to be "I have
+     * a USB stick"; nothing in the wizard ever let her choose it, so
+     * phase 2 refused every install with "the memory stick you chose is
+     * not plugged in any more". This build installs without one, and
+     * the box is now her saying she understands what that gives up. */
     y += draw_check(ID_CHK_USB, &g_ack_usb,
-        L"I have a USB stick of at least 4 GB that I am happy to erase.",
-        L"We turn it into a rescue stick before anything is changed. If this PC "
-        L"ever refuses to start, that stick is how you get Windows back. "
-        L"You do not need to plug it in yet.",
-        x, y, narrow, C_ACCENT) + S(24);
+        L"I understand there is no rescue USB stick.",
+        L"A copy of this PC\u2019s start-up is kept on the drive itself. If this "
+        L"PC ever refuses to start at all, getting Windows back will need "
+        L"another computer. Please unplug any USB drives before going on.",
+        x, y, narrow, C_WARM) + S(24);
 
-    y += text_draw(L"We ask for both because they cover different accidents. The "
-                   L"rescue area on the drive handles \"AurOS will not start\". The "
-                   L"USB stick handles \"this PC will not start at all\".",
+    y += text_draw(L"This is a test version of AurOS. Use it on a PC whose "
+                   L"files are also kept somewhere else.",
                    g_f_small, C_MUTED, x, y, narrow, DT_WORDBREAK);
     return y - y0;
 }
@@ -1806,15 +1839,17 @@ static int page_consent(int x, int y, int w)
                    g_f_body, C_SUBTLE, x, y, narrow, DT_WORDBREAK) + S(26);
 
     y += section_head(L"WHAT CHANGES", C_WARM, x, y, narrow);
-    y += bullet(L"A rescue area is made on the drive first, out of space nobody is "
-                L"using. Nothing else happens until that is done.", C_WARM, x, y, narrow);
-    y += bullet(L"The part of the drive that Windows uses is made smaller, to free "
-                L"up room. Windows files are not deleted and not moved off this PC.",
-                C_WARM, x, y, narrow);
+    y += bullet(L"A copy of AurOS, about 5 GB, is downloaded into a folder called "
+                L"AurOS on this drive.", C_WARM, x, y, narrow);
+    y += bullet(L"After one restart, the part of the drive that Windows uses is made "
+                L"smaller, to free up room. Windows files are not deleted and not "
+                L"moved off this PC.", C_WARM, x, y, narrow);
+    y += bullet(L"A copy of this PC\u2019s start-up is saved into that room first. "
+                L"Nothing else is written until it is.", C_WARM, x, y, narrow);
     y += bullet(L"A new, separate space is created in that freed-up room, and AurOS "
                 L"is copied into it.", C_WARM, x, y, narrow);
-    y += bullet(L"The start-up menu changes. From then on, switching this PC on asks "
-                L"you which one you want.", C_WARM, x, y, narrow);
+    y += bullet(L"AurOS is added to this PC\u2019s start-up menu, beside Windows.",
+                C_WARM, x, y, narrow);
     y += S(10);
 
     y += section_head(L"WHAT STAYS", C_ACCENT, x, y, narrow);
@@ -1826,11 +1861,14 @@ static int page_consent(int x, int y, int w)
     y += S(10);
 
     y += section_head(L"HOW TO UNDO IT", C_ACCENT_ALT, x, y, narrow);
-    y += bullet(L"Switch the PC on and choose \"Put Windows back\" in the menu. It "
-                L"puts the drive back exactly as it is today. No USB stick, no second "
-                L"computer, no phone call.", C_ACCENT_ALT, x, y, narrow);
-    y += bullet(L"If this PC will not start at all, the rescue USB stick does the "
-                L"same job.", C_ACCENT_ALT, x, y, narrow);
+    y += bullet(L"When AurOS first starts it asks whether it works. Say no, and this "
+                L"PC goes back to starting Windows by itself.", C_ACCENT_ALT, x, y, narrow);
+    y += bullet(L"Windows stays in this PC\u2019s start-up menu either way. The key "
+                L"that opens that menu is shown when the PC switches on (often F12, "
+                L"F9 or Esc).", C_ACCENT_ALT, x, y, narrow);
+    y += bullet(L"There is no rescue USB stick in this version. If this PC will not "
+                L"start at all, you will need another computer to repair it.",
+                C_ERR, x, y, narrow);
     y += S(16);
 
     fill_rr((float)x, (float)y, (float)narrow, (float)S(2), 1.f, C_OVERLAY, 1.f);
@@ -1915,14 +1953,11 @@ static int page_choose(int x, int y, int w)
         L"Nothing in Windows is deleted. AurOS needs about 28 GB of room.",
         C_ACCENT, x, y, narrow) + S(16);
 
-    y += choice_card(ID_CARD_REPLACE, g_choice == 1,
-        L"Replace Windows completely",
-        NULL,
-        L"Everything on this PC is erased: Windows, your programs, and every file "
-        L"on this drive. Windows cannot be put back afterwards, and the rescue area "
-        L"cannot bring your files back either. Only choose this if everything you "
-        L"want is already copied somewhere else.",
-        C_ERR, x, y, narrow) + S(16);
+    /* Replacing Windows is not offered: see choice_ok(). Said, rather
+     * than silently missing, so nobody goes looking for it. */
+    y += text_draw(L"Replacing Windows completely is not available in this "
+                   L"version. AurOS is always installed beside it.",
+                   g_f_small, C_MUTED, x, y, narrow, DT_WORDBREAK) + S(16);
 
     if (g_choice == 1) {
         y += draw_check(ID_CHK_REPLACE, &g_ack_replace,
@@ -2775,7 +2810,7 @@ static void widget_activate(int id)
     case ID_CHK_REPLACE: g_ack_replace  = !g_ack_replace;  return;
     case ID_CHK_READY:   g_ready_confirm= !g_ready_confirm;return;
     case ID_CARD_DUAL:   g_choice = 0; g_ack_replace = 0;  return;
-    case ID_CARD_REPLACE:g_choice = 1;                     return;
+    case ID_CARD_REPLACE:                                  return;
     case ID_INPUT_AGREE: return;                 /* click just takes focus */
     default: break;
     }
@@ -3282,7 +3317,6 @@ static int shot_run(const char *dir)
     shot_save(dir, "5b-consent-typed");
 
     g_page = PAGE_CHOOSE;   shot_save(dir, "6a-choose");
-    g_choice = 1; shot_save(dir, "6b-choose-replace");
     g_choice = 0; g_ack_replace = 0;
 
     /* The archetype chooser opens on Rail; the foot of the list is where
@@ -3411,10 +3445,12 @@ static int nav_test(const char *dir)
     nt_check(nav_allowed(PAGE_CHOOSE), "typed acknowledgement accepted (any case)");
     g_choice = 1;
     nt_check(!nav_allowed(PAGE_PERSONALIZE),
-             "replace-Windows refused until its own box is ticked");
+             "replace-Windows refused with its box unticked");
     g_ack_replace = 1;
-    nt_check(nav_allowed(PAGE_PERSONALIZE), "replace-Windows accepted once acknowledged");
+    nt_check(!nav_allowed(PAGE_PERSONALIZE),
+             "replace-Windows refused even when acknowledged: it does not exist");
     g_choice = 0; g_ack_replace = 0;
+    nt_check(nav_allowed(PAGE_PERSONALIZE), "keeping Windows is accepted");
     nt_check(!nav_allowed(PAGE_PROGRESS), "install refused until the drive is confirmed");
     g_ready_confirm = 1;
     nt_check(nav_allowed(PAGE_PROGRESS), "install reachable at the end of a clean run");

@@ -472,6 +472,21 @@ int plat_file_append(const char *to, const void *buf, size_t n,
     return 0;
 }
 
+int plat_file_delete(const char *path, char *why, size_t wn)
+{
+    if (unlink(path) == 0 || errno == ENOENT) return 0;
+    snprintf(why, wn, "%s could not be removed", path);
+    return -1;
+}
+
+int plat_file_rename(const char *from, const char *to, char *why, size_t wn)
+{
+    mkparents(to);
+    if (rename(from, to) == 0) return 0;
+    snprintf(why, wn, "%s could not be moved to %s", from, to);
+    return -1;
+}
+
 uint64_t plat_free_space(const char *path)
 {
     char dir[1024];
@@ -505,7 +520,9 @@ int plat_payload_embedded(void)
 
 int plat_payload(const char *name, char *path, size_t pn, char *why, size_t wn)
 {
-    if (strcmp(name, PAYLOAD_KERNEL) && strcmp(name, PAYLOAD_INITRD)) {
+    if (strcmp(name, PAYLOAD_KERNEL) && strcmp(name, PAYLOAD_INITRD) &&
+        strcmp(name, PAYLOAD_SHIM) && strcmp(name, PAYLOAD_GRUB) &&
+        strcmp(name, PAYLOAD_MOKMGR)) {
         snprintf(why, wn, "the installer asked itself for something it does "
                           "not carry.");
         return -1;

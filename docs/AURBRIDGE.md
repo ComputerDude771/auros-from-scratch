@@ -620,6 +620,71 @@ itself is unchanged: it mounts the old Windows volume read-only,
 refuses a hibernated or dirty one out loud, and reports what could not
 come across.
 
+## Installing without a memory stick
+
+Everything above is the design, and the stick is load-bearing in it: it
+holds the image, the installer's notes and the first copy of the way
+back. The no-stick mode exists because an install with no stick was
+asked for, for a test machine, with the cost understood. It is what the
+wizard does today (`g_ab_choice.no_stick = 1` in `install_begin`), and
+the only mode it can do: the wizard has never had a page to choose a
+stick on, so in stick mode phase 2 refused every install with "the
+memory stick you chose is not plugged in any more".
+
+**What changes, in order:**
+
+| | with a stick | without |
+|---|---|---|
+| phase 2 | image, record area and room for the way back written to the stick | image downloaded (in pieces, see below) to `\AurOS\auros-<profile>.img` on the Windows drive, and its 4096-byte manifest written beside it as `…img.manifest` |
+| journal | `"image_on":"stick"` | `"image_on":"windows"` |
+| staging: the image | found on the stick by type GUID | read through a **read-only** `ntfs3` mount of the Windows partition the journal names (`src/aurstage/winvol.c`), checked with `statvfs` to really be read-only, unmounted before the shrink and mounted again only to copy |
+| staging: the record | 16 slots on the stick | none; an interrupted install starts over |
+| staging: the way back | captured onto the stick before the shrink | captured **into memory** before the shrink (refused if `MemAvailable` cannot hold it with 256 MiB to spare), then written into the space the shrink frees and read back **before a byte of AurOS** — a failure there stops the install |
+| after the install | two copies of the way back | one, on the disk |
+
+**What it gives up, said plainly:**
+
+- *The copy that survives the disk.* The way back lives on the disk it
+  exists to rescue. A disk that fails takes it with it.
+- *A window with no saved copy anywhere persistent*: from the start of
+  the shrink until the copy is written into the freed space. The shrink
+  changes neither the partition table nor the EFI partition, and an
+  interrupted `ntfsresize` leaves the volume dirty, which the gate
+  refuses on the next attempt, so what is at risk in that window is
+  C: itself — which a copy of the start-up would not have saved either.
+- *Resuming.* There is nowhere to write the record, so an install cut
+  short is started again from the beginning. That is safe because
+  every step before the commit leaves the old table in force.
+- *Room.* The image sits inside C: through the shrink, so the drive has
+  to be able to give up the usual 28 GB **plus** the image. Phase 0
+  checks that against preflight's `$Bitmap` measurement before
+  anything is downloaded.
+- *A machine that will not start at all* needs another computer to
+  make a rescue stick.
+
+**Where the image comes from.** The desktop image is published as
+gzip, in pieces under 100 MB, on the `image-desktop` branch of this
+repository (`pieces.txt` there lists name, size and SHA-256 of each),
+and `build/aurbridge` bakes that list into the wizard when it is given
+`AUROS_IMAGE_PIECES=` with `AUROS_IMAGE_SHA256=` and
+`AUROS_IMAGE_BYTES=`. Phase 2 downloads each piece with WinHTTP,
+resuming a dropped connection and fetching a piece again that arrives
+wrong; unpacks them with `src/aurbridge/inflate.c` into `….img.part`,
+hashing as it writes; renames it into place only when the whole image
+matches the baked SHA-256; and only then deletes the pieces. A second
+press of *Start installing* costs only what is missing.
+
+**What proves it:** `tools/nosticktest.sh` runs AurBridge's own phase
+engine in no-stick mode against a synthetic machine, puts the image
+inside its NTFS volume, boots the staging environment with one disk
+and nothing else plugged in, installs, starts the result, and puts
+Windows back from the copy on the disk; both refusals (no image, a
+damaged image) leave the disk byte-for-byte unchanged, which is also
+the proof that the read-only mount wrote nothing. The download is
+exercised by `aurbridge getimage` under Wine and `aurbridge-sim
+getimage` natively, against a server that drops a connection and
+corrupts a piece on purpose.
+
 ## Power loss, step by step
 
 The point of the ordering above is that this table has exactly one bad
@@ -711,8 +776,10 @@ CI both depend on this.
 
 ## Signing
 
-Ship **OV, not EV**: since 2024 EV buys nothing over OV for SmartScreen.
-Keys on a hardware token or cloud HSM (June 2023 requirement).
+Ship **OV, not EV** -- or Azure Artifact Signing where eligible: since
+2024 EV buys nothing over OV for SmartScreen. Keys on a hardware token or
+cloud HSM (June 2023 requirement). `docs/SIGNING.md` has the comparison
+and `docs/RELEASE.md` the order it happens in.
 
 **Signing is not optional.** Smart App Control blocks unsigned code by
 default and auto-enables for exactly our target profile — a

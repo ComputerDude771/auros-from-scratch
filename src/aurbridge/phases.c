@@ -7,6 +7,7 @@
 #include <string.h>
 #include <time.h>
 
+#include "inflate.h"
 #include "phases.h"
 #include "plat.h"
 #include "format.h"
@@ -295,6 +296,38 @@ static int phase_inspect(const ab_choice *c, pf_report *r, ab_machine *m,
          (unsigned long long)m->win_start_lba,
          (unsigned long long)(m->win_sectors * 512 / 1000000000ull));
 
+    /* THE NO-STICK MODE COUNTS THE IMAGE AS WELL. Preflight measured
+     * what the Windows drive could give up before five gigabytes of
+     * AurOS arrived on it, and in this mode they stay there through the
+     * shrink -- the shrink cannot give back space a file is sitting in.
+     * Asked here, where the answer costs nothing, rather than after the
+     * download and the restart. */
+    if (c->no_stick && r->system_volume >= 0) {
+        const pf_volume *v = &r->volumes[r->system_volume];
+        uint64_t have_img = 0;
+        plat_file_size(c->image_path, &have_img);
+        uint64_t img = c->image_expect ? c->image_expect
+                                       : (6ull * 1024 * 1024 * 1024);
+        uint64_t extra = have_img >= img ? 0 : img - have_img;
+        if (v->shrink_measured && v->offline_shrinkable) {
+            uint64_t give = v->offline_shrinkable > PF_WINDOWS_KEEP_BYTES
+                          ? v->offline_shrinkable - PF_WINDOWS_KEEP_BYTES : 0;
+            if (give < extra || give - extra < PF_AUROS_NEED_BYTES) {
+                snprintf(why, n,
+                         "without a memory stick, the copy of AurOS (%llu MB) "
+                         "has to stay on the Windows drive while it is "
+                         "installed, and then there is not enough room left: "
+                         "about %llu MB could be freed and AurOS needs %llu MB. "
+                         "Free up space in Windows, or install with a memory "
+                         "stick.",
+                         (unsigned long long)(img / MIB),
+                         (unsigned long long)((give > extra ? give - extra : 0) / MIB),
+                         (unsigned long long)(PF_AUROS_NEED_BYTES / MIB));
+                return -1;
+            }
+        }
+    }
+
     /* Asked here, where a refusal costs nothing. See the note on
      * prepare_possible(). */
     if (prepare_possible(c, m, why, n) != 0) return -1;
@@ -426,10 +459,58 @@ static int profile_ok(const char *p, char *why, size_t n)
     return 0;
 }
 
+static int prepare_possible_nostick(const ab_choice *c, char *why, size_t n)
+{
+    if (!c->kernel_path[0] && !plat_payload_embedded()) {
+        snprintf(why, n,
+                 "this copy of the installer is incomplete -- the part that "
+                 "starts your computer is missing from it. Download it "
+                 "again.");
+        return -1;
+    }
+    uint64_t have = 0, alt = 0;
+    plat_file_size(c->image_path, &have);
+    if (c->image_alt_path[0]) plat_file_size(c->image_alt_path, &alt);
+    int pieces = c->pieces_text && c->pieces_text[0];
+    if (!have && !alt && !pieces && !c->image_url[0]) {
+        snprintf(why, n, "the copy of AurOS to install could not be found, and "
+                         "this installer does not know where to download it "
+                         "from.");
+        return -1;
+    }
+    if (pieces && (!c->image_sha256[0] || !c->image_expect)) {
+        snprintf(why, n,
+                 "this copy of the installer was not built correctly -- it "
+                 "does not say what AurOS should look like. Download the "
+                 "installer again.");
+        return -1;
+    }
+    /* ROOM FOR THE DOWNLOAD, THE UNPACKED IMAGE, AND BOTH AT ONCE: the
+     * pieces are only deleted once what they unpack to has been
+     * checked. */
+    if (pieces && have < c->image_expect) {
+        static ab_pieces pc;
+        if (ab_pieces_parse(c->pieces_text, &pc, why, n) != 0) return -1;
+        uint64_t need = c->image_expect + pc.total;
+        uint64_t free_now = plat_free_space(c->image_path);
+        if (free_now && free_now < need) {
+            snprintf(why, n,
+                     "there is not enough room on the Windows drive to "
+                     "download AurOS: it needs %llu MB free while it "
+                     "downloads and unpacks, and there are %llu MB.",
+                     (unsigned long long)(need / MIB),
+                     (unsigned long long)(free_now / MIB));
+            return -1;
+        }
+    }
+    return 0;
+}
+
 static int prepare_possible(const ab_choice *c, ab_machine *m,
                             char *why, size_t n)
 {
     if (profile_ok(c->profile, why, n) != 0) return -1;
+    if (c->no_stick) return prepare_possible_nostick(c, why, n);
     if (find_stick(c, m, why, n) != 0) return -1;
     if (!m->stick_sector) {
         /* The same refusal the system disk gets, for the same reason.
@@ -580,6 +661,307 @@ static int fetch_progress(uint64_t got, uint64_t total, void *ud)
     return 0;
 }
 
+/* ── the image, in pieces ──────────────────────────────────────────── */
+
+static const char *skip_sp(const char *p)
+{ while (*p == ' ' || *p == '\t') p++; return p; }
+
+/* One word, up to whitespace or the end of the line. 0 if it did not
+ * fit, which is a refusal: a truncated name is a different file. */
+static int word(const char **pp, char *out, size_t n)
+{
+    const char *p = skip_sp(*pp);
+    size_t k = 0;
+    while (*p && *p != ' ' && *p != '\t' && *p != '\n' && *p != '\r') {
+        if (k + 1 >= n) return 0;
+        out[k++] = *p++;
+    }
+    out[k] = 0;
+    *pp = p;
+    return k > 0;
+}
+
+int ab_pieces_parse(const char *text, ab_pieces *out, char *why, size_t n)
+{
+    memset(out, 0, sizeof *out);
+    const char *p = text ? text : "";
+    int line = 0;
+    while (*p) {
+        line++;
+        const char *eol = strchr(p, '\n');
+        const char *next = eol ? eol + 1 : p + strlen(p);
+        p = skip_sp(p);
+        if (*p == '#' || *p == '\n' || *p == '\r' || !*p) { p = next; continue; }
+        char kw[16];
+        if (!word(&p, kw, sizeof kw)) goto bad;
+        if (!strcmp(kw, "base")) {
+            if (!word(&p, out->base, sizeof out->base)) goto bad;
+        } else if (!strcmp(kw, "piece")) {
+            if (out->n >= AB_MAX_PIECES) goto bad;
+            ab_piece *q = &out->p[out->n];
+            char num[32];
+            if (!word(&p, q->name, sizeof q->name) ||
+                !word(&p, num, sizeof num) ||
+                !word(&p, q->sha256, sizeof q->sha256)) goto bad;
+            char *e = NULL;
+            q->bytes = strtoull(num, &e, 10);
+            if (!e || *e || !q->bytes || !hex_ok(q->sha256)) goto bad;
+            /* A name that could leave the directory it is saved in is
+             * not a name. */
+            if (strchr(q->name, '/') || strchr(q->name, '\\') ||
+                strchr(q->name, ':') || strstr(q->name, "..")) goto bad;
+            out->total += q->bytes;
+            out->n++;
+        } else {
+            goto bad;
+        }
+        p = next;
+    }
+    if (!out->base[0] || out->n == 0) goto bad_empty;
+    if (strncmp(out->base, "https://", 8) != 0 &&
+        strncmp(out->base, "http://", 7) != 0) goto bad_empty;
+    return 0;
+bad:
+    snprintf(why, n, "this copy of the installer was not built correctly -- "
+                     "its list of where to download AurOS from is damaged "
+                     "(line %d). Download the installer again.", line);
+    return -1;
+bad_empty:
+    snprintf(why, n, "this copy of the installer was not built correctly -- "
+                     "it does not say where to download AurOS from. Download "
+                     "the installer again.");
+    return -1;
+}
+
+/* Where the pieces go: the directory the image is going into. */
+static void dir_of(const char *path, char *out, size_t n)
+{
+    snprintf(out, n, "%s", path);
+    char *a = strrchr(out, '\\'), *b = strrchr(out, '/');
+    char *s = a > b ? a : b;
+    if (s) s[1] = 0; else out[0] = 0;
+}
+
+/* Is this piece here, whole, and the right bytes? */
+static int piece_ok(const char *path, const ab_piece *q)
+{
+    uint64_t have = 0;
+    if (plat_file_size(path, &have) != 0 || have != q->bytes) return 0;
+    unsigned char d[32];
+    char w[PLAT_WHY];
+    if (image_hash(path, d, NULL, NULL, w, sizeof w) != 0) return 0;
+    return hex_eq(d, q->sha256);
+}
+
+typedef struct {
+    ab_progress prog; void *ud;
+    uint64_t done, total;
+    int lo, hi;
+} span_prog;
+
+static int piece_progress(uint64_t got, uint64_t total, void *ud)
+{
+    (void)total;
+    span_prog *sp = ud;
+    if (sp->prog && sp->total) {
+        uint64_t at = sp->done + got;
+        if (at > sp->total) at = sp->total;
+        sp->prog(sp->lo + (int)((uint64_t)(sp->hi - sp->lo) * at / sp->total),
+                 sp->ud);
+    }
+    return 0;
+}
+
+/* The reader gz_inflate pulls from: the pieces, in order, as one
+ * stream. */
+typedef struct {
+    const ab_pieces *pc;
+    const char *dir;
+    int idx;
+    uint64_t off;
+    char *why; size_t wn;
+} piece_reader;
+
+static int piece_read(void *ud, uint8_t *buf, size_t n, size_t *got)
+{
+    piece_reader *r = ud;
+    *got = 0;
+    while (r->idx < r->pc->n && r->off == r->pc->p[r->idx].bytes) {
+        r->idx++;
+        r->off = 0;
+    }
+    if (r->idx >= r->pc->n) return 0;
+    const ab_piece *q = &r->pc->p[r->idx];
+    uint64_t left = q->bytes - r->off;
+    size_t take = left < n ? (size_t)left : n;
+    char path[900];
+    snprintf(path, sizeof path, "%s%s", r->dir, q->name);
+    if (plat_file_read(path, r->off, buf, take, r->why, r->wn) != 0) {
+        snprintf(r->why, r->wn, "part %d of the downloaded AurOS could not "
+                                "be read back.", r->idx + 1);
+        return -1;
+    }
+    r->off += take;
+    *got = take;
+    return 0;
+}
+
+/* The writer: onto the end of the .part file, hashed as it goes, and
+ * never past the size the build said the image is. */
+typedef struct {
+    const char *path;
+    fmt_sha sha;
+    uint64_t written, expect;
+    span_prog sp;
+    char *why; size_t wn;
+} image_writer;
+
+static int image_write(void *ud, const uint8_t *buf, size_t n)
+{
+    image_writer *w = ud;
+    if (w->written + n > w->expect) {
+        snprintf(w->why, w->wn, "the downloaded AurOS unpacks to more than it "
+                                "should. It is not the one this installer "
+                                "was built for.");
+        return -1;
+    }
+    if (plat_file_append(w->path, buf, n, w->why, w->wn) != 0) {
+        snprintf(w->why, w->wn, "the Windows drive ran out of room while "
+                                "AurOS was being unpacked.");
+        return -1;
+    }
+    fmt_sha_feed(&w->sha, buf, n);
+    w->written += n;
+    piece_progress(w->written, w->expect, &w->sp);
+    return 0;
+}
+
+/* THE PIECES, FETCHED, CHECKED, JOINED, UNPACKED AND CHECKED AGAIN.
+ *
+ * Each piece is resumed rather than restarted when a connection drops,
+ * and tried again from nothing if it arrives wrong. A piece already
+ * here and right is not fetched at all, so pressing Start installing a
+ * second time after a failure costs only what is missing. The pieces
+ * are removed once the image they unpack to has matched the hash baked
+ * into this program -- not before, so a failure while unpacking does
+ * not cost the download. */
+static int ensure_image_pieces(const ab_choice *c, int present,
+                               ab_say say, ab_progress prog, void *ud,
+                               char *why, size_t n)
+{
+    static ab_pieces pc;
+    if (ab_pieces_parse(c->pieces_text, &pc, why, n) != 0) return -1;
+    if (!hex_ok(c->image_sha256) || !c->image_expect) {
+        snprintf(why, n,
+                 "this copy of the installer was not built correctly -- it "
+                 "does not say what AurOS should look like. Download the "
+                 "installer again.");
+        return -1;
+    }
+    unsigned char dig[32];
+    if (present) {
+        uint64_t have = 0;
+        plat_file_size(c->image_path, &have);
+        if (have == c->image_expect) {
+            talk(say, ud, "checking the copy of AurOS already on this computer");
+            if (image_hash(c->image_path, dig, prog, ud, why, n) == 0 &&
+                hex_eq(dig, c->image_sha256))
+                return 0;
+        }
+        talk(say, ud, "the copy of AurOS on this computer is not the right "
+                      "one; getting it again");
+    }
+
+    char dir[600];
+    dir_of(c->image_path, dir, sizeof dir);
+    uint64_t done = 0;
+    for (int i = 0; i < pc.n; i++) {
+        const ab_piece *q = &pc.p[i];
+        char path[900], url[512];
+        snprintf(path, sizeof path, "%s%s", dir, q->name);
+        if ((size_t)snprintf(url, sizeof url, "%s%s", pc.base, q->name)
+                >= sizeof url) {
+            snprintf(why, n, "an address in this installer is too long.");
+            return -1;
+        }
+        if (piece_ok(path, q)) { done += q->bytes; continue; }
+        talk(say, ud, "downloading AurOS, part %d of %d", i + 1, pc.n);
+        int ok = 0;
+        char last[PLAT_WHY] = "";
+        for (int attempt = 0; attempt < 8 && !ok; attempt++) {
+            uint64_t have = 0;
+            plat_file_size(path, &have);
+            /* Longer than it should be, or whole and wrong (piece_ok has
+             * already said so): from nothing. Shorter: carry on. */
+            if (have >= q->bytes) have = 0;
+            if (have == 0 && plat_file_put(path, "", 0, why, n) != 0)
+                return -1;
+            if (have < q->bytes) {
+                span_prog sp = { prog, ud, done, pc.total, 0, 60 };
+                if (plat_fetch(url, path, piece_progress, &sp, last,
+                               sizeof last) != 0) {
+                    talk(say, ud, "the download stopped (%s); carrying on", last);
+                    continue;
+                }
+            }
+            if (piece_ok(path, q)) { ok = 1; break; }
+            talk(say, ud, "part %d did not arrive intact; fetching it again",
+                 i + 1);
+        }
+        if (!ok) {
+            snprintf(why, n,
+                     "part %d of AurOS could not be downloaded intact%s%s. "
+                     "Check this computer is online and press Start "
+                     "installing again -- what has already arrived is kept.",
+                     i + 1, last[0] ? ": " : "", last);
+            return -1;
+        }
+        done += q->bytes;
+    }
+
+    talk(say, ud, "unpacking AurOS (about %llu MB)",
+         (unsigned long long)(c->image_expect / MIB));
+    char part[640];
+    snprintf(part, sizeof part, "%s.part", c->image_path);
+    if (plat_file_put(part, "", 0, why, n) != 0) return -1;
+    piece_reader rd = { &pc, dir, 0, 0, why, n };
+    image_writer wr;
+    memset(&wr, 0, sizeof wr);
+    wr.path = part; wr.expect = c->image_expect; wr.why = why; wr.wn = n;
+    wr.sp.prog = prog; wr.sp.ud = ud; wr.sp.total = c->image_expect;
+    wr.sp.lo = 60; wr.sp.hi = 95;
+    fmt_sha_start(&wr.sha);
+    uint64_t out = 0;
+    char w2[PLAT_WHY];
+    if (gz_inflate(piece_read, &rd, image_write, &wr, &out, why, n) != 0) {
+        plat_file_delete(part, w2, sizeof w2);
+        return -1;
+    }
+    fmt_sha_done(&wr.sha, dig);
+    if (wr.written != c->image_expect || !hex_eq(dig, c->image_sha256)) {
+        plat_file_delete(part, w2, sizeof w2);
+        /* EVERY PIECE MATCHED ITS OWN HASH, so the network did not do
+         * this: what was published is not what this installer was
+         * built to expect. That is our mistake, and the sentence says
+         * so rather than sending her to find another network. */
+        snprintf(why, n,
+                 "the downloaded AurOS does not match what this installer "
+                 "expects. This is a mistake in how this version was "
+                 "published, not in your computer or your internet. Nothing "
+                 "has been changed.");
+        return -1;
+    }
+    if (plat_file_rename(part, c->image_path, why, n) != 0) return -1;
+    for (int i = 0; i < pc.n; i++) {
+        char path[900];
+        snprintf(path, sizeof path, "%s%s", dir, pc.p[i].name);
+        plat_file_delete(path, w2, sizeof w2);
+    }
+    if (prog) prog(95, ud);
+    talk(say, ud, "AurOS is downloaded, unpacked and checked");
+    return 0;
+}
+
 /*
  * THE IMAGE IS HERE, OR IT IS FETCHED, OR THIS REFUSES.
  *
@@ -612,6 +994,25 @@ static int ensure_image(const ab_choice *c, ab_say say, ab_progress prog,
     }
     uint64_t have = 0;
     int present = plat_file_size(c->image_path, &have) == 0 && have > 0;
+
+    /* ALREADY ON THIS COMPUTER, SOMEWHERE ELSE: beside the installer,
+     * where a developer build expects it. Moved, not copied, when it is
+     * on the same drive -- five gigabytes twice is a drive this product's
+     * users do not have. */
+    if (!present && c->image_alt_path[0] &&
+        strcmp(c->image_alt_path, c->image_path) != 0) {
+        uint64_t alt = 0;
+        if (plat_file_size(c->image_alt_path, &alt) == 0 && alt > 0) {
+            talk(say, ud, "moving the copy of AurOS beside the installer into "
+                          "place");
+            if (plat_file_rename(c->image_alt_path, c->image_path, why, n) != 0)
+                return -1;
+            present = 1;
+            have = alt;
+        }
+    }
+    if (c->pieces_text && c->pieces_text[0])
+        return ensure_image_pieces(c, present, say, prog, ud, why, n);
 
     /* NOTHING TO CHECK IT AGAINST is a state with two sides. A file
      * already here and no hash is the developer arrangement and is
@@ -695,11 +1096,23 @@ static int ensure_image(const ab_choice *c, ab_say say, ab_progress prog,
     return -1;
 }
 
+int ab_fetch_image(const ab_choice *c, ab_say say, ab_progress prog,
+                   void *ud, char *why, size_t n)
+{
+    return ensure_image(c, say, prog, ud, why, n);
+}
+
+static int phase_prepare_nostick(const ab_choice *c, ab_machine *m,
+                                 ab_say say, ab_progress prog, void *ud,
+                                 char *why, size_t n);
+
 static int phase_prepare(const ab_choice *c, pf_report *r, ab_machine *m,
                          ab_say say, ab_progress prog, void *ud,
                          char *why, size_t n)
 {
     (void)r;
+    if (c->no_stick)
+        return phase_prepare_nostick(c, m, say, prog, ud, why, n);
     if (find_stick(c, m, why, n) != 0) return -1;
     if (ensure_image(c, say, prog, ud, why, n) != 0) return -1;
 
@@ -893,12 +1306,95 @@ static int phase_prepare(const ab_choice *c, pf_report *r, ab_machine *m,
     return 0;
 }
 
+/* ── phase 2, without a memory stick ─────────────────────────────── */
+
+/* NOTHING IS WRITTEN TO ANY DISK BUT AS FILES. The image is fetched or
+ * found at image_path on the Windows drive, and the one thing this adds
+ * is its manifest -- the same 4096 bytes a stick carries in front of
+ * the image, with the same hashes -- as the file image_path +
+ * ".manifest", read back and compared. After the restart the staging
+ * environment reads both through a read-only mount (src/aurstage/
+ * winvol.c) and checks every hash in it before it touches anything. */
+static int phase_prepare_nostick(const ab_choice *c, ab_machine *m,
+                                 ab_say say, ab_progress prog, void *ud,
+                                 char *why, size_t n)
+{
+    (void)m;
+    if (ensure_image(c, say, prog, ud, why, n) != 0) return -1;
+    uint64_t image_bytes = 0;
+    if (plat_file_size(c->image_path, &image_bytes) != 0 || !image_bytes) {
+        snprintf(why, n, "the copy of AurOS to install could not be found.");
+        return -1;
+    }
+    static uint8_t ihead[2 * 4096 + 16384];
+    size_t hneed = 2 * 512 + 16384;
+    if (plat_file_read(c->image_path, 0, ihead, hneed, why, n) != 0) {
+        snprintf(why, n, "the copy of AurOS to install could not be read.");
+        return -1;
+    }
+    uint64_t root_off = 0, root_len = 0, esp_off = 0, esp_len = 0;
+    if (fmt_image_root_extent(ihead, hneed, 512, &root_off, &root_len,
+                              why, n) != 0 ||
+        fmt_image_esp_extent(ihead, hneed, 512, &esp_off, &esp_len,
+                             why, n) != 0)
+        return -1;
+    if (!root_len || root_off > image_bytes || root_len > image_bytes - root_off ||
+        !esp_len || esp_off > image_bytes || esp_len > image_bytes - esp_off) {
+        snprintf(why, n,
+                 "the copy of AurOS on this computer is incomplete. Delete the "
+                 "AurOS folder on the Windows drive and try again.");
+        return -1;
+    }
+
+    talk(say, ud, "noting down what the copy of AurOS must look like");
+    static uint8_t buf[1 << 20];
+    unsigned char root_sha[32], esp_sha[32];
+    const struct { uint64_t off, len; unsigned char *out; int lo, hi; } X[2] = {
+        { esp_off,  esp_len,  esp_sha,  95, 96 },
+        { root_off, root_len, root_sha, 96, 100 },
+    };
+    for (int k = 0; k < 2; k++) {
+        fmt_sha h; fmt_sha_start(&h);
+        for (uint64_t at = 0; at < X[k].len; ) {
+            size_t take = X[k].len - at > sizeof buf ? sizeof buf
+                                                     : (size_t)(X[k].len - at);
+            if (plat_file_read(c->image_path, X[k].off + at, buf, take,
+                               why, n) != 0)
+                return -1;
+            fmt_sha_feed(&h, buf, take);
+            at += take;
+            if (prog) prog(X[k].lo + (int)((X[k].hi - X[k].lo) * at / X[k].len),
+                           ud);
+        }
+        fmt_sha_done(&h, X[k].out);
+    }
+
+    uint8_t man[FMT_MANIFEST_BYTES], back[FMT_MANIFEST_BYTES];
+    fmt_manifest(man, image_bytes, root_off, root_len, 512, root_sha,
+                 c->profile, esp_off, esp_len, esp_sha);
+    char mp[600];
+    if ((size_t)snprintf(mp, sizeof mp, "%s.manifest", c->image_path)
+            >= sizeof mp) {
+        snprintf(why, n, "the folder AurOS is in has too long a name.");
+        return -1;
+    }
+    if (plat_file_put(mp, man, sizeof man, why, n) != 0) return -1;
+    if (plat_file_read(mp, 0, back, sizeof back, why, n) != 0 ||
+        memcmp(back, man, sizeof man) != 0) {
+        snprintf(why, n, "the note describing AurOS did not read back the way "
+                         "it was written. Nothing has been changed.");
+        return -1;
+    }
+    talk(say, ud, "AurOS is ready on the Windows drive; no memory stick is "
+                  "used");
+    return 0;
+}
+
 /* ── phase 3: the last thing before the restart ──────────────────── */
 
 static int phase_handoff(const ab_choice *c, pf_report *r, ab_machine *m,
                          ab_say say, void *ud, char *why, size_t n)
 {
-    (void)r;
     /* THE STAGING ENVIRONMENT, OUT OF THE INSTALLER ITSELF.
      *
      * A path in the choice means a developer running against a build
@@ -953,6 +1449,8 @@ static int phase_handoff(const ab_choice *c, pf_report *r, ab_machine *m,
      * Without it the staging environment installs whichever image it
      * finds first, on a stick that may hold two. */
     snprintf(j.profile, sizeof j.profile, "%s", c->profile);
+    snprintf(j.image_on, sizeof j.image_on, "%s",
+             c->no_stick ? "windows" : "stick");
     j.run_id = m->run_id;
     j.written_unix = (uint64_t)time(NULL);
 
@@ -1004,6 +1502,88 @@ static int phase_handoff(const ab_choice *c, pf_report *r, ab_machine *m,
             return -1;
         }
     }
+    /* ── THE WAY IN, WITH SECURE BOOT ON ─────────────────────────────
+     *
+     * The entry used to start staging.efi -- the kernel -- directly,
+     * with its command line in the entry. The kernel is signed by
+     * Canonical; firmware with Secure Boot on trusts Microsoft, so on
+     * nearly every Windows 10 and 11 PC the firmware refused it,
+     * consumed BootNext and started Windows, and the install simply
+     * never happened. Nothing tested that path with Secure Boot on:
+     * every end-to-end test handed QEMU the kernel with -kernel.
+     *
+     * So the entry starts shim -- Canonical's, signed by Microsoft, the
+     * same file the installed system boots through -- which starts
+     * Canonical's signed grub, which verifies and starts the kernel.
+     * That grub's configuration path is baked into it and covered by
+     * its signature: it reads \EFI\ubuntu\grub.cfg on the partition it
+     * was loaded from. On a machine where that file already exists and
+     * is not ours, another Ubuntu-family system owns it, and this
+     * refuses rather than overwrite somebody else's start-up. */
+    const char *extra = getenv("AURBRIDGE_STAGING_KARGS");  /* tests only */
+    char shim[512], grub[512], mokm[512], w2[PLAT_WHY];
+    int chain = plat_payload(PAYLOAD_SHIM, shim, sizeof shim, w2, sizeof w2) == 0 &&
+                plat_payload(PAYLOAD_GRUB, grub, sizeof grub, w2, sizeof w2) == 0;
+    int have_mm = chain &&
+                  plat_payload(PAYLOAD_MOKMGR, mokm, sizeof mokm, w2, sizeof w2) == 0;
+    if (chain) {
+        char ucfg[512], back[64];
+        snprintf(ucfg, sizeof ucfg, "%s/EFI/ubuntu/grub.cfg", esp);
+        uint64_t have = 0;
+        if (plat_file_size(ucfg, &have) == 0 && have > 0 &&
+            (plat_file_read(ucfg, 0, back, have < 11 ? (size_t)have : 11,
+                            w2, sizeof w2) != 0 ||
+             have < 11 || memcmp(back, "# AurBridge", 11) != 0)) {
+            snprintf(why, n,
+                     "another Linux system's start-up is already set up on this "
+                     "computer, in the place AurOS would need. AurOS will not "
+                     "overwrite it. Nothing has been changed.");
+            plat_esp_close();
+            plat_payload_free();
+            return -1;
+        }
+        char cfg[1024];
+        int cl = snprintf(cfg, sizeof cfg,
+            "# AurBridge: starts the AurOS installer, once. Written by the\n"
+            "# AurOS installer, and safe to delete once AurOS is installed.\n"
+            "set timeout=0\n"
+            "set default=0\n"
+            "search --no-floppy --file --set=root /EFI/AurOS/staging.efi\n"
+            "menuentry 'AurOS installer' {\n"
+            "    linux /EFI/AurOS/staging.efi aurstage.install "
+            "aurstage.profile=%s console=tty0%s%s\n"
+            "    initrd /EFI/AurOS/staging.img\n"
+            "}\n",
+            c->profile, extra ? " " : "", extra ? extra : "");
+        if (cl <= 0 || (size_t)cl >= sizeof cfg) {
+            snprintf(why, n, "the start-up settings could not be written.");
+            plat_esp_close(); plat_payload_free();
+            return -1;
+        }
+        char d1[512], d2[512], d3[512], d4[512];
+        snprintf(d1, sizeof d1, "%s/EFI/AurOS/shimx64.efi", esp);
+        snprintf(d2, sizeof d2, "%s/EFI/AurOS/grubx64.efi", esp);
+        snprintf(d3, sizeof d3, "%s/EFI/AurOS/mmx64.efi", esp);
+        snprintf(d4, sizeof d4, "%s/EFI/AurOS/grub.cfg", esp);
+        if (plat_file_copy(shim, d1, why, n) != 0 ||
+            plat_file_copy(grub, d2, why, n) != 0 ||
+            (have_mm && plat_file_copy(mokm, d3, why, n) != 0) ||
+            plat_file_put(d4, cfg, (size_t)cl, why, n) != 0 ||
+            plat_file_put(ucfg, cfg, (size_t)cl, why, n) != 0) {
+            plat_esp_close(); plat_payload_free();
+            return -1;
+        }
+    } else if (r && r->secure_boot == 1) {
+        snprintf(why, n,
+                 "this copy of the installer cannot start AurOS on a computer "
+                 "with Secure Boot switched on, and this one has it on. "
+                 "Download the installer again. Nothing has been changed.");
+        plat_esp_close(); plat_payload_free();
+        return -1;
+    } else {
+        talk(say, ud, "NOTE: this build starts the installer directly, which "
+                      "only works with Secure Boot off");
+    }
     plat_esp_close();
     /* Anything that was unpacked to get here is gone again. The bytes
      * that matter are on the EFI partition now. */
@@ -1011,14 +1591,19 @@ static int phase_handoff(const ab_choice *c, pf_report *r, ab_machine *m,
 
     /* The boot entry, found by its own description and replaced, never
      * by "the entries we did not record" -- which also selects the
-     * Fedora somebody installed last month. */
+     * Fedora somebody installed last month. Through shim it carries no
+     * command line at all: shim reads a non-empty one as the name of
+     * the next thing to start, and the kernel's arguments are in
+     * grub.cfg. */
     char cmdline[512];
     snprintf(cmdline, sizeof cmdline,
              "initrd=\\EFI\\AurOS\\staging.img aurstage.install "
-             "aurstage.profile=%s console=tty0", c->profile);
+             "aurstage.profile=%s console=tty0%s%s", c->profile,
+             extra ? " " : "", extra ? extra : "");
     if (plat_boot_make("AurOS Installer", &m->esp,
-                       "\\EFI\\AurOS\\staging.efi",
-                       cmdline, &m->boot_entry, why, n) != 0)
+                       chain ? "\\EFI\\AurOS\\shimx64.efi"
+                             : "\\EFI\\AurOS\\staging.efi",
+                       chain ? "" : cmdline, &m->boot_entry, why, n) != 0)
         return -1;
 
     /* BOOTNEXT AND NOT BOOTORDER. It is one-shot: the firmware clears
@@ -1048,7 +1633,9 @@ int ab_run(ab_phase upto, const ab_choice *c, pf_report *r, ab_machine *m,
         talk(say, ud, "NOTE: this is %s, not a real computer.", plat_name());
 
     for (ab_phase p = AB_INSPECT; p <= upto && p < AB_N; p++) {
-        talk(say, ud, "── %s", ab_phase_name(p));
+        talk(say, ud, "── %s",
+             p == AB_PREPARE && c->no_stick ? "getting AurOS ready"
+                                            : ab_phase_name(p));
         int rc;
         switch (p) {
         case AB_INSPECT: rc = phase_inspect(c, r, m, say, ud, why, n); break;

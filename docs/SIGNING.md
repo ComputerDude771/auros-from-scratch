@@ -32,7 +32,8 @@ different failures, and neither of them is fixable in code.
 
 ## What has to be bought
 
-**An OV or EV code-signing certificate, on hardware.**
+**A code-signing certificate on hardware, or Microsoft's signing
+service.** Which one is below; the short answer is "not EV".
 
 Since 1 June 2023 the CA/Browser Forum's baseline requirements have
 required code-signing private keys to be generated and held on
@@ -49,25 +50,34 @@ Either works with this build. The cloud route is easier to automate and
 does not put a physical object on the critical path of a release; the
 token is cheaper and does not depend on somebody else's uptime.
 
-### OV or EV
+### OV, EV, or Microsoft's own signing service
 
-|  | OV | EV |
-|---|---|---|
-| Identity check | the organisation is verified | the organisation is verified more strictly |
-| SmartScreen | reputation is **earned** — the warning keeps appearing until enough people have downloaded and run it | **immediate** — no warning from the first download |
-| Typical price | roughly USD 200–400 a year | roughly USD 300–600 a year |
+This section used to say **EV is the one to buy**, on the grounds that
+EV got SmartScreen reputation from the first download. That stopped
+being true in 2024, when Microsoft removed the behaviour: EV-signed
+files now earn reputation the same way OV-signed ones do.
+`docs/research/signing-trust.md` finding 3 already said so, and
+`docs/AURBRIDGE.md` said "ship OV"; this file was the one out of step.
 
-Check current prices; they move, and resellers are usually well under a
-CA's list price.
+|  | OV certificate | EV certificate | Azure Artifact Signing |
+|---|---|---|---|
+| Identity check | organisation (or individual, at some CAs) | stricter organisation check | Microsoft validates the organisation or individual |
+| SmartScreen | reputation **earned** over downloads | the same, since 2024 | the same |
+| Key storage | hardware token or cloud HSM (required since June 2023) | the same | Microsoft holds it; certificates last days and renew themselves |
+| Price, roughly | USD 200–400 a year, less through resellers | USD 300–600 a year | USD 9.99 a month (5,000 signatures) |
+| Who can get one | anyone the CA can verify | organisations | organisations in the US, Canada, EU, UK and several other countries; **individuals only in the US and Canada** |
 
-**For this product, EV is the one to buy, and the reason is specific.**
-OV reputation is accrued per-publisher across downloads over time. A
-new publisher signing a new installer still gets the warning — for
-weeks, or until a few thousand people have run it. Those weeks are
-exactly the launch, and the population is exactly the one that cannot
-get past a blue screen. Paying the difference buys the absence of the
-warning on the very first download, which is the only download that
-matters.
+**For this product: Azure Artifact Signing if you are eligible for it,
+otherwise OV.** EV buys nothing here that OV does not, and the premium
+is money a small project should spend on the hardware matrix instead.
+Whichever is used, the warning keeps appearing until enough people have
+run the installer; plan the first release as a small, known group, not
+a public launch.
+
+Check current prices and eligibility before paying; they move. As of
+this writing: [Microsoft's EV change](https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/smartscreen-reputation),
+[DigiCert's note on it](https://knowledge.digicert.com/alerts/ev-signed-application-showing-microsoft-defender-smartscreen-warnings),
+[Artifact Signing pricing](https://azure.microsoft.com/en-us/pricing/details/artifact-signing/).
 
 ### Who can buy one
 

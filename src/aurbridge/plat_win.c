@@ -944,6 +944,36 @@ int plat_file_append(const char *to, const void *buf, size_t n,
     return 0;
 }
 
+int plat_file_delete(const char *path, char *why, size_t wn)
+{
+    wchar_t w[1024];
+    if (to_wide(path, w, 1024) != 0) {
+        snprintf(why, wn, "a file path on this computer could not be read");
+        return -1;
+    }
+    if (DeleteFileW(w)) return 0;
+    DWORD e = GetLastError();
+    if (e == ERROR_FILE_NOT_FOUND || e == ERROR_PATH_NOT_FOUND) return 0;
+    why_of(why, wn, "a file the installer made could not be removed", e);
+    return -1;
+}
+
+int plat_file_rename(const char *from, const char *to, char *why, size_t wn)
+{
+    make_dirs(to);
+    wchar_t wf[1024], wt[1024];
+    if (to_wide(from, wf, 1024) != 0 || to_wide(to, wt, 1024) != 0) {
+        snprintf(why, wn, "a file path on this computer could not be read");
+        return -1;
+    }
+    if (!MoveFileExW(wf, wt, MOVEFILE_REPLACE_EXISTING | MOVEFILE_COPY_ALLOWED |
+                             MOVEFILE_WRITE_THROUGH)) {
+        why_of(why, wn, "a file could not be moved into place", GetLastError());
+        return -1;
+    }
+    return 0;
+}
+
 uint64_t plat_free_space(const char *path)
 {
     char dir[MAX_PATH * 4];
@@ -974,13 +1004,16 @@ uint64_t plat_free_space(const char *path)
  */
 #define RT_AUROS_PAYLOAD  10        /* RT_RCDATA */
 
-static char g_payload_tmp[2][MAX_PATH];
+static char g_payload_tmp[5][MAX_PATH];
 static int  g_payload_n;
 
 static int payload_id(const char *name)
 {
     if (!strcmp(name, PAYLOAD_KERNEL)) return 1;
     if (!strcmp(name, PAYLOAD_INITRD)) return 2;
+    if (!strcmp(name, PAYLOAD_SHIM))   return 3;
+    if (!strcmp(name, PAYLOAD_GRUB))   return 4;
+    if (!strcmp(name, PAYLOAD_MOKMGR)) return 5;
     return 0;
 }
 
@@ -1077,7 +1110,7 @@ int plat_payload(const char *name, char *path, size_t pn, char *why, size_t wn)
                           "where it needs them.");
         return -1;
     }
-    if (g_payload_n < 2) {
+    if (g_payload_n < 5) {
         _snprintf(g_payload_tmp[g_payload_n], MAX_PATH - 1, "%s", out);
         g_payload_tmp[g_payload_n][MAX_PATH - 1] = 0;
         g_payload_n++;

@@ -462,7 +462,7 @@ size_t fmt_journal_json(const fmt_journal *j, char *out, size_t n)
      * as 140, because the day profile's width changes a constant here
      * silently truncates the journal's copy and the stick then
      * disagrees with itself. */
-    char e_stage[64], e_boot[64];
+    char e_stage[64], e_boot[64], e_on[64];
     char e_prof[2 * sizeof j->profile];
     esc(e_serial, sizeof e_serial, j->disk_serial);
     esc(e_model,  sizeof e_model,  j->disk_model);
@@ -471,19 +471,20 @@ size_t fmt_journal_json(const fmt_journal *j, char *out, size_t n)
     esc(e_stage,  sizeof e_stage,  j->stage);
     esc(e_boot,   sizeof e_boot,   j->boot_from);
     esc(e_prof,   sizeof e_prof,   j->profile);
+    esc(e_on,     sizeof e_on,     j->image_on);
     int k = snprintf(out, n,
         "{\"disk_serial\":\"%s\",\"disk_model\":\"%s\","
         "\"disk_bytes\":%llu,\"logical_sector\":%u,"
         "\"win_part\":\"%s\",\"win_start_lba\":%llu,\"win_sectors\":%llu,"
         "\"win_ntfs_serial\":%llu,\"gpt_sha256\":\"%s\",\"stage\":\"%s\","
-        "\"boot_from\":\"%s\",\"profile\":\"%s\",\"run_id\":%llu,"
-        "\"written_unix\":%llu}\n",
+        "\"boot_from\":\"%s\",\"profile\":\"%s\",\"image_on\":\"%s\","
+        "\"run_id\":%llu,\"written_unix\":%llu}\n",
         e_serial, e_model,
         (unsigned long long)j->disk_bytes, (unsigned)j->logical_sector,
         e_part, (unsigned long long)j->win_start_lba,
         (unsigned long long)j->win_sectors,
         (unsigned long long)j->win_ntfs_serial,
-        e_gpt, e_stage, e_boot, e_prof,
+        e_gpt, e_stage, e_boot, e_prof, e_on,
         (unsigned long long)j->run_id,
         (unsigned long long)j->written_unix);
     if (k < 0 || (size_t)k >= n) return 0;
