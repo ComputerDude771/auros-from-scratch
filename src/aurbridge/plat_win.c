@@ -944,6 +944,30 @@ int plat_file_append(const char *to, const void *buf, size_t n,
     return 0;
 }
 
+int plat_restart(char *why, size_t wn)
+{
+    HANDLE tok;
+    if (OpenProcessToken(GetCurrentProcess(),
+                         TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &tok)) {
+        TOKEN_PRIVILEGES tp;
+        memset(&tp, 0, sizeof tp);
+        tp.PrivilegeCount = 1;
+        tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+        if (LookupPrivilegeValueW(NULL, L"SeShutdownPrivilege",
+                                  &tp.Privileges[0].Luid))
+            AdjustTokenPrivileges(tok, FALSE, &tp, 0, NULL, NULL);
+        CloseHandle(tok);
+    }
+    if (!ExitWindowsEx(EWX_REBOOT | EWX_FORCEIFHUNG,
+                       SHTDN_REASON_MAJOR_APPLICATION |
+                       SHTDN_REASON_MINOR_INSTALLATION |
+                       SHTDN_REASON_FLAG_PLANNED)) {
+        why_of(why, wn, "this computer would not restart", GetLastError());
+        return -1;
+    }
+    return 0;
+}
+
 int plat_file_delete(const char *path, char *why, size_t wn)
 {
     wchar_t w[1024];

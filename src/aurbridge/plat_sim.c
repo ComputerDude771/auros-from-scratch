@@ -472,6 +472,17 @@ int plat_file_append(const char *to, const void *buf, size_t n,
     return 0;
 }
 
+/* A simulated computer does not restart; the test does that itself by
+ * booting the disk. Written down, like every command, in ran.log. */
+int plat_restart(char *why, size_t wn)
+{
+    (void)why; (void)wn;
+    char cmd[] = "restart";
+    char tail[8];
+    plat_run(cmd, tail, sizeof tail);
+    return 0;
+}
+
 int plat_file_delete(const char *path, char *why, size_t wn)
 {
     if (unlink(path) == 0 || errno == ENOENT) return 0;

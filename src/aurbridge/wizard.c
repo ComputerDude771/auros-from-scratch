@@ -321,6 +321,14 @@ static wchar_t g_det_lang[96], g_det_kbd[96], g_det_tz[128];
 /* dev harness only; never set by anything the user can click */
 static int   g_shot_mode = 0;
 
+/* SET ONLY BY "Restart now", and by Windows itself ending the session.
+ * Closing the window before the restart takes everything back
+ * (install_cancel); restarting is the one way of leaving it that keeps
+ * the one-shot start-up setting, because it is the restart that setting
+ * is waiting for. Without this the only button at the end said "Close",
+ * and pressing it undid the install the person had just prepared. */
+static int   g_restarting = 0;
+
 #define AGREE_WORD L"AGREE"
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -1025,11 +1033,11 @@ static const struct {
  { L"Write down what you agreed to",
    L"Your answers, and a copy of this PC\u2019s unlock key if it has one.", 0 },
  { L"Get AurOS",
-   L"About 5 GB is downloaded into the AurOS folder on this drive, and every byte is checked. Windows is untouched by this step.", 0 },
+   L"About 5 GB is downloaded into the AurOS folder on this drive, and checked.", 0 },
  { L"Add AurOS to the start-up menu",
    L"AurOS is offered once, at the next start. Windows stays the one that starts by default.", 0 },
  { L"Make room",
-   L"After the restart: the Windows drive is made smaller, and a copy of this PC\u2019s start-up is saved in the room that frees. Your Windows files stay where they are.", 1 },
+   L"After the restart: the Windows drive is made smaller. Your files stay where they are.", 1 },
  { L"Copy AurOS onto the drive",
    L"AurOS is written into the new space, then read back and checked, byte for byte.", 1 },
  { L"Try it out on this PC",
@@ -2464,9 +2472,9 @@ static int page_progress(int x, int y, int w)
         stroke_rr((float)x, (float)y, (float)narrow, (float)h, (float)S(12), 1.2f,
                   C_WARM, 0.35f);
         glyph_bang((float)(x + S(26)), (float)(y + h / 2), (float)S(15), C_WARM, 1.f);
-        text_draw(L"Nothing on this PC is changed by the steps below. The only "
-                  L"thing written to is the USB stick, and the only thing "
-                  L"changed is which system starts next time \u2014 once.",
+        text_draw(L"Before the restart, the only things written are the AurOS "
+                  L"folder on this drive and a few start-up files, and the only "
+                  L"thing changed is which system starts next time \u2014 once.",
                   g_f_small, C_WARM, x + S(48), y + S(11), narrow - S(70), DT_WORDBREAK);
         y += h + S(22);
     }
@@ -2569,7 +2577,7 @@ static const wchar_t *primary_label(void)
     case PAGE_PERSONALIZE: return L"Continue";
     case PAGE_READY:       return g_choice == 1 ? L"Erase and install"
                                                 : L"Start installing";
-    case PAGE_PROGRESS:    return L"Close";
+    case PAGE_PROGRESS:    return g_ab_state == 2 ? L"Restart now" : L"Close";
     default:               return L"Continue";
     }
 }
@@ -2597,8 +2605,10 @@ static const wchar_t *footer_hint(void)
     case PAGE_READY:
         return L"Last chance to stop without anything having happened.";
     case PAGE_PROGRESS:
-        return L"Nothing on this PC has been changed. Closing this window "
-               L"puts everything back.";
+        return g_ab_state == 2
+            ? L"Save your work first. Closing instead puts everything back."
+            : L"Nothing on this PC has been changed. Closing this window "
+              L"puts everything back.";
     default: return L"";
     }
 }
@@ -2794,7 +2804,21 @@ static void do_primary(void)
      * AURBRIDGE.md: destructive work re-runs preflight and aborts on
      * any block, however long the user spent on the pages in between. */
     case PAGE_READY:       start_check(PAGE_PROGRESS); break;
-    case PAGE_PROGRESS:    PostMessageW(g_hwnd, WM_CLOSE, 0, 0); break;
+    case PAGE_PROGRESS:
+        if (g_ab_state == 2) {
+            char why[PLAT_WHY];
+            g_restarting = 1;
+            if (plat_restart(why, sizeof why) != 0) {
+                g_restarting = 0;
+                wchar_t w[PLAT_WHY];
+                MultiByteToWideChar(CP_UTF8, 0, why, -1, w, PLAT_WHY);
+                w[PLAT_WHY - 1] = 0;
+                MessageBoxW(g_hwnd, w, L"AurBridge", MB_OK | MB_ICONWARNING);
+            }
+            break;
+        }
+        PostMessageW(g_hwnd, WM_CLOSE, 0, 0);
+        break;
     default: break;
     }
 }
@@ -3247,13 +3271,22 @@ static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM wp, LPARAM lp)
         DestroyWindow(h);
         return 0;
 
+    /* WINDOWS IS ENDING THE SESSION -- a restart from the Start menu, or
+     * ours. Either way the restart is happening, and it is the one the
+     * armed setting is for; taking it back now would make the restart
+     * she chose start Windows again with nothing done. */
+    case WM_ENDSESSION:
+        if (wp) g_restarting = 1;
+        return 0;
+
     case WM_DESTROY:
         KillTimer(h, 1);
         /* Take back the one-shot start-up setting, if it was set. A
          * window closed after phase 3 and before the restart must not
          * leave a computer that starts the installer once and then
-         * cannot say why. */
-        install_cancel();
+         * cannot say why. Not when the window is going BECAUSE of the
+         * restart. */
+        if (!g_restarting) install_cancel();
         PostQuitMessage(0);
         return 0;
 
@@ -3340,6 +3373,15 @@ static int shot_run(const char *dir)
     for (int i = 0; i < 30; i++) install_tick();
     g_page = PAGE_PROGRESS; shot_save(dir, "10-progress");
     for (int i = 0; i < 60; i++) install_tick();
+    /* THE END AS A PERSON SEES IT WHEN IT WORKED. Under Wine the engine
+     * stops at phase 0 -- there is no disk to read -- so the finished
+     * state is set here, after the worker has let go, for the picture
+     * only: the page and its "Restart now" button are what is under
+     * review, not the engine. */
+    if (g_ab_thread) WaitForSingleObject(g_ab_thread, 60000);
+    InterlockedExchange(&g_ab_state, 2);
+    g_install_running = 1;
+    install_tick();
     shot_save(dir, "10b-progress-end");
     return 0;
 }

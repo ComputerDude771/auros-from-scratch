@@ -243,6 +243,15 @@ int plat_boot_next_clear(char *why, size_t wn);
  * needs. Returns the exit status, or -1 if it would not start. */
 int plat_run(const char *cmdline, char *tail, size_t n);
 
+/* ── the one restart ─────────────────────────────────────────────── */
+
+/* Restart the computer, now. The wizard's last button, after phase 3:
+ * the staging environment is armed with BootNext and this is the
+ * restart it is waiting for. A restart, never a shut down -- with Fast
+ * Startup on, Windows' "shut down" leaves the drive half-asleep, which
+ * the staging environment refuses to touch. */
+int plat_restart(char *why, size_t wn);
+
 /* ── which implementation is this ────────────────────────────────── */
 
 /* 1 when this is the simulated machine. Everything user-facing says

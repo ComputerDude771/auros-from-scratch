@@ -194,6 +194,34 @@ true on this commit:
   the console, which is readable but is not the progress display the
   design calls for.
 
+### Found while making the test build, and fixed
+
+Recorded because each of them passed every test that existed, and each
+would have stopped the first real install:
+
+- **The restart would not have started the installer on a PC with
+  Secure Boot on** -- nearly every Windows 10 and 11 PC. The boot entry
+  named the staging kernel itself, which Canonical signs and firmware
+  does not trust; every end-to-end test handed QEMU the kernel with
+  `-kernel`, which skips the question. The entry now starts the image's
+  Microsoft-signed shim, which starts Canonical's grub, which starts the
+  kernel; `tools/nosticktest.sh` boots it from firmware with Microsoft's
+  keys and Secure Boot enforcing, and shows the old entry being refused.
+- **The last button undid the install.** After phase 3 the only button
+  said *Close*, and closing the window takes the one-shot start-up
+  setting back by design. It says *Restart now* and restarts, keeping
+  the setting; closing still takes everything back.
+- **The installer never asked for administrator rights**, so a
+  double-click landed on a refusal page. It carries a manifest now.
+- **The wizard could not install at all in the stick mode** -- it never
+  nominated a stick -- so every install from the GUI would have failed
+  in phase 2. The test build is no-stick; the stick page is still owed
+  (above).
+- **"Replace Windows completely" did nothing**: chosen, it installed
+  beside a Windows that was still there. It is no longer offered.
+- **"Put Windows back" was promised on the consent page** as a menu
+  entry that does not exist. The page now says what is true.
+
 ---
 
 ## What the test build is, and is not

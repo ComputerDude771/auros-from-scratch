@@ -516,13 +516,27 @@ int image_verify(const image_src *s, void (*progress)(int), char *why, size_t n)
     }
     if (hash_region(s->dev, image_base_off(s) + s->esp_off,
                     s->esp_len, got, NULL) != 0) {
-        snprintf(why, n, "%s could not be read all the way through.",
-                 src_words(s));
+        if (s->from_file)
+            snprintf(why, n, "%s could not be read all the way through.",
+                     src_words(s));
+        else
+            snprintf(why, n,
+                     "the AurOS memory stick could not be read all the way "
+                     "through. It may be faulty, or it may have been unplugged.");
         return -1;
     }
     if (memcmp(got, s->esp_sha, 32) != 0) {
-        snprintf(why, n, "the part of %s that starts a computer is damaged. "
-                         "It will need to be made again.", src_words(s));
+        /* The stick's sentence is the one it always was, word for word:
+         * tools/installtest.sh waits for it, and a person who has seen
+         * it before should see it again. */
+        if (s->from_file)
+            snprintf(why, n, "the part of the copy of AurOS on the Windows "
+                             "drive that starts a computer is damaged. Delete "
+                             "the AurOS folder and run the installer again.");
+        else
+            snprintf(why, n,
+                     "the part of the memory stick that starts a computer is "
+                     "damaged. It will need to be written again.");
         return -1;
     }
     return 0;
@@ -538,7 +552,10 @@ int image_write_root(wr_target *t, const image_src *s, uint64_t dst_off,
     }
     int fd = open(s->dev, O_RDONLY | O_CLOEXEC);
     if (fd < 0) {
-        snprintf(why, n, "%s could not be read", src_words(s));
+        if (s->from_file)
+            snprintf(why, n, "%s could not be read", src_words(s));
+        else
+            snprintf(why, n, "the AurOS memory stick could not be read");
         return -1;
     }
     static unsigned char src[CH];
@@ -557,8 +574,14 @@ int image_write_root(wr_target *t, const image_src *s, uint64_t dst_off,
     for (uint64_t at = HOLD; at < s->root_len; ) {
         size_t take = s->root_len - at > CH ? CH : (size_t)(s->root_len - at);
         if (read_at(fd, src, take, base + at) != 0) {
-            snprintf(why, n, "%s stopped responding partway through.",
-                     src_words(s));
+            if (s->from_file)
+                snprintf(why, n, "%s stopped responding partway through.",
+                         src_words(s));
+            else
+                snprintf(why, n,
+                         "the AurOS memory stick stopped responding partway "
+                         "through. Nothing on the Windows drive has been "
+                         "touched.");
             goto out;
         }
         if (wr_bytes(t, WR_ROOT, dst_off + at, src, take, why, n) != 0) goto out;
