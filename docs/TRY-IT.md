@@ -42,10 +42,13 @@ and is not", before starting.
    **Yes**.
 4. Follow the pages. **Check this PC** reads only. If it stops with a
    red card, the card says what to do; nothing has been changed.
-5. On **Ready**, tick the box and press **Start installing**. It
+5. On **Make it yours**, the language, keyboard, time zone, look and
+   (on the page before) desktop you pick are what AurOS starts with.
+   The ones Windows already uses are picked for you.
+6. On **Ready**, tick the box and press **Start installing**. It
    downloads AurOS (the long part), checks it, and gets the restart
    ready. Nothing on the drive is changed yet.
-6. Press **Restart now**. Do not close the window instead: closing it
+7. Press **Restart now**. Do not close the window instead: closing it
    takes everything back, on purpose.
 
 ## After the restart
@@ -58,6 +61,9 @@ and is not", before starting.
 - If it stops with a sentence and `verdict=...`, **take a photo of the
   screen** and send it. A stop before *Making room* has changed
   nothing; switch the PC off and on and Windows starts as before.
+- On its first start AurOS applies what you chose in the installer. The
+  language sets dates, numbers and the programs that carry their own
+  translations; AurOS's own menus are English for now.
 - When AurOS starts, it asks **whether it works**. Say **yes** to make
   AurOS what the PC starts from now on; say **no** and the PC goes back
   to starting Windows. Windows is still there either way.
