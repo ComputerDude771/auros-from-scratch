@@ -44,13 +44,20 @@ v1, kept so that installers built against them keep working.
   (`tools/putbacktest.sh`, 16/16, with Secure Boot on);
 - the `aurfirst` fix for a second install after Windows was put back
   (`2d85777`);
-- Ubuntu's security updates, installed daily by `unattended-upgrades`.
+- Ubuntu's security updates, installed daily by `unattended-upgrades`,
+  except the kernel, grub and shim (they would regenerate AurOS's
+  start-up menu; see `docs/issues/v3/STATUS.md`, 7.4).
+
+Replaced once, on 2026-09-26, before any installer used it: an
+independent review found that "Put Windows back" could be triggered by
+a double-click and that a kernel update would drop AurOS's menu. The
+pieces here are the fixed build.
 
 | | |
 |---|---|
 | image | `auros-desktop.img`, 5,325,717,504 bytes |
-| image SHA-256 | `8ee78e9a671e860fdfadd809ddc3f53790f5930f2fc457a0171246f4d4431999` |
-| compressed SHA-256 | `a5a8b373201aa425102ab6e6de1a8d9d7ad468d788ce1336950626a862d914b0` |
+| image SHA-256 | `5dee5f443b8129387764e0547a41e9798f8d931b109b8102e79d6deb5afef5ee` |
+| compressed SHA-256 | `f7925ad05005fb91e59c62501709176d45a47858f6fda691aa255579a12e0ed5` |
 | pieces | `v3/pieces.txt` |
 
 ## The test installer
