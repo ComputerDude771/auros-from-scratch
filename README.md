@@ -69,12 +69,20 @@ branch before running it.
 
 | | |
 |---|---|
-| SHA-256 | `f971559d2edc03710bbcde0ad1f43270deedcbd184d82378dc1f2e188c724015` |
-| downloads | the v2 image (`v2/pieces.txt`) |
-| built from | branch `claude/confident-johnson-hxevk4`, commit `3775c3d` |
-| tested **on real Windows** | GitHub Actions `windows-latest` (`.github/workflows/windows.yml`): the wizard starts the way a double-click starts it, passes its navigation test, and runs preflight read-only against the machine; the console tool's selftest and preflight; WinHTTP downloads all 20 v2 pieces and the installer's own inflater checks the image (`verdict=ok`); and the previous build, below, fails to start there exactly as it did on the first real PC. After publishing, the same workflow downloads this file from here, checks the SHA-256 above, and starts it. |
-| tested in simulation | `tools/installtest.sh` 37/37, `tools/nosticktest.sh` 45/45, `tools/manifesttest.sh` 10/10 on this file, `tools/aurfirsttest.sh` 65/65, `tools/choicestest.sh` 21/21, Ferry 43/43 |
+| SHA-256 | `c70045fb55e23cf40689689d4188157077cad47bbf44c5813d76b9af57cb1a37` |
+| downloads | the v3 image (`v3/pieces.txt`): Put Windows back, and security updates |
+| built from | branch `claude/confident-johnson-hxevk4`, commit `1bef5d7` |
+| tested **on real Windows** | GitHub Actions `windows-latest` (`.github/workflows/windows.yml`): the wizard starts the way a double-click starts it, passes its navigation test and runs preflight read-only against the machine; the console tool's selftest and preflight; the start-up partition check on a real EFI partition, filled with an earlier attempt's files (passes) and with somebody else's (refuses); WinHTTP downloads all 20 v3 pieces and the installer's own inflater checks the image (`verdict=ok`); the broken 2026-09-25 build fails to start there exactly as it did on the first real PC. After publishing, the same workflow downloads this file from here, checks the SHA-256 above, and starts it. |
+| tested in simulation | `tools/installtest.sh` 37/37, `tools/nosticktest.sh` 45/45, `tools/manifesttest.sh` 10/10 on this file; on the v3 image `tools/putbacktest.sh` 16/16, `tools/firstboottest.sh` 32/32, `tools/choicesboottest.sh` 9/9 |
+| reviewed | an independent review of every v3 change; its seven findings are fixed in this build (`docs/issues/v3/STATUS.md`) |
 | not tested | a real PC's disk being resized and written: that is what a spare PC is for |
+
+New in this build: "Put Windows back" in AurOS (Settings, and AurOS's
+start-up menu); it asks before closing throws away a prepared install;
+it says that OneDrive files kept only online will not come across; a
+second attempt is no longer refused for the first attempt's files; and
+the restore's messages no longer ask for a memory stick nobody was
+given.
 
 It keeps what is chosen on its *Make it yours* page: AurOS starts in
 that language, keyboard layout, time zone, look and desktop.
@@ -92,6 +100,8 @@ exception for the file, or wait. `docs/TRY-IT.md` has the steps.
 
 Earlier test installers:
 
+- `f971559d...` (2026-09-26, v2 image): the first that starts on
+  Windows. Works; installs the v2 image, which has no "Put Windows back".
 - `3e32e929...` (2026-09-25, v2): **does not start on Windows.** Its
   manifest had `--` inside an XML comment; Windows refuses it with "The
   application has failed to start because its side-by-side
