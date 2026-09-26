@@ -12,12 +12,23 @@ Which means "does the installer actually carry it" is a question about
 the PE resource directory, and this is what answers it -- in another
 language, without asking the program that wrote it.
 
-    tools/pe_payload.py list  EXE
-    tools/pe_payload.py get   EXE ID OUTFILE
+    tools/pe_payload.py list     EXE
+    tools/pe_payload.py get      EXE ID OUTFILE
+    tools/pe_payload.py manifest EXE            print the RT_MANIFEST
+    tools/pe_payload.py check    EXE-or-XML     is it a manifest Windows loads?
+
+`check` exists because the first real Windows PC refused to start the
+wizard: "its side-by-side configuration is incorrect". Its manifest had
+`--` inside an XML comment, which XML forbids and Windows' manifest
+parser enforces. Wine loaded it anyway, so every test passed. A manifest
+Windows cannot parse means the program cannot start, before any of its
+code runs, so the check is strict: a well-formed document, one
+<assembly>, and the requireAdministrator the wizard depends on.
 """
 import struct, sys
 
 RT_RCDATA = 10
+RT_MANIFEST = 24
 
 
 def _u16(b, o): return struct.unpack_from('<H', b, o)[0]
@@ -65,12 +76,16 @@ class PE:
 
     def rcdata(self):
         """→ {id: (offset, length)} for every RT_RCDATA resource."""
+        return self.resources(RT_RCDATA)
+
+    def resources(self, rtype):
+        """→ {id: (offset, length)} for every resource of one type."""
         if not self.res_rva:
             return {}
         root = self.off(self.res_rva)
         found = {}
         for tid, sub in self._entries(root):
-            if tid & 0x80000000 or tid != RT_RCDATA:
+            if tid & 0x80000000 or tid != rtype:
                 continue
             tdir = root + (sub & 0x7FFFFFFF)
             for rid, rsub in self._entries(tdir):
@@ -83,15 +98,56 @@ class PE:
         return found
 
 
+def check_manifest(data):
+    """→ None if Windows can load this manifest, else why not."""
+    import xml.dom.minidom
+    import xml.parsers.expat
+    try:
+        doc = xml.dom.minidom.parseString(data)
+    except xml.parsers.expat.ExpatError as e:
+        return 'not well-formed XML: %s' % e
+    root = doc.documentElement
+    if root.localName != 'assembly' or \
+            root.namespaceURI != 'urn:schemas-microsoft-com:asm.v1':
+        return 'the root element is not <assembly> in asm.v1'
+    levels = [e.getAttribute('level') for e in
+              doc.getElementsByTagName('requestedExecutionLevel')]
+    if levels != ['requireAdministrator']:
+        return 'requestedExecutionLevel is %r, not requireAdministrator' % levels
+    return None
+
+
 def main():
     if len(sys.argv) < 3:
         raise SystemExit(__doc__)
     what, path = sys.argv[1], sys.argv[2]
+    if what == 'check':
+        data = open(path, 'rb').read()
+        if data[:2] == b'MZ':
+            man = PE(path).resources(RT_MANIFEST)
+            if list(man) != [1]:
+                raise SystemExit('%s: expected one manifest, id 1; found %s'
+                                 % (path, sorted(man) or 'none'))
+            off, ln = man[1]
+            data = PE(path).b[off:off + ln]
+        why = check_manifest(data)
+        if why:
+            raise SystemExit('%s: Windows would refuse to start this: %s'
+                             % (path, why))
+        print('%s: manifest ok' % path)
+        return
     pe = PE(path)
     res = pe.rcdata()
     if what == 'list':
         for rid in sorted(res):
             print('%d %d' % (rid, res[rid][1]))
+        return
+    if what == 'manifest':
+        man = pe.resources(RT_MANIFEST)
+        if 1 not in man:
+            raise SystemExit(1)
+        off, ln = man[1]
+        sys.stdout.buffer.write(pe.b[off:off + ln])
         return
     if what == 'get':
         rid = int(sys.argv[3])

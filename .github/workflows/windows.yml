@@ -1,0 +1,169 @@
+# Does the installer start on real Windows?
+#
+# Every test before this ran the Windows half under Wine, and Wine loaded
+# a manifest that real Windows refuses: the first real PC could not start
+# the wizard at all ("its side-by-side configuration is incorrect",
+# docs/issues/v3/01-sxs-manifest.md). These jobs run on a real Windows
+# Server VM. They are read-only: preflight only reads, the wizard's
+# --selftest and --navtest only render and report, and getimage writes
+# files to the runner's temp directory.
+#
+#   build              the .exe files, from this commit, on Linux
+#   windows-source     those .exe files, started on Windows
+#   windows-published  the file a person downloads from image-desktop,
+#                      started on Windows, pinned by its SHA-256
+#   windows-known-bad  the 2026-09-25 test build must FAIL to start here,
+#                      or the jobs above prove nothing
+#   windows-download   WinHTTP fetches the published image pieces and
+#                      the installer's own inflater checks them
+name: windows
+
+on:
+  push:
+    branches: ['claude/**']
+  workflow_dispatch:
+
+env:
+  # The installer published on branch image-desktop. Change both lines
+  # together when a new one is published.
+  PUBLISHED_URL: https://raw.githubusercontent.com/ComputerDude771/auros-from-scratch/image-desktop/AurOS-Installer-test.exe
+  PUBLISHED_SHA256: 3e32e929f57c5c2673f4547a09b44c827743d191120d22a57dfc6f28a4f3e875
+  KNOWN_BAD_URL: https://raw.githubusercontent.com/ComputerDude771/auros-from-scratch/d2735b6b775b1952c724aabdfdf2567246ab6c74/AurOS-Installer-test.exe
+  KNOWN_BAD_SHA256: 3e32e929f57c5c2673f4547a09b44c827743d191120d22a57dfc6f28a4f3e875
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: toolchain
+        run: sudo apt-get update -q && sudo apt-get install -y -q mingw-w64 libxml2-utils
+      - name: build/aurbridge
+        run: sh build/aurbridge
+      - name: manifest gate (tools/manifesttest.sh)
+        run: sh tools/manifesttest.sh out/aurbridge-wizard.exe
+      - name: host-side selftests
+        run: |
+          out/aurbridge-sim gzselftest
+          out/aurbridge-sim sbselftest
+      - uses: actions/upload-artifact@v4
+        with:
+          name: exe
+          path: |
+            out/aurbridge.exe
+            out/aurbridge-wizard.exe
+
+  windows-source:
+    needs: build
+    runs-on: windows-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { name: exe, path: exe }
+      - name: console tool starts and passes its selftest
+        shell: pwsh
+        run: |
+          .\exe\aurbridge.exe version
+          if ($LASTEXITCODE -ne 0) { throw "version exited $LASTEXITCODE" }
+          .\exe\aurbridge.exe selftest
+          if ($LASTEXITCODE -ne 0) { throw "selftest exited $LASTEXITCODE" }
+      - name: preflight on a real Windows machine (read-only)
+        shell: pwsh
+        run: |
+          .\exe\aurbridge.exe preflight
+          $code = $LASTEXITCODE
+          .\exe\aurbridge.exe preflight --json | Out-File preflight.json
+          # 0 = go, 1 = blocked. A server VM may well be blocked; what
+          # must not happen is a crash or any other code.
+          if ($code -ne 0 -and $code -ne 1) { throw "preflight exited $code" }
+          Get-Content preflight.json
+      - name: wizard starts, navigates, runs preflight
+        shell: pwsh
+        run: |
+          $exe = (Resolve-Path .\exe\aurbridge-wizard.exe).Path
+          $d = New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP\wiz"
+          $p = Start-Process -FilePath $exe -ArgumentList '--navtest', $d.FullName -Wait -PassThru
+          Get-Content "$d\navtest.log"
+          if ($p.ExitCode -ne 0) { throw "--navtest exited $($p.ExitCode)" }
+          if (Select-String -Path "$d\navtest.log" -Pattern '\[FAIL\]' -Quiet) { throw "navtest has FAIL lines" }
+          if (-not (Select-String -Path "$d\navtest.log" -Pattern '\[PASS\]' -Quiet)) { throw "navtest passed nothing" }
+          $p = Start-Process -FilePath $exe -ArgumentList '--selftest', $d.FullName -PassThru
+          if (-not $p.WaitForExit(180000)) { $p.Kill(); throw "--selftest did not finish in 3 minutes" }
+          Get-Content "$d\selftest.log"
+          if (-not (Select-String -Path "$d\selftest.log" -Pattern 'window created   : yes' -Quiet)) { throw "no window" }
+          if (-not (Select-String -Path "$d\selftest.log" -Pattern 'preflight done   : 1' -Quiet)) { throw "preflight did not finish" }
+      - name: wizard starts the way a double-click starts it
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath (Resolve-Path .\exe\aurbridge-wizard.exe).Path -PassThru
+          Start-Sleep -Seconds 8
+          if ($p.HasExited) { throw "the wizard exited on its own, code $($p.ExitCode)" }
+          $p.Kill()
+          "the wizard was running after 8 seconds"
+
+  windows-published:
+    runs-on: windows-latest
+    steps:
+      - name: download what a person downloads
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri $env:PUBLISHED_URL -OutFile AurOS-Installer-test.exe
+          $h = (Get-FileHash AurOS-Installer-test.exe -Algorithm SHA256).Hash.ToLower()
+          "SHA-256 $h"
+          if ($h -ne $env:PUBLISHED_SHA256) { throw "the published file is not the one this workflow was pinned to" }
+      - name: it starts, navigates, runs preflight
+        shell: pwsh
+        run: |
+          $exe = (Resolve-Path .\AurOS-Installer-test.exe).Path
+          $d = New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP\pub"
+          $p = Start-Process -FilePath $exe -ArgumentList '--navtest', $d.FullName -Wait -PassThru
+          Get-Content "$d\navtest.log"
+          if ($p.ExitCode -ne 0) { throw "--navtest exited $($p.ExitCode)" }
+          if (Select-String -Path "$d\navtest.log" -Pattern '\[FAIL\]' -Quiet) { throw "navtest has FAIL lines" }
+          $p = Start-Process -FilePath $exe -ArgumentList '--selftest', $d.FullName -PassThru
+          if (-not $p.WaitForExit(180000)) { $p.Kill(); throw "--selftest did not finish in 3 minutes" }
+          Get-Content "$d\selftest.log"
+          if (-not (Select-String -Path "$d\selftest.log" -Pattern 'window created   : yes' -Quiet)) { throw "no window" }
+          if (-not (Select-String -Path "$d\selftest.log" -Pattern 'preflight done   : 1' -Quiet)) { throw "preflight did not finish" }
+          $p = Start-Process -FilePath $exe -PassThru
+          Start-Sleep -Seconds 8
+          if ($p.HasExited) { throw "the wizard exited on its own, code $($p.ExitCode)" }
+          $p.Kill()
+          "the published installer was running after 8 seconds"
+
+  windows-known-bad:
+    runs-on: windows-latest
+    steps:
+      - name: the build that failed on the first real PC fails here too
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri $env:KNOWN_BAD_URL -OutFile bad.exe
+          $h = (Get-FileHash bad.exe -Algorithm SHA256).Hash.ToLower()
+          if ($h -ne $env:KNOWN_BAD_SHA256) { throw "not the known-bad file: $h" }
+          $started = $true
+          try {
+            $p = Start-Process -FilePath (Resolve-Path .\bad.exe).Path -PassThru -ErrorAction Stop
+            Start-Sleep -Seconds 5
+            if ($p.HasExited) { $started = $false; "exited with $($p.ExitCode)" } else { $p.Kill() }
+          } catch {
+            $started = $false
+            "refused, as on the real PC: $($_.Exception.Message)"
+          }
+          if ($started) { throw "the known-bad build started: this machine cannot tell a good installer from a bad one" }
+
+  windows-download:
+    needs: build
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { name: exe, path: exe }
+      - name: WinHTTP fetches the published v2 image, and it checks out
+        shell: pwsh
+        run: |
+          $list = "$env:RUNNER_TEMP\pieces.txt"
+          Invoke-WebRequest -Uri https://raw.githubusercontent.com/ComputerDude771/auros-from-scratch/image-desktop/v2/pieces.txt -OutFile $list
+          $out = "$env:RUNNER_TEMP\auros-desktop.img"
+          .\exe\aurbridge.exe getimage $list $out c361d06d700f90feb9628fd3b486b07eb23e1991aa751605409b163f6ba5a45a 5325717504 | Tee-Object -FilePath getimage.log
+          $code = $LASTEXITCODE
+          if ($code -ne 0) { throw "getimage exited $code" }
+          if (-not (Select-String -Path getimage.log -Pattern 'verdict=ok' -Quiet)) { throw "no verdict=ok" }

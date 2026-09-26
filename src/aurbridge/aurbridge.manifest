@@ -1,18 +1,4 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<!--
-  The wizard's application manifest, linked in by build/aurbridge.
-
-  requireAdministrator, because every check preflight makes reads the raw
-  disk and the firmware, and without it a double-click landed on a refusal
-  page whose remedy was "right-click and choose Run as administrator" --
-  a step the people this is for do not know exists. With it, Windows asks
-  the ordinary "do you want to allow this app" question before the window
-  opens. (Windows' installer-detection heuristic would have done this for
-  a 32-bit program called "setup"; it never applies to a 64-bit one.)
-
-  supportedOS for 7 through 11, so that Windows does not run the program
-  under compatibility shims for an older version than the one it is on.
--->
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
   <assemblyIdentity type="win32" name="AurOS.AurBridge" version="0.1.0.0"
                     processorArchitecture="amd64"/>

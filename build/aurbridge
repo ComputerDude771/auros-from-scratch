@@ -143,8 +143,11 @@ if [ -n "$SHIM_CAS" ] && printf '%s\n' "$SHIM_CAS" | LC_ALL=C grep -q '[^A-Za-z0
 fi
 {
     printf '#define AUROS_SHIM_CAS \\\n'
+    # "if", not "[ ] &&": as the loop's last command a false test is the
+    # loop's status, and under set -e an empty list (no shim, a developer
+    # build) ended the whole build here without a word.
     printf '%s\n' "$SHIM_CAS" | while IFS= read -r ca; do
-        [ -n "$ca" ] && printf '    "%s\\n" \\\n' "$ca"
+        if [ -n "$ca" ]; then printf '    "%s\\n" \\\n' "$ca"; fi
     done
     printf '    ""\n'
 } >> "$BAKED"
@@ -205,11 +208,27 @@ else
 fi
 
 # ── the wizard's manifest: ask for administrator rights up front ────
-# See src/aurbridge/aurbridge.manifest for why. The console tool is left
-# without one: it is what CI and a person at a prompt run, and preflight
-# already says plainly when it is not elevated.
+# requireAdministrator, because every check preflight makes reads the raw
+# disk and the firmware, and without it a double-click landed on a refusal
+# page whose remedy was "right-click and choose Run as administrator": a
+# step the people this is for do not know exists. With it, Windows asks
+# the ordinary "do you want to allow this app" question before the window
+# opens. supportedOS names 7 through 11, so that Windows does not run the
+# program under compatibility shims for an older version.
+#
+# The manifest carries no comments. Everything in it ships byte for byte,
+# and the one it had held "--", which XML forbids inside a comment: on
+# the first real Windows PC the wizard would not start at all ("its
+# side-by-side configuration is incorrect"), while Wine loaded it without
+# a murmur. So it is checked strictly here, and again inside the .exe
+# once it is linked (tools/pe_payload.py check; tools/manifesttest.sh).
+#
+# The console tool is left without one: it is what CI and a person at a
+# prompt run, and preflight already says plainly when it is not elevated.
 WINDRES="${WINDRES:-x86_64-w64-mingw32-windres}"
 MANIFEST_OBJ=""
+python3 "$ROOT/tools/pe_payload.py" check "$SRC/aurbridge.manifest" >/dev/null \
+    || die "the wizard's manifest is one Windows would refuse; the wizard would not start"
 if command -v "$WINDRES" >/dev/null 2>&1; then
     printf '1 24 "%s"\n' "$SRC/aurbridge.manifest" > "$OUT/aurbridge-manifest.rc"
     "$WINDRES" -O coff -i "$OUT/aurbridge-manifest.rc" -o "$OUT/aurbridge-manifest.o" \
@@ -233,6 +252,11 @@ $CC -O2 $WARN $IMGDEF -I "$OUT" -mwindows -o "$OUT/aurbridge-wizard.exe" \
     -lgdi32 -lcomctl32 -lwinhttp \
     || die "the wizard did not build"
 note "$(du -h "$OUT/aurbridge-wizard.exe" | cut -f1)"
+if [ -n "$MANIFEST_OBJ" ]; then
+    python3 "$ROOT/tools/pe_payload.py" check "$OUT/aurbridge-wizard.exe" >/dev/null \
+        || die "the manifest inside aurbridge-wizard.exe is one Windows would refuse"
+    note "manifest inside the .exe checked: Windows can load it"
+fi
 
 # ── the host-side simulation ───────────────────────────────────────
 #
