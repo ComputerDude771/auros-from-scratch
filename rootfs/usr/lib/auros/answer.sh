@@ -1,6 +1,6 @@
 #!/bin/sh
 # ═══════════════════════════════════════════════════════════════════
-#  answer.sh — the three things the desktop may ask for as root
+#  answer.sh — the four things the desktop may ask for as root
 #
 #  Started by auros-answer.path when a file appears in /run/auros,
 #  which is aurshell.service's own RuntimeDirectory: mode 0700, owned
@@ -28,7 +28,7 @@
 #             put anything in it.
 #
 #  The word is still not a command. It is matched against a fixed list
-#  of three and anything else is written down as unknown.
+#  of four and anything else is written down as unknown.
 # ═══════════════════════════════════════════════════════════════════
 set -u
 # Overridable for tools/aurfirsttest.sh and for nothing else; the unit
@@ -38,6 +38,11 @@ STATE=${AUROS_STATE:-/var/lib/auros}
 BIN=${AUROS_BIN:-/usr/sbin}
 LOG=${AUROS_LOG:-/var/log/auros-answer.log}
 RES="$OUT/result"
+GRUBENV=${AUROS_GRUBENV:-/boot/grub/grubenv}
+REBOOT=${AUROS_REBOOT:-systemctl --no-block reboot}
+# The one entry "Put Windows back" restarts into: the "Yes" inside the
+# submenu build/mkimage writes, by id.
+PUTBACK_ENTRY='put-windows-back>put-windows-back-yes'
 exec >>"$LOG" 2>&1
 echo "=== $(date -Is) ==="
 
@@ -52,6 +57,49 @@ rc=$?
 [ "$rc" = 1 ] && { echo "nothing to answer"; exit 0; }
 
 say() { printf '%s\n' "$*" >> "$RES.new"; }
+
+# GRUB'S ENVIRONMENT BLOCK, WRITTEN WHOLE. Exactly 1024 bytes, which
+# is the format grub's load_env and save_env read and rewrite in place;
+# written beside and moved over, so a power cut leaves the old block or
+# the new one and never half of each. Written here rather than with
+# grub-editenv so that the one thing this depends on is sh.
+grubenv_put() { # [key=value]
+    t="$GRUBENV.new"
+    { printf '# GRUB Environment Block\n'
+      if [ -n "${1:-}" ]; then printf '%s\n' "$1"; fi
+    } > "$t" || return 1
+    have=$(wc -c < "$t")
+    [ "$have" -le 1024 ] || { rm -f "$t"; return 1; }
+    head -c $((1024 - have)) /dev/zero | tr '\0' '#' >> "$t" || return 1
+    sync "$t" 2>/dev/null
+    mv -f "$t" "$GRUBENV"
+}
+
+# IS THE WAY BACK STILL ON THIS COMPUTER. The restore starts from the
+# staging kernel the installer left in \EFI\AurOS on the machine's own
+# EFI partition. Looked for read-only, on every EFI partition, and
+# unmounted again; AurOS never writes there. AUROS_ESP_ROOTS (tests
+# only) names directories to look in instead of mounting anything.
+staging_present() {
+    if [ -n "${AUROS_ESP_ROOTS:-}" ]; then
+        for d in $AUROS_ESP_ROOTS; do
+            [ -f "$d/EFI/AurOS/staging.efi" ] && [ -f "$d/EFI/AurOS/staging.img" ] && return 0
+        done
+        return 1
+    fi
+    found=1
+    for dev in $(lsblk -rno PATH,PARTTYPE 2>/dev/null |
+                 awk 'tolower($2)=="c12a7328-f81f-11d2-ba4b-00a0c93ec93b"{print $1}'); do
+        m=$(mktemp -d /run/auros-esp.XXXXXX) || continue
+        if mount -o ro "$dev" "$m" 2>/dev/null; then
+            [ -f "$m/EFI/AurOS/staging.efi" ] && [ -f "$m/EFI/AurOS/staging.img" ] && found=0
+            umount "$m" 2>/dev/null
+        fi
+        rmdir "$m" 2>/dev/null
+        [ "$found" = 0 ] && return 0
+    done
+    return 1
+}
 : > "$RES.new"
 say "request=$word"
 
@@ -116,6 +164,31 @@ case "$word" in
         fi
     fi
     ;;
+  putback)
+    # PUT WINDOWS BACK. Not done here: a restore rewrites the partition
+    # table of the disk it runs from, which cannot be done safely from
+    # a running AurOS (docs/AURBRIDGE.md, "Putting it back"). This
+    # arranges the next start -- AurOS's menu, told to take the restore
+    # entry once, and the firmware told to start that menu once -- and
+    # restarts. Each step that fails takes the ones before it back: a
+    # next_entry left behind would remove AurOS on some later start
+    # nobody asked for.
+    if ! staging_present; then
+        say "result=failed"
+        say "note=the files that put Windows back are not on this computer any more"
+    elif ! grubenv_put "next_entry=$PUTBACK_ENTRY"; then
+        say "result=failed"
+        say "note=AurOS could not set its start-up menu"
+    elif ! "$BIN/aurfirst" putback 2>&1; then
+        grubenv_put
+        say "result=failed"
+        say "note=this computer would not let AurOS arrange the restart"
+    else
+        say "result=ok"
+        say "note=restarting to put Windows back"
+        putback_restart=1
+    fi
+    ;;
   *)
     say "result=refused"
     say "note=unknown request"
@@ -129,4 +202,10 @@ esac
 chmod 0644 "$RES.new" 2>/dev/null
 mv -f "$RES.new" "$RES"
 echo "answered: $(cat "$RES")"
+# After the answer is written, so the desktop can say what is about to
+# happen before it does.
+if [ "${putback_restart:-0}" = 1 ]; then
+    sleep "${AUROS_REBOOT_DELAY:-3}"
+    $REBOOT
+fi
 exit 0

@@ -72,12 +72,15 @@ static const char *run_dir(void)
     return AF_RUN_USER;
 }
 
-/* The three, and nothing else. Spelled here so that the shell around
- * this cannot widen the list by accident. */
+/* The four, and nothing else. Spelled here so that the shell around
+ * this cannot widen the list by accident. `putback` restarts the
+ * computer into the restore that removes AurOS: the bound is still
+ * "nothing she could not have asked for by pressing the button in
+ * front of her", and that button asks twice. */
 static int is_one_of_ours(const char *w)
 {
     return !strcmp(w, "confirm") || !strcmp(w, "decline") ||
-           !strcmp(w, "import");
+           !strcmp(w, "import")  || !strcmp(w, "putback");
 }
 
 /* Remove it, whatever it turned out to be. unlinkat on the directory
@@ -138,10 +141,21 @@ int af_request_take(char *out, size_t n)
     if (k < 0) { snprintf(out, n, "%s", "unknown"); return 1; }
     raw[k] = 0;
 
+    /* THE WORD EXACTLY, with at most a newline after it. This used to
+     * keep the letters and drop everything else, so "con firm" and
+     * "put back" were read as the words they spell -- harmless, since
+     * she may send those words anyway, but a fixed list matched after
+     * the input has been rewritten is not a fixed list. Anything else
+     * in the file makes it unknown. */
+    if (k > 0 && raw[k - 1] == '\n') raw[--k] = 0;
     size_t o = 0;
-    for (ssize_t i = 0; i < k && o + 1 < n && o < 16; i++)
-        if (raw[i] >= 'a' && raw[i] <= 'z') out[o++] = raw[i];
+    int stray = 0;
+    for (ssize_t i = 0; i < k; i++) {
+        if (raw[i] < 'a' || raw[i] > 'z' || o + 1 >= n || o >= 16) { stray = 1; break; }
+        out[o++] = raw[i];
+    }
     out[o] = 0;
+    if (stray) out[0] = 0;
     /* AND IT IS NOT ECHOED IF IT IS NOT ONE OF OURS. The shell version
      * wrote `request=<the filtered bytes>` into a file she can read,
      * which on a symlinked request was a read oracle for a file she

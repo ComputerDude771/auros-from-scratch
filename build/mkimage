@@ -177,6 +177,21 @@ terminal_input  console serial
 terminal_output console serial gfxterm
 $GRUB_COLOURS
 
+# ONE START CHOSEN FROM INSIDE AUROS, and only one. "Put Windows back"
+# in AurOS writes next_entry here (rootfs/usr/lib/auros/answer.sh) and
+# restarts; it is cleared before the entry runs, so a restore that
+# stops -- or a power cut -- does not come round again at the next
+# start. aurstage_extra is for tools/putbacktest.sh and nothing else:
+# it adds a serial console to the restore so the test can read it.
+if [ -s (\$root)/boot/grub/grubenv ]; then
+  load_env --file (\$root)/boot/grub/grubenv next_entry aurstage_extra
+fi
+if [ "\${next_entry}" ]; then
+  set default="\${next_entry}"
+  set next_entry=
+  save_env --file (\$root)/boot/grub/grubenv next_entry
+fi
+
 menuentry 'AurOS' --class auros --id auros {
     linux  /boot/vmlinuz-$KVER root=UUID=$ROOT_UUID ro quiet splash console=tty0 console=ttyS0,115200n8
     initrd /boot/initrd.img-$KVER
@@ -219,7 +234,42 @@ menuentry 'Windows' --class windows --id windows {
     chainloader /EFI/Microsoft/Boot/bootmgfw.efi
 }
 fi
+
+# PUT WINDOWS BACK: REMOVE AUROS AND GIVE WINDOWS ITS SPACE BACK.
+#
+# The restore is the staging environment's (aurstage.restore), started
+# from the kernel the installer left in \EFI\AurOS on the machine's own
+# EFI partition -- the same Canonical-signed kernel the install ran on,
+# so it starts with Secure Boot on. It is here, in AurOS's own menu, so
+# that it can be reached when AurOS itself no longer starts; AurOS's
+# Settings reach it too, by choosing it for the next start.
+#
+# Behind a question, because one key in a menu should not remove an
+# operating system: "No" comes first and is what Enter does. The whole
+# thing is inside the if, so a machine whose installer files are gone
+# has no line that fails when chosen.
+if search --no-floppy --file --set=aurstage /EFI/AurOS/staging.efi ; then
+submenu 'Put Windows back (remove AurOS)' --class windows --id put-windows-back {
+    menuentry 'No, keep AurOS' --id put-windows-back-no {
+        configfile /boot/grub/grub.cfg
+    }
+    menuentry 'Yes: remove AurOS and give Windows all of its drive back' --class windows --id put-windows-back-yes {
+        insmod part_gpt
+        insmod fat
+        search --no-floppy --file --set=root /EFI/AurOS/staging.efi
+        linux  /EFI/AurOS/staging.efi aurstage.restore console=tty0 \${aurstage_extra}
+        initrd /EFI/AurOS/staging.img
+    }
+}
+fi
 EOF
+
+# The environment block the menu above reads, empty. grub rewrites it in
+# place and will not create it, so it has to exist: exactly 1024 bytes.
+{ printf '# GRUB Environment Block\n'
+  head -c $((1024 - 25)) /dev/zero | tr '\0' '#'
+} > "$MNT/boot/grub/grubenv"
+[ "$(wc -c < "$MNT/boot/grub/grubenv")" = 1024 ] || die "grubenv is not 1024 bytes"
 
 # grub needs its modules on the root filesystem at the prefix the ESP
 # config points to.

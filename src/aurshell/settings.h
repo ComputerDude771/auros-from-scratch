@@ -61,7 +61,8 @@ int  settings_dragging(void);
 #define SET_PAGE_TIME   1
 #define SET_PAGE_SHELL  2
 #define SET_PAGE_LOOK   3
-#define SET_PAGE_N      4
+#define SET_PAGE_WINDOWS 4
+#define SET_PAGE_N      5
 
 typedef struct {
     int page;        /* one of SET_PAGE_*                      */
@@ -70,6 +71,8 @@ typedef struct {
     int battery;     /* 1 if this machine shows a battery row  */
     int backlight;   /* 1 if it shows a brightness row         */
     int sound;       /* 1 if it shows a sound row              */
+    int windows;     /* 1 if this computer came from Windows, so
+                        "Put Windows back" is a row              */
 } set_view;
 
 int  settings_targets(const shell_ctx *c, int sw, int sh, const set_view *v,

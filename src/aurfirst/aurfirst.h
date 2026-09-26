@@ -144,6 +144,12 @@ int  af_confirm(const af_state *s, char *why, size_t n);
  * BootOrder says -- which is still Windows, because nothing here has
  * touched it -- and write the stamp so the hold stops re-arming. */
 int  af_decline(const af_state *s, char *why, size_t n);
+/* "Put Windows back": arm BootNext at AurOS's own entry, whatever was
+ * answered, so that the next start reaches AurOS's start-up menu --
+ * where the restore is -- even on a machine that has been told to
+ * start Windows. Writes BootNext only; never BootOrder. 0 on success,
+ * -1 with `why` set. */
+int  af_putback(const af_state *s, char *why, size_t n);
 
 /* ── the one word the desktop is allowed to ask for ───────────────── */
 

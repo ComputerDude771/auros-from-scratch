@@ -393,6 +393,44 @@ int af_hold(const af_state *s, char *why, size_t n)
     return 0;
 }
 
+/* ── putting Windows back ─────────────────────────────────────────
+ *
+ * The restore itself is the staging environment's (aurstage.restore):
+ * a restore rewrites the partition table of the disk it runs from, and
+ * doing that from inside a running AurOS means rewriting it under a
+ * mounted root. So "Put Windows back" in AurOS only arranges the next
+ * start: AurOS's own start-up menu, told which entry to take once
+ * (answer.sh does that, in grubenv), and this -- the firmware told to
+ * start AurOS's menu once, because on a machine where she answered "it
+ * does not work" the firmware would otherwise start Windows and the
+ * menu would never be seen.
+ *
+ * Unlike af_hold this does not care what was answered: it is a new
+ * request, made by pressing a button that says what it does. */
+int af_putback(const af_state *s, char *why, size_t n)
+{
+    if (!s->efivars || !s->writable) {
+        snprintf(why, n, "AurOS cannot reach this computer's start-up "
+                         "settings, so it cannot arrange the restart.");
+        return -1;
+    }
+    if (!s->have_entry) {
+        snprintf(why, n, "this computer has no start-up entry for AurOS "
+                         "to restart into.");
+        return -1;
+    }
+    uint8_t v[2] = { (uint8_t)(s->entry & 0xFF), (uint8_t)(s->entry >> 8) };
+    if (af_var_put("BootNext", v, sizeof v, why, n) != 0) return -1;
+    uint8_t back[8];
+    if (af_var_get("BootNext", back, sizeof back) != 2 ||
+        memcmp(back, v, 2) != 0) {
+        snprintf(why, n, "this computer's firmware did not keep what AurOS "
+                         "asked it to start next time");
+        return -1;
+    }
+    return 0;
+}
+
 /* ── the one function in this tree that writes BootOrder ───────────── */
 int af_confirm(const af_state *s, char *why, size_t n)
 {
