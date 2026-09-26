@@ -977,7 +977,8 @@ void restore_run(const stage_machine *m)
               oc.volumes_grown, oc.volumes_left_small, oc.mbr_restored);
     stage_say("%s", "");
     stage_say("Windows is back. This computer will switch itself off;");
-    stage_say("take the memory stick out and start it again.");
+    stage_say("switch it on again and Windows starts. If an AurOS memory");
+    stage_say("stick is plugged in, take it out first.");
     sync();
     reboot(RB_POWER_OFF);
     for (;;) pause();

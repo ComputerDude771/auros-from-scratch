@@ -72,7 +72,10 @@ Windows machine before it is published (`.github/workflows/windows.yml`).
 
 ## Running it
 
-1. Download `AurOS-Installer-test.exe` and double-click it.
+1. Download `AurOS-Installer-test.exe` from
+   https://github.com/ComputerDude771/auros-from-scratch/raw/image-desktop/AurOS-Installer-test.exe
+   and double-click it. (Its SHA-256 is in the `image-desktop`
+   branch's README, with what was tested on real Windows.)
 2. Windows shows **"Windows protected your PC"**, because the file is
    not signed yet. Click **More info**, then **Run anyway**.
    (If there is no *Run anyway*, the PC has Smart App Control on, and
@@ -117,6 +120,25 @@ start menu also has a **Windows** entry.
 The `C:\AurOS` folder keeps the 5 GB copy of AurOS. Once AurOS works
 you can delete it from Windows.
 
-**There is no "Put Windows back" button yet** (see `docs/RELEASE.md`
-§7): the restore that removes AurOS and gives Windows its space back
-exists and is tested, but nothing on screen starts it in this build.
+## Putting Windows back
+
+To remove AurOS and give Windows all of its drive back:
+
+- in AurOS: **Settings → Put Windows back**, then press **Remove AurOS
+  and put Windows back** twice (the first press says what goes with
+  it). The PC restarts into the restore, which shows text while it
+  works and then **switches itself off**; switch it on again and
+  Windows starts. **Do not switch it off while the text is still
+  moving.**
+- or, if AurOS itself does not start: in AurOS's start-up menu (the list
+  that appears for three seconds when AurOS starts), choose **Put Windows
+  back (remove AurOS)**, then **Yes**.
+
+Everything saved inside AurOS goes with it; copy what you want to keep
+onto a memory stick first. If the restore stops with a sentence and
+`verdict=...`, take a photo of the screen, as with the install.
+
+This is in the v3 image, which is what the installer downloads from
+2026-09-26 on. A PC installed before that (with the v2 image) has the
+restore on its disk but nothing on screen that starts it; install again
+with the current installer to get it.
