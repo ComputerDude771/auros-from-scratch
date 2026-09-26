@@ -191,6 +191,12 @@ if [ "\${next_entry}" ]; then
   set default="\${next_entry}"
   set next_entry=
   save_env --file (\$root)/boot/grub/grubenv next_entry
+  # TEN SECONDS WITH IT ON SCREEN, not three. The only next_entry
+  # anything writes is the restore, and it removes AurOS; a person who
+  # did not mean it -- or meant it weeks ago and then started Windows
+  # instead -- gets a visible moment to press a key and choose otherwise.
+  set timeout=10
+  set timeout_style=menu
 fi
 
 menuentry 'AurOS' --class auros --id auros {
@@ -221,9 +227,9 @@ menuentry 'AurOS (recovery shell)' --class recovery --id auros-recovery {
 # AurOS installs alongside Windows and does not remove it, so after
 # phase 10 makes AurOS the default this is the only way back to it that
 # does not involve a firmware key nobody remembers. It is found rather
-# than configured: `search --file` looks for the Windows boot manager
+# than configured: "search --file" looks for the Windows boot manager
 # on every partition the firmware can see, which needs no knowledge of
-# the machine at build time -- and the whole entry is inside the `if`,
+# the machine at build time -- and the whole entry is inside the "if",
 # so an image booted on a computer with no Windows on it does not
 # offer a menu line that fails when chosen.
 if search --no-floppy --file --set=winesp /EFI/Microsoft/Boot/bootmgfw.efi ; then

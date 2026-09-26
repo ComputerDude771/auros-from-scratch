@@ -25,7 +25,10 @@ PrivateTmp=yes
 # the next start in grub's environment block, /boot/grub/grubenv. That
 # directory, and nothing else under /boot. tools/putbacktest.sh is what
 # found it missing: every unit test ran answer.sh outside this sandbox.
-ReadWritePaths=/var/lib/auros /var/log /run/auros-answer /run/auros /boot/grub
+# The "-" makes it optional: without it, a root with no /boot/grub
+# would fail the whole unit with 226/NAMESPACE -- confirm, decline and
+# import with it, not only putback.
+ReadWritePaths=/var/lib/auros /var/log /run/auros-answer /run/auros -/boot/grub
 # Importing somebody's files can take a long time on a ten-year-old
 # disk and must never become a failed boot or a failed desktop.
 SuccessExitStatus=0 1 2 3

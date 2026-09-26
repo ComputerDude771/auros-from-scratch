@@ -2040,7 +2040,14 @@ int main(int argc, char **argv)
                          * it at all: a full-screen state with no way
                          * out for anyone not using a mouse. */
                         if (SHELL_PANEL_OPEN(&c)) {
-                            if (ev.value) {
+                            /* ENTER DOES NOT REPEAT. value 2 is the
+                             * keyboard's auto-repeat, and a held Enter
+                             * used to press whatever was selected over
+                             * and over -- on the Put Windows back page,
+                             * that is both of its two presses in half a
+                             * second. Arrows still repeat: that is how a
+                             * slider is moved by holding a key. */
+                            if (ev.value == 1 || (ev.value == 2 && ev.code != 28)) {
                                 if      (c.net_open)      net_key(&c, ev.code);
                                 else if (c.settings_open) settings_key(&c, ev.code);
                                 else if (c.bt_open)       bt_key(&c, ev.code);

@@ -185,9 +185,16 @@ case "$word" in
         say "result=failed"
         say "note=AurOS could not set its start-up menu"
     elif ! "$BIN/aurfirst" putback 2>&1; then
-        grubenv_put
         say "result=failed"
-        say "note=this computer would not let AurOS arrange the restart"
+        # THE TAKE-BACK IS CHECKED. A next_entry left behind would run
+        # the restore at some later start, so if it cannot be cleared the
+        # answer has to say so -- "failed" alone reads as "nothing will
+        # happen", which would then not be true.
+        if grubenv_put; then
+            say "note=this computer would not let AurOS arrange the restart"
+        else
+            say "note=the restart could not be arranged, and AurOS's start-up menu may still run the restore next time; choose No in it"
+        fi
     else
         say "result=ok"
         say "note=restarting to put Windows back"

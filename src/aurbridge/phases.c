@@ -1441,9 +1441,9 @@ static void write_choices(const ab_choice *c, const char *esp,
  * entry that is never armed -- harmless, since nothing else has changed,
  * but a refusal with the sizes in it is what a person can act on.
  *
- * Files a previous attempt left under \EFI\AurOS are replaced, so their
- * bytes count as room; but a replacement is written beside the old file
- * and then moved over it, so the largest new file has to fit on top. */
+ * Files a previous attempt left under \\EFI\\AurOS are replaced, so their
+ * bytes count as room. plat_file_copy overwrites in place (CopyFileW,
+ * not a copy beside and a rename), so nothing has to fit on top. */
 static int esp_room(const char *esp, const char *kern, const char *init,
                     char *why, size_t n)
 {
@@ -1451,7 +1451,7 @@ static int esp_room(const char *esp, const char *kern, const char *init,
                                   "grubx64.efi", "mmx64.efi", "grub.cfg",
                                   "choices.conf" };
     static const char *extra[] = { PAYLOAD_SHIM, PAYLOAD_GRUB, PAYLOAD_MOKMGR };
-    uint64_t want = 0, largest = 0, sz = 0, old = 0;
+    uint64_t want = 0, sz = 0, old = 0;
     char p[512], w2[PLAT_WHY];
     const char *have[2] = { kern, init };
     for (int i = 0; i < 2; i++) {
@@ -1461,13 +1461,13 @@ static int esp_room(const char *esp, const char *kern, const char *init,
                              "computer could not be measured.");
             return -1;
         }
-        want += sz; if (sz > largest) largest = sz;
+        want += sz;
     }
     for (size_t i = 0; i < sizeof extra / sizeof extra[0]; i++) {
         sz = 0;
         if (plat_payload(extra[i], p, sizeof p, w2, sizeof w2) == 0 &&
             plat_file_size(p, &sz) == 0) {
-            want += sz; if (sz > largest) largest = sz;
+            want += sz;
         }
     }
     want += 1ULL << 20;                 /* grub.cfg, choices, FAT clusters */
@@ -1478,12 +1478,15 @@ static int esp_room(const char *esp, const char *kern, const char *init,
     }
     snprintf(p, sizeof p, "%s/EFI", esp);
     uint64_t free_now = plat_free_space(p);
-    if (!free_now) return 0;            /* could not be asked; the copy will say */
-    if (free_now + old < want || (old && free_now < largest)) {
+    /* ZERO IS AN ANSWER. It used to mean "could not be asked" and let
+     * the copy go ahead, which on a partition that really is full is
+     * the half-written copy this function exists to prevent. Either
+     * way nothing has been written yet, so refusing costs nothing. */
+    if (free_now + old < want) {
         snprintf(why, n,
                  "the start-up partition does not have room for what AurOS "
-                 "starts from: it needs %llu MB there and has %llu MB free. "
-                 "Nothing has been changed.",
+                 "starts from: it needs %llu MB there and has %llu MB free, or "
+                 "could not say. Nothing has been changed.",
                  (unsigned long long)((want + MIB - 1) / MIB),
                  (unsigned long long)(free_now / MIB));
         return -1;

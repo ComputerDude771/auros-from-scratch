@@ -1,0 +1,20 @@
+// AurOS: automatic security updates for everything EXCEPT the kernel,
+// grub and shim. Found by review on 2026-09-26, before anything shipped:
+//
+//  - a kernel update runs zz-update-grub, which regenerates
+//    /boot/grub/grub.cfg with grub-mkconfig -- and build/mkimage writes
+//    that file by hand. AurOS's start-up menu, its "Put Windows back"
+//    entry and its Windows entry would all disappear on the first
+//    security update, with nothing on screen to connect the two.
+//  - a grub or shim update runs grub-install, which by default adds its
+//    own firmware entry at the head of BootOrder. BootOrder is written
+//    only by `aurfirst confirm`: on a machine whose person said AurOS
+//    does not work, that would make AurOS the default anyway.
+//
+// These stay out until update-grub regenerates AurOS's own menu and
+// grub-install is told to leave NVRAM alone. docs/issues/v3/STATUS.md, 7.4.
+Unattended-Upgrade::Package-Blacklist {
+    "linux-";
+    "grub";
+    "shim";
+};

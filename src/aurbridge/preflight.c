@@ -1310,11 +1310,29 @@ static void check_esp(pf_report *r)
     uint64_t carried = plat_payload_bytes();
     const uint64_t SLACK = 1ULL * 1024 * 1024;     /* grub.cfg, choices, FAT */
     uint64_t need = (carried ? carried : 40ULL * 1024 * 1024) + SLACK;
+    /* AND WHAT AN EARLIER ATTEMPT LEFT IS ROOM. A stopped or closed
+     * attempt leaves its files under \EFI\AurOS on purpose (they are
+     * harmless, and replaced by the next), so on a 95 MB partition with
+     * 61 MB free the second try found 28 MB and refused -- for good,
+     * because nobody can delete files there. Phase 3 counts them the
+     * same way (esp_room in phases.c). */
+    static const char *ours[] = { "staging.efi", "staging.img", "shimx64.efi",
+                                  "grubx64.efi", "mmx64.efi", "grub.cfg",
+                                  "choices.conf" };
+    uint64_t left = 0;
+    for (size_t i = 0; i < sizeof ours / sizeof ours[0]; i++) {
+        char fp[MAX_PATH + 64];
+        WIN32_FILE_ATTRIBUTE_DATA fa;
+        snprintf(fp, sizeof fp, "%sEFI\\AurOS\\%s", r->esp_volume, ours[i]);
+        if (GetFileAttributesExA(fp, GetFileExInfoStandard, &fa))
+            left += ((uint64_t)fa.nFileSizeHigh << 32) | fa.nFileSizeLow;
+    }
+    uint64_t room = r->esp_free_bytes + left;
     char c[32];
-    size_str(r->esp_free_bytes, a, sizeof a);
+    size_str(room, a, sizeof a);
     size_str(r->esp_size_bytes, b, sizeof b);
     size_str(need, c, sizeof c);
-    if (r->esp_free_bytes < need) {
+    if (room < need) {
         snprintf(det, sizeof det,
             "The start-up partition is %s with %s free. AurOS has to put %s of "
             "start-up files there for the restart, and they do not fit. Nothing "

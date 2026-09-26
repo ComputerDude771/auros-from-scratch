@@ -112,6 +112,38 @@ jobs:
           if ($hit.detail -notmatch [regex]::Escape($ctl)) { throw "it fired, but not about $ctl : $($hit.detail)" }
           "found: $($hit.detail)"
           exit 0
+      - name: an earlier attempt's files on the start-up partition count as room
+        shell: pwsh
+        run: |
+          # This VM's EFI partition is 95 MB with about 61 MB free. Fill it
+          # to 10 MB free, first with a file where an earlier AurOS attempt
+          # leaves its own (which the next one replaces, so it is room),
+          # then with somebody else's file (which is not). The first must
+          # pass and the second must refuse, or the check is not looking.
+          # The VM is thrown away after the run.
+          mountvol S: /S
+          if (-not (Test-Path S:\EFI)) { throw "the EFI partition did not mount" }
+          function Fill($path) {
+            $free = ([System.IO.DriveInfo]::new('S')).AvailableFreeSpace
+            fsutil file createnew $path ([int64]($free - 10MB)) | Out-Null
+          }
+          function EspFinding() {
+            (.\exe\aurbridge.exe preflight --json | Out-String | ConvertFrom-Json).findings |
+              Where-Object { $_.id -like 'esp-*' } | Select-Object -First 1
+          }
+          New-Item -ItemType Directory -Force S:\EFI\AurOS | Out-Null
+          Fill S:\EFI\AurOS\staging.img
+          $ours = EspFinding
+          Remove-Item S:\EFI\AurOS -Recurse -Force
+          Fill S:\EFI\not-aurOS.bin
+          $theirs = EspFinding
+          Remove-Item S:\EFI\not-aurOS.bin -Force
+          mountvol S: /D
+          "with AurOS's own leftovers: $($ours.id): $($ours.detail)"
+          "with somebody else's file:  $($theirs.id): $($theirs.detail)"
+          if ($ours.id -ne 'esp-space') { throw "an earlier attempt's files were not counted as room" }
+          if ($theirs.id -ne 'esp-low-space') { throw "a full partition was not refused: the check is not looking" }
+          exit 0
       - name: wizard starts, navigates, runs preflight
         shell: pwsh
         run: |

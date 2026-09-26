@@ -170,6 +170,7 @@ static struct {
      * has gone to the root side and this panel is waiting to hear. */
     int converted;
     int armed;
+    uint32_t armed_at;         /* when the first press was, in ms        */
     int asked;
     time_t asked_at;           /* an answer older than this is not ours */
 } S = { .sel = -1, .drag_row = -1, .hover_act = -1, .cur_ch = -1 };
@@ -395,13 +396,14 @@ static int came_from_windows(void)
 /* The word, into the desktop's own runtime directory, the way the
  * welcome panel sends its three. O_EXCL: a request already sitting
  * there is one the root side has not picked up, and two presses must
- * not make two. */
+ * not make two. 1 means one is already waiting -- which is NOT ours
+ * sent, and the page must not say it is restarting when it is not. */
 static int ask_root(const char *word)
 {
     char path[512];
     snprintf(path, sizeof path, "%s/answer", WELCOME_RUN);
     int fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
-    if (fd < 0) return errno == EEXIST ? 0 : -1;
+    if (fd < 0) return errno == EEXIST ? 1 : -1;
     ssize_t k = write(fd, word, strlen(word));
     close(fd);
     return k == (ssize_t)strlen(word) ? 0 : -1;
@@ -900,13 +902,25 @@ static void choose(shell_ctx *c, int idx)
         }
         if (!S.armed) {
             S.armed = 1;
+            S.armed_at = now_ms();
             snprintf(S.ch[idx].label, CHOICE_LEN, "%s",
                      "Press again to restart and remove AurOS");
             snprintf(S.said, sizeof S.said, "%s",
                      "First copy anything you want to keep onto a memory stick.");
             return;
         }
-        if (ask_root("putback") != 0) {
+        /* NOT A DOUBLE-CLICK. Two presses inside a second and a half
+         * are one press made twice by a hand, not two decisions; the
+         * second has to come after she has had time to read what the
+         * first one changed. */
+        if ((uint32_t)(now_ms() - S.armed_at) < 1500) return;
+        int rc = ask_root("putback");
+        if (rc == 1) {
+            snprintf(S.said, sizeof S.said, "%s",
+                     "Something else is still being done. Try again in a moment.");
+            return;
+        }
+        if (rc != 0) {
             snprintf(S.said, sizeof S.said, "%s",
                      "That could not be asked for just now. Nothing has changed.");
             return;
