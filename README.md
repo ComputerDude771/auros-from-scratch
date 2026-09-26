@@ -34,6 +34,25 @@ v1, kept so that installers built against them keep working.
 | compressed SHA-256 | `1c93135eb1ad402299d05add705f2da485f25360bd13d0ea0d7753ea5bc328a1` |
 | pieces | `v2/pieces.txt` |
 
+## v3: Put Windows back, and security updates
+
+`v3/` holds the next build of the same image, from branch
+`claude/confident-johnson-hxevk4`:
+
+- "Put Windows back": a row in Settings, and an entry in AurOS's own
+  start-up menu, that restart into the installer's restore
+  (`tools/putbacktest.sh`, 16/16, with Secure Boot on);
+- the `aurfirst` fix for a second install after Windows was put back
+  (`2d85777`);
+- Ubuntu's security updates, installed daily by `unattended-upgrades`.
+
+| | |
+|---|---|
+| image | `auros-desktop.img`, 5,325,717,504 bytes |
+| image SHA-256 | `8ee78e9a671e860fdfadd809ddc3f53790f5930f2fc457a0171246f4d4431999` |
+| compressed SHA-256 | `a5a8b373201aa425102ab6e6de1a8d9d7ad468d788ce1336950626a862d914b0` |
+| pieces | `v3/pieces.txt` |
+
 ## The test installer
 
 `AurOS-Installer-test.exe` is the unsigned no-stick test build of the
