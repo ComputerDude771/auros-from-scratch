@@ -90,7 +90,12 @@ staging_present() {
     found=1
     for dev in $(lsblk -rno PATH,PARTTYPE 2>/dev/null |
                  awk 'tolower($2)=="c12a7328-f81f-11d2-ba4b-00a0c93ec93b"{print $1}'); do
-        m=$(mktemp -d /run/auros-esp.XXXXXX) || continue
+        # /tmp, which this unit has privately (PrivateTmp=yes): under
+        # ProtectSystem=strict, /run outside our own directories is
+        # read-only, and a mount point there could not be made -- so
+        # every look found nothing and "Put Windows back" said the files
+        # were gone on a machine that had them.
+        m=$(mktemp -d "${TMPDIR:-/tmp}/auros-esp.XXXXXX") || continue
         if mount -o ro "$dev" "$m" 2>/dev/null; then
             [ -f "$m/EFI/AurOS/staging.efi" ] && [ -f "$m/EFI/AurOS/staging.img" ] && found=0
             umount "$m" 2>/dev/null
