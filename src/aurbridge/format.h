@@ -174,6 +174,9 @@ typedef struct {
      * narrower of the two, so 64 is the width, and phases.c refuses a
      * longer one before anything is written. */
     char     profile[64];
+    /* "stick" or "windows": where the staging environment will find
+     * the image. See src/aurstage/journal.h. */
+    char     image_on[16];
     uint64_t run_id;
     uint64_t written_unix;
 } fmt_journal;

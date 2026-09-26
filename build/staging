@@ -473,6 +473,12 @@ note "$n_lib libraries"
 # find a block device is a small fraction of that, and the budget is
 # an ESP that is commonly 100 MB and nearly full.
 #
+# ntfs3 is in it for ONE path: the no-stick mode reads the AurOS image
+# out of \AurOS\ on the Windows drive, through a read-only mount made
+# by src/aurstage/winvol.c and nowhere else. boot.c still never loads
+# it; a module that is only ever loaded on purpose is not mounted by
+# accident.
+#
 # VMD is in this list for a specific reason: on Intel RST machines the
 # disk is invisible without it, and "this computer has no disk" is the
 # worst possible thing to tell somebody about a computer they are
@@ -491,6 +497,7 @@ kernel/drivers/virtio
 kernel/fs/ext4
 kernel/fs/fat
 kernel/fs/nls
+kernel/fs/ntfs3
 kernel/lib
 kernel/crypto
 "
@@ -524,6 +531,25 @@ SZ=$(du -h "$OUT/auros-staging$SUF.img" | cut -f1)
 # kernel do not load into another, and shipping them separately is how
 # that gets discovered on somebody's laptop.
 cp -a "$RFS/boot/vmlinuz-$KVER" "$OUT/auros-staging$SUF-vmlinuz"
+
+# AND THE SIGNED WAY IN. Started directly, this kernel is refused by any
+# firmware with Secure Boot on: it is signed by Canonical, and firmware
+# trusts Microsoft. AurBridge therefore starts it through the image's own
+# Microsoft-signed shim and Canonical-signed grub -- the same two files
+# build/mkimage copies for the installed system -- and carries them in
+# the installer beside the kernel. Taken from the image, never rebuilt:
+# their signatures are the whole point of them.
+SHIM_SRC=""
+for c in shimx64.efi.dualsigned shimx64.efi.signed.latest shimx64.efi.signed; do
+    [ -f "$RFS/usr/lib/shim/$c" ] && { SHIM_SRC="$RFS/usr/lib/shim/$c"; break; }
+done
+GRUB_SRC="$RFS/usr/lib/grub/x86_64-efi-signed/grubx64.efi.signed"
+[ -n "$SHIM_SRC" ] && [ -f "$GRUB_SRC" ] \
+    || die "no signed shim and grub in $RFS; the installer could not start
+     this environment on a machine with Secure Boot on"
+cp "$SHIM_SRC" "$OUT/auros-staging$SUF-shimx64.efi"
+cp "$GRUB_SRC" "$OUT/auros-staging$SUF-grubx64.efi"
+cp "$RFS/usr/lib/shim/mmx64.efi" "$OUT/auros-staging$SUF-mmx64.efi" 2>/dev/null || true
 
 printf '\n%s::%s %s  (%s, kernel %s)\n' "$C_OK" "$C_RST" \
        "$OUT/auros-staging$SUF.img" "$SZ" "$KVER"

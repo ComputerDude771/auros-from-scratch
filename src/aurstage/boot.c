@@ -65,6 +65,25 @@ int stage_cmdline_value(const char *key, char *out, size_t n)
     return i ? 0 : -1;
 }
 
+/* How much memory the kernel says could be had, in bytes, out of
+ * /proc/meminfo's MemAvailable. 0 when it will not say, which every
+ * caller treats as "not enough": the one that asks is about to hold a
+ * copy of this machine's startup in memory and nowhere else. */
+uint64_t stage_mem_available(void)
+{
+    int fd = open("/proc/meminfo", O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return 0;
+    char buf[4096];
+    ssize_t k = read(fd, buf, sizeof buf - 1);
+    close(fd);
+    if (k <= 0) return 0;
+    buf[k] = 0;
+    const char *p = strstr(buf, "MemAvailable:");
+    if (!p) return 0;
+    unsigned long long kb = strtoull(p + 13, NULL, 10);
+    return (uint64_t)kb * 1024;
+}
+
 /* ── saying things ───────────────────────────────────────────────── */
 
 static int log_fd = -1;
@@ -113,6 +132,10 @@ int stage_mount_pseudo(void)
          * is mounted read-only here: stage A writes nothing, and that
          * includes NVRAM. */
         { "efivarfs", "/sys/firmware/efi/efivars", "efivarfs", MS_RDONLY },
+        /* Only so that stage_say_secure() can read the kernel's
+         * lockdown mode off /sys/kernel/security/lockdown. */
+        { "securityfs", "/sys/kernel/security", "securityfs",
+          MS_RDONLY | MS_NOSUID | MS_NOEXEC | MS_NODEV },
     };
     int bad = 0;
     for (size_t i = 0; i < sizeof M / sizeof M[0]; i++) {
@@ -127,10 +150,52 @@ int stage_mount_pseudo(void)
                        strerror(errno));
             continue;
         }
+        if (!strcmp(M[i].type, "securityfs")) continue;   /* a line less */
         stage_warn("could not mount %s (%s)", M[i].dst, strerror(errno));
         bad++;
     }
     return bad == 0;
+}
+
+/* ── Secure Boot, and what it does to this kernel ────────────────
+ *
+ * One line, because a photo of this screen is how a failed install is
+ * reported and "was Secure Boot on?" is the first question anybody
+ * asks. With it on, this kernel is locked down: modules must be
+ * signed, and a few ways into the kernel's memory are shut. Nothing
+ * this program does needs any of those -- ntfs3 and the disk drivers
+ * come signed with the kernel, raw writes to a disk and EFI variables
+ * are not what lockdown restricts -- and tools/nosticktest.sh installs
+ * with it on to prove that rather than assert it. */
+void stage_say_secure(void)
+{
+    int sb = -1;
+    unsigned char v[8];
+    int fd = open("/sys/firmware/efi/efivars/"
+                  "SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+                  O_RDONLY | O_CLOEXEC);
+    if (fd >= 0) {
+        /* efivarfs: four bytes of attributes, then the one byte */
+        if (read(fd, v, sizeof v) == 5) sb = v[4] ? 1 : 0;
+        close(fd);
+    }
+    char lk[128] = "", mode[32] = "";
+    fd = open("/sys/kernel/security/lockdown", O_RDONLY | O_CLOEXEC);
+    if (fd >= 0) {
+        ssize_t k = read(fd, lk, sizeof lk - 1);
+        close(fd);
+        if (k > 0) {
+            lk[k] = 0;
+            char *o = strchr(lk, '['), *c = o ? strchr(o, ']') : NULL;
+            if (o && c && (size_t)(c - o - 1) < sizeof mode) {
+                memcpy(mode, o + 1, (size_t)(c - o - 1));
+                mode[c - o - 1] = 0;
+            }
+        }
+    }
+    stage_say("secure   Secure Boot %s; kernel lockdown %s",
+              sb == 1 ? "on" : sb == 0 ? "off" : "unknown",
+              mode[0] ? mode : "unknown");
 }
 
 /* ── drivers, the way udev does it, without udev ─────────────────── */

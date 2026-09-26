@@ -52,6 +52,7 @@
 #include <math.h>
 
 #include "preflight.h"
+#include "sbdb.h"
 #include "phases.h"
 
 /* Baked in by build/aurbridge. A build that has not been told where
@@ -65,6 +66,17 @@
 #endif
 #ifndef AUROS_IMAGE_BYTES
 #define AUROS_IMAGE_BYTES   0ULL
+#endif
+/* WHERE THE IMAGE IS PUBLISHED IN PIECES, baked in by build/aurbridge
+ * from AUROS_IMAGE_PIECES (see phases.h for the format). Empty in a
+ * build that was not given one. */
+#if defined(__has_include)
+# if __has_include("aurbridge-baked.h")
+#  include "aurbridge-baked.h"
+# endif
+#endif
+#ifndef AUROS_PIECES_TEXT
+#define AUROS_PIECES_TEXT   ""
 #endif
 
 /* ── Palette: themes/nocturne.theme, copied exactly ───────────────── */
@@ -304,11 +316,29 @@ static int   g_sel_lang = 0, g_sel_kbd = 0, g_sel_tz = 0, g_sel_theme = 0;
  * image's profile — it travels in ab_choice.shell_archetype. */
 static int   g_sel_shell = SHELL_DEFAULT;
 
+#define OPT_MAX 10
+/* Each chip is a label she reads AND a value the installed system can
+ * act on, kept side by side. The values used to not exist: the chips
+ * were words, only the words were kept, and nothing she chose here
+ * reached AurOS (choices.conf, written in phase 3, is where they go
+ * now -- see ab_choice in phases.h for the forms). */
+static wchar_t g_langs[OPT_MAX][96]; static char g_lang_v[OPT_MAX][64]; static int g_n_langs;
+static wchar_t g_kbds [OPT_MAX][96]; static char g_kbd_v [OPT_MAX][64]; static int g_n_kbds;
+static wchar_t g_tzs  [OPT_MAX][96]; static char g_tz_v  [OPT_MAX][96]; static int g_n_tzs;
+
 /* detected-from-Windows defaults, filled in at startup */
 static wchar_t g_det_lang[96], g_det_kbd[96], g_det_tz[128];
 
 /* dev harness only; never set by anything the user can click */
 static int   g_shot_mode = 0;
+
+/* SET ONLY BY "Restart now", and by Windows itself ending the session.
+ * Closing the window before the restart takes everything back
+ * (install_cancel); restarting is the one way of leaving it that keeps
+ * the one-shot start-up setting, because it is the restart that setting
+ * is waiting for. Without this the only button at the end said "Close",
+ * and pressing it undid the install the person had just prepared. */
+static int   g_restarting = 0;
 
 #define AGREE_WORD L"AGREE"
 
@@ -861,7 +891,8 @@ CHK[] = {
   { L"Permission to make changes", L"AurBridge must run as an administrator",
     { "not-elevated", NULL } },
   { L"How this PC starts up", L"UEFI start-up, and Secure Boot",
-    { "firmware-uefi", "firmware-bios", "secure-boot-on", NULL } },
+    { "firmware-uefi", "firmware-bios", "secure-boot-on", "secure-boot-off",
+      SBDB_BLOCK_ID, "secure-boot-unsigned-build", NULL } },
   { L"Power", L"Plugged in, with charge to spare",
     { "not-on-ac", "battery-low", NULL } },
   { L"Windows updates", L"Nothing half-installed and waiting for a restart",
@@ -933,9 +964,15 @@ static int consent_ok(void)
 {
     return _wcsicmp(g_agree, AGREE_WORD) == 0;
 }
+/* ONLY THE DUAL BOOT EXISTS. "Replace Windows completely" was a card on
+ * the choose page, with its own warning and an "Erase and install"
+ * button, and nothing behind it: g_choice never reached the engine, so
+ * a person who chose to erase this PC -- before giving it away, say --
+ * got AurOS installed beside a Windows that was still there, files and
+ * all. Until an erase exists, choosing one is not possible. */
 static int choice_ok(void)
 {
-    return g_choice == 0 || (g_choice == 1 && g_ack_replace);
+    return g_choice == 0;
 }
 
 static int nav_allowed(page_id p)
@@ -1007,12 +1044,12 @@ static const struct {
    L"Every safety check runs again, right before we start. Nothing is written.", 0 },
  { L"Write down what you agreed to",
    L"Your answers, and a copy of this PC\u2019s unlock key if it has one.", 0 },
- { L"Build a way back",
-   L"The rescue USB stick, with a copy of AurOS on it and room to save this PC\u2019s start-up. Windows is untouched by this step.", 0 },
+ { L"Get AurOS",
+   L"About 5 GB is downloaded into the AurOS folder on this drive, and checked.", 0 },
  { L"Add AurOS to the start-up menu",
    L"AurOS is offered once, at the next start. Windows stays the one that starts by default.", 0 },
  { L"Make room",
-   L"After the restart: the Windows drive is made smaller. Your Windows files stay where they are.", 1 },
+   L"After the restart: the Windows drive is made smaller. Your files stay where they are.", 1 },
  { L"Copy AurOS onto the drive",
    L"AurOS is written into the new space, then read back and checked, byte for byte.", 1 },
  { L"Try it out on this PC",
@@ -1137,6 +1174,30 @@ static DWORD WINAPI ab_worker(LPVOID p)
     return 0;
 }
 
+/* WHAT SHE CHOSE ON THE PERSONALIZE AND DESKTOP PAGES, as values the
+ * installed system can act on. Its own function so that --navtest can
+ * pick chips and read back what the engine would be handed; the
+ * language used to be the constant "en" and nothing else travelled. */
+static void choices_from_page(ab_choice *c)
+{
+    _snprintf(c->shell_archetype, sizeof c->shell_archetype - 1, "%s",
+              SHELLS[g_sel_shell].id);
+    _snprintf(c->language, sizeof c->language - 1, "%s", g_lang_v[g_sel_lang]);
+    _snprintf(c->keyboard, sizeof c->keyboard - 1, "%s", g_kbd_v[g_sel_kbd]);
+    _snprintf(c->timezone, sizeof c->timezone - 1, "%s", g_tz_v[g_sel_tz]);
+    /* The theme's id is its file name, which is its display name in
+     * lower case (themes/<id>.theme). */
+    char t[32];
+    int k = WideCharToMultiByte(CP_UTF8, 0, THEMES[g_sel_theme].name, -1,
+                                t, sizeof t, NULL, NULL);
+    c->theme[0] = 0;
+    if (k > 0) {
+        for (char *p = t; *p; p++)
+            if (*p >= 'A' && *p <= 'Z') *p = (char)(*p - 'A' + 'a');
+        _snprintf(c->theme, sizeof c->theme - 1, "%s", t);
+    }
+}
+
 static void install_begin(void)
 {
     ab_lock_init();
@@ -1152,22 +1213,29 @@ static void install_begin(void)
     g_install_finished = 0;
 
     memset(&g_ab_choice, 0, sizeof g_ab_choice);
-    /* The archetype is the one choice with a stable identifier of its
-     * own (shells/<id>.shell), so it is the one that travels as text. */
-    _snprintf(g_ab_choice.shell_archetype,
-              sizeof g_ab_choice.shell_archetype - 1, "%s",
-              SHELLS[g_sel_shell].id);
     _snprintf(g_ab_choice.profile, sizeof g_ab_choice.profile - 1, "%s",
               "desktop");
-    _snprintf(g_ab_choice.language, sizeof g_ab_choice.language - 1, "%s", "en");
-    _snprintf(g_ab_choice.stick_serial,
-              sizeof g_ab_choice.stick_serial - 1, "%s",
-              pf_recovery_stick() ? pf_recovery_stick() : "");
-    /* WHERE THE IMAGE GOES, NOT WHERE IT IS. Beside the installer,
-     * because that is where a person would look for it and where a
-     * second run will find it already downloaded. */
-    beside_me(g_ab_choice.image_path,  sizeof g_ab_choice.image_path,
+    choices_from_page(&g_ab_choice);
+    /* NO MEMORY STICK. See page_backup() and docs/AURBRIDGE.md,
+     * "Installing without a memory stick". */
+    g_ab_choice.no_stick = 1;
+    g_ab_choice.stick_serial[0] = 0;
+    /* WHERE THE IMAGE GOES: \AurOS\ on the drive Windows started from,
+     * because that is the volume the staging environment will mount
+     * after the restart -- the journal names that partition and no
+     * other. An image already sitting beside the installer is moved
+     * there rather than downloaded again. */
+    {
+        char sd[16] = "C:";
+        DWORD k = GetEnvironmentVariableA("SystemDrive", sd, sizeof sd);
+        if (k == 0 || k >= sizeof sd || sd[1] != ':') snprintf(sd, sizeof sd, "C:");
+        sd[2] = 0;
+        _snprintf(g_ab_choice.image_path, sizeof g_ab_choice.image_path - 1,
+                  "%s\\AurOS\\auros-desktop.img", sd);
+    }
+    beside_me(g_ab_choice.image_alt_path, sizeof g_ab_choice.image_alt_path,
               "auros-desktop.img");
+    g_ab_choice.pieces_text = AUROS_PIECES_TEXT;
     /* WHERE TO GET IT, BAKED IN WHEN THIS WAS BUILT. Empty in a
      * developer build, which then requires the image to be sitting
      * there already -- the arrangement this product had before it was
@@ -1253,26 +1321,61 @@ static void install_cancel(void)
 /* ═══════════════════════════════════════════════════════════════════
  *  What Windows already knows about this user
  * ═══════════════════════════════════════════════════════════════════ */
-#define OPT_MAX 10
-static wchar_t g_langs[OPT_MAX][96]; static int g_n_langs;
-static wchar_t g_kbds [OPT_MAX][96]; static int g_n_kbds;
-static wchar_t g_tzs  [OPT_MAX][96];  static int g_n_tzs;
 
-static void opt_push(wchar_t (*list)[96], int *n, const wchar_t *s)
+static void opt_push(wchar_t (*list)[96], char (*vals)[64], int *n,
+                     const wchar_t *label, const char *value)
 {
-    if (!s || !*s || *n >= OPT_MAX) return;
-    for (int i = 0; i < *n; i++) if (!_wcsicmp(list[i], s)) return;
-    wcsncpy(list[*n], s, 95); list[*n][95] = 0; (*n)++;
+    if (!label || !*label || *n >= OPT_MAX) return;
+    for (int i = 0; i < *n; i++) if (!_wcsicmp(list[i], label)) return;
+    wcsncpy(list[*n], label, 95); list[*n][95] = 0;
+    snprintf(vals[*n], 64, "%s", value ? value : "");
+    (*n)++;
 }
+/* The time-zone values are longer ("windows:" and a Windows key name),
+ * so they get their own width. */
+static void tz_push(const wchar_t *label, const char *value)
+{
+    if (!label || !*label || g_n_tzs >= OPT_MAX) return;
+    for (int i = 0; i < g_n_tzs; i++) if (!_wcsicmp(g_tzs[i], label)) return;
+    wcsncpy(g_tzs[g_n_tzs], label, 95); g_tzs[g_n_tzs][95] = 0;
+    snprintf(g_tz_v[g_n_tzs], sizeof g_tz_v[0], "%s", value ? value : "");
+    g_n_tzs++;
+}
+
+typedef DWORD (WINAPI *PFN_GDTZI)(PDYNAMIC_TIME_ZONE_INFORMATION);
 
 static void detect_defaults(void)
 {
+    /* LANGUAGE: Windows' locale name, "en-GB", is a glibc one, en_GB,
+     * with a hyphen for an underscore -- when it has that shape. A name
+     * with a script in it ("zh-Hans-CN") keeps its label and gets no
+     * value: first boot then leaves the language to Ferry, which reads
+     * it out of Windows itself, rather than guessing. */
     wchar_t name[LOCALE_NAME_MAX_LENGTH];
+    char det_lang_v[64] = "";
     if (GetUserDefaultLocaleName(name, LOCALE_NAME_MAX_LENGTH)) {
         if (!GetLocaleInfoEx(name, LOCALE_SLOCALIZEDDISPLAYNAME, g_det_lang, 96))
             wcsncpy(g_det_lang, name, 95);
+        char a[LOCALE_NAME_MAX_LENGTH];
+        if (WideCharToMultiByte(CP_UTF8, 0, name, -1, a, sizeof a, NULL, NULL) > 0) {
+            size_t l = strlen(a);
+            int ok = (l == 5 || l == 6) && a[l - 3] == '-';
+            for (size_t i = 0; ok && i < l; i++) {
+                char ch = a[i];
+                if (i < l - 3) ok = ch >= 'a' && ch <= 'z';
+                else if (i > l - 3) ok = ch >= 'A' && ch <= 'Z';
+            }
+            if (ok) {
+                a[l - 3] = '_';
+                snprintf(det_lang_v, sizeof det_lang_v, "%s.UTF-8", a);
+            }
+        }
     }
+    /* KEYBOARD: the layout's id (KLID), which Ferry's table maps to an
+     * XKB layout on the other side. The label is Windows' own name for
+     * it, out of the registry. */
     wchar_t klid[KL_NAMELENGTH];
+    char det_kbd_v[64] = "";
     if (GetKeyboardLayoutNameW(klid)) {
         wchar_t sub[200];
         _snwprintf(sub, 199,
@@ -1286,42 +1389,62 @@ static void detect_defaults(void)
                 g_det_kbd[0] = 0;
             RegCloseKey(k);
         }
+        char a[16];
+        if (WideCharToMultiByte(CP_UTF8, 0, klid, -1, a, sizeof a, NULL, NULL) > 0 &&
+            strlen(a) == 8)
+            snprintf(det_kbd_v, sizeof det_kbd_v, "klid:%s", a);
     }
-    TIME_ZONE_INFORMATION tzi;
-    memset(&tzi, 0, sizeof tzi);
-    if (GetTimeZoneInformation(&tzi) != TIME_ZONE_ID_INVALID)
-        wcsncpy(g_det_tz, tzi.StandardName, 127);
+    /* TIME ZONE: Windows' key name ("Pacific Standard Time"), which is
+     * what the CLDR table on the other side is keyed by. It is in the
+     * DYNAMIC structure, which is Vista and later, reached by
+     * GetProcAddress so the binary still loads on anything older. */
+    char det_tz_v[96] = "";
+    {
+        TIME_ZONE_INFORMATION tzi;
+        memset(&tzi, 0, sizeof tzi);
+        if (GetTimeZoneInformation(&tzi) != TIME_ZONE_ID_INVALID)
+            wcsncpy(g_det_tz, tzi.StandardName, 127);
+        PFN_GDTZI gd = (PFN_GDTZI)(void (*)(void))GetProcAddress(
+            GetModuleHandleW(L"kernel32.dll"), "GetDynamicTimeZoneInformation");
+        DYNAMIC_TIME_ZONE_INFORMATION d;
+        memset(&d, 0, sizeof d);
+        char a[160];
+        if (gd && gd(&d) != TIME_ZONE_ID_INVALID && d.TimeZoneKeyName[0] &&
+            WideCharToMultiByte(CP_UTF8, 0, d.TimeZoneKeyName, -1, a, sizeof a,
+                                NULL, NULL) > 0)
+            snprintf(det_tz_v, sizeof det_tz_v, "windows:%s", a);
+    }
 
     /* The value Windows is already using goes first and is preselected:
      * the common case should need no clicks at all. */
-    opt_push(g_langs, &g_n_langs, g_det_lang);
-    opt_push(g_langs, &g_n_langs, L"English (United States)");
-    opt_push(g_langs, &g_n_langs, L"English (United Kingdom)");
-    opt_push(g_langs, &g_n_langs, L"Español");
-    opt_push(g_langs, &g_n_langs, L"Français");
-    opt_push(g_langs, &g_n_langs, L"Deutsch");
-    opt_push(g_langs, &g_n_langs, L"Português");
-    opt_push(g_langs, &g_n_langs, L"Italiano");
-    opt_push(g_langs, &g_n_langs, L"Polski");
+    opt_push(g_langs, g_lang_v, &g_n_langs, g_det_lang, det_lang_v);
+    opt_push(g_langs, g_lang_v, &g_n_langs, L"English (United States)", "en_US.UTF-8");
+    opt_push(g_langs, g_lang_v, &g_n_langs, L"English (United Kingdom)", "en_GB.UTF-8");
+    opt_push(g_langs, g_lang_v, &g_n_langs, L"Español", "es_ES.UTF-8");
+    opt_push(g_langs, g_lang_v, &g_n_langs, L"Français", "fr_FR.UTF-8");
+    opt_push(g_langs, g_lang_v, &g_n_langs, L"Deutsch", "de_DE.UTF-8");
+    opt_push(g_langs, g_lang_v, &g_n_langs, L"Português (Brasil)", "pt_BR.UTF-8");
+    opt_push(g_langs, g_lang_v, &g_n_langs, L"Italiano", "it_IT.UTF-8");
+    opt_push(g_langs, g_lang_v, &g_n_langs, L"Polski", "pl_PL.UTF-8");
 
-    opt_push(g_kbds, &g_n_kbds, g_det_kbd);
-    opt_push(g_kbds, &g_n_kbds, L"US");
-    opt_push(g_kbds, &g_n_kbds, L"United Kingdom");
-    opt_push(g_kbds, &g_n_kbds, L"Spanish");
-    opt_push(g_kbds, &g_n_kbds, L"French (AZERTY)");
-    opt_push(g_kbds, &g_n_kbds, L"German (QWERTZ)");
-    opt_push(g_kbds, &g_n_kbds, L"Portuguese (Brazil)");
+    opt_push(g_kbds, g_kbd_v, &g_n_kbds, g_det_kbd, det_kbd_v);
+    opt_push(g_kbds, g_kbd_v, &g_n_kbds, L"US", "xkb:us");
+    opt_push(g_kbds, g_kbd_v, &g_n_kbds, L"United Kingdom", "xkb:gb");
+    opt_push(g_kbds, g_kbd_v, &g_n_kbds, L"Spanish", "xkb:es");
+    opt_push(g_kbds, g_kbd_v, &g_n_kbds, L"French (AZERTY)", "xkb:fr");
+    opt_push(g_kbds, g_kbd_v, &g_n_kbds, L"German (QWERTZ)", "xkb:de");
+    opt_push(g_kbds, g_kbd_v, &g_n_kbds, L"Portuguese (Brazil)", "xkb:br");
 
-    opt_push(g_tzs, &g_n_tzs, g_det_tz);
-    opt_push(g_tzs, &g_n_tzs, L"GMT Standard Time");
-    opt_push(g_tzs, &g_n_tzs, L"Central European Time");
-    opt_push(g_tzs, &g_n_tzs, L"Eastern Time (US & Canada)");
-    opt_push(g_tzs, &g_n_tzs, L"Central Time (US & Canada)");
-    opt_push(g_tzs, &g_n_tzs, L"Pacific Time (US & Canada)");
+    tz_push(g_det_tz, det_tz_v);
+    tz_push(L"London", "iana:Europe/London");
+    tz_push(L"Paris, Berlin, Madrid, Rome", "iana:Europe/Paris");
+    tz_push(L"New York (Eastern)", "iana:America/New_York");
+    tz_push(L"Chicago (Central)", "iana:America/Chicago");
+    tz_push(L"Los Angeles (Pacific)", "iana:America/Los_Angeles");
 
-    if (!g_n_langs) opt_push(g_langs, &g_n_langs, L"English (United States)");
-    if (!g_n_kbds)  opt_push(g_kbds,  &g_n_kbds,  L"US");
-    if (!g_n_tzs)   opt_push(g_tzs, &g_n_tzs, L"GMT Standard Time");
+    if (!g_n_langs) opt_push(g_langs, g_lang_v, &g_n_langs, L"English (United States)", "en_US.UTF-8");
+    if (!g_n_kbds)  opt_push(g_kbds, g_kbd_v, &g_n_kbds, L"US", "xkb:us");
+    if (!g_n_tzs)   tz_push(L"London", "iana:Europe/London");
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -1621,6 +1744,96 @@ static int page_checking(int x, int y, int w)
  *  and the one thing they can do about it. There is no continue button,
  *  no "advanced", no override, and nav_allowed() would refuse one anyway.
  * ═══════════════════════════════════════════════════════════════════ */
+/* THE ONE SETTING, DRAWN. A refusal whose remedy is a screen the
+ * person has never seen needs more than a sentence, so the Secure Boot
+ * card carries a sketch: the way there from Windows, and the firmware's
+ * own screen with the one line to change marked. Every maker's screen
+ * is a little different; the sketch uses the commonest words and the
+ * card's text names the others. draw=0 measures only. */
+static int sb_figure(int x, int y, int w, int draw)
+{
+    static const wchar_t *const way[] = {
+        L"Settings", L"System", L"Recovery", L"Advanced startup: Restart now",
+        L"Troubleshoot", L"Advanced options", L"UEFI Firmware Settings",
+    };
+    const int nway = (int)(sizeof way / sizeof way[0]);
+    int y0 = y;
+    int chip_h = S(26), pad = S(10), gap = S(8);
+    int sep_w = text_w(L"\u203A", g_f_small) + S(10);
+
+    if (draw) text_draw(L"THE WAY THERE, FROM WINDOWS", g_f_tiny, C_WARM,
+                        x, y, w, DT_SINGLELINE);
+    y += S(16) + S(6);
+    int cx = x;
+    for (int i = 0; i < nway; i++) {
+        int cw = text_w(way[i], g_f_small) + pad * 2;
+        if (cx > x && cx + cw > x + w) { cx = x; y += chip_h + gap; }
+        if (draw) {
+            int last = i == nway - 1;
+            fill_rr((float)cx, (float)y, (float)cw, (float)chip_h, (float)S(8),
+                    C_SURFACE, 0.95f);
+            if (last)
+                stroke_rr((float)cx, (float)y, (float)cw, (float)chip_h,
+                          (float)S(8), 1.2f, C_WARM, 0.85f);
+            RECT b = { cx, y, cx + cw, y + chip_h };
+            text_in(way[i], g_f_small, last ? C_WARM : C_FG_HI, b,
+                    DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+            if (i < nway - 1) {
+                RECT sb = { cx + cw, y, cx + cw + sep_w, y + chip_h };
+                text_in(L"\u203A", g_f_small, C_SUBTLE, sb,
+                        DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+            }
+        }
+        cx += cw + sep_w;
+    }
+    y += chip_h + S(18);
+
+    if (draw) text_draw(L"THEN, ON THE PC'S OWN SETTINGS SCREEN", g_f_tiny, C_WARM,
+                        x, y, w, DT_SINGLELINE);
+    y += S(16) + S(6);
+    int row = S(30), sw = w > S(560) ? S(560) : w;
+    int sh = row * 4 + S(10);
+    if (draw) {
+        fill_rr((float)x, (float)y, (float)sw, (float)sh, (float)S(6), C_BG, 1.f);
+        stroke_rr((float)x, (float)y, (float)sw, (float)sh, (float)S(6), 1.f,
+                  C_OVERLAY, 1.f);
+        fill_rr((float)x + 1.f, (float)y + 1.f, (float)sw - 2.f, (float)row,
+                (float)S(5), C_INFO, 0.16f);
+        RECT hb = { x + S(12), y, x + sw - S(12), y + row };
+        text_in(L"Security  \u203A  Secure Boot", g_f_smallb, C_INFO, hb,
+                DT_SINGLELINE | DT_VCENTER);
+        static const struct { const wchar_t *k, *v; int mark; } R[] = {
+            { L"Secure Boot",                        L"[Enabled]   leave it on", 0 },
+            { L"Allow Microsoft 3rd Party UEFI CA",  L"[Disabled]  \u2192  [Enabled]", 1 },
+            { L"Secure Boot Mode",                   L"[Standard]", 0 },
+        };
+        for (int i = 0; i < 3; i++) {
+            int ry = y + row * (i + 1) + S(4);
+            if (R[i].mark) {
+                fill_rr((float)(x + S(6)), (float)ry, (float)(sw - S(12)),
+                        (float)(row - S(2)), (float)S(4), C_WARM, 0.14f);
+                stroke_rr((float)(x + S(6)), (float)ry, (float)(sw - S(12)),
+                          (float)(row - S(2)), (float)S(4), 1.2f, C_WARM, 0.85f);
+            }
+            RECT kb = { x + S(16), ry, x + sw / 2 + S(40), ry + row - S(2) };
+            RECT vb = { x + sw / 2 + S(48), ry, x + sw - S(14), ry + row - S(2) };
+            text_in(R[i].k, R[i].mark ? g_f_smallb : g_f_small,
+                    R[i].mark ? C_FG_HI : C_SUBTLE, kb,
+                    DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+            text_in(R[i].v, R[i].mark ? g_f_smallb : g_f_small,
+                    R[i].mark ? C_WARM : C_SUBTLE, vb, DT_SINGLELINE | DT_VCENTER);
+        }
+    }
+    y += sh + S(10);
+    const wchar_t *cap =
+        L"A sketch: every maker's screen looks a little different. Then choose "
+        L"Save and Exit (often F10), and run this installer again. Secure Boot "
+        L"stays on.";
+    y += draw ? text_draw(cap, g_f_small, C_SUBTLE, x, y, w, DT_WORDBREAK)
+              : text_h(cap, g_f_small, w, DT_WORDBREAK);
+    return y - y0;
+}
+
 static int block_card(const pf_result *r, int x, int y, int w)
 {
     wchar_t title[128], detail[600], remedy[600], risk[16];
@@ -1643,7 +1856,10 @@ static int block_card(const pf_result *r, int x, int y, int w)
     int rh   = remedy[0]
         ? text_h(remedy, g_f_body, bw - rpad * 2, DT_WORDBREAK) + rlab + rpad * 2 + S(4)
         : 0;
-    int h = pad + th + (dh ? dh + S(8) : 0) + (rh ? rh + S(18) : 0) + pad;
+    int fig = !strcmp(r->id, SBDB_BLOCK_ID);
+    int fh  = fig ? sb_figure(tx, 0, bw, 0) : 0;
+    int h = pad + th + (dh ? dh + S(8) : 0) + (rh ? rh + S(18) : 0)
+          + (fh ? fh + S(18) : 0) + pad;
 
     fill_rr((float)x, (float)y, (float)w, (float)h, (float)S(14), C_SURFACE_HI, 0.75f);
     stroke_rr((float)x, (float)y, (float)w, (float)h, (float)S(14), 1.2f, C_ERR, 0.30f);
@@ -1663,7 +1879,9 @@ static int block_card(const pf_result *r, int x, int y, int w)
         text_draw(L"WHAT TO DO", g_f_tiny, C_WARM, tx + rpad, cy + rpad, bw, DT_SINGLELINE);
         text_draw(remedy, g_f_body, C_FG_HI, tx + rpad, cy + rpad + rlab,
                   bw - rpad * 2, DT_WORDBREAK);
+        cy += rh;
     }
+    if (fh) sb_figure(tx, cy + S(18), bw, 1);
     if (risk[0]) {
         int pw = text_w(risk, g_f_tiny) + S(16);
         int px = x + w - pad - pw;
@@ -1740,16 +1958,20 @@ static int page_backup(int x, int y, int w)
         L"iCloud or Google Drive. Photos and documents first.",
         x, y, narrow, C_ACCENT) + S(14);
 
+    /* NO MEMORY STICK IN THIS BUILD. The second box used to be "I have
+     * a USB stick"; nothing in the wizard ever let her choose it, so
+     * phase 2 refused every install with "the memory stick you chose is
+     * not plugged in any more". This build installs without one, and
+     * the box is now her saying she understands what that gives up. */
     y += draw_check(ID_CHK_USB, &g_ack_usb,
-        L"I have a USB stick of at least 4 GB that I am happy to erase.",
-        L"We turn it into a rescue stick before anything is changed. If this PC "
-        L"ever refuses to start, that stick is how you get Windows back. "
-        L"You do not need to plug it in yet.",
-        x, y, narrow, C_ACCENT) + S(24);
+        L"I understand there is no rescue USB stick.",
+        L"A copy of this PC\u2019s start-up is kept on the drive itself. If this "
+        L"PC ever refuses to start at all, getting Windows back will need "
+        L"another computer. Please unplug any USB drives before going on.",
+        x, y, narrow, C_WARM) + S(24);
 
-    y += text_draw(L"We ask for both because they cover different accidents. The "
-                   L"rescue area on the drive handles \"AurOS will not start\". The "
-                   L"USB stick handles \"this PC will not start at all\".",
+    y += text_draw(L"This is a test version of AurOS. Use it on a PC whose "
+                   L"files are also kept somewhere else.",
                    g_f_small, C_MUTED, x, y, narrow, DT_WORDBREAK);
     return y - y0;
 }
@@ -1806,15 +2028,17 @@ static int page_consent(int x, int y, int w)
                    g_f_body, C_SUBTLE, x, y, narrow, DT_WORDBREAK) + S(26);
 
     y += section_head(L"WHAT CHANGES", C_WARM, x, y, narrow);
-    y += bullet(L"A rescue area is made on the drive first, out of space nobody is "
-                L"using. Nothing else happens until that is done.", C_WARM, x, y, narrow);
-    y += bullet(L"The part of the drive that Windows uses is made smaller, to free "
-                L"up room. Windows files are not deleted and not moved off this PC.",
-                C_WARM, x, y, narrow);
+    y += bullet(L"A copy of AurOS, about 5 GB, is downloaded into a folder called "
+                L"AurOS on this drive.", C_WARM, x, y, narrow);
+    y += bullet(L"After one restart, the part of the drive that Windows uses is made "
+                L"smaller, to free up room. Windows files are not deleted and not "
+                L"moved off this PC.", C_WARM, x, y, narrow);
+    y += bullet(L"A copy of this PC\u2019s start-up is saved into that room first. "
+                L"Nothing else is written until it is.", C_WARM, x, y, narrow);
     y += bullet(L"A new, separate space is created in that freed-up room, and AurOS "
                 L"is copied into it.", C_WARM, x, y, narrow);
-    y += bullet(L"The start-up menu changes. From then on, switching this PC on asks "
-                L"you which one you want.", C_WARM, x, y, narrow);
+    y += bullet(L"AurOS is added to this PC\u2019s start-up menu, beside Windows.",
+                C_WARM, x, y, narrow);
     y += S(10);
 
     y += section_head(L"WHAT STAYS", C_ACCENT, x, y, narrow);
@@ -1826,11 +2050,14 @@ static int page_consent(int x, int y, int w)
     y += S(10);
 
     y += section_head(L"HOW TO UNDO IT", C_ACCENT_ALT, x, y, narrow);
-    y += bullet(L"Switch the PC on and choose \"Put Windows back\" in the menu. It "
-                L"puts the drive back exactly as it is today. No USB stick, no second "
-                L"computer, no phone call.", C_ACCENT_ALT, x, y, narrow);
-    y += bullet(L"If this PC will not start at all, the rescue USB stick does the "
-                L"same job.", C_ACCENT_ALT, x, y, narrow);
+    y += bullet(L"When AurOS first starts it asks whether it works. Say no, and this "
+                L"PC goes back to starting Windows by itself.", C_ACCENT_ALT, x, y, narrow);
+    y += bullet(L"Windows stays in this PC\u2019s start-up menu either way. The key "
+                L"that opens that menu is shown when the PC switches on (often F12, "
+                L"F9 or Esc).", C_ACCENT_ALT, x, y, narrow);
+    y += bullet(L"There is no rescue USB stick in this version. If this PC will not "
+                L"start at all, you will need another computer to repair it.",
+                C_ERR, x, y, narrow);
     y += S(16);
 
     fill_rr((float)x, (float)y, (float)narrow, (float)S(2), 1.f, C_OVERLAY, 1.f);
@@ -1915,14 +2142,11 @@ static int page_choose(int x, int y, int w)
         L"Nothing in Windows is deleted. AurOS needs about 28 GB of room.",
         C_ACCENT, x, y, narrow) + S(16);
 
-    y += choice_card(ID_CARD_REPLACE, g_choice == 1,
-        L"Replace Windows completely",
-        NULL,
-        L"Everything on this PC is erased: Windows, your programs, and every file "
-        L"on this drive. Windows cannot be put back afterwards, and the rescue area "
-        L"cannot bring your files back either. Only choose this if everything you "
-        L"want is already copied somewhere else.",
-        C_ERR, x, y, narrow) + S(16);
+    /* Replacing Windows is not offered: see choice_ok(). Said, rather
+     * than silently missing, so nobody goes looking for it. */
+    y += text_draw(L"Replacing Windows completely is not available in this "
+                   L"version. AurOS is always installed beside it.",
+                   g_f_small, C_MUTED, x, y, narrow, DT_WORDBREAK) + S(16);
 
     if (g_choice == 1) {
         y += draw_check(ID_CHK_REPLACE, &g_ack_replace,
@@ -2429,9 +2653,9 @@ static int page_progress(int x, int y, int w)
         stroke_rr((float)x, (float)y, (float)narrow, (float)h, (float)S(12), 1.2f,
                   C_WARM, 0.35f);
         glyph_bang((float)(x + S(26)), (float)(y + h / 2), (float)S(15), C_WARM, 1.f);
-        text_draw(L"Nothing on this PC is changed by the steps below. The only "
-                  L"thing written to is the USB stick, and the only thing "
-                  L"changed is which system starts next time \u2014 once.",
+        text_draw(L"Before the restart, the only things written are the AurOS "
+                  L"folder on this drive and a few start-up files, and the only "
+                  L"thing changed is which system starts next time \u2014 once.",
                   g_f_small, C_WARM, x + S(48), y + S(11), narrow - S(70), DT_WORDBREAK);
         y += h + S(22);
     }
@@ -2534,7 +2758,7 @@ static const wchar_t *primary_label(void)
     case PAGE_PERSONALIZE: return L"Continue";
     case PAGE_READY:       return g_choice == 1 ? L"Erase and install"
                                                 : L"Start installing";
-    case PAGE_PROGRESS:    return L"Close";
+    case PAGE_PROGRESS:    return g_ab_state == 2 ? L"Restart now" : L"Close";
     default:               return L"Continue";
     }
 }
@@ -2562,8 +2786,10 @@ static const wchar_t *footer_hint(void)
     case PAGE_READY:
         return L"Last chance to stop without anything having happened.";
     case PAGE_PROGRESS:
-        return L"Nothing on this PC has been changed. Closing this window "
-               L"puts everything back.";
+        return g_ab_state == 2
+            ? L"Save your work first. Closing instead puts everything back."
+            : L"Nothing on this PC has been changed. Closing this window "
+              L"puts everything back.";
     default: return L"";
     }
 }
@@ -2759,7 +2985,21 @@ static void do_primary(void)
      * AURBRIDGE.md: destructive work re-runs preflight and aborts on
      * any block, however long the user spent on the pages in between. */
     case PAGE_READY:       start_check(PAGE_PROGRESS); break;
-    case PAGE_PROGRESS:    PostMessageW(g_hwnd, WM_CLOSE, 0, 0); break;
+    case PAGE_PROGRESS:
+        if (g_ab_state == 2) {
+            char why[PLAT_WHY];
+            g_restarting = 1;
+            if (plat_restart(why, sizeof why) != 0) {
+                g_restarting = 0;
+                wchar_t w[PLAT_WHY];
+                MultiByteToWideChar(CP_UTF8, 0, why, -1, w, PLAT_WHY);
+                w[PLAT_WHY - 1] = 0;
+                MessageBoxW(g_hwnd, w, L"AurBridge", MB_OK | MB_ICONWARNING);
+            }
+            break;
+        }
+        PostMessageW(g_hwnd, WM_CLOSE, 0, 0);
+        break;
     default: break;
     }
 }
@@ -2775,7 +3015,7 @@ static void widget_activate(int id)
     case ID_CHK_REPLACE: g_ack_replace  = !g_ack_replace;  return;
     case ID_CHK_READY:   g_ready_confirm= !g_ready_confirm;return;
     case ID_CARD_DUAL:   g_choice = 0; g_ack_replace = 0;  return;
-    case ID_CARD_REPLACE:g_choice = 1;                     return;
+    case ID_CARD_REPLACE:                                  return;
     case ID_INPUT_AGREE: return;                 /* click just takes focus */
     default: break;
     }
@@ -3212,13 +3452,22 @@ static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM wp, LPARAM lp)
         DestroyWindow(h);
         return 0;
 
+    /* WINDOWS IS ENDING THE SESSION -- a restart from the Start menu, or
+     * ours. Either way the restart is happening, and it is the one the
+     * armed setting is for; taking it back now would make the restart
+     * she chose start Windows again with nothing done. */
+    case WM_ENDSESSION:
+        if (wp) g_restarting = 1;
+        return 0;
+
     case WM_DESTROY:
         KillTimer(h, 1);
         /* Take back the one-shot start-up setting, if it was set. A
          * window closed after phase 3 and before the restart must not
          * leave a computer that starts the installer once and then
-         * cannot say why. */
-        install_cancel();
+         * cannot say why. Not when the window is going BECAUSE of the
+         * restart. */
+        if (!g_restarting) install_cancel();
         PostQuitMessage(0);
         return 0;
 
@@ -3267,6 +3516,22 @@ static int shot_run(const char *dir)
 
     if (g_report.n_block > 0) { g_page = PAGE_BLOCKED; shot_save(dir, "3-blocked"); }
 
+    /* A Secured-core PC, which trusts nothing but Windows: the one
+     * refusal that carries a picture. A fixture, judged by the same
+     * sbdb_judge() preflight calls, and put back afterwards. */
+    {
+        pf_report keep = g_report;
+        memset(&g_report, 0, sizeof g_report);
+        g_report.system_disk = -1;
+        sbdb_judge(&g_report, 1, 0, (const unsigned char *)"", 0, -1, NULL, 0,
+                   "Microsoft Corporation UEFI CA 2011\n");
+        g_page = PAGE_BLOCKED; shot_save(dir, "3b-blocked-secure-boot");
+        g_scroll[PAGE_BLOCKED] = 10000;
+        shot_save(dir, "3c-blocked-secure-boot-picture");
+        g_scroll[PAGE_BLOCKED] = 0;
+        g_report = keep;
+    }
+
     g_page = PAGE_BACKUP;   shot_save(dir, "4a-backup-empty");
     g_ack_backup = g_ack_usb = 1;
     shot_save(dir, "4b-backup-done");
@@ -3282,7 +3547,6 @@ static int shot_run(const char *dir)
     shot_save(dir, "5b-consent-typed");
 
     g_page = PAGE_CHOOSE;   shot_save(dir, "6a-choose");
-    g_choice = 1; shot_save(dir, "6b-choose-replace");
     g_choice = 0; g_ack_replace = 0;
 
     /* The archetype chooser opens on Rail; the foot of the list is where
@@ -3306,6 +3570,15 @@ static int shot_run(const char *dir)
     for (int i = 0; i < 30; i++) install_tick();
     g_page = PAGE_PROGRESS; shot_save(dir, "10-progress");
     for (int i = 0; i < 60; i++) install_tick();
+    /* THE END AS A PERSON SEES IT WHEN IT WORKED. Under Wine the engine
+     * stops at phase 0 -- there is no disk to read -- so the finished
+     * state is set here, after the worker has let go, for the picture
+     * only: the page and its "Restart now" button are what is under
+     * review, not the engine. */
+    if (g_ab_thread) WaitForSingleObject(g_ab_thread, 60000);
+    InterlockedExchange(&g_ab_state, 2);
+    g_install_running = 1;
+    install_tick();
     shot_save(dir, "10b-progress-end");
     return 0;
 }
@@ -3411,13 +3684,42 @@ static int nav_test(const char *dir)
     nt_check(nav_allowed(PAGE_CHOOSE), "typed acknowledgement accepted (any case)");
     g_choice = 1;
     nt_check(!nav_allowed(PAGE_PERSONALIZE),
-             "replace-Windows refused until its own box is ticked");
+             "replace-Windows refused with its box unticked");
     g_ack_replace = 1;
-    nt_check(nav_allowed(PAGE_PERSONALIZE), "replace-Windows accepted once acknowledged");
+    nt_check(!nav_allowed(PAGE_PERSONALIZE),
+             "replace-Windows refused even when acknowledged: it does not exist");
     g_choice = 0; g_ack_replace = 0;
+    nt_check(nav_allowed(PAGE_PERSONALIZE), "keeping Windows is accepted");
     nt_check(!nav_allowed(PAGE_PROGRESS), "install refused until the drive is confirmed");
     g_ready_confirm = 1;
     nt_check(nav_allowed(PAGE_PROGRESS), "install reachable at the end of a clean run");
+
+    if (g_nt) fprintf(g_nt, "\n3b. what she picks is what the engine is handed\n");
+    {
+        detect_defaults();
+        int es = -1, kes = -1, lon = -1, moss = -1, tb = -1;
+        for (int i = 0; i < g_n_langs; i++) if (!wcscmp(g_langs[i], L"Español")) es = i;
+        for (int i = 0; i < g_n_kbds; i++)  if (!wcscmp(g_kbds[i], L"Spanish")) kes = i;
+        for (int i = 0; i < g_n_tzs; i++)   if (!wcscmp(g_tzs[i], L"London")) lon = i;
+        for (int i = 0; i < N_THEMES; i++)  if (!wcscmp(THEMES[i].name, L"Moss")) moss = i;
+        for (int i = 0; i < N_SHELLS; i++)  if (!strcmp(SHELLS[i].id, "taskbar")) tb = i;
+        nt_check(es >= 0 && kes >= 0 && lon >= 0 && moss >= 0 && tb >= 0,
+                 "the chips the check picks are all offered");
+        if (es >= 0 && kes >= 0 && lon >= 0 && moss >= 0 && tb >= 0) {
+            g_sel_lang = es; g_sel_kbd = kes; g_sel_tz = lon;
+            g_sel_theme = moss; g_sel_shell = tb;
+            ab_choice c;
+            memset(&c, 0, sizeof c);
+            choices_from_page(&c);
+            nt_check(!strcmp(c.language, "es_ES.UTF-8"), "Español travels as es_ES.UTF-8");
+            nt_check(!strcmp(c.keyboard, "xkb:es"), "the Spanish keyboard travels as xkb:es");
+            nt_check(!strcmp(c.timezone, "iana:Europe/London"), "London travels as Europe/London");
+            nt_check(!strcmp(c.theme, "moss"), "the Moss look travels as moss");
+            nt_check(!strcmp(c.shell_archetype, "taskbar"), "the taskbar desktop travels as taskbar");
+        }
+        g_sel_lang = g_sel_kbd = g_sel_tz = g_sel_theme = 0;
+        g_sel_shell = SHELL_DEFAULT;
+    }
 
     if (g_nt) fprintf(g_nt, "\n4. a block appears after the user answered everything\n");
     nt_fake_report(1);

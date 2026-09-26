@@ -46,11 +46,55 @@ typedef enum {
 
 const char *ab_phase_name(ab_phase p);
 
+/* ── the image, in pieces ───────────────────────────────────────────
+ *
+ * Where the image is published for the no-stick build: gzip, cut into
+ * numbered pieces small enough for a git host, each with its own
+ * SHA-256, all relative to one base address. The list is text, baked
+ * into the installer when it is built (build/aurbridge), and read by
+ * ab_pieces_parse:
+ *
+ *   base https://example.org/auros/desktop/
+ *   piece auros-desktop.img.gz.000 94371840 <64 hex>
+ *   piece auros-desktop.img.gz.001 94371840 <64 hex>
+ *   ...
+ *
+ * What comes out of joining and unpacking them is checked against
+ * image_sha256 and image_expect below, so the pieces' own hashes are
+ * there to name WHICH piece went wrong, not to decide whether the
+ * image is right. */
+#define AB_MAX_PIECES 128
+typedef struct {
+    char     name[96];
+    uint64_t bytes;
+    char     sha256[65];
+} ab_piece;
+
+typedef struct {
+    char     base[320];
+    int      n;
+    uint64_t total;
+    ab_piece p[AB_MAX_PIECES];
+} ab_pieces;
+
+int ab_pieces_parse(const char *text, ab_pieces *out, char *why, size_t n);
+
 /* What the person chose, in the wizard. */
 typedef struct {
     char profile[64];          /* "desktop", "school-kiosk"           */
     char shell_archetype[32];  /* shells/<id>.shell                   */
-    char language[16];
+    /* WHAT SHE CHOSE ON THE PERSONALIZE PAGE, as values the installed
+     * system can act on rather than the words on the chips. Written to
+     * \EFI\AurOS\choices.conf in phase 3 and applied at first boot
+     * (rootfs/usr/lib/auros/choices.sh). Any of them may be empty.
+     *   language   a glibc locale:         "es_ES.UTF-8"
+     *   keyboard   "xkb:<layout>[:<var>]"  or "klid:<8 hex>" (Windows')
+     *   timezone   "iana:<Area/City>"      or "windows:<TimeZoneKeyName>"
+     *   theme      themes/<id>.theme       "moss"                        */
+    char language[32];
+    char keyboard[64];
+    char timezone[96];
+    char theme[32];
     char stick_serial[64];     /* the disk she nominated (R4/R11)     */
 
     /* Where the image is, or will be. The wizard fills this in from
@@ -92,6 +136,23 @@ typedef struct {
     /* She has read what phase 1 says and agreed to it. Nothing sets
      * this but a person. */
     int  consent_given;
+
+    /* THE NO-STICK MODE. No memory stick is written or needed: the
+     * image stays at image_path, which must then be on the Windows
+     * drive (the wizard puts it in \AurOS\ there), with its manifest
+     * beside it as image_path + ".manifest", and the journal says
+     * image_on=windows so the staging environment reads it through a
+     * read-only mount. What this costs is written down in
+     * docs/AURBRIDGE.md, "Installing without a memory stick". */
+    int  no_stick;
+
+    /* Where to get the image from when it is not already at
+     * image_path: the piece list above (text, or NULL), and failing
+     * that image_url. image_alt_path is a copy somebody has already
+     * put somewhere else -- beside the installer -- which is moved into
+     * place rather than downloaded again. */
+    const char *pieces_text;
+    char image_alt_path[512];
 
     /* Minutes of the user's own time this is allowed to take before
      * saying so -- reserved; the phases report progress instead. */
@@ -167,6 +228,13 @@ int ab_stick_layout(uint64_t stick_bytes, uint32_t sector,
  * if this one is smaller the install refuses AFTER the restart, which
  * is a refusal the user has already waited through a reboot for. */
 uint64_t ab_saved_bytes(uint64_t esp_bytes, uint32_t sector, int n_volumes);
+
+/* Get the image to c->image_path and check it: already there, moved
+ * from image_alt_path, downloaded in pieces, or downloaded whole --
+ * in that order. Exposed so the console tool can exercise the download
+ * on its own, which is how it is tested under Wine. */
+int ab_fetch_image(const ab_choice *c, ab_say say, ab_progress prog,
+                   void *ud, char *why, size_t n);
 
 int ab_selftest(void);
 

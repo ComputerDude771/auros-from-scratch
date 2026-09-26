@@ -102,6 +102,14 @@ int plat_file_put(const char *to, const void *buf, size_t n,
  * what this replaced. */
 int plat_file_append(const char *to, const void *buf, size_t n,
                      char *why, size_t wn);
+/* Remove a file this program made. 0 if it is gone afterwards,
+ * including when it was never there. */
+int plat_file_delete(const char *path, char *why, size_t wn);
+/* Rename `from` to `to`, replacing `to`. On Windows a rename across
+ * volumes becomes a copy and a delete, which is what moving an image
+ * from beside the installer onto the Windows drive needs. */
+int plat_file_rename(const char *from, const char *to, char *why, size_t wn);
+
 /* How much room is left on the volume holding `path` -- which need not
  * exist yet; the DIRECTORY it would go in is what is asked about. 0 if
  * this computer will not say, which is not a refusal: a machine that
@@ -129,6 +137,17 @@ uint64_t plat_free_space(const char *path);
  */
 #define PAYLOAD_KERNEL  "staging-kernel"
 #define PAYLOAD_INITRD  "staging-initrd"
+/* THE WAY IN UNDER SECURE BOOT. The staging kernel is signed by
+ * Canonical, and firmware trusts Microsoft: started directly, as the
+ * boot entry used to, a machine with Secure Boot on -- which is nearly
+ * every Windows 10 and 11 PC -- refuses it, consumes BootNext, and
+ * comes back to Windows with nothing done. So the entry starts the same
+ * Microsoft-signed shim and Canonical-signed grub the installed system
+ * boots through, and grub starts the kernel. Carried as three more
+ * resources; see phase_handoff. */
+#define PAYLOAD_SHIM    "staging-shim"
+#define PAYLOAD_GRUB    "staging-grub"
+#define PAYLOAD_MOKMGR  "staging-mokmgr"
 
 int  plat_payload(const char *name, char *path, size_t pn,
                   char *why, size_t wn);
@@ -218,11 +237,32 @@ int plat_boot_next(uint16_t num, char *why, size_t wn);
 /* And take it away again, for an abort before the restart. */
 int plat_boot_next_clear(char *why, size_t wn);
 
+/* Secure Boot: -1 not known, 0 off, 1 on. On Windows, what Windows
+ * itself records; in the simulation, the file secureboot ("1"). */
+int plat_secure_boot(void);
+
+/* One of the firmware's signature databases, "db" (the signers Secure
+ * Boot trusts) or "dbx" (what it has revoked), as the variable's data
+ * (src/aurbridge/sbdb.h reads them). Reading only; it needs
+ * SeSystemEnvironmentPrivilege like everything else here. In the
+ * simulation, the files db.bin and dbx.bin. */
+int plat_efi_sigdb(const char *name, unsigned char *buf, size_t cap,
+                   size_t *got, char *why, size_t wn);
+
 /* ── running something else ──────────────────────────────────────── */
 
 /* `tail` gets the last of its output, which is what an error message
  * needs. Returns the exit status, or -1 if it would not start. */
 int plat_run(const char *cmdline, char *tail, size_t n);
+
+/* ── the one restart ─────────────────────────────────────────────── */
+
+/* Restart the computer, now. The wizard's last button, after phase 3:
+ * the staging environment is armed with BootNext and this is the
+ * restart it is waiting for. A restart, never a shut down -- with Fast
+ * Startup on, Windows' "shut down" leaves the drive half-asleep, which
+ * the staging environment refuses to touch. */
+int plat_restart(char *why, size_t wn);
 
 /* ── which implementation is this ────────────────────────────────── */
 

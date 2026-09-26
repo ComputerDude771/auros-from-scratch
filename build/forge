@@ -207,7 +207,13 @@ stage_packages() {
     mkdir -p "$RFS/etc/auros"
     : > "$RFS/etc/auros/build-warnings"
     chroot_prep
-    local pkgs="$packages_hardware $packages_boot $packages_base $packages_desktop $packages_files $packages_apps $packages_extra"
+    # `locales` IN EVERY IMAGE, not in any one profile's list. Stage 4
+    # runs locale-gen and writes LANG from the profile whatever the
+    # profile says, and without this package there is no locale-gen:
+    # every image shipped LANG=en_US.UTF-8 naming a locale that did not
+    # exist, which glibc quietly turns into C -- and the language chosen
+    # in the installer had nothing to be generated with.
+    local pkgs="locales $packages_hardware $packages_boot $packages_base $packages_desktop $packages_files $packages_apps $packages_extra"
     # The letters this image can draw in. Not decoration: a page in a
     # language with no font is a page of empty boxes, and this product
     # promises a school can ship it in its own language.
@@ -848,6 +854,7 @@ stage_overlay() {
     done
     note "rootfs overlay: $(cd "$ROOT/rootfs" && find . -type f | wc -l) files"
     chmod 755 "$RFS/usr/lib/auros/firstboot.sh" 2>/dev/null || true
+    chmod 755 "$RFS/usr/lib/auros/choices.sh" 2>/dev/null || true
 
     enable_unit auros-firstboot.service multi-user.target
     # Phases 9 and 10. The hold runs on every boot until somebody has
@@ -1634,6 +1641,7 @@ squash_preconditions() {
              usr/bin/aurshell \
              usr/lib/auros/answer.sh \
              usr/lib/auros/firstboot.sh \
+             usr/lib/auros/choices.sh \
              etc/systemd/system/auros-hold.service \
              etc/systemd/system/auros-answer.path \
              etc/systemd/system/auros-answer.service \

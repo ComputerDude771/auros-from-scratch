@@ -32,7 +32,8 @@ different failures, and neither of them is fixable in code.
 
 ## What has to be bought
 
-**An OV or EV code-signing certificate, on hardware.**
+**A code-signing certificate on hardware, or Microsoft's signing
+service.** Which one is below; the short answer is "not EV".
 
 Since 1 June 2023 the CA/Browser Forum's baseline requirements have
 required code-signing private keys to be generated and held on
@@ -49,25 +50,34 @@ Either works with this build. The cloud route is easier to automate and
 does not put a physical object on the critical path of a release; the
 token is cheaper and does not depend on somebody else's uptime.
 
-### OV or EV
+### OV, EV, or Microsoft's own signing service
 
-|  | OV | EV |
-|---|---|---|
-| Identity check | the organisation is verified | the organisation is verified more strictly |
-| SmartScreen | reputation is **earned** — the warning keeps appearing until enough people have downloaded and run it | **immediate** — no warning from the first download |
-| Typical price | roughly USD 200–400 a year | roughly USD 300–600 a year |
+This section used to say **EV is the one to buy**, on the grounds that
+EV got SmartScreen reputation from the first download. That stopped
+being true in 2024, when Microsoft removed the behaviour: EV-signed
+files now earn reputation the same way OV-signed ones do.
+`docs/research/signing-trust.md` finding 3 already said so, and
+`docs/AURBRIDGE.md` said "ship OV"; this file was the one out of step.
 
-Check current prices; they move, and resellers are usually well under a
-CA's list price.
+|  | OV certificate | EV certificate | Azure Artifact Signing |
+|---|---|---|---|
+| Identity check | organisation (or individual, at some CAs) | stricter organisation check | Microsoft validates the organisation or individual |
+| SmartScreen | reputation **earned** over downloads | the same, since 2024 | the same |
+| Key storage | hardware token or cloud HSM (required since June 2023) | the same | Microsoft holds it; certificates last days and renew themselves |
+| Price, roughly | USD 200–400 a year, less through resellers | USD 300–600 a year | USD 9.99 a month (5,000 signatures) |
+| Who can get one | anyone the CA can verify | organisations | organisations in the US, Canada, EU, UK and several other countries; **individuals only in the US and Canada** |
 
-**For this product, EV is the one to buy, and the reason is specific.**
-OV reputation is accrued per-publisher across downloads over time. A
-new publisher signing a new installer still gets the warning — for
-weeks, or until a few thousand people have run it. Those weeks are
-exactly the launch, and the population is exactly the one that cannot
-get past a blue screen. Paying the difference buys the absence of the
-warning on the very first download, which is the only download that
-matters.
+**For this product: Azure Artifact Signing if you are eligible for it,
+otherwise OV.** EV buys nothing here that OV does not, and the premium
+is money a small project should spend on the hardware matrix instead.
+Whichever is used, the warning keeps appearing until enough people have
+run the installer; plan the first release as a small, known group, not
+a public launch.
+
+Check current prices and eligibility before paying; they move. As of
+this writing: [Microsoft's EV change](https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/smartscreen-reputation),
+[DigiCert's note on it](https://knowledge.digicert.com/alerts/ev-signed-application-showing-microsoft-defender-smartscreen-warnings),
+[Artifact Signing pricing](https://azure.microsoft.com/en-us/pricing/details/artifact-signing/).
 
 ### Who can buy one
 
@@ -149,12 +159,24 @@ anything to anybody. `tools/loadertest.sh` proves it against
 `OVMF_CODE_4M.ms.fd` with Microsoft's own keys enrolled and Secure Boot
 enforcing.
 
-The shim is **dual-signed**: by the Microsoft UEFI CA 2011 *and* the
-2023 CA. The 2011 CA is the one old firmware trusts, and it is the
-whole reason the chain is borrowed rather than built — the dual-signing
-window closed in June 2026, so a distribution applying to Microsoft on
-its own today can only obtain a 2023-only shim, which would not boot on
-exactly the old PCs this product exists for.
+**What "dualsigned" means, because this file used to get it wrong.**
+Ubuntu's `shimx64.efi.dualsigned` carries two signatures: Canonical's
+own and **Microsoft's, through the Microsoft Corporation UEFI CA 2011**
+(`sbverify --list` shows exactly those two). It is *not* signed with
+Microsoft's 2023 third-party key. The 2011 CA is the one old firmware
+trusts, which is the whole reason the chain is borrowed rather than
+built: a distribution applying to Microsoft on its own today gets a
+2023-signed shim, which would not boot on exactly the old PCs this
+product exists for.
+
+The other side of the same fact: **a PC that lists Microsoft's 2023
+third-party key and not the 2011 one refuses this shim**, and so does a
+Secured-core PC that ships with third-party keys switched off. Neither
+is left to find out at the restart. The installer reads the firmware's
+`db` (and `dbx`) from Windows before it changes anything and asks
+whether it trusts the key the carried shim is signed with -- a name
+`build/aurbridge` reads off the shim itself, so a newer shim is checked
+for its own key. See `docs/AURBRIDGE.md`, "Secure Boot stays on".
 
 If AurOS ever needs its own shim — to carry its own vendor certificate,
 so that kernel modules could be signed by us — that is a submission to

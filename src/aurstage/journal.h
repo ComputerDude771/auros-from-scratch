@@ -76,6 +76,13 @@ typedef struct {
      * so on today's shipped build this compares a constant with
      * itself. The wire is here; the picker is not. */
     char     profile[JOURNAL_STR];
+    /* WHERE THE IMAGE IS. Empty or "stick": on the AurOS memory stick,
+     * which is the design. "windows": the no-stick mode -- AurBridge
+     * left it in \AurOS\ on the Windows drive, and there is no stick
+     * at all, so there is no second copy of the way back until the
+     * install has written one onto this disk. Anything else is a
+     * journal this build does not understand, and is refused. */
+    char     image_on[JOURNAL_STR];
     uint64_t run_id;              /* this install attempt             */
     uint64_t written_unix;        /* when Windows wrote this          */
 } journal;
@@ -112,6 +119,13 @@ int journal_read(const char *path, journal *out);
  *
  * `why` gets one sentence naming the difference. */
 #include "aurstage.h"
+/* Which of this machine's disks the record is about: by serial, then by
+ * serial written differently, then as the one disk whose partition
+ * table has the record's hash. NULL if none, or if that last is not
+ * exactly one. `how` says which (1, 2, 3; 0 for none). */
+const stage_disk *journal_disk(const journal *j, const stage_machine *m,
+                               int *how);
+
 journal_verdict journal_check(const journal *j, const stage_machine *m,
                               char *why, size_t n);
 

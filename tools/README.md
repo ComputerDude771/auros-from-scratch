@@ -72,17 +72,21 @@ cc -O2 -std=gnu11 -o /tmp/bttest tools/bttest.c src/aurshell/bt.c \
    src/aurshell/foot.c src/aurshell/layouts/*.c src/common/theme.c \
    src/common/font.c -I src/aurshell -I src/common -lm && /tmp/bttest
 
-# The welcome question. WELCOME_RUN and WELCOME_STATE are redirected so
-# the test never writes into a running desktop's runtime directory.
-# The three -D paths are a directory the test makes and fills; it must
-# not be the binary's own path, which is what this recipe used to say
-# -- the first run created /tmp/welcometest as a directory and every
-# link after it failed with "Is a directory".
+# The welcome question. WELCOME_RUN, WELCOME_ANSWER and WELCOME_STATE
+# are redirected so the test never writes into a running desktop's
+# runtime directory. The -D paths are directories the test makes and
+# fills; they must not be the binary's own path, which is what this
+# recipe used to say -- the first run created /tmp/welcometest as a
+# directory and every link after it failed with "Is a directory".
+# WELCOME_ANSWER was added when the answer moved to a root-owned
+# directory of its own; left out, the test reads /run/auros-answer and
+# stops at check 20.
 cc -O2 -std=gnu11 -o /tmp/welcometest tools/welcometest.c \
    src/aurshell/welcome.c src/aurshell/foot.c src/aurshell/draw.c \
    src/aurshell/shellcommon.c src/aurshell/anim.c src/aurshell/layouts/*.c \
    src/common/theme.c src/common/font.c -I src/aurshell -I src/common -lm \
    -DWELCOME_RUN='"/tmp/welcometest.d"' \
+   -DWELCOME_ANSWER='"/tmp/welcometest.d/answer.d"' \
    -DWELCOME_STATE='"/tmp/welcometest.d/first.state"' \
    -DWELCOME_FOUND='"/tmp/welcometest.d/found.json"' && /tmp/welcometest
 

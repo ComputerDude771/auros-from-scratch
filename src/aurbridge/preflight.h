@@ -143,6 +143,15 @@ typedef struct {
     int       recovery_disk;        /* index into disks[], -1 = none   */
 } pf_report;
 
+/* What AurOS asks for, and what Windows must be left with -- the R7
+ * numbers preflight.c's space check is built on, public so that the
+ * no-stick mode (phases.c) can ask the same question again with the
+ * image counted as well: in that mode five gigabytes of AurOS sit on
+ * the Windows drive through the shrink, and preflight measured before
+ * they arrived. */
+#define PF_AUROS_NEED_BYTES   (28ULL * 1024 * 1024 * 1024)
+#define PF_WINDOWS_KEEP_BYTES ( 8ULL * 1024 * 1024 * 1024)
+
 /* ── the recovery USB (R4 · R11) ──────────────────────────────────────
  *
  * R11 wants every removable disk unplugged, so that writing to the

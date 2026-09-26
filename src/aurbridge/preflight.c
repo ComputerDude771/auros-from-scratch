@@ -2,6 +2,9 @@
  * Strictly read-only. R-numbers reference docs/research/red-team.md. */
 
 #include "preflight.h"
+#include "plat.h"
+#include "sbdb.h"
+#include "aurbridge-baked.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -115,20 +118,21 @@ static void check_firmware(pf_report *r)
             "you would need a clean install rather than an upgrade.");
     }
 
-    DWORD sb = 0;
-    if (reg_dword(HKEY_LOCAL_MACHINE,
-        "SYSTEM\\CurrentControlSet\\Control\\SecureBoot\\State",
-        "UEFISecureBootEnabled", &sb))
-        r->secure_boot = sb ? 1 : 0;
-    else
-        r->secure_boot = -1;
-
-    if (r->secure_boot == 1)
-        add(r, "secure-boot-on", "R15", PF_WARN, "Secure Boot is enabled",
-            "AurOS boots through a Microsoft-signed shim, but the first boot asks you to "
-            "approve AurOS's key on a blue setup screen.",
-            "No action now. We will show you exactly which buttons to press, with photos, "
-            "before you restart.");
+    /* SECURE BOOT CAN STAY ON, on a PC that trusts the key the shim we
+     * carry is signed with -- which is asked of the firmware's own db
+     * here, before anything is changed, rather than found out after
+     * the restart. sbdb.h has the whole story. */
+    r->secure_boot = plat_secure_boot();
+    static unsigned char db[65536], dbx[65536];
+    size_t n_db = 0, n_dbx = 0;
+    int rc_db = -1, rc_dbx = -1;
+    if (r->secure_boot == 1) {
+        char why[PLAT_WHY];
+        rc_db  = plat_efi_sigdb("db",  db,  sizeof db,  &n_db,  why, sizeof why);
+        rc_dbx = plat_efi_sigdb("dbx", dbx, sizeof dbx, &n_dbx, why, sizeof why);
+    }
+    sbdb_judge(r, r->secure_boot, rc_db, db, n_db, rc_dbx, dbx, n_dbx,
+               AUROS_SHIM_CAS);
 }
 
 /* ── R6: power ───────────────────────────────────────────────────── */
@@ -915,8 +919,8 @@ static void check_disks(pf_report *r)
  * free, and ntfsresize needs headroom above the data it relocates.
  * Shrinking to the last free byte is an install that fits and a PC that
  * stops working a month later. */
-#define PF_AUROS_NEED   (28ULL * 1024 * 1024 * 1024)
-#define PF_WINDOWS_KEEP ( 8ULL * 1024 * 1024 * 1024)
+#define PF_AUROS_NEED   PF_AUROS_NEED_BYTES
+#define PF_WINDOWS_KEEP PF_WINDOWS_KEEP_BYTES
 
 static uint64_t shrink_giveable(uint64_t offline_shrinkable)
 {

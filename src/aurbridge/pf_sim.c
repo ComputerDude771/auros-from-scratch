@@ -15,12 +15,19 @@
  * against this proves the phase engine works on a machine that passes
  * preflight, and proves nothing whatever about preflight -- which is
  * tested separately, on Windows, by `aurbridge preflight`.
+ *
+ * WITH ONE EXCEPTION, Secure Boot, whose decision is portable code
+ * (sbdb.c) fed by two platform calls this machine can answer from
+ * files: the same judgement preflight.c makes, on the db a test hands
+ * it -- Microsoft's real one, or one with a key taken out.
  */
 #include <stdio.h>
 #include <string.h>
 
 #include "preflight.h"
 #include "plat.h"
+#include "sbdb.h"
+#include "aurbridge-baked.h"
 
 static uint64_t g64(const uint8_t *p)
 { uint64_t v = 0; for (int i = 7; i >= 0; i--) v = (v << 8) | p[i]; return v; }
@@ -122,6 +129,18 @@ void pf_run(pf_report *r)
             r->esp_size_bytes = pd->esp_length;
         }
         r->n_disks++;
+    }
+    r->secure_boot = plat_secure_boot();
+    {
+        static unsigned char db[65536], dbx[65536];
+        size_t n_db = 0, n_dbx = 0;
+        int rc_db = -1, rc_dbx = -1;
+        if (r->secure_boot == 1) {
+            rc_db  = plat_efi_sigdb("db",  db,  sizeof db,  &n_db,  why, sizeof why);
+            rc_dbx = plat_efi_sigdb("dbx", dbx, sizeof dbx, &n_dbx, why, sizeof why);
+        }
+        sbdb_judge(r, r->secure_boot, rc_db, db, n_db, rc_dbx, dbx, n_dbx,
+                   AUROS_SHIM_CAS);
     }
     if (r->system_disk < 0) {
         pf_result *res = &r->results[r->n++];
