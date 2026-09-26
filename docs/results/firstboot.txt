@@ -1,0 +1,54 @@
+
+Does the real AurOS ask, and does the answer stick?
+
+  the desktop image, under firmware that persists between boots,
+  in the state an install leaves it: Windows first, AurOS in the
+  menu, BootNext pointing at AurOS
+
+  somebody switches it on, and says nothing yet
+    AurOS starts from its own entry, not the removable path      ok
+    ...because BootNext was asked for first                      ok
+    the desktop comes up                                         ok
+    the one-shot is armed again for the next start               ok
+    and Windows is still what the computer starts by default     ok
+    nothing has been decided                                     ok
+
+  then she presses "It works"
+    the second start reaches AurOS too -- the hold held          ok
+    the press is a file in the desktop's own directory           ok
+    root carried it out and said so                              ok
+    ...and took the request away                                 ok
+    AurOS is now first in BootOrder                              ok
+    and Windows Boot Manager is still in it                      ok
+    the one-shot is gone                                         ok
+    and the answer is recorded                                   ok
+
+  and switches it on again the next day
+    AurOS starts, now from BootOrder                             ok
+    and nothing re-arms the one-shot any more                    ok
+    and the order she chose is the order it keeps                ok
+
+  on a fresh machine, she presses "Go back to Windows"
+    AurOS starts, and asks                                       ok
+    root carried it out                                          ok
+    the one-shot is cleared                                      ok
+    and Windows is first, as it always was                       ok
+    and the answer is recorded                                   ok
+
+  and the next power-on
+    the firmware goes to Windows first                           ok
+    and never to AurOS's own entry                               ok
+    and nothing ever re-arms the one-shot                        ok
+
+  two entries called AurOS, and the other one comes first
+Could not get geometry of device (Inappropriate ioctl for device)    the other AurOS entry survived the firmware's own tidying    ok
+    this install starts from its own entry                       ok
+    aurfirst takes its own entry, not the other disk's           ok
+    ...by the partition it names, found from inside the running system ok
+    and the one-shot is re-armed to its own entry                ok
+    saying it works puts ITS entry first                         ok
+    and the other AurOS is still in the menu                     ok
+
+32 checks: the real image asks, the answer is carried out by
+root and not by the desktop, and it decides what the computer starts
+from then on -- in both directions.

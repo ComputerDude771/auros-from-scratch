@@ -84,7 +84,9 @@ was given out. The README there says what was tested where, and marks
   takes back what it wrote.
 - Tests: `aurfirsttest` 65/65; `targets` measures the new page;
   `tools/putbacktest.sh` boots the real image with Secure Boot on from
-  the button to `aurstage.restore` and not again: PUTBACK_RESULT.
+  the button to `aurstage.restore` and not again: 16/16 on the v3
+  image (`docs/results/putback.txt`). Its first run failed, and found
+  that `answer.sh`'s sandbox made `/run` and `/boot` read-only; fixed.
 - On the way: `request.c` matched the word after throwing away every
   non-letter, so "con firm" read as `confirm`. It is exact now.
 
@@ -93,7 +95,7 @@ was given out. The README there says what was tested where, and marks
 | | | |
 |---|---|---|
 | 6.1 | The `aurfirst` fix was in no branch or image | **done**: merged; `aurfirsttest` 54, now 65 with the putback cases; in the v3 image. |
-| 6.2 | `firstboottest` case C | **not done**: OVMF still removes the planted entry; nobody knows why yet. |
+| 6.2 | `firstboottest` case C | **done**: OVMF does not prune; when it adds an entry it takes the first number neither `BootOrder` nor `BootNext` mentions and writes over what is there. Reproduced with OVMF and no OS; the fixture now lists the other entry in `BootOrder`, which is also how a confirmed-then-restored install leaves it. Result: `firstboottest` 32/32 on the v3 image, case C included (`docs/results/firstboot.txt`). |
 | 6.3 | Dead "AurOS" entry after a restore | unchanged, accepted and documented. |
 
 ## 7. Images, build and hosting
@@ -101,7 +103,7 @@ was given out. The README there says what was tested where, and marks
 | | | |
 |---|---|---|
 | 7.1 | No Firefox | **cannot be done here**: this environment's network refuses every Mozilla host. The environment's network policy is the fix. |
-| 7.2 | Rebuild images | **partly**: the desktop image is rebuilt (v3); the other four profiles are not. |
+| 7.2 | Rebuild images | **partly**: the desktop image is rebuilt and published as `v3/` (`8ee78e9a`); the other four profiles are not rebuilt (nothing downloads them yet). |
 | 7.3 | Image hosted on a git branch | **not done**: moving to GitHub Releases needs a release made from the GitHub page or an account with that permission. |
 | 7.4 | No update channel | **partly**: `unattended-upgrades` installs Ubuntu's security updates daily. AurOS's own programs are built into the image and still have no update path. |
 | 7.5 | Azure Artifact Signing step | **not done**: cannot be tested without an account. |
