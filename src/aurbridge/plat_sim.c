@@ -572,6 +572,21 @@ int plat_payload_embedded(void)
     return access(p, R_OK) == 0;
 }
 
+uint64_t plat_payload_bytes(void)
+{
+    static const char *names[] = { PAYLOAD_KERNEL, PAYLOAD_INITRD, PAYLOAD_SHIM,
+                                   PAYLOAD_GRUB, PAYLOAD_MOKMGR };
+    uint64_t total = 0;
+    for (size_t i = 0; i < sizeof names / sizeof names[0]; i++) {
+        char rel[128], full[600];
+        struct stat st;
+        snprintf(rel, sizeof rel, "payload/%s", names[i]);
+        simpath(full, sizeof full, rel);
+        if (stat(full, &st) == 0) total += (uint64_t)st.st_size;
+    }
+    return total;
+}
+
 int plat_payload(const char *name, char *path, size_t pn, char *why, size_t wn)
 {
     if (strcmp(name, PAYLOAD_KERNEL) && strcmp(name, PAYLOAD_INITRD) &&

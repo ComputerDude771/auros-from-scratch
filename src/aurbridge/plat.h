@@ -155,6 +155,12 @@ void plat_payload_free(void);
 /* 1 if this binary is carrying the payload rather than expecting it in
  * a folder. The release build refuses to publish one that is not. */
 int  plat_payload_embedded(void);
+/* How many bytes of start-up files this binary carries (all five
+ * payloads), or 0 if it carries none. Preflight measures the EFI
+ * partition against this rather than against a guess: the guess (96 MB)
+ * told a real Windows machine with 61 MB free that it did not have room
+ * for the 33 MB that actually go there. */
+uint64_t plat_payload_bytes(void);
 
 /* ── fetching the image ──────────────────────────────────────────── */
 /*

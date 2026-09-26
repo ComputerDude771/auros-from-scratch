@@ -1101,6 +1101,17 @@ int plat_payload_embedded(void)
     return 1;
 }
 
+uint64_t plat_payload_bytes(void)
+{
+    uint64_t total = 0;
+    for (int i = 1; i <= 5; i++) {
+        HRSRC r = FindResourceA(NULL, MAKEINTRESOURCEA(i),
+                                MAKEINTRESOURCEA(RT_AUROS_PAYLOAD));
+        if (r) total += SizeofResource(NULL, r);
+    }
+    return total;
+}
+
 int plat_payload(const char *name, char *path, size_t pn, char *why, size_t wn)
 {
     int id = payload_id(name);

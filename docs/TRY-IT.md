@@ -35,6 +35,41 @@ Leave **Secure Boot on**; AurOS starts with it on. On the rare PC that
 trusts only Windows (some Secured-core laptops), the installer stops at
 *Check this PC* and shows the one firmware setting to switch on.
 
+## If antivirus stops it
+
+The test installer is unsigned and new, so antivirus programs that
+judge files by how many people have run them will hold it. It also
+carries about 30 MB of start-up files, asks for administrator rights,
+and writes to the disk and the firmware's start-up list: exactly what
+they are built to be wary of.
+
+- **Avast / AVG** show *"Suspicious file detected"*, upload the file
+  to their Threat Labs, then *"This needs a closer look"* and block it
+  "for a few hours". Either wait for their verdict, or open Avast →
+  *Menu* → *Settings* → *General* → *Exceptions* → *Add exception* and
+  add the downloaded file. Download it again afterwards if Avast moved
+  it to the Virus Chest.
+- **Microsoft Defender** is the SmartScreen step below.
+- **Any other antivirus**: add an exception for the file the same way.
+
+**Also pause its real-time protection while the installer runs**, up to
+*Restart now*. Before the restart it only reads the drive, downloads
+into `C:\AurOS`, writes its files under `\EFI\AurOS` and sets a one-time
+start-up entry; nothing resizes or rewrites the Windows drive until
+after the restart. A behaviour blocker that stops it part way therefore
+leaves Windows as it was, but it will not install either; if that
+happens, take a photo of what the antivirus said. Turn protection back
+on afterwards.
+
+## If nothing opens at all
+
+If double-clicking shows *"The application has failed to start because
+its side-by-side configuration is incorrect"*, that is the test build
+published on 2026-09-25 (SHA-256 `3e32e929...`); Windows refused its
+manifest before any of it ran, and nothing on the PC was changed.
+Download the installer again: the current one is checked on a real
+Windows machine before it is published (`.github/workflows/windows.yml`).
+
 ## Running it
 
 1. Download `AurOS-Installer-test.exe` and double-click it.

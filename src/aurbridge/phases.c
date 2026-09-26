@@ -1434,6 +1434,63 @@ static void write_choices(const ab_choice *c, const char *esp,
 
 /* ── phase 3: the last thing before the restart ──────────────────── */
 
+/* ROOM ON THE EFI PARTITION, ASKED BEFORE THE FIRST BYTE GOES THERE.
+ * Preflight asked already, but of a number; this asks of the files about
+ * to be copied and the partition as it is now. A copy that runs out of
+ * room half way leaves a kernel with no initramfs beside it and a boot
+ * entry that is never armed -- harmless, since nothing else has changed,
+ * but a refusal with the sizes in it is what a person can act on.
+ *
+ * Files a previous attempt left under \EFI\AurOS are replaced, so their
+ * bytes count as room; but a replacement is written beside the old file
+ * and then moved over it, so the largest new file has to fit on top. */
+static int esp_room(const char *esp, const char *kern, const char *init,
+                    char *why, size_t n)
+{
+    static const char *mine[] = { "staging.efi", "staging.img", "shimx64.efi",
+                                  "grubx64.efi", "mmx64.efi", "grub.cfg",
+                                  "choices.conf" };
+    static const char *extra[] = { PAYLOAD_SHIM, PAYLOAD_GRUB, PAYLOAD_MOKMGR };
+    uint64_t want = 0, largest = 0, sz = 0, old = 0;
+    char p[512], w2[PLAT_WHY];
+    const char *have[2] = { kern, init };
+    for (int i = 0; i < 2; i++) {
+        sz = 0;
+        if (plat_file_size(have[i], &sz) != 0) {
+            snprintf(why, n, "the part of the installer that starts your "
+                             "computer could not be measured.");
+            return -1;
+        }
+        want += sz; if (sz > largest) largest = sz;
+    }
+    for (size_t i = 0; i < sizeof extra / sizeof extra[0]; i++) {
+        sz = 0;
+        if (plat_payload(extra[i], p, sizeof p, w2, sizeof w2) == 0 &&
+            plat_file_size(p, &sz) == 0) {
+            want += sz; if (sz > largest) largest = sz;
+        }
+    }
+    want += 1ULL << 20;                 /* grub.cfg, choices, FAT clusters */
+    for (size_t i = 0; i < sizeof mine / sizeof mine[0]; i++) {
+        snprintf(p, sizeof p, "%s/EFI/AurOS/%s", esp, mine[i]);
+        sz = 0;
+        if (plat_file_size(p, &sz) == 0) old += sz;
+    }
+    snprintf(p, sizeof p, "%s/EFI", esp);
+    uint64_t free_now = plat_free_space(p);
+    if (!free_now) return 0;            /* could not be asked; the copy will say */
+    if (free_now + old < want || (old && free_now < largest)) {
+        snprintf(why, n,
+                 "the start-up partition does not have room for what AurOS "
+                 "starts from: it needs %llu MB there and has %llu MB free. "
+                 "Nothing has been changed.",
+                 (unsigned long long)((want + MIB - 1) / MIB),
+                 (unsigned long long)(free_now / MIB));
+        return -1;
+    }
+    return 0;
+}
+
 static int phase_handoff(const ab_choice *c, pf_report *r, ab_machine *m,
                          ab_say say, void *ud, char *why, size_t n)
 {
@@ -1460,6 +1517,12 @@ static int phase_handoff(const ab_choice *c, pf_report *r, ab_machine *m,
     char esp[256];
     if (plat_esp_open(esp, sizeof esp, why, n) != 0)
         { plat_payload_free(); return -1; }
+
+    if (esp_room(esp, kern, init, why, n) != 0) {
+        plat_esp_close();
+        plat_payload_free();
+        return -1;
+    }
 
     char dst[512];
     snprintf(dst, sizeof dst, "%s/EFI/AurOS/staging.efi", esp);

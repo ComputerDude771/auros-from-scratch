@@ -76,6 +76,11 @@ jobs:
           # must not happen is a crash or any other code.
           if ($code -ne 0 -and $code -ne 1) { throw "preflight exited $code" }
           Get-Content preflight.json
+          # A finding that fires on a machine that does not have the thing
+          # is a false alarm: this VM has no Intel storage and a
+          # Microsoft virtual disk.
+          if (Select-String -Path preflight.json -Pattern '"intel-rst"' -Quiet) { throw "intel-rst on a VM without Intel storage" }
+          exit 0
       - name: wizard starts, navigates, runs preflight
         shell: pwsh
         run: |

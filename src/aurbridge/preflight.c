@@ -1292,25 +1292,40 @@ static void check_esp(pf_report *r)
         return;
     }
 
-    /* AURBRIDGE.md: the staging kernel and initramfs go here, and the
-     * initramfs is budgeted at ~80 MB. An OEM ESP is commonly 100 MB and
-     * 85-95% full, so falling back to the recovery USB is the designed
-     * path, not a fault. */
-    const uint64_t STAGING_NEED = 96ULL * 1024 * 1024;
+    /* WHAT GOES HERE IS WHAT THIS INSTALLER CARRIES: the staging kernel
+     * and initramfs, and the shim, grub and MokManager that start them
+     * with Secure Boot on, about 33 MB, plus a few kilobytes of
+     * grub.cfg and choices. This used to be a guess of 96 MB from when
+     * the initramfs was budgeted at 80, and it told the first real
+     * Windows machine this ran on (a 95 MB partition with 61 MB free)
+     * that there was not room, and that "your recovery stick" would be
+     * used instead -- in an installer that has no stick. A binary that
+     * carries nothing (a developer build) is measured against 40 MB.
+     *
+     * The wizard installs without a stick, so a partition without room
+     * is a refusal, made here before anything is written, and phase 3
+     * asks the same question again of the partition itself. */
+    uint64_t carried = plat_payload_bytes();
+    const uint64_t SLACK = 1ULL * 1024 * 1024;     /* grub.cfg, choices, FAT */
+    uint64_t need = (carried ? carried : 40ULL * 1024 * 1024) + SLACK;
+    char c[32];
     size_str(r->esp_free_bytes, a, sizeof a);
     size_str(r->esp_size_bytes, b, sizeof b);
-    if (r->esp_free_bytes < STAGING_NEED) {
+    size_str(need, c, sizeof c);
+    if (r->esp_free_bytes < need) {
         snprintf(det, sizeof det,
-            "The start-up partition is %s with %s free -- not enough for the rescue "
-            "system AurOS starts from. It will start from your recovery stick instead. "
-            "Nothing in the start-up partition is removed or reformatted.", b, a);
-        add(r, "esp-low-space", "R12", PF_INFO,
-            "The start-up partition is nearly full", det,
-            "Nothing to do, but the recovery stick now has to stay plugged in for the "
-            "restart.");
+            "The start-up partition is %s with %s free. AurOS has to put %s of "
+            "start-up files there for the restart, and they do not fit. Nothing "
+            "in the start-up partition is removed or reformatted to make room.",
+            b, a, c);
+        add(r, "esp-low-space", "R12", PF_BLOCK,
+            "The start-up partition is too full", det,
+            "This PC cannot use this installer. Nothing has been changed. A "
+            "version that starts from a memory stick instead is planned.");
     } else {
         snprintf(det, sizeof det,
-            "The start-up partition is %s with %s free.", b, a);
+            "The start-up partition is %s with %s free; AurOS needs %s there.",
+            b, a, c);
         add(r, "esp-space", "R12", PF_INFO, "Start-up partition measured", det, "");
     }
 }
@@ -1545,7 +1560,13 @@ static void check_storage_controller(pf_report *r)
         char key[256];
         snprintf(key, sizeof key, "SYSTEM\\CurrentControlSet\\Services\\%s", rst_services[i]);
         DWORD start = 0;
-        if (reg_dword(HKEY_LOCAL_MACHINE, key, "Start", &start) && start <= 3) {
+        /* START == 0, BOOT START: the driver Windows itself started from.
+         * It used to be "<= 3", which is every driver merely installed,
+         * and Windows installs Intel's on PCs that have no Intel storage
+         * at all: the first real Windows machine this ran on (a Hyper-V
+         * VM with a Microsoft virtual disk) was warned about Intel RST.
+         * A warning every PC gets is a warning nobody reads. */
+        if (reg_dword(HKEY_LOCAL_MACHINE, key, "Start", &start) && start == 0) {
             char det[512];
             snprintf(det, sizeof det,
                 "The storage controller is managed by Intel Rapid Storage Technology "
