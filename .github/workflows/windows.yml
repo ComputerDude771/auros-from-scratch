@@ -81,6 +81,32 @@ jobs:
           # Microsoft virtual disk.
           if (Select-String -Path preflight.json -Pattern '"intel-rst"' -Quiet) { throw "intel-rst on a VM without Intel storage" }
           exit 0
+      - name: the storage check finds the real controller's driver
+        shell: pwsh
+        run: |
+          # Asked independently of AurBridge: the drivers from the system
+          # disk up through its parents, the way Device Manager has them.
+          $n = (Get-Disk | Where-Object IsSystem | Select-Object -First 1).Number
+          $id = (Get-CimInstance Win32_DiskDrive | Where-Object Index -eq $n).PNPDeviceID
+          $chain = @()
+          while ($id) {
+            $svc = (Get-PnpDeviceProperty -InstanceId $id -KeyName DEVPKEY_Device_Service -ErrorAction SilentlyContinue).Data
+            $chain += "$id [$svc]"
+            if ($svc -and $svc -ne 'disk' -and -not $ctl) { $ctl = $svc }
+            $id = (Get-PnpDeviceProperty -InstanceId $id -KeyName DEVPKEY_Device_Parent -ErrorAction SilentlyContinue).Data
+          }
+          $chain
+          if (-not $ctl) { throw "no controller driver found above the system disk" }
+          "the system disk's controller is run by $ctl"
+          # Told to treat that driver as Intel's, the check has to name it.
+          $env:AURBRIDGE_TEST_RST_SERVICE = $ctl
+          .\exe\aurbridge.exe preflight --json | Out-File rst.json
+          $f = Get-Content rst.json -Raw | ConvertFrom-Json
+          $hit = $f.findings | Where-Object id -eq 'intel-rst'
+          if (-not $hit) { throw "told $ctl is Intel's, the check did not find it: the walk is not reaching the controller" }
+          if ($hit.detail -notmatch [regex]::Escape($ctl)) { throw "it fired, but not about $ctl : $($hit.detail)" }
+          "found: $($hit.detail)"
+          exit 0
       - name: wizard starts, navigates, runs preflight
         shell: pwsh
         run: |

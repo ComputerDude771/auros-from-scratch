@@ -12,6 +12,8 @@
 #include <ctype.h>
 #include <winioctl.h>
 #include <winsvc.h>
+#include <setupapi.h>
+#include <cfgmgr32.h>
 
 /* ── result recording ────────────────────────────────────────────── */
 static void add(pf_report *r, const char *id, const char *risk, pf_severity sev,
@@ -1549,36 +1551,103 @@ static void check_memory(pf_report *r)
 }
 
 /* ── driver / RST detection (R10) ────────────────────────────────── */
+/*
+ * If the SATA/NVMe controller is in Intel RST / VMD remap mode, a kernel
+ * without vmd support sees no disk at all: we would write a perfect image
+ * and boot to "no bootable device". The Windows-side tell is which driver
+ * owns the controller THE WINDOWS DISK HANGS OFF.
+ *
+ * It used to ask the registry whether any of Intel's drivers was set to
+ * start (Start <= 3), then whether one was a boot driver (Start == 0).
+ * Both answered yes on the first real Windows machine this ran on, a
+ * Hyper-V VM whose only disks are Microsoft virtual disks: Windows
+ * installs Intel's drivers everywhere, some as boot drivers, whether or
+ * not there is Intel storage. So the question is now asked of the device
+ * tree: from the system disk's own device node up through its parents,
+ * is any of them run by one of Intel's storage drivers.
+ */
+static const GUID AB_GUID_DEVINTERFACE_DISK =
+    { 0x53f56307, 0xb6bf, 0x11d0, { 0x94, 0xf2, 0x00, 0xa0, 0xc9, 0x1e, 0xfb, 0x8b } };
+
+static int rst_service(const char *svc)
+{
+    static const char *rst[] = { "iaStorAC", "iaStorAVC", "iaStorVD", "iaStorV",
+                                 "iaStorA", "iaStor", NULL };
+    for (int i = 0; rst[i]; i++)
+        if (!_stricmp(svc, rst[i])) return 1;
+    /* TESTS ONLY, like AURBRIDGE_STAGING_KARGS: one more driver name to
+     * treat as Intel's, so that a machine without Intel storage can
+     * prove the walk up the device tree finds its real controller's
+     * driver (.github/workflows/windows.yml), rather than the check
+     * passing because it never found anything. */
+    const char *t = getenv("AURBRIDGE_TEST_RST_SERVICE");
+    if (t && *t && !_stricmp(svc, t)) return 1;
+    return 0;
+}
+
+/* 1: an Intel storage driver runs the system disk or one of its parents
+ *    (its name in `svc`); 0: none does; -1: the tree could not be read. */
+static int system_disk_rst(int disk, char *svc, size_t sn)
+{
+    HDEVINFO set = SetupDiGetClassDevsA(&AB_GUID_DEVINTERFACE_DISK, NULL, NULL,
+                                        DIGCF_PRESENT | DIGCF_DEVICEINTERFACE);
+    if (set == INVALID_HANDLE_VALUE) return -1;
+    int result = -1;
+    SP_DEVICE_INTERFACE_DATA ifd;
+    ifd.cbSize = sizeof ifd;
+    for (DWORD i = 0; SetupDiEnumDeviceInterfaces(set, NULL,
+                          &AB_GUID_DEVINTERFACE_DISK, i, &ifd); i++) {
+        static BYTE dbuf[2048];
+        SP_DEVICE_INTERFACE_DETAIL_DATA_A *det = (void *)dbuf;
+        det->cbSize = sizeof *det;
+        SP_DEVINFO_DATA dev;
+        dev.cbSize = sizeof dev;
+        if (!SetupDiGetDeviceInterfaceDetailA(set, &ifd, det, sizeof dbuf, NULL, &dev))
+            continue;
+        HANDLE h = CreateFileA(det->DevicePath, 0, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                               NULL, OPEN_EXISTING, 0, NULL);
+        if (h == INVALID_HANDLE_VALUE) continue;
+        STORAGE_DEVICE_NUMBER num; DWORD ret = 0;
+        BOOL got = DeviceIoControl(h, IOCTL_STORAGE_GET_DEVICE_NUMBER, NULL, 0,
+                                   &num, sizeof num, &ret, NULL);
+        CloseHandle(h);
+        if (!got || (int)num.DeviceNumber != disk) continue;
+
+        result = 0;
+        DEVINST node = dev.DevInst;
+        for (int depth = 0; depth < 16; depth++) {
+            char name[128]; ULONG len = sizeof name;
+            if (CM_Get_DevNode_Registry_PropertyA(node, CM_DRP_SERVICE, NULL, name,
+                                                  &len, 0) == CR_SUCCESS &&
+                rst_service(name)) {
+                snprintf(svc, sn, "%s", name);
+                result = 1;
+                break;
+            }
+            DEVINST up;
+            if (CM_Get_Parent(&up, node, 0) != CR_SUCCESS) break;
+            node = up;
+        }
+        break;
+    }
+    SetupDiDestroyDeviceInfoList(set);
+    return result;
+}
+
 static void check_storage_controller(pf_report *r)
 {
-    /* If the SATA/NVMe controller is in Intel RST / VMD remap mode, a
-     * kernel without vmd support sees no disk at all: we would write a
-     * perfect image and boot to "no bootable device". The Windows-side
-     * tell is which driver owns the boot disk's controller. */
-    static const char *rst_services[] = { "iaStorAC", "iaStorVD", "iaStorV", "iaStorA", NULL };
-    for (int i = 0; rst_services[i]; i++) {
-        char key[256];
-        snprintf(key, sizeof key, "SYSTEM\\CurrentControlSet\\Services\\%s", rst_services[i]);
-        DWORD start = 0;
-        /* START == 0, BOOT START: the driver Windows itself started from.
-         * It used to be "<= 3", which is every driver merely installed,
-         * and Windows installs Intel's on PCs that have no Intel storage
-         * at all: the first real Windows machine this ran on (a Hyper-V
-         * VM with a Microsoft virtual disk) was warned about Intel RST.
-         * A warning every PC gets is a warning nobody reads. */
-        if (reg_dword(HKEY_LOCAL_MACHINE, key, "Start", &start) && start == 0) {
-            char det[512];
-            snprintf(det, sizeof det,
-                "The storage controller is managed by Intel Rapid Storage Technology "
-                "(%s). In this mode the drive is presented through an Intel remapping "
-                "layer that AurOS may not be able to see.", rst_services[i]);
-            add(r, "intel-rst", "R10", PF_WARN,
-                "This PC uses Intel Rapid Storage Technology", det,
-                "AurBridge will verify from the rescue environment that AurOS can see "
-                "your drive before changing anything. If it cannot, nothing is changed.");
-            return;
-        }
-    }
+    if (r->system_disk < 0) return;
+    char svc[128] = "";
+    if (system_disk_rst(r->system_disk, svc, sizeof svc) != 1) return;
+    char det[512];
+    snprintf(det, sizeof det,
+        "The storage controller is managed by Intel Rapid Storage Technology "
+        "(%s). In this mode the drive is presented through an Intel remapping "
+        "layer that AurOS may not be able to see.", svc);
+    add(r, "intel-rst", "R10", PF_WARN,
+        "This PC uses Intel Rapid Storage Technology", det,
+        "AurBridge will verify from the rescue environment that AurOS can see "
+        "your drive before changing anything. If it cannot, nothing is changed.");
 }
 
 /* ── public API ──────────────────────────────────────────────────── */

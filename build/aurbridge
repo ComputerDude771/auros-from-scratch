@@ -241,7 +241,7 @@ fi
 step "aurbridge.exe (console)"
 # shellcheck disable=SC2086
 $CC -O2 $WARN $IMGDEF -I "$OUT" -o "$OUT/aurbridge.exe" "$SRC/main.c" $LIB $PAYLOAD_OBJ \
-    -lwinhttp \
+    -lwinhttp -lsetupapi -lcfgmgr32 \
     || die "the console tool did not build"
 note "$(du -h "$OUT/aurbridge.exe" | cut -f1)"
 
@@ -249,7 +249,7 @@ step "aurbridge-wizard.exe"
 # shellcheck disable=SC2086
 $CC -O2 $WARN $IMGDEF -I "$OUT" -mwindows -o "$OUT/aurbridge-wizard.exe" \
     "$SRC/wizard.c" $LIB $PAYLOAD_OBJ $MANIFEST_OBJ \
-    -lgdi32 -lcomctl32 -lwinhttp \
+    -lgdi32 -lcomctl32 -lwinhttp -lsetupapi -lcfgmgr32 \
     || die "the wizard did not build"
 note "$(du -h "$OUT/aurbridge-wizard.exe" | cut -f1)"
 if [ -n "$MANIFEST_OBJ" ]; then
