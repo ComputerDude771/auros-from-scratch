@@ -103,9 +103,9 @@ was given out. The README there says what was tested where, and marks
 | | | |
 |---|---|---|
 | 7.1 | No Firefox | **cannot be done here**: this environment's network refuses every Mozilla host. The environment's network policy is the fix. |
-| 7.2 | Rebuild images | **partly**: the desktop image is rebuilt and published as `v3/` (`8ee78e9a`); the other four profiles are not rebuilt (nothing downloads them yet). |
+| 7.2 | Rebuild images | **partly**: the desktop image is rebuilt and published as `v3/` (`5dee5f44`); the other four profiles are not rebuilt (nothing downloads them yet). |
 | 7.3 | Image hosted on a git branch | **not done**: moving to GitHub Releases needs a release made from the GitHub page or an account with that permission. |
-| 7.4 | No update channel | **partly**: `unattended-upgrades` installs Ubuntu's security updates daily. AurOS's own programs are built into the image and still have no update path. |
+| 7.4 | No update channel | **partly**: `unattended-upgrades` installs Ubuntu's security updates daily, **except the kernel, grub and shim**. A kernel update runs `update-grub`, which regenerates `grub.cfg` and would drop AurOS's hand-written menu (Put Windows back and the Windows entry with it), and a grub or shim update runs `grub-install`, which puts its own entry first in `BootOrder`. They stay out until `update-grub` regenerates AurOS's menu (a `/etc/grub.d` generator, or a diverted `update-grub`) and `grub-install` is told to leave NVRAM alone. The same applies to a person running `apt upgrade` by hand, which is open. AurOS's own programs are built into the image and still have no update path. |
 | 7.5 | Azure Artifact Signing step | **not done**: cannot be tested without an account. |
 | 7.6 | Manifest unchecked by the build | **done** (item 1). |
 
@@ -150,6 +150,30 @@ the staging restore told people without a stick to plug one in;
 `tools/welcometest.c` could not pass when built the way
 `tools/README.md` says (it counted the answer directory as the panel's
 file, and never created it).
+
+## An independent review of all of the above
+
+A separate reviewer read every source change made for v3, looking for
+defects. Its findings, all fixed and in the v3 image and installer:
+
+1. "Put Windows back" could fire by accident: a double-click, or Enter
+   held for half a second, made both presses. Enter no longer repeats
+   into panels, the second press must come 1.5 s after the first, and
+   the menu then shows the restore for ten seconds, not three.
+2. Automatic updates would have regenerated `grub.cfg` and dropped
+   AurOS's menu, and could have reordered `BootOrder` (see 7.4).
+3. A second attempt could be refused for good: preflight counted an
+   earlier attempt's files as used. Proven fixed on a real Windows EFI
+   partition by `windows.yml`, with the opposite case refusing.
+4. Taking back `next_entry` after a failure was not checked.
+5. Phase 3's room check was too strict with leftovers, and let a
+   completely full partition through.
+6. `auros-answer.service` failed as a whole on a root without
+   `/boot/grub`.
+7. Settings said "Restarting" when a request was already waiting.
+
+Also found by it: two backticks in `build/mkimage`'s `grub.cfg` heredoc
+that ran commands on the build host.
 
 ## 11. Non-code release blockers: cannot be done in code
 

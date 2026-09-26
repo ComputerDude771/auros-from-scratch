@@ -33,7 +33,7 @@ env:
   # The image the published installer downloads: its piece list, and
   # what the whole image must hash to. Change with the installer.
   IMAGE_PIECES_URL: https://raw.githubusercontent.com/ComputerDude771/auros-from-scratch/image-desktop/v3/pieces.txt
-  IMAGE_SHA256: 8ee78e9a671e860fdfadd809ddc3f53790f5930f2fc457a0171246f4d4431999
+  IMAGE_SHA256: 5dee5f443b8129387764e0547a41e9798f8d931b109b8102e79d6deb5afef5ee
   IMAGE_BYTES: 5325717504
 
 jobs:
