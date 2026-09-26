@@ -75,8 +75,10 @@ are given:
 
 https://github.com/ComputerDude771/auros-from-scratch/raw/image-desktop/AurOS-Installer-test.exe
 
-`windows.yml`'s `PUBLISHED_SHA256` is pinned to that file; change it in
-the same commit as the file.
+Right now: installer `c70045fb` (built from `1bef5d7`), which downloads
+the v3 image `5dee5f44` from `image-desktop/v3/`. `windows.yml`'s
+`PUBLISHED_SHA256` and `IMAGE_*` are pinned to them; change them in the
+same commit as the files.
 
 ## What the user has asked for, standing
 

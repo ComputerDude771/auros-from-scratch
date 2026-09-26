@@ -51,10 +51,18 @@ Its first runs found two more bugs, both fixed (item 9).
 
 ## 4. Republish: done
 
-`AurOS-Installer-test.exe` on `image-desktop` is `f971559d`, built from
-`3775c3d`, started on real Windows from the public link before the link
-was given out. The README there says what was tested where, and marks
-`3e32e929` as a build that does not start.
+`AurOS-Installer-test.exe` on `image-desktop` is **`c70045fb`**, built
+from `1bef5d7`, downloading the v3 image (`5dee5f44`). Before it was
+published: `installtest` 37/37, `nosticktest` 45/45, `putbacktest`
+16/16, `firstboottest` 32/32, `choicesboottest` 9/9, `manifesttest`
+10/10, and every job in `windows.yml` on real Windows, including the
+download of the whole v3 image by the installer's own code. After it
+was published, `windows.yml` downloaded it from the public link, checked
+its SHA-256 and started it. The README there says what was tested where.
+
+In between (2026-09-26), `f971559d` was the first build that starts on
+Windows; it installs the v2 image, without Put Windows back. `3e32e929`
+is marked as the build that does not start.
 
 ## 5. The installer
 

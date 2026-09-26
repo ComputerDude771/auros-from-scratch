@@ -2,7 +2,7 @@
 Does the real image start up the way the installer was told to?
 
   booting the image from firmware (this is slow under emulation)
-    first boot finished (after about 210s)                       ok
+    first boot finished (after about 150s)                       ok
 
   what the installed system now says
     its language is Spanish                                      ok
@@ -16,4 +16,3 @@ Does the real image start up the way the installer was told to?
 
 9 checks: the real image starts up in the language, keyboard, time
 zone, look and desktop the installer was told.
-exit=0
