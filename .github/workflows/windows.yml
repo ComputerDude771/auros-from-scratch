@@ -27,7 +27,7 @@ env:
   # The installer published on branch image-desktop. Change both lines
   # together when a new one is published.
   PUBLISHED_URL: https://raw.githubusercontent.com/ComputerDude771/auros-from-scratch/image-desktop/AurOS-Installer-test.exe
-  PUBLISHED_SHA256: 3e32e929f57c5c2673f4547a09b44c827743d191120d22a57dfc6f28a4f3e875
+  PUBLISHED_SHA256: f971559d2edc03710bbcde0ad1f43270deedcbd184d82378dc1f2e188c724015
   KNOWN_BAD_URL: https://raw.githubusercontent.com/ComputerDude771/auros-from-scratch/d2735b6b775b1952c724aabdfdf2567246ab6c74/AurOS-Installer-test.exe
   KNOWN_BAD_SHA256: 3e32e929f57c5c2673f4547a09b44c827743d191120d22a57dfc6f28a4f3e875
 

@@ -828,9 +828,14 @@ void install_run(const stage_machine *m)
  * here and nothing below the line to warn about. */
 static void stop_restore(void)
 {
+    /* NOT "WITH THE MEMORY STICK PLUGGED IN". The installer people
+     * actually have installs without one, and "Put Windows back" is now
+     * started from AurOS's own menu; telling somebody to fetch a stick
+     * they were never given is a dead end on the one screen that has to
+     * say what to do next. */
     stage_say("%s", "");
-    stage_say("Turn this computer off with the power button, and start it");
-    stage_say("again with the AurOS memory stick plugged in.");
+    stage_say("Turn this computer off with the power button, then on again.");
+    stage_say("If you have an AurOS memory stick, plug it in first.");
     sync();
     for (;;) pause();
 }
@@ -866,7 +871,8 @@ void restore_run(const stage_machine *m)
         stage_warn("there is no saved copy of this computer's Windows "
                    "startup, on this computer or on any drive plugged "
                    "into it.");
-        stage_say("         Plug in the AurOS memory stick and try again.");
+        stage_say("         Nothing has been changed. If you have an AurOS "
+                  "memory stick, plug it in and try again.");
         stage_say("aurstage-report v1 verdict=restore-nothing-saved "
                   "record=none -");
         stop_restore();

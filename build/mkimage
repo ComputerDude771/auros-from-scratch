@@ -185,6 +185,7 @@ $GRUB_COLOURS
 # it adds a serial console to the restore so the test can read it.
 if [ -s (\$root)/boot/grub/grubenv ]; then
   load_env --file (\$root)/boot/grub/grubenv next_entry aurstage_extra
+  export aurstage_extra
 fi
 if [ "\${next_entry}" ]; then
   set default="\${next_entry}"
