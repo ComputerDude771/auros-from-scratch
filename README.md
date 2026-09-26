@@ -43,10 +43,12 @@ branch before running it.
 
 | | |
 |---|---|
-| SHA-256 | `3e32e929f57c5c2673f4547a09b44c827743d191120d22a57dfc6f28a4f3e875` |
+| SHA-256 | `f971559d2edc03710bbcde0ad1f43270deedcbd184d82378dc1f2e188c724015` |
 | downloads | the v2 image (`v2/pieces.txt`) |
-| built from | branch `claude/laughing-cray-ayao6i`, commit `cd437e1` |
-| tested | `tools/installtest.sh` 37/37, `tools/nosticktest.sh` 45/45, `tools/choicesboottest.sh` 9/9; the same piece list downloaded and checked from here under Wine |
+| built from | branch `claude/confident-johnson-hxevk4`, commit `3775c3d` |
+| tested **on real Windows** | GitHub Actions `windows-latest` (`.github/workflows/windows.yml`): the wizard starts the way a double-click starts it, passes its navigation test, and runs preflight read-only against the machine; the console tool's selftest and preflight; WinHTTP downloads all 20 v2 pieces and the installer's own inflater checks the image (`verdict=ok`); and the previous build, below, fails to start there exactly as it did on the first real PC. After publishing, the same workflow downloads this file from here, checks the SHA-256 above, and starts it. |
+| tested in simulation | `tools/installtest.sh` 37/37, `tools/nosticktest.sh` 45/45, `tools/manifesttest.sh` 10/10 on this file, `tools/aurfirsttest.sh` 65/65, `tools/choicestest.sh` 21/21, Ferry 43/43 |
+| not tested | a real PC's disk being resized and written: that is what a spare PC is for |
 
 It keeps what is chosen on its *Make it yours* page: AurOS starts in
 that language, keyboard layout, time zone, look and desktop.
@@ -58,6 +60,17 @@ Secured-core laptops), stops and shows the one setting to switch on. It
 writes nothing outside `\EFI\AurOS`, so a PC that also has Ubuntu is
 fine.
 
-Earlier test installers: `540a0bf2...` (v2, choices kept; wrote a file
-in `\EFI\ubuntu` and refused PCs with Ubuntu), `005fe4d8...` (v1, ignored
-the choices).
+**Antivirus.** Avast and AVG hold unsigned new programs for a few hours
+("Suspicious file detected", then "This needs a closer look"). Add an
+exception for the file, or wait. `docs/TRY-IT.md` has the steps.
+
+Earlier test installers:
+
+- `3e32e929...` (2026-09-25, v2): **does not start on Windows.** Its
+  manifest had `--` inside an XML comment; Windows refuses it with "The
+  application has failed to start because its side-by-side
+  configuration is incorrect". Wine did not, so every test passed. Do
+  not use it.
+- `540a0bf2...` (v2, choices kept; wrote a file in `\EFI\ubuntu` and
+  refused PCs with Ubuntu).
+- `005fe4d8...` (v1, ignored the choices).
