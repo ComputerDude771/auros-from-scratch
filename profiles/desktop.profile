@@ -96,6 +96,14 @@ packages_boot="shim-signed grub-efi-amd64-signed grub-efi-amd64
                efibootmgr os-prober"
 
 # Minimum userland for a system that can repair and explain itself.
+#
+# unattended-upgrades: THE UPDATE CHANNEL, for everything that comes
+# from Ubuntu. Security updates from noble-security, installed by
+# themselves once a day (rootfs/etc/apt/apt.conf.d/20auto-upgrades).
+# The image already listed the security archive and nothing ever read
+# it, so a machine installed today would have stayed exactly as it was
+# built. AurOS's own programs are built into the image, not packaged,
+# and are not covered: docs/issues/v3/07-images-and-build.md, 7.4.
 packages_base="systemd-sysv dbus udev sudo less nano
                    initramfs-tools
                ca-certificates curl wget
@@ -104,7 +112,8 @@ packages_base="systemd-sysv dbus udev sudo less nano
                zstd xz-utils bzip2
                iputils-ping openssh-client
                fonts-inter fonts-jetbrains-mono
-               fonts-paratype"
+               fonts-paratype
+               unattended-upgrades"
 
 # The desktop. Kept deliberately small; aurshell provides the shell.
 # What an application needs before it can put a window on the screen.

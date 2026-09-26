@@ -1646,13 +1646,25 @@ static int phase_handoff(const ab_choice *c, pf_report *r, ab_machine *m,
             plat_file_read(ucfg, 0, back, 11, w2, sizeof w2) == 0 &&
             memcmp(back, "# AurBridge", 11) == 0)
             plat_file_delete(ucfg, w2, sizeof w2);
-        char cfg[1024];
+        char cfg[2048];
         int cl = snprintf(cfg, sizeof cfg,
             "# AurBridge: starts the AurOS installer, once. Written by the\n"
             "# AurOS installer, and safe to delete once AurOS is installed.\n"
             "set timeout=0\n"
             "set default=0\n"
-            "search --no-floppy --file --set=root /EFI/AurOS/staging.efi\n"
+            /* THE PARTITION GRUB WAS STARTED FROM, which is this one:
+             * $cmdpath is "(hd0,gpt1)/EFI/AurOS". A search by file name
+             * alone would take the first partition with an old
+             * \EFI\AurOS\staging.efi on it -- a second EFI partition, a
+             * second disk -- and the journal check would then refuse,
+             * safely, on the wrong machine's copy. The search stays as
+             * the fallback for a grub without regexp. */
+            "if regexp --set=1:aurdev '^\\((.*)\\)' \"$cmdpath\"; then\n"
+            "    set root=\"$aurdev\"\n"
+            "fi\n"
+            "if [ ! -f /EFI/AurOS/staging.efi ]; then\n"
+            "    search --no-floppy --file --set=root /EFI/AurOS/staging.efi\n"
+            "fi\n"
             "menuentry 'AurOS installer' {\n"
             "    linux /EFI/AurOS/staging.efi aurstage.install "
             "aurstage.profile=%s console=tty0%s%s\n"

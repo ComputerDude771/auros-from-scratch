@@ -212,18 +212,20 @@
         </article>
 
         <article class="card card-warn">
-          <h3>The installer &mdash; not yet</h3>
+          <h3>The installer &mdash; a test build, for spare PCs</h3>
           <p>
-            AurBridge&rsquo;s destructive phases are specified and not yet written.
-            Nothing that shrinks a partition or writes a boot entry ships until the
-            rescue partition and the one-button &ldquo;Put Windows back&rdquo; path
-            exist and have been tested by deliberately failing an install at every
-            single step.
+            AurBridge&rsquo;s destructive phases are written: shrinking Windows,
+            writing AurOS, checking it, the one restart, and putting Windows back.
+            They have been tested on simulated machines with real firmware, with the
+            power cut at seventeen named moments, and Windows came back every time
+            with every file exactly as it was. The installer starts on real Windows
+            and is checked there before each test build is published.
           </p>
           <p class="small">
-            We would rather have this sentence on our download page than a support
-            queue full of people whose family photos are on a partition they cannot
-            reach.
+            What has not happened yet is the part that matters most: installs on
+            many real PCs. Until it has, the test build is for computers whose
+            files you do not need, it is not signed, and it is not linked from
+            this page.
           </p>
         </article>
       </div>
@@ -231,17 +233,16 @@
       <div class="note note-warn" style="margin-top:1.6rem">
         <span class="note-title">There is no public build published yet</span>
         <p>
-          When there is, it will appear here as a single file
-          &mdash; <code>aurbridge-check-0.1.0.exe</code> &mdash; alongside its
+          When there is, it will appear here as a single file, alongside its
           SHA-256 checksum and its Authenticode signature, and this page will tell
           you how to check both. Until then this button has nothing to hand you, and
-          we are not going to pretend otherwise by linking you to a file that does
-          not exist.
+          we are not going to pretend otherwise by linking you to a test build that
+          has not yet been through enough real computers.
         </p>
         <p class="small">
-          If you build from source in the meantime, the preflight component is the
-          one that compiles today: <code>src/aurbridge/</code>. It returns exit code
-          <code>0</code> for go and <code>1</code> for blocked.
+          If you build from source in the meantime, <code>src/aurbridge/</code>
+          builds both the read-only check and the installer. The check returns exit
+          code <code>0</code> for go and <code>1</code> for blocked.
         </p>
       </div>
 

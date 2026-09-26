@@ -438,8 +438,10 @@
           <p>
             Nothing that shrinks a partition ships until the rescue area and the
             &ldquo;Put Windows back&rdquo; button exist and have been tested by
-            deliberately failing an install at every single step. That work is why
-            there is no public installer download on this site today.
+            deliberately failing an install at every single step. Both now exist,
+            and that testing has been done on simulated machines. It has not yet
+            been done on enough real ones, which is why there is no public
+            installer download on this site today.
           </p>
         </article>
       </div>
@@ -589,17 +591,21 @@
             <li>The theme engine: inheritance, colour algebra, nine render targets, four themes</li>
             <li>The wallpaper renderer, including its own image encoder &mdash; no image files anywhere in the system</li>
             <li>The source-to-package build system, with dependency resolution</li>
-            <li>The installer&rsquo;s read-only preflight, building as a native Windows program</li>
+            <li>The installer&rsquo;s read-only preflight, building as a native Windows program, and checked on real Windows</li>
             <li>The profile system this site&rsquo;s <a href="organizations.html">organizations page</a> describes</li>
+            <li>Every installer phase: consent, the saved copy of your start-up, shrink, write, verify, the one restart</li>
+            <li>&ldquo;Put Windows back&rdquo;, from AurOS&rsquo;s Settings or its start-up menu; the restore itself tested with the power cut at five moments</li>
+            <li>The Secure Boot chain, through Microsoft-signed shim, with Secure Boot left on</li>
+            <li>The migration engine: files, Wi-Fi networks, Firefox, settings</li>
           </ul>
         </article>
         <article class="card">
           <h3>Not built yet</h3>
           <ul class="marked no small">
-            <li>Every destructive installer phase: consent, rescue kit, shrink, write, boot handoff</li>
-            <li>The rescue environment and the &ldquo;Put Windows back&rdquo; path</li>
-            <li>The migration engine &mdash; specified in detail, not yet written</li>
-            <li>Code signing, the Secure Boot chain, and the update channel</li>
+            <li>Installs on many real PCs, which is the one test that cannot be simulated</li>
+            <li>Code signing, and the update channel</li>
+            <li>Carrying Wi-Fi passwords and Chrome or Edge passwords across</li>
+            <li>A screen reader in the installer</li>
             <li>A legal entity, insurance, and a lawyer-drafted consent flow</li>
             <li>A tested hardware list</li>
           </ul>

@@ -1066,6 +1066,10 @@ static int   g_ph[N_PHASES];
 static int   g_ph_cur = -1;
 static float g_ph_prog;
 static int   g_install_running, g_install_finished;
+/* Everything before the restart is done and the one-shot is armed:
+ * closing the window now would take it all back (install_cancel), so
+ * WM_CLOSE asks first. */
+static int   g_install_armed;
 
 #define LOG_MAX 80
 static wchar_t g_log[LOG_MAX][200];
@@ -1296,6 +1300,7 @@ static void install_tick(void)
         g_ph_cur = -1;
         g_install_running = 0;
         g_install_finished = 1;
+        g_install_armed = 1;
     } else if (st == 3) {
         if (phase < N_PHASES) g_ph[phase] = PH_FAILED;
         g_ph_cur = -1;
@@ -1970,6 +1975,16 @@ static int page_backup(int x, int y, int w)
         L"PC ever refuses to start at all, getting Windows back will need "
         L"another computer. Please unplug any USB drives before going on.",
         x, y, narrow, C_WARM) + S(24);
+
+    /* ONEDRIVE KEEPS SOME FILES ONLY ONLINE, and the folder shows them
+     * anyway. Ferry will not copy a placeholder (docs/FERRY.md, "The
+     * OneDrive trap"), so they stay behind unless she makes them local
+     * first -- and nothing said so until AurOS was already installed. */
+    y += text_draw(L"If you use OneDrive: files it keeps only online will not "
+                   L"come across to AurOS. To bring them, right-click the "
+                   L"OneDrive folder and choose \u201cAlways keep on this "
+                   L"device\u201d, and wait for it to finish, before you go on.",
+                   g_f_small, C_FG, x, y, narrow, DT_WORDBREAK) + S(16);
 
     y += text_draw(L"This is a test version of AurOS. Use it on a PC whose "
                    L"files are also kept somewhere else.",
@@ -3448,6 +3463,20 @@ static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM wp, LPARAM lp)
             if (MessageBoxW(h, L"Stop setting up AurOS?\n\nNothing on this PC has "
                                L"been changed, so it is safe to stop here.",
                             L"AurBridge", MB_YESNO | MB_ICONQUESTION) != IDYES)
+                return 0;
+        }
+        /* READY, AND ABOUT TO BE THROWN AWAY. After the last step the
+         * window's X used to close it and take back the restart without
+         * a word -- the download, the check, everything -- and the only
+         * warning was a line in docs/TRY-IT.md. */
+        if (g_install_armed && !g_restarting) {
+            if (MessageBoxW(h, L"Close without restarting?\n\nEverything is "
+                               L"ready, but closing now takes it back: AurOS will "
+                               L"not be installed, and this PC starts Windows as "
+                               L"usual.\n\nTo install AurOS, choose No, then "
+                               L"press Restart now.",
+                            L"AurBridge", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2)
+                    != IDYES)
                 return 0;
         }
         DestroyWindow(h);
