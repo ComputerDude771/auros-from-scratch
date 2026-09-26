@@ -71,6 +71,21 @@ and `mv` it over; the running shell keeps the old file open.
 | `out/aurbridge-sim sbselftest` | Secure Boot db logic | instant | |
 | `out/aurbridge-sim gzselftest` | inflater | instant | |
 | `WINEDEBUG=-all wine out/aurbridge.exe selftest` | preflight + inflate + sbdb | seconds | |
+| `sh tools/manifesttest.sh out/aurbridge-wizard.exe` | 10 | seconds | mingw, python3 |
+| `sh tools/putbacktest.sh` | 16 | about 20 min (three desktop boots under TCG) | `out/auros-desktop.img`, staging, `OVMF_*_4M.ms.fd` |
+| `sh tools/firstboottest.sh desktop` | cases A, B, C | about 40 min | `out/auros-desktop.img` |
+
+**Real Windows: `.github/workflows/windows.yml`, on every push to a
+`claude/**` branch.** Wine is not Windows (docs/handoff/TRAPS.md): the
+first real PC refused an installer every test here had passed. The
+workflow builds the `.exe` files, starts them on a GitHub Actions
+Windows VM, downloads the published installer and starts that, and
+downloads the published image with the installer's own WinHTTP code.
+Its `PUBLISHED_SHA256` and `IMAGE_*` variables are changed in the same
+commit that publishes a new installer or image. Read results with the
+GitHub tools (`actions_list`, `get_job_logs`); the repository is public,
+so `curl https://api.github.com/repos/ComputerDude771/auros-from-scratch/actions/runs`
+also works without a token.
 
 `tools/README.md` lists every other test. Saved transcripts live in
 `docs/results/`, with an index in `docs/results/README.md`; after a run,

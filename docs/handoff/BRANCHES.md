@@ -1,5 +1,12 @@
 # Branches, and the two chats
 
+> **Update, 2026-09-26.** The two lines below were merged into
+> `claude/confident-johnson-hxevk4` (merge commit `eed8beb`), which is
+> now the only development branch; the `aurfirst` fix `2d85777` is in
+> it and in the v3 image. The merge had one conflict, `HANDOFF.md`
+> itself (both lines had added one). What follows is how things stood
+> on 2026-09-25, kept as history.
+
 Repository: `ComputerDude771/auros-from-scratch`. As of 2026-09-25 there
 are three branches on GitHub.
 

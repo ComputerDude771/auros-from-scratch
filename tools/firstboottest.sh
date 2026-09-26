@@ -361,11 +361,12 @@ fi
 # WHY THE OTHER ENTRY POINTS AT A PARTITION THAT EXISTS. The first
 # version of this case planted an entry for a partition that had been
 # deleted, which is exactly what "Put Windows back" leaves -- and OVMF
-# quietly deleted it at the next boot and reused its number for one of
-# its own, so three checks below passed with no dead entry left to be
-# mistaken for ours. Real firmware usually does not prune like that,
-# which is why dead entries pile up in the wild; but a test that passes
-# because the firmware tidied up is not testing anything.
+# replaced it at the next boot with one of its own under the same
+# number, so three checks below passed with no dead entry left to be
+# mistaken for ours. (Why: see where Boot0001 is planted below. It was
+# never about the partition; an entry no BootOrder or BootNext mentions
+# is a free number to EDK2.) A test that passes because the firmware
+# tidied up is not testing anything.
 #
 # So the other AurOS is on a SECOND DISK, in a real AUROS-BOOT with a
 # file where its entry says: valid by every rule OVMF has, and the other
@@ -394,8 +395,19 @@ echo
 echo "  two entries called AurOS, and the other one comes first"
 fresh_machine || { echo "  could not prepare the machine"; exit 2; }
 other_disk    || { echo "  could not make the second disk"; exit 2; }
+# LISTED IN BootOrder, after Windows. OVMF (EDK2) does not prune boot
+# entries: when it adds one of its own it takes the first number that
+# neither BootOrder nor BootNext mentions, and writes over whatever
+# Boot#### is already there. An entry planted outside BootOrder was
+# therefore replaced at the first boot -- that was the "firmware's own
+# tidying" this case kept failing on (2026-09-26: reproduced with OVMF
+# and no OS in ninety seconds; listed, the same entry survives). It is
+# also the realistic shape: an install that was confirmed and then put
+# back leaves its entry in BootOrder.
 python3 "$E" "$NV" plant-hd Boot0001 "AurOS" '\EFI\AurOS\shimx64.efi' "$OD" 1 \
     || { echo "  could not plant the other entry"; exit 2; }
+python3 "$E" "$NV" set-order 0000 0001 \
+    || { echo "  could not list the other entry"; exit 2; }
 power_on none; read_back
 # THE FIXTURE, CHECKED BEFORE ANYTHING IS CONCLUDED FROM IT.
 python3 "$E" "$NV" entry AurOS >/dev/null 2>&1

@@ -1,5 +1,11 @@
 # What is left, in priority order
 
+> **Superseded, 2026-09-26**, by `docs/issues/v3/STATUS.md`, which goes
+> through every open item and says what was done. Items 1 (the merge),
+> 3 (the desktop image; the other four profiles are not rebuilt) and 5
+> (Secure Boot on the development branch) are done there. Kept as
+> history.
+
 ## 1. Merge `claude/linux-distro-from-scratch-tt5dx1` into the active branch
 
 It holds the `aurfirst` fix (`2d85777`) and the first-boot test, which

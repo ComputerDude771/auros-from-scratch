@@ -1,0 +1,27 @@
+
+Does "Put Windows back" in AurOS reach the restore, with Secure Boot on?
+
+    the image carries grub's environment block                     ok
+    ...and a Put Windows back entry in its menu                    ok
+  boot 1: AurOS, where she presses Put Windows back
+    the desktop came up and the button was pressed                 ok
+    answer.sh answered ok                                          ok
+    ...and restarted the computer itself                           ok
+    the menu will take the restore entry next                      ok
+    and the firmware will start AurOS's menu, though she declined  ok
+    ...with BootOrder untouched: Windows is still the default      ok
+
+  boot 2: the next start, with nobody touching anything
+    the firmware started AurOS's entry                             ok
+    grub started the staging kernel with aurstage.restore          ok
+    ...with Secure Boot on                                         ok
+    the restore ran, and found nothing on this test disk to put back ok
+    ...and changed nothing on that disk                            ok
+    the menu's one-time choice was used up                         ok
+
+  boot 3: the start after that
+    it does not restore again                                      ok
+    ...it starts AurOS                                             ok
+
+16 checks: the button in AurOS restarts into the restore, once,
+through AurOS's own menu, with Secure Boot on.
