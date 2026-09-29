@@ -112,6 +112,28 @@ jobs:
           if ($hit.detail -notmatch [regex]::Escape($ctl)) { throw "it fired, but not about $ctl : $($hit.detail)" }
           "found: $($hit.detail)"
           exit 0
+      - name: the install switches Fast Startup off itself
+        shell: pwsh
+        run: |
+          # Switched ON first, the way most home PCs have it, and the
+          # preflight must then say it will be switched off -- not refuse.
+          $k = 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Power'
+          Set-ItemProperty -Path $k -Name HiberbootEnabled -Value 1 -Type DWord
+          powercfg /hibernate on 2>&1 | Out-String | Write-Output
+          $f = (.\exe\aurbridge.exe preflight --json | Out-String | ConvertFrom-Json).findings |
+                 Where-Object id -eq 'fast-startup'
+          if (-not $f) { throw "with Fast Startup on, preflight did not notice" }
+          if ($f.severity -ne 'info') { throw "Fast Startup is still a refusal: $($f.severity)" }
+          .\exe\aurbridge.exe fast-startup-off
+          if ($LASTEXITCODE -ne 0) { throw "fast-startup-off exited $LASTEXITCODE" }
+          $v = (Get-ItemProperty -Path $k -Name HiberbootEnabled).HiberbootEnabled
+          if ($v -ne 0) { throw "HiberbootEnabled is still $v" }
+          if (Test-Path "$env:SystemDrive\hiberfil.sys") { throw "hiberfil.sys is still there" }
+          $f = (.\exe\aurbridge.exe preflight --json | Out-String | ConvertFrom-Json).findings |
+                 Where-Object id -eq 'fast-startup'
+          if ($f) { throw "after switching it off, preflight still mentions Fast Startup" }
+          "Fast Startup was on, and the installer switched it off"
+          exit 0
       - name: an earlier attempt's files on the start-up partition count as room
         shell: pwsh
         run: |

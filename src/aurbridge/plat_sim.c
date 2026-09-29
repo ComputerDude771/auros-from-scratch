@@ -517,6 +517,18 @@ int plat_file_append(const char *to, const void *buf, size_t n,
 
 /* A simulated computer does not restart; the test does that itself by
  * booting the disk. Written down, like every command, in ran.log. */
+int plat_fast_startup_off(char *why, size_t wn)
+{
+    /* The simulated machine has no Fast Startup. It leaves a mark, so a
+     * test can see the install asked for it, and first. */
+    char p[600];
+    simpath(p, sizeof p, "fast-startup-off");
+    FILE *f = fopen(p, "w");
+    if (f) fclose(f);
+    (void)why; (void)wn;
+    return 0;
+}
+
 int plat_restart(char *why, size_t wn)
 {
     (void)why; (void)wn;

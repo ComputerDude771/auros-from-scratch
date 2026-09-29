@@ -281,13 +281,18 @@ static void check_fast_startup(pf_report *r)
         /* If Windows later resumes from a hibernation image taken before
          * we moved the partitions, it writes back a stale NTFS metadata
          * and partition map. Both operating systems are destroyed, and
-         * silently. This is the single nastiest failure in the register. */
-        add(r, "fast-startup", "R2", PF_BLOCK, "Fast Startup is switched on",
+         * silently. This is the single nastiest failure in the register.
+         *
+         * NOT A REFUSAL ANY MORE: the install's first step switches it off
+         * (plat_fast_startup_off) and checks it went off, and refuses
+         * there if Windows will not. The restart the install uses is a
+         * restart, which never hibernates, so nothing about this boot is
+         * at risk in between. */
+        add(r, "fast-startup", "R2", PF_INFO, "Fast Startup will be switched off",
             "With Fast Startup, 'Shut down' does not fully shut down -- Windows saves its "
-            "session to disk. If Windows later restores that saved session after the disk "
-            "layout has changed, it can overwrite the new layout and damage both systems.",
-            "AurBridge can switch Fast Startup off for you (powercfg /h off) and restart "
-            "Windows once. This is quick, reversible, and must happen before anything else.");
+            "session to disk, and restoring it after the drive has changed can damage "
+            "both systems. The install switches it off before it does anything else.",
+            "Nothing to do.");
     }
 }
 

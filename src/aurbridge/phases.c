@@ -1111,6 +1111,12 @@ static int phase_prepare(const ab_choice *c, pf_report *r, ab_machine *m,
                          char *why, size_t n)
 {
     (void)r;
+    /* FAST STARTUP OFF, FIRST (R2). Before the download, the stick or
+     * anything on the drive: a machine that cannot have it switched off
+     * stops here with nothing changed. The consent page says this
+     * happens. */
+    talk(say, ud, "switching off Windows' Fast Startup");
+    if (plat_fast_startup_off(why, n) != 0) return -1;
     if (c->no_stick)
         return phase_prepare_nostick(c, m, say, prog, ud, why, n);
     if (find_stick(c, m, why, n) != 0) return -1;

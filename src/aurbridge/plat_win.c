@@ -992,6 +992,40 @@ int plat_file_append(const char *to, const void *buf, size_t n,
     return 0;
 }
 
+int plat_fast_startup_off(char *why, size_t wn)
+{
+    static const char *KEY =
+        "SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Power";
+    HKEY k;
+    DWORD zero = 0;
+    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, KEY, 0, KEY_SET_VALUE, &k) == ERROR_SUCCESS) {
+        RegSetValueExA(k, "HiberbootEnabled", 0, REG_DWORD, (const BYTE *)&zero,
+                       sizeof zero);
+        RegCloseKey(k);
+    }
+    char sys[MAX_PATH], cmd[MAX_PATH + 64], tail[256];
+    if (!GetSystemDirectoryA(sys, sizeof sys)) snprintf(sys, sizeof sys, "C:\\Windows\\System32");
+    snprintf(cmd, sizeof cmd, "\"%s\\powercfg.exe\" /hibernate off", sys);
+    plat_run(cmd, tail, sizeof tail);
+
+    /* READ BACK, not assumed: a policy can forbid either change, and
+     * the install must not go on believing it made one it did not. */
+    DWORD v = 1, sz = sizeof v, type = 0;
+    int reg_off = RegGetValueA(HKEY_LOCAL_MACHINE, KEY, "HiberbootEnabled",
+                               RRF_RT_REG_DWORD, &type, &v, &sz) != ERROR_SUCCESS || v == 0;
+    char sd[8] = "C:", hib[MAX_PATH];
+    GetEnvironmentVariableA("SystemDrive", sd, sizeof sd);
+    snprintf(hib, sizeof hib, "%s\\hiberfil.sys", sd);
+    int file_gone = GetFileAttributesA(hib) == INVALID_FILE_ATTRIBUTES;
+    if (reg_off && file_gone) return 0;
+    snprintf(why, wn,
+             "Windows would not switch Fast Startup off%s. Nothing has been "
+             "changed on the drive. Switch it off in Control Panel, Power "
+             "Options, \"Choose what the power buttons do\", then try again.",
+             tail[0] ? " (it said so)" : "");
+    return -1;
+}
+
 int plat_restart(char *why, size_t wn)
 {
     HANDLE tok;

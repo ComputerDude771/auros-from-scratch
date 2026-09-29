@@ -250,9 +250,6 @@ static const struct { const wchar_t *label; page_id first; } RAIL[] = {
     { L"Check this PC",     PAGE_CHECKING    },
     { L"Before we start",   PAGE_BACKUP      },
     { L"What will happen",  PAGE_CONSENT     },
-    { L"Your choice",       PAGE_CHOOSE      },
-    { L"How it works",      PAGE_DESKTOP     },
-    { L"Make it yours",     PAGE_PERSONALIZE },
     { L"Ready",             PAGE_READY       },
     { L"Installing",        PAGE_PROGRESS    },
 };
@@ -995,12 +992,16 @@ static int nav_allowed(page_id p)
     switch (p) {
     case PAGE_BACKUP:      return 1;
     case PAGE_CONSENT:     return g_ack_backup && g_ack_usb;
-    case PAGE_CHOOSE:      return nav_allowed(PAGE_CONSENT) && consent_ok();
-    case PAGE_DESKTOP:     return nav_allowed(PAGE_CHOOSE) && choice_ok();
-    /* The archetype chooser has no gate of its own: one is always
-     * selected (Rail by default), so there is nothing to withhold. */
-    case PAGE_PERSONALIZE: return nav_allowed(PAGE_DESKTOP);
-    case PAGE_READY:       return nav_allowed(PAGE_PERSONALIZE);
+    /* THE PERSON ALREADY CHOSE THEIR AurOS: it is the build they asked
+     * for, and the installer's job is to put that on this PC. The pages
+     * that offered a different desktop and look, and the "keep Windows
+     * or replace it" page with one real answer, are not in the way any
+     * more; they stay in the source because --shot still draws them. */
+    case PAGE_CHOOSE:
+    case PAGE_DESKTOP:
+    case PAGE_PERSONALIZE: return 0;
+    case PAGE_READY:       return nav_allowed(PAGE_CONSENT) && consent_ok() &&
+                                  choice_ok();
     case PAGE_PROGRESS:    return nav_allowed(PAGE_READY) && g_ready_confirm;
     default:               return 0;
     }
@@ -1185,22 +1186,15 @@ static DWORD WINAPI ab_worker(LPVOID p)
  * language used to be the constant "en" and nothing else travelled. */
 static void choices_from_page(ab_choice *c)
 {
-    _snprintf(c->shell_archetype, sizeof c->shell_archetype - 1, "%s",
-              SHELLS[g_sel_shell].id);
+    /* THE LOOK AND THE DESKTOP ARE THE BUILD'S. Left empty, choices.sh
+     * leaves them as the image has them -- which is the AurOS this
+     * person asked for. What does travel is what Windows already knows
+     * about them: language, keyboard, time zone (detect_defaults). */
+    c->shell_archetype[0] = 0;
     _snprintf(c->language, sizeof c->language - 1, "%s", g_lang_v[g_sel_lang]);
     _snprintf(c->keyboard, sizeof c->keyboard - 1, "%s", g_kbd_v[g_sel_kbd]);
     _snprintf(c->timezone, sizeof c->timezone - 1, "%s", g_tz_v[g_sel_tz]);
-    /* The theme's id is its file name, which is its display name in
-     * lower case (themes/<id>.theme). */
-    char t[32];
-    int k = WideCharToMultiByte(CP_UTF8, 0, THEMES[g_sel_theme].name, -1,
-                                t, sizeof t, NULL, NULL);
     c->theme[0] = 0;
-    if (k > 0) {
-        for (char *p = t; *p; p++)
-            if (*p >= 'A' && *p <= 'Z') *p = (char)(*p - 'A' + 'a');
-        _snprintf(c->theme, sizeof c->theme - 1, "%s", t);
-    }
 }
 
 static void install_begin(void)
@@ -1649,9 +1643,9 @@ static int page_welcome(int x, int y, int w)
                      L"Each time you switch the PC on, you pick which one you want.",
                      x, y, narrow, C_ACCENT);
     y += feature_row(1, L"You can change your mind",
-                     L"Before anything at all is changed, we build a rescue area on "
-                     L"the drive and a rescue USB stick. One button puts Windows back "
-                     L"the way it was.",
+                     L"Before anything at all is changed, a copy of this PC\u2019s "
+                     L"start-up is saved on the drive. \u201cPut Windows back\u201d in "
+                     L"AurOS puts Windows back the way it was.",
                      x, y, narrow, C_ACCENT);
     /* The first two rows are reassurances and share one colour, because
      * they are the same kind of statement. The third is a refusal, and
@@ -2044,6 +2038,10 @@ static int page_consent(int x, int y, int w)
                    g_f_body, C_SUBTLE, x, y, narrow, DT_WORDBREAK) + S(26);
 
     y += section_head(L"WHAT CHANGES", C_WARM, x, y, narrow);
+    y += bullet(L"Windows\u2019 Fast Startup is switched off, and hibernation with "
+                L"it, so that shutting Windows down really shuts it down. With it "
+                L"on, Windows can write an old copy of the drive back over the new "
+                L"one.", C_WARM, x, y, narrow);
     y += bullet(L"A copy of AurOS, about 5 GB, is downloaded into a folder called "
                 L"AurOS on this drive.", C_WARM, x, y, narrow);
     y += bullet(L"After one restart, the part of the drive that Windows uses is made "
@@ -2595,18 +2593,26 @@ static int page_ready(int x, int y, int w)
                    : L"Will be erased, along with everything else on this drive.",
                  g_choice == 0 ? C_ACCENT : C_ERR, x, y, narrow);
 
+    /* NOT "AND A RESCUE USB STICK". This build installs without one,
+     * and this row promised one to everybody who reached it. */
     y += sum_row(L"If something goes wrong",
-                 L"A rescue area is built on the drive before anything else, and a "
-                 L"rescue USB stick alongside it. Either one puts this PC back.",
+                 L"A copy of this PC\u2019s start-up is saved on the drive before "
+                 L"anything else is changed, and \u201cPut Windows back\u201d in AurOS "
+                 L"uses it to undo everything.",
+                 C_FG, x, y, narrow);
+    y += sum_row(L"Fast Startup",
+                 L"Switched off first, so that shutting Windows down really shuts it "
+                 L"down. It protects both systems\u2019 files.",
                  C_FG, x, y, narrow);
 
     _snwprintf(buf, 255, L"%s  ·  %s keyboard  ·  %s",
                g_langs[g_sel_lang], g_kbds[g_sel_kbd], g_tzs[g_sel_tz]);
     buf[255] = 0;
     y += sum_row(L"Language and region", buf, C_FG, x, y, narrow);
-    y += sum_row(L"How the desktop works", SHELLS[g_sel_shell].name,
+    y += sum_row(L"Your AurOS",
+                 L"The version made for you, with its own look and desktop. "
+                 L"Language, keyboard and time zone come from Windows.",
                  C_FG, x, y, narrow);
-    y += sum_row(L"Look", THEMES[g_sel_theme].name, C_FG, x, y, narrow);
     y += sum_row(L"How long",
                  L"About 40 minutes. This PC restarts once part way through, on its "
                  L"own.", C_FG, x, y, narrow);
@@ -2751,10 +2757,7 @@ static int primary_enabled(void)
     case PAGE_CHECKING:    return g_pf_valid && g_reveal >= N_CHK && pf_is_go(&g_report);
     case PAGE_BLOCKED:     return 1;
     case PAGE_BACKUP:      return nav_allowed(PAGE_CONSENT);
-    case PAGE_CONSENT:     return nav_allowed(PAGE_CHOOSE);
-    case PAGE_CHOOSE:      return nav_allowed(PAGE_DESKTOP);
-    case PAGE_DESKTOP:     return nav_allowed(PAGE_PERSONALIZE);
-    case PAGE_PERSONALIZE: return nav_allowed(PAGE_READY);
+    case PAGE_CONSENT:     return nav_allowed(PAGE_READY);
     case PAGE_READY:       return nav_allowed(PAGE_PROGRESS);
     case PAGE_PROGRESS:    return g_install_finished;
     default:               return 0;
@@ -2826,7 +2829,7 @@ static page_id back_target(void)
     case PAGE_CHOOSE:      return PAGE_CONSENT;
     case PAGE_DESKTOP:     return PAGE_CHOOSE;
     case PAGE_PERSONALIZE: return PAGE_DESKTOP;
-    case PAGE_READY:       return PAGE_PERSONALIZE;
+    case PAGE_READY:       return PAGE_CONSENT;
     default:               return PAGE_WELCOME;
     }
 }
@@ -2993,10 +2996,7 @@ static void do_primary(void)
                            break;
     case PAGE_BACKUP:      goto_page(PAGE_CONSENT);
                            g_want_focus_id = ID_INPUT_AGREE; break;
-    case PAGE_CONSENT:     goto_page(PAGE_CHOOSE); break;
-    case PAGE_CHOOSE:      goto_page(PAGE_DESKTOP); break;
-    case PAGE_DESKTOP:     goto_page(PAGE_PERSONALIZE); break;
-    case PAGE_PERSONALIZE: goto_page(PAGE_READY); break;
+    case PAGE_CONSENT:     goto_page(PAGE_READY); break;
     /* Re-run every safety check before the phase list starts, per
      * AURBRIDGE.md: destructive work re-runs preflight and aborts on
      * any block, however long the user spent on the pages in between. */
@@ -3707,24 +3707,29 @@ static int nav_test(const char *dir)
     nt_check(!nav_allowed(PAGE_CONSENT), "one box is not enough");
     g_ack_usb = 1;
     nt_check(nav_allowed(PAGE_CONSENT), "consent reachable with both boxes");
-    nt_check(!nav_allowed(PAGE_CHOOSE), "choice refused until AGREE is typed");
+    nt_check(!nav_allowed(PAGE_READY), "ready refused until AGREE is typed");
     wcscpy(g_agree, L"agre");
-    nt_check(!nav_allowed(PAGE_CHOOSE), "a near miss is still refused");
+    nt_check(!nav_allowed(PAGE_READY), "a near miss is still refused");
     wcscpy(g_agree, L"agree");
-    nt_check(nav_allowed(PAGE_CHOOSE), "typed acknowledgement accepted (any case)");
+    nt_check(nav_allowed(PAGE_READY), "typed acknowledgement accepted (any case)");
     g_choice = 1;
-    nt_check(!nav_allowed(PAGE_PERSONALIZE),
+    nt_check(!nav_allowed(PAGE_READY),
              "replace-Windows refused with its box unticked");
     g_ack_replace = 1;
-    nt_check(!nav_allowed(PAGE_PERSONALIZE),
+    nt_check(!nav_allowed(PAGE_READY),
              "replace-Windows refused even when acknowledged: it does not exist");
     g_choice = 0; g_ack_replace = 0;
-    nt_check(nav_allowed(PAGE_PERSONALIZE), "keeping Windows is accepted");
+    nt_check(nav_allowed(PAGE_READY), "keeping Windows is accepted");
+    /* The person chose their AurOS before downloading this: nothing in
+     * the installer offers a different one. */
+    nt_check(!nav_allowed(PAGE_CHOOSE) && !nav_allowed(PAGE_DESKTOP) &&
+             !nav_allowed(PAGE_PERSONALIZE),
+             "no page offers a different desktop or look");
     nt_check(!nav_allowed(PAGE_PROGRESS), "install refused until the drive is confirmed");
     g_ready_confirm = 1;
     nt_check(nav_allowed(PAGE_PROGRESS), "install reachable at the end of a clean run");
 
-    if (g_nt) fprintf(g_nt, "\n3b. what she picks is what the engine is handed\n");
+    if (g_nt) fprintf(g_nt, "\n3b. what Windows knows travels; the build's look stays\n");
     {
         detect_defaults();
         int es = -1, kes = -1, lon = -1, moss = -1, tb = -1;
@@ -3744,8 +3749,11 @@ static int nav_test(const char *dir)
             nt_check(!strcmp(c.language, "es_ES.UTF-8"), "Español travels as es_ES.UTF-8");
             nt_check(!strcmp(c.keyboard, "xkb:es"), "the Spanish keyboard travels as xkb:es");
             nt_check(!strcmp(c.timezone, "iana:Europe/London"), "London travels as Europe/London");
-            nt_check(!strcmp(c.theme, "moss"), "the Moss look travels as moss");
-            nt_check(!strcmp(c.shell_archetype, "taskbar"), "the taskbar desktop travels as taskbar");
+            /* Even with other chips selected -- nothing on screen can
+             * select them now, but the state still exists -- the look and
+             * the desktop stay the build's own. */
+            nt_check(c.theme[0] == 0, "the look is the build's, not the installer's");
+            nt_check(c.shell_archetype[0] == 0, "the desktop is the build's, not the installer's");
         }
         g_sel_lang = g_sel_kbd = g_sel_tz = g_sel_theme = 0;
         g_sel_shell = SHELL_DEFAULT;

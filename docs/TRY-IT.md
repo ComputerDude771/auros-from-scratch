@@ -19,11 +19,8 @@ and is not", before starting.
 
 ## Before you start, in Windows
 
-1. **Turn off Fast Startup.** Control Panel → Power Options → *Choose
-   what the power buttons do* → *Change settings that are currently
-   unavailable* → untick **Turn on fast startup** → Save. (With it on,
-   Windows never really shuts down, and AurOS will not resize a drive
-   that is half-asleep.)
+1. **Fast Startup**: nothing to do. The installer switches it off
+   itself as its first step (it says so before you agree).
 2. **If the drive is encrypted, decrypt it.** Settings → Privacy &
    security → **Device encryption** → Off (or BitLocker → Turn off),
    and wait until it says it is finished. AurOS refuses encrypted

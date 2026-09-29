@@ -261,6 +261,18 @@ int plat_efi_sigdb(const char *name, unsigned char *buf, size_t cap,
  * needs. Returns the exit status, or -1 if it would not start. */
 int plat_run(const char *cmdline, char *tail, size_t n);
 
+/* ── Fast Startup, off ──────────────────────────────────────────────
+ *
+ * The first thing an install does. With Fast Startup on, Windows'
+ * "shut down" hibernates the kernel and leaves every NTFS volume
+ * half-mounted; resuming that after the partitions have moved writes a
+ * stale view of the disk back over it (R2). It used to be a refusal
+ * whose remedy said "AurBridge can switch Fast Startup off for you" --
+ * and nothing did. Now this does: HiberbootEnabled=0 and
+ * `powercfg /hibernate off` (which also removes hiberfil.sys), then
+ * both are read back. 0 when both are off, -1 with a sentence. */
+int plat_fast_startup_off(char *why, size_t wn);
+
 /* ── the one restart ─────────────────────────────────────────────── */
 
 /* Restart the computer, now. The wizard's last button, after phase 3:

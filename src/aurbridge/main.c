@@ -66,6 +66,7 @@ static void usage(void)
     "  aurbridge preflight            check this PC and report (read-only)\n"
     "  aurbridge preflight --json     same, machine-readable for the wizard\n"
     "  aurbridge selftest             check this binary, not this PC\n"
+    "  aurbridge fast-startup-off     what an install does first: Fast Startup off\n"
     "  aurbridge getimage LIST DEST SHA256 BYTES\n"
     "                                 download AurOS in pieces (files only)\n"
     "  aurbridge version\n\n"
@@ -95,6 +96,17 @@ int main(int argc, char **argv)
      * plumbing -- and those are exactly the parts a build should
      * refuse to ship broken. */
     if (!strcmp(cmd, "getimage")) return getimage(argc, argv);
+    /* The install's first step, alone, so that a real Windows machine
+     * can be asked whether it works (.github/workflows/windows.yml). */
+    if (!strcmp(cmd, "fast-startup-off")) {
+        char why[400];
+        if (plat_fast_startup_off(why, sizeof why) != 0) {
+            fprintf(stderr, "aurbridge: %s\n", why);
+            return 1;
+        }
+        puts("aurbridge: Fast Startup and hibernation are off");
+        return 0;
+    }
     if (!strcmp(cmd, "selftest")) {
         int bad = pf_selftest() + gz_selftest() + sbdb_selftest();
         if (bad == 0) puts("aurbridge selftest: ok");
