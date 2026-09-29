@@ -69,23 +69,26 @@ branch before running it.
 
 | | |
 |---|---|
-| SHA-256 | `c70045fb55e23cf40689689d4188157077cad47bbf44c5813d76b9af57cb1a37` |
+| SHA-256 | `04089423c6952c0c5df3ca810005e712da953d7bde2a433517b44e79096f78f1` |
 | downloads | the v3 image (`v3/pieces.txt`): Put Windows back, and security updates |
-| built from | branch `claude/confident-johnson-hxevk4`, commit `1bef5d7` |
-| tested **on real Windows** | GitHub Actions `windows-latest` (`.github/workflows/windows.yml`): the wizard starts the way a double-click starts it, passes its navigation test and runs preflight read-only against the machine; the console tool's selftest and preflight; the start-up partition check on a real EFI partition, filled with an earlier attempt's files (passes) and with somebody else's (refuses); WinHTTP downloads all 20 v3 pieces and the installer's own inflater checks the image (`verdict=ok`); the broken 2026-09-25 build fails to start there exactly as it did on the first real PC. After publishing, the same workflow downloads this file from here, checks the SHA-256 above, and starts it. |
+| built from | branch `claude/confident-johnson-hxevk4`, commit `ed67e18` |
+| tested **on real Windows** | GitHub Actions `windows-latest` (`.github/workflows/windows.yml`): the wizard starts the way a double-click starts it, passes its navigation test (49 checks) and runs preflight read-only against the machine; the console tool's selftest and preflight; the Fix button's space fix (temp folders emptied, a junction in %TEMP% removed as a link with the file behind it untouched); the task that reopens the installer after a restart is made and removed; Fast Startup switched off; the start-up partition check on a real EFI partition, filled with an earlier attempt's files (passes) and with somebody else's (refuses); WinHTTP downloads all 20 v3 pieces and the installer's own inflater checks the image (`verdict=ok`); the broken 2026-09-25 build fails to start there exactly as it did on the first real PC. After publishing, the same workflow downloads this file from here, checks the SHA-256 above, and starts it. |
 | tested in simulation | `tools/installtest.sh` 37/37, `tools/nosticktest.sh` 45/45, `tools/manifesttest.sh` 10/10 on this file; on the v3 image `tools/putbacktest.sh` 16/16, `tools/firstboottest.sh` 32/32, `tools/choicesboottest.sh` 9/9 |
 | reviewed | an independent review of every v3 change; its seven findings are fixed in this build (`docs/issues/v3/STATUS.md`) |
 | not tested | a real PC's disk being resized and written: that is what a spare PC is for |
 
-New in this build: "Put Windows back" in AurOS (Settings, and AurOS's
-start-up menu); it asks before closing throws away a prepared install;
-it says that OneDrive files kept only online will not come across; a
-second attempt is no longer refused for the first attempt's files; and
-the restore's messages no longer ask for a memory stick nobody was
-given.
+New in this build: **it fixes what it finds.** The stop page lists each
+problem in one line with what happens about it, and *Fix these for me*
+does it: frees space on C:, switches BitLocker off, switches Fast
+Startup off, restarts once for waiting updates and opens again by
+itself. Charger, battery and USB drives need no button: it re-checks
+every few seconds and carries on. The window now fits the screen, so
+the page and its buttons can always be reached. It installs the AurOS
+that was ordered, with Windows' language, keyboard and time zone; there
+are no pages to pick a look or a desktop.
 
-It keeps what is chosen on its *Make it yours* page: AurOS starts in
-that language, keyboard layout, time zone, look and desktop.
+What it cannot fix it says in one line and leaves alone: a PC that
+starts the old way (BIOS), a failing drive, some multi-drive setups.
 
 **Leave Secure Boot on.** The restart goes through Microsoft-signed
 shim; before changing anything the installer reads the firmware's list
@@ -100,6 +103,8 @@ exception for the file, or wait. `docs/TRY-IT.md` has the steps.
 
 Earlier test installers:
 
+- `c70045fb...` (2026-09-26, v3 image): described problems instead of
+  fixing them, and on a small screen its bottom was off the screen.
 - `f971559d...` (2026-09-26, v2 image): the first that starts on
   Windows. Works; installs the v2 image, which has no "Put Windows back".
 - `3e32e929...` (2026-09-25, v2): **does not start on Windows.** Its
