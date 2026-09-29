@@ -91,6 +91,10 @@ same commit as the files.
   to end** — and "tested" now includes starting it on real Windows.
 - They write informally and want plain answers: what works, what does
   not, and a link.
+- **Every time a fix is published, end the reply with the download link
+  and the new SHA-256**, even when they did not ask:
+  https://github.com/ComputerDude771/auros-from-scratch/raw/image-desktop/AurOS-Installer-test.exe
+  If nothing new was published, say so and give the link to what is there.
 - **Spending credits is fine; raising the credit limit is not.**
 
 ## Product rules the code is built around
