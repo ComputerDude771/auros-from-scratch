@@ -62,6 +62,14 @@ moments (`powercuttest`), the real image's first boot and its choices
 button in AurOS through AurOS's own menu to the restore
 (`putbacktest`).
 
+**Proven on real Windows** (`windows.yml`, every push): the wizard
+starts and navigates; preflight reads the machine; Fast Startup is
+switched off by the installer; the stop page's *Fix these for me*
+frees space (temp folders emptied, a junction in `%TEMP%` removed as a
+link, the file behind it untouched); the task that reopens the
+installer after a restart is made and removed; the whole image
+downloads through the installer's own code.
+
 **Not proven: a real PC's disk being resized and written.** The first
 real-PC attempt (2026-09-26) could not start the installer at all; that
 is fixed, and the tester has the fixed build. Their result is the next
@@ -75,7 +83,7 @@ are given:
 
 https://github.com/ComputerDude771/auros-from-scratch/raw/image-desktop/AurOS-Installer-test.exe
 
-Right now: installer `c70045fb` (built from `1bef5d7`), which downloads
+Right now: installer `04089423` (built from `ed67e18`), which downloads
 the v3 image `5dee5f44` from `image-desktop/v3/`. `windows.yml`'s
 `PUBLISHED_SHA256` and `IMAGE_*` are pinned to them; change them in the
 same commit as the files.
@@ -96,6 +104,16 @@ same commit as the files.
   https://github.com/ComputerDude771/auros-from-scratch/raw/image-desktop/AurOS-Installer-test.exe
   If nothing new was published, say so and give the link to what is there.
 - **Spending credits is fine; raising the credit limit is not.**
+- **The installer fixes problems, it does not describe them** (2026-09-29).
+  The stop page is one short line per problem plus what happens about
+  it (`src/aurbridge/fix.h`); anything a program can fix, the button
+  fixes; the page re-checks by itself. The build refuses a new
+  preflight stop without its line in `fix_win.c`.
+- **The SmartScreen "Windows protected your PC" panel** is what they
+  mean by "the exe might be sus". It is signing, not code:
+  `docs/SIGNING.md` says what to buy (Azure Artifact Signing, or an OV
+  certificate) and the build's signing step is waiting for it. Nothing
+  in the .exe removes it, and nothing should try to.
 
 ## Product rules the code is built around
 

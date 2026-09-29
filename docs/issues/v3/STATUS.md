@@ -51,8 +51,8 @@ Its first runs found two more bugs, both fixed (item 9).
 
 ## 4. Republish: done
 
-`AurOS-Installer-test.exe` on `image-desktop` is **`c70045fb`**, built
-from `1bef5d7`, downloading the v3 image (`5dee5f44`). Before it was
+`AurOS-Installer-test.exe` on `image-desktop` is **`04089423`**, built
+from `ed67e18` (it fixes what the check finds; before it, `c70045fb` from `1bef5d7`), downloading the v3 image (`5dee5f44`). Before it was
 published: `installtest` 37/37, `nosticktest` 45/45, `putbacktest`
 16/16, `firstboottest` 32/32, `choicesboottest` 9/9, `manifesttest`
 10/10, and every job in `windows.yml` on real Windows, including the
