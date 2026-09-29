@@ -61,6 +61,17 @@ note "windows:$(echo "$WINONLY" | sed "s|$SRC/||g")"
 note "simulated:$(echo "$SIMONLY" | sed "s|$SRC/||g")"
 LIB="$LIB $WINONLY"
 
+# EVERY STOP HAS A SHORT LINE. The page a stopped check lands on shows
+# each problem as one short line and what the installer does about it
+# (src/aurbridge/fix.h). A new check in preflight.c without its line there
+# would fall back to a paragraph; refuse that here instead of noticing
+# on somebody's screen.
+for id in $(grep -o 'add(r, "[a-z0-9-]*", "[A-Z0-9]*", PF_BLOCK' "$SRC/preflight.c" \
+            | cut -d'"' -f2 | sort -u); do
+    grep -q "{ \"$id\"," "$SRC/fix_win.c" \
+        || die "preflight can stop with \"$id\", and fix_win.c has no line for it"
+done
+
 # -municode is NOT used: main.c is a plain main() and the wizard has
 # its own WinMain. Unicode comes from the W-suffixed APIs, which is
 # the only way that works the same on Windows 7 and 11.

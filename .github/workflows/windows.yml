@@ -134,6 +134,50 @@ jobs:
           if ($f) { throw "after switching it off, preflight still mentions Fast Startup" }
           "Fast Startup was on, and the installer switched it off"
           exit 0
+      - name: the Fix button frees space, and never follows a link out of Temp
+        shell: pwsh
+        timeout-minutes: 25
+        run: |
+          # Leftovers in both temp folders must go. A junction in %TEMP%
+          # pointing at somebody's folder must go as a link, and the file
+          # behind it must still be there afterwards: a recursive delete
+          # that follows it would delete their files.
+          $keep = "$env:SystemDrive\keep-me"
+          New-Item -ItemType Directory -Force $keep | Out-Null
+          Set-Content "$keep\photo.txt" 'somebody''s file'
+          New-Item -ItemType Directory -Force "$env:TEMP\aurtest\deeper" | Out-Null
+          Set-Content "$env:TEMP\aurtest\deeper\junk.tmp" 'junk'
+          Set-Content "$env:WINDIR\Temp\aurtest-junk.tmp" 'junk'
+          cmd /c mklink /J "$env:TEMP\aurtest-link" $keep | Out-Null
+          if (-not (Test-Path "$env:TEMP\aurtest-link\photo.txt")) { throw "the junction was not made" }
+          .\exe\aurbridge.exe fix insufficient-space
+          if ($LASTEXITCODE -ne 0) { throw "fix insufficient-space exited $LASTEXITCODE" }
+          if (Test-Path "$env:TEMP\aurtest\deeper\junk.tmp") { throw "a file in %TEMP% is still there" }
+          if (Test-Path "$env:WINDIR\Temp\aurtest-junk.tmp") { throw "a file in Windows\Temp is still there" }
+          if (Test-Path "$env:TEMP\aurtest-link") { throw "the junction is still there" }
+          if (-not (Test-Path "$keep\photo.txt")) { throw "THE FILE BEHIND THE JUNCTION WAS DELETED" }
+          # Nothing a program cannot fix is attempted.
+          .\exe\aurbridge.exe fix firmware-bios
+          if ($LASTEXITCODE -ne 2) { throw "fix firmware-bios exited $LASTEXITCODE, not 2" }
+          "temp folders emptied; the file behind the link is untouched"
+          exit 0
+      - name: after a restart it asks for, the installer opens again by itself
+        shell: pwsh
+        run: |
+          $tn = 'AurOS installer - continue'
+          .\exe\aurbridge.exe resume-arm
+          if ($LASTEXITCODE -ne 0) { throw "resume-arm exited $LASTEXITCODE" }
+          $x = schtasks.exe /query /tn $tn /xml | Out-String
+          if ($LASTEXITCODE -ne 0) { throw "the task was not created" }
+          if ($x -notmatch '--resume') { throw "the task does not pass --resume" }
+          if ($x -notmatch 'aurbridge\.exe') { throw "the task does not start the installer" }
+          if ($x -notmatch 'LogonTrigger') { throw "the task does not run at sign-in" }
+          if ($x -notmatch 'HighestAvailable') { throw "the task does not run with the rights the installer needs" }
+          .\exe\aurbridge.exe resume-done
+          schtasks.exe /query /tn $tn 2>&1 | Out-Null
+          if ($LASTEXITCODE -eq 0) { throw "the task is still there after resume-done" }
+          "the task is made, starts the installer with --resume at sign-in, and goes again"
+          exit 0
       - name: an earlier attempt's files on the start-up partition count as room
         shell: pwsh
         run: |

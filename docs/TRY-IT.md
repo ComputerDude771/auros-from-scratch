@@ -19,14 +19,21 @@ and is not", before starting.
 
 ## Before you start, in Windows
 
-1. **Fast Startup**: nothing to do. The installer switches it off
-   itself as its first step (it says so before you agree).
-2. **If the drive is encrypted, decrypt it.** Settings → Privacy &
-   security → **Device encryption** → Off (or BitLocker → Turn off),
-   and wait until it says it is finished. AurOS refuses encrypted
-   drives; it cannot resize them.
-3. **Install any waiting Windows updates and restart once**, so nothing
-   is half-installed.
+Nothing. If the check finds something, the stop page lists each
+problem in one line with what happens about it, and **Fix these for
+me** does it:
+
+| Problem | What the installer does |
+|---|---|
+| Fast Startup on | switches it off (always, as its first step) |
+| Not enough space on C: | empties the Recycle Bin, Windows' temp folders and Disk Cleanup's leftovers (not Downloads, not the previous Windows) |
+| Drive encrypted (BitLocker / Device encryption) | switches it off, then waits for Windows to finish |
+| Updates waiting for a restart, or a drive check pending | restarts Windows once, and opens again by itself after you sign in |
+| Charger unplugged, battery low, USB drive plugged in | nothing to press: fix it and the page carries on by itself |
+
+Some things nothing on the PC can fix (a PC that starts the old way,
+BIOS; a failing drive; some multi-drive setups). Then the page says so
+in one line and changes nothing.
 
 Leave **Secure Boot on**; AurOS starts with it on. On the rare PC that
 trusts only Windows (some Secured-core laptops), the installer stops at
@@ -79,11 +86,10 @@ Windows machine before it is published (`.github/workflows/windows.yml`).
    an unsigned installer cannot run on it. Use a different PC.)
 3. Windows asks **"Do you want to allow this app to make changes?"** →
    **Yes**.
-4. Follow the pages. **Check this PC** reads only. If it stops with a
-   red card, the card says what to do; nothing has been changed.
-5. On **Make it yours**, the language, keyboard, time zone, look and
-   (on the page before) desktop you pick are what AurOS starts with.
-   The ones Windows already uses are picked for you.
+4. Follow the pages. **Check this PC** reads only. If it stops, press
+   **Fix these for me** (see above).
+5. There is nothing to pick: it installs the AurOS you ordered, with
+   the language, keyboard and time zone Windows already uses.
 6. On **Ready**, tick the box and press **Start installing**. It
    downloads AurOS (the long part), checks it, and gets the restart
    ready. Nothing on the drive is changed yet.

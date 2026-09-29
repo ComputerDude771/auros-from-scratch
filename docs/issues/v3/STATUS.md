@@ -149,7 +149,7 @@ What remains is what item 9 says: installs on real PCs.
 | 10.2 | Two handoffs | **done**: one `HANDOFF.md`, and `docs/handoff/` updated. |
 | 10.3 | "Tested" without saying where | **done**: the `image-desktop` README separates real Windows from simulation. |
 | 10.4 | TRY-IT gaps | **done**: antivirus, and what the side-by-side error was. |
-| 10.5 | "One file" and eight steps | **partly**: OneDrive now asked about; Fast Startup, BitLocker and the others are still refusals the person has to act on. |
+| 10.5 | "One file" and eight steps | **partly**: the installer fixes Fast Startup, low space, BitLocker and a waiting restart itself (`src/aurbridge/fix_win.c`), and carries on by itself when the charger or a USB drive is sorted. Still refusals: legacy BIOS PCs, failing drives, multi-drive setups. |
 | 10.6 | Theme template placeholder | checked: only in `aurora new`'s scaffold, never shipped. |
 
 Also found and fixed: `build/aurbridge` died silently on a developer

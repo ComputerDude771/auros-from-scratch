@@ -8,6 +8,7 @@
 #include "phases.h"
 #include "inflate.h"
 #include "sbdb.h"
+#include "fix.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -67,6 +68,9 @@ static void usage(void)
     "  aurbridge preflight --json     same, machine-readable for the wizard\n"
     "  aurbridge selftest             check this binary, not this PC\n"
     "  aurbridge fast-startup-off     what an install does first: Fast Startup off\n"
+    "  aurbridge fix ID               what the wizard's Fix button does for ID\n"
+    "  aurbridge resume-arm|resume-done\n"
+    "                                 set up / take away opening again after a restart\n"
     "  aurbridge getimage LIST DEST SHA256 BYTES\n"
     "                                 download AurOS in pieces (files only)\n"
     "  aurbridge version\n\n"
@@ -105,6 +109,36 @@ int main(int argc, char **argv)
             return 1;
         }
         puts("aurbridge: Fast Startup and hibernation are off");
+        return 0;
+    }
+    /* The wizard's fixes, one at a time, for the same reason. */
+    if (!strcmp(cmd, "fix")) {
+        if (argc < 3) { usage(); return 2; }
+        const fix_info *f = fix_lookup(argv[2]);
+        if (!f || f->kind != FIX_AUTO) {
+            fprintf(stderr, "aurbridge: \"%s\" is not something a program fixes\n", argv[2]);
+            return 2;
+        }
+        char why[400] = "";
+        if (fix_run(argv[2], why, sizeof why) != 0) {
+            fprintf(stderr, "aurbridge: %s\n", why);
+            return 1;
+        }
+        printf("aurbridge: ran the fix for %s\n", argv[2]);
+        return 0;
+    }
+    if (!strcmp(cmd, "resume-arm")) {
+        char why[400] = "";
+        if (fix_resume_arm(why, sizeof why) != 0) {
+            fprintf(stderr, "aurbridge: %s\n", why);
+            return 1;
+        }
+        puts("aurbridge: the installer opens again at the next sign-in");
+        return 0;
+    }
+    if (!strcmp(cmd, "resume-done")) {
+        fix_resume_done();
+        puts("aurbridge: it will not open again by itself");
         return 0;
     }
     if (!strcmp(cmd, "selftest")) {

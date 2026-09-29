@@ -54,6 +54,7 @@
 #include "preflight.h"
 #include "sbdb.h"
 #include "phases.h"
+#include "fix.h"
 
 /* Baked in by build/aurbridge. A build that has not been told where
  * the image lives produces an installer that expects it to be sitting
@@ -878,6 +879,163 @@ static void pf_start(void)
     HANDLE h = CreateThread(NULL, 0, pf_worker, NULL, 0, NULL);
     if (h) CloseHandle(h);
     else { pf_run(&g_report); InterlockedExchange(&g_pf_state, 2); }
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+ *  Fixing what the check found, instead of describing it
+ * ═══════════════════════════════════════════════════════════════════
+ *
+ * The page a stopped check lands on used to be a report: every problem in
+ * a paragraph, a "WHAT TO DO" box, and a Check again button. It is a list
+ * now -- the problem and what happens about it, one line each (fix.h) --
+ * with one button that fixes everything a program can fix, and a check
+ * that runs again by itself every few seconds, so that plugging in the
+ * charger or taking out a USB stick is all somebody has to do. */
+enum { FS_NONE = 0, FS_RUNNING, FS_DONE, FS_FAILED };
+#define FIX_MAX 24
+static struct { char id[48]; int state; int after; wchar_t why[200]; } g_fx[FIX_MAX];
+static int           g_fx_n;
+static volatile LONG g_fix_busy;       /* the fix worker is running        */
+static pf_report     g_bg_report;      /* the quiet re-check's own copy    */
+static volatile LONG g_bg_state;       /* 0 idle, 1 running, 2 has a result */
+static int           g_bg_ticks;
+static int           g_resumed;        /* opened again after our restart  */
+
+static int fx_index(const char *id)
+{
+    for (int i = 0; i < g_fx_n; i++) if (!strcmp(g_fx[i].id, id)) return i;
+    if (g_fx_n >= FIX_MAX) return -1;
+    snprintf(g_fx[g_fx_n].id, sizeof g_fx[0].id, "%s", id);
+    g_fx[g_fx_n].state = FS_NONE;
+    g_fx[g_fx_n].after = 0;
+    g_fx[g_fx_n].why[0] = 0;
+    return g_fx_n++;
+}
+
+static fix_kind kind_of(const pf_result *r)
+{
+    const fix_info *f = fix_lookup(r->id);
+    if (!f) return FIX_UNKNOWN;
+    /* A restart is offered once. Still there after it: nothing we can do. */
+    if (f->kind == FIX_RESTART && g_resumed) return FIX_CANNOT;
+    return f->kind;
+}
+
+/* What the one button on the stop page would do: 1 if anything shown is
+ * something a program can fix, 2 if one of those needs a restart. */
+static int fixable_now(void)
+{
+    int any = 0;
+    for (int i = 0; i < g_report.n; i++) {
+        if (g_report.results[i].sev != PF_BLOCK) continue;
+        fix_kind k = kind_of(&g_report.results[i]);
+        /* Something nothing can fix is there too: fixing the rest (and
+         * restarting somebody's PC for it) would change nothing. */
+        if (k == FIX_CANNOT) return 0;
+        if (k == FIX_RESTART) any = 2;
+        if (k == FIX_AUTO && !any) any = 1;
+    }
+    return any;
+}
+
+static DWORD WINAPI fix_worker(LPVOID p)
+{
+    (void)p;
+    /* The ids were copied out on the UI thread before this started; the
+     * report itself is only ever touched there. */
+    int restart = 0;
+    for (int i = 0; i < g_fx_n; i++) {
+        const fix_info *f = fix_lookup(g_fx[i].id);
+        if (!f) continue;
+        if (f->kind == FIX_RESTART) { restart = !g_resumed; continue; }
+        if (f->kind != FIX_AUTO) continue;
+        g_fx[i].state = FS_RUNNING;
+        char why[200] = "";
+        if (fix_run(g_fx[i].id, why, sizeof why) == 0) g_fx[i].state = FS_DONE;
+        else {
+            MultiByteToWideChar(CP_UTF8, 0, why, -1, g_fx[i].why, 199);
+            g_fx[i].state = FS_FAILED;
+        }
+    }
+    /* LAST, AND ONCE: every other fix is done first so the restart is the
+     * only one, and the installer opens again after it (fix.h). */
+    if (restart) {
+        char why[200] = "";
+        for (int i = 0; i < g_fx_n; i++) {
+            const fix_info *f = fix_lookup(g_fx[i].id);
+            if (f && f->kind == FIX_RESTART) g_fx[i].state = FS_RUNNING;
+        }
+        g_restarting = 1;
+        if (fix_restart_and_continue(why, sizeof why) != 0) {
+            g_restarting = 0;
+            for (int i = 0; i < g_fx_n; i++) {
+                const fix_info *f = fix_lookup(g_fx[i].id);
+                if (f && f->kind == FIX_RESTART) {
+                    MultiByteToWideChar(CP_UTF8, 0, why, -1, g_fx[i].why, 199);
+                    g_fx[i].state = FS_FAILED;
+                }
+            }
+        }
+    }
+    InterlockedExchange(&g_fix_busy, 0);
+    g_bg_ticks = 1000;                 /* check again straight away */
+    return 0;
+}
+
+static int any_cannot(void)
+{
+    for (int i = 0; i < g_report.n; i++)
+        if (g_report.results[i].sev == PF_BLOCK && kind_of(&g_report.results[i]) == FIX_CANNOT)
+            return 1;
+    return 0;
+}
+
+static void fix_start(void)
+{
+    if (!fixable_now()) return;
+    if (InterlockedCompareExchange(&g_fix_busy, 1, 0) != 0) return;
+    for (int i = 0; i < g_report.n; i++) {
+        if (g_report.results[i].sev != PF_BLOCK) continue;
+        fix_kind k = kind_of(&g_report.results[i]);
+        if (k != FIX_AUTO && k != FIX_RESTART) continue;
+        int j = fx_index(g_report.results[i].id);
+        if (j >= 0) { g_fx[j].state = FS_NONE; g_fx[j].after = 0; g_fx[j].why[0] = 0; }
+    }
+    HANDLE h = CreateThread(NULL, 0, fix_worker, NULL, 0, NULL);
+    if (h) CloseHandle(h);
+    else InterlockedExchange(&g_fix_busy, 0);
+}
+
+static DWORD WINAPI bg_worker(LPVOID p)
+{
+    (void)p;
+    pf_run(&g_bg_report);              /* read-only, by contract */
+    InterlockedExchange(&g_bg_state, 2);
+    return 0;
+}
+
+/* The quiet re-check, from tick(): every few seconds while the stop page
+ * is up and nothing is being fixed. When it comes back clean the page
+ * moves on by itself. */
+static int bg_recheck_tick(void)
+{
+    if (InterlockedCompareExchange(&g_bg_state, 0, 2) == 2) {
+        memcpy(&g_report, &g_bg_report, sizeof g_report);
+        g_pf_valid = 1;
+        g_bg_ticks = 0;
+        /* a fix that has run, and been checked since */
+        for (int i = 0; i < g_fx_n; i++) if (g_fx[i].state == FS_DONE) g_fx[i].after = 1;
+        return 1;
+    }
+    if (g_fix_busy || g_bg_state != 0) return 0;
+    if (++g_bg_ticks < 50) return 0;   /* about three seconds */
+    g_bg_ticks = 0;
+    if (InterlockedCompareExchange(&g_bg_state, 1, 0) != 0) return 0;
+    memset(&g_bg_report, 0, sizeof g_bg_report);
+    HANDLE h = CreateThread(NULL, 0, bg_worker, NULL, 0, NULL);
+    if (h) CloseHandle(h);
+    else InterlockedExchange(&g_bg_state, 0);
+    return 0;
 }
 
 /* The checklist the CHECKING page shows. Every id preflight can emit is
@@ -1896,44 +2054,83 @@ static int block_card(const pf_result *r, int x, int y, int w)
 static int page_blocked(int x, int y, int w)
 {
     int y0 = y;
-    y += text_draw(L"We have stopped, and nothing has been changed",
-                   g_f_title, C_FG_HI, x, y, w, DT_WORDBREAK) + S(14);
-    y += text_draw(L"There is something about this PC that we cannot work around "
-                   L"safely. This PC is exactly as it was a moment ago — no drive, "
-                   L"no file and no setting has been touched.",
-                   g_f_body, C_FG, x, y, w > S(680) ? S(680) : w, DT_WORDBREAK) + S(26);
-
+    int narrow = w > S(720) ? S(720) : w;
+    int cannot = 0, other = 0;
     for (int i = 0; i < g_report.n; i++) {
         if (g_report.results[i].sev != PF_BLOCK) continue;
-        y += block_card(&g_report.results[i], x, y, w) + S(14);
+        fix_kind k = kind_of(&g_report.results[i]);
+        if (k == FIX_CANNOT) cannot++; else other++;
     }
+    (void)other;
+    y += text_draw(!cannot ? L"Almost there. A few things first"
+                           : L"AurOS can\u2019t go on this PC yet",
+                   g_f_title, C_FG_HI, x, y, w, DT_WORDBREAK) + S(10);
+    y += text_draw(L"Nothing on this PC has been changed.",
+                   g_f_body, C_SUBTLE, x, y, narrow, DT_WORDBREAK) + S(22);
 
-    /* warnings are shown here too, quietly: if the user fixes the blocks
-     * they will meet these next, and surprises are how trust is lost */
-    int shown_warn_head = 0;
+    /* What cannot be fixed first: it is the answer, and the rest waits
+     * on it. */
+    for (int pass = 0; pass < 2; pass++)
     for (int i = 0; i < g_report.n; i++) {
-        if (g_report.results[i].sev != PF_WARN) continue;
-        if (!shown_warn_head) {
-            y += S(12);
-            y += text_draw(L"Also worth knowing", g_f_smallb, C_WARM, x, y, w,
-                           DT_SINGLELINE) + S(10);
-            shown_warn_head = 1;
+        const pf_result *r = &g_report.results[i];
+        if (r->sev != PF_BLOCK) continue;
+        if ((kind_of(r) == FIX_CANNOT) != (pass == 0)) continue;
+        /* The Secure Boot setting keeps its card: it has a picture of the
+         * one switch to find, and a picture is the fix. */
+        if (!strcmp(r->id, SBDB_BLOCK_ID)) {
+            y += block_card(r, x, y, narrow) + S(12);
+            continue;
         }
-        wchar_t t[128], d[600];
-        a2w(g_report.results[i].title, t, 128);
-        a2w(g_report.results[i].detail, d, 600);
-        int th = text_draw(t, g_f_bodyb, C_WARM, x + S(16), y, w - S(32), DT_WORDBREAK);
-        int dh = text_draw(d, g_f_small, C_SUBTLE, x + S(16), y + th + S(2),
-                           w - S(32), DT_WORDBREAK);
-        y += th + dh + S(16);
+        const fix_info *f = fix_lookup(r->id);
+        wchar_t prob[160], fix[600];
+        if (f) {
+            wcsncpy(prob, f->problem, 159); prob[159] = 0;
+            wcsncpy(fix, f->fix, 599);      fix[599] = 0;
+        } else {
+            a2w(r->title, prob, 160);
+            a2w(r->remedy, fix, 600);
+        }
+        uint32_t dot = C_ERR;
+        int j = -1;
+        for (int k = 0; k < g_fx_n; k++) if (!strcmp(g_fx[k].id, r->id)) j = k;
+        fix_kind k = kind_of(r);
+        if (cannot && k != FIX_CANNOT && f) {
+            wcsncpy(fix, f->kind == FIX_WAIT ? f->fix
+                         : L"We\u2019ll fix this one once the red ones are sorted.", 599);
+            fix[599] = 0;
+        }
+        if (k == FIX_AUTO || k == FIX_RESTART) dot = C_WARM;
+        if (k == FIX_WAIT) dot = C_ACCENT_ALT;
+        if (f && f->kind == FIX_RESTART && k == FIX_CANNOT)
+            wcscpy(fix, L"Restarting didn\u2019t clear it, so AurOS can\u2019t go on this PC yet.");
+        if (j >= 0 && g_fx[j].state == FS_RUNNING) {
+            wcscpy(fix, f && f->kind == FIX_RESTART
+                        ? L"Restarting Windows now. This installer opens again by itself."
+                        : L"Fixing it now\u2026");
+            dot = C_ACCENT;
+        } else if (j >= 0 && g_fx[j].state == FS_DONE && g_fx[j].after && f && f->after) {
+            wcsncpy(fix, f->after, 599); fix[599] = 0;
+            dot = C_ACCENT;
+        } else if (j >= 0 && g_fx[j].state == FS_DONE) {
+            wcscpy(fix, L"Done. Checking again\u2026");
+            dot = C_ACCENT;
+        } else if (j >= 0 && g_fx[j].state == FS_FAILED) {
+            _snwprintf(fix, 599, L"We couldn\u2019t fix this: %ls", g_fx[j].why);
+            fix[599] = 0;
+        }
+        int ph = text_h(prob, g_f_bodyb, narrow - S(34), DT_WORDBREAK);
+        int fh = text_h(fix, g_f_small, narrow - S(34), DT_WORDBREAK);
+        int h = S(14) + ph + S(4) + fh + S(14);
+        fill_rr((float)x, (float)y, (float)narrow, (float)h, (float)S(12),
+                C_SURFACE_HI, 0.7f);
+        fill_rr((float)(x + S(14)), (float)(y + S(19)), (float)S(10), (float)S(10),
+                (float)S(5), dot, 1.f);
+        text_draw(prob, g_f_bodyb, C_FG_HI, x + S(34), y + S(14), narrow - S(48),
+                  DT_WORDBREAK);
+        text_draw(fix, g_f_small, C_SUBTLE, x + S(34), y + S(14) + ph + S(4),
+                  narrow - S(48), DT_WORDBREAK);
+        y += h + S(10);
     }
-
-    y += S(10);
-    y += text_draw(L"There is no way past this screen. That is deliberate: it is the "
-                   L"difference between an install we refused and a photo library we "
-                   L"lost. Fix what is listed above and press Check again — or close "
-                   L"this and carry on using Windows exactly as before.",
-                   g_f_small, C_MUTED, x, y, w > S(680) ? S(680) : w, DT_WORDBREAK);
     return y - y0;
 }
 
@@ -2755,7 +2952,7 @@ static int primary_enabled(void)
     switch (g_page) {
     case PAGE_WELCOME:     return 1;
     case PAGE_CHECKING:    return g_pf_valid && g_reveal >= N_CHK && pf_is_go(&g_report);
-    case PAGE_BLOCKED:     return 1;
+    case PAGE_BLOCKED:     return !g_fix_busy;
     case PAGE_BACKUP:      return nav_allowed(PAGE_CONSENT);
     case PAGE_CONSENT:     return nav_allowed(PAGE_READY);
     case PAGE_READY:       return nav_allowed(PAGE_PROGRESS);
@@ -2769,7 +2966,8 @@ static const wchar_t *primary_label(void)
     switch (g_page) {
     case PAGE_WELCOME:     return L"Get started";
     case PAGE_CHECKING:    return L"Continue";
-    case PAGE_BLOCKED:     return L"Check again";
+    case PAGE_BLOCKED:     return g_fix_busy ? L"Fixing\u2026"
+                                : fixable_now() ? L"Fix these for me" : L"Check again";
     case PAGE_BACKUP:      return L"Continue";
     case PAGE_CONSENT:     return L"I agree — continue";
     case PAGE_CHOOSE:      return L"Continue";
@@ -2790,7 +2988,10 @@ static const wchar_t *footer_hint(void)
     case PAGE_CHECKING:
         return L"Reading only. Nothing on this PC is written to.";
     case PAGE_BLOCKED:
-        return L"Nothing has been changed. You can close this and keep using Windows.";
+        return any_cannot()       ? L"Nothing on this PC was changed. You can close this."
+             : fixable_now() == 2 ? L"The PC restarts once; this opens again by itself."
+             : fixable_now()      ? L"When it\u2019s fixed, we carry on by ourselves."
+                                  : L"We check again every few seconds, by ourselves.";
     case PAGE_BACKUP:
         return L"Both need to be true before we can go on.";
     case PAGE_CONSENT:
@@ -2990,7 +3191,9 @@ static void do_primary(void)
     if (!primary_enabled()) { MessageBeep(MB_ICONASTERISK); return; }
     switch (g_page) {
     case PAGE_WELCOME:     start_check(PAGE_BACKUP); break;
-    case PAGE_BLOCKED:     start_check(PAGE_BACKUP); break;
+    case PAGE_BLOCKED:     if (fixable_now()) fix_start();
+                           else start_check(PAGE_BACKUP);
+                           break;
     case PAGE_CHECKING:    check_advance(); if (g_page == PAGE_CHECKING)
                                goto_page(PAGE_BACKUP);
                            break;
@@ -3040,6 +3243,30 @@ static void widget_activate(int id)
     if (id >= ID_TZ)    { g_sel_tz    = id - ID_TZ;    return; }
     if (id >= ID_KBD)   { g_sel_kbd   = id - ID_KBD;   return; }
     if (id >= ID_LANG)  { g_sel_lang  = id - ID_LANG;  return; }
+}
+
+/* The part of the screen a window may use (without the taskbar), on the
+ * monitor `h` is on, or the main one before there is a window. */
+static int work_area(HWND h, RECT *wa)
+{
+    HMONITOR mon = h ? MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST)
+                     : MonitorFromPoint((POINT){ 0, 0 }, MONITOR_DEFAULTTOPRIMARY);
+    MONITORINFO mi;
+    mi.cbSize = sizeof mi;
+    if (mon && GetMonitorInfoW(mon, &mi)) { *wa = mi.rcWork; return 1; }
+    return SystemParametersInfoW(SPI_GETWORKAREA, 0, wa, 0) ? 1 : 0;
+}
+
+/* The scroll bar: where its track is, and whether it is being dragged.
+ * A bar that only moved with the wheel was a bar people could not use:
+ * a touchpad without scrolling, or somebody who expects to drag it. */
+static int g_drag_bar = 0, g_drag_y0 = 0, g_drag_s0 = 0;
+
+static int on_scroll_track(int x, int y)
+{
+    if (g_content_h <= g_view_h) return 0;
+    int tx = g_card.right - S(13);
+    return x >= tx - S(8) && x <= tx + S(14) && y >= g_body.top && y <= g_body.bottom;
 }
 
 static void scroll_by(int dy)
@@ -3262,6 +3489,12 @@ static void tick(void)
         need = 1;
     } else if (g_page == PAGE_CONSENT) {
         need = 1;                      /* caret blink */
+    } else if (g_page == PAGE_BLOCKED && !g_selftest) {
+        if (bg_recheck_tick()) {
+            /* Everything is clear now: go on, the way a clean check does. */
+            if (g_report.n_block == 0) goto_page(PAGE_BACKUP);
+        }
+        need = 1;
     }
 
     if (g_selftest) {
@@ -3342,6 +3575,14 @@ static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM wp, LPARAM lp)
         MINMAXINFO *mm = (MINMAXINFO *)lp;
         mm->ptMinTrackSize.x = S(920);
         mm->ptMinTrackSize.y = S(640);
+        /* Never bigger than the screen: a minimum taller than a small
+         * laptop's screen put the bottom of every page, and the buttons,
+         * where nobody could reach them. */
+        RECT wa;
+        if (work_area(h, &wa)) {
+            if (mm->ptMinTrackSize.x > wa.right - wa.left) mm->ptMinTrackSize.x = wa.right - wa.left;
+            if (mm->ptMinTrackSize.y > wa.bottom - wa.top) mm->ptMinTrackSize.y = wa.bottom - wa.top;
+        }
         return 0;
     }
 
@@ -3375,6 +3616,16 @@ static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM wp, LPARAM lp)
 
     case WM_MOUSEMOVE: {
         g_mouse.x = GET_X_LPARAM(lp); g_mouse.y = GET_Y_LPARAM(lp);
+        if (g_drag_bar) {
+            int room = g_view_h > 0 ? g_view_h : 1;
+            int m = scroll_max();
+            g_scroll[g_page] = g_drag_s0 + (int)((long long)(g_mouse.y - g_drag_y0)
+                                                 * g_content_h / room);
+            if (g_scroll[g_page] > m) g_scroll[g_page] = m;
+            if (g_scroll[g_page] < 0) g_scroll[g_page] = 0;
+            InvalidateRect(h, NULL, FALSE);
+            return 0;
+        }
         int hot = w_find_at(g_mouse.x, g_mouse.y);
         if (hot != g_hot_idx) { g_hot_idx = hot; InvalidateRect(h, NULL, FALSE); }
         return 0;
@@ -3387,6 +3638,18 @@ static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM wp, LPARAM lp)
 
     case WM_LBUTTONDOWN:
         g_mouse.x = GET_X_LPARAM(lp); g_mouse.y = GET_Y_LPARAM(lp);
+        if (on_scroll_track(g_mouse.x, g_mouse.y)) {
+            /* a press on the track jumps there, then drags from there */
+            int m = scroll_max();
+            int span = g_body.bottom - g_body.top;
+            if (span > 0) g_scroll[g_page] = (int)((long long)(g_mouse.y - g_body.top) * m / span);
+            if (g_scroll[g_page] > m) g_scroll[g_page] = m;
+            if (g_scroll[g_page] < 0) g_scroll[g_page] = 0;
+            g_drag_bar = 1; g_drag_y0 = g_mouse.y; g_drag_s0 = g_scroll[g_page];
+            SetCapture(h);
+            InvalidateRect(h, NULL, FALSE);
+            return 0;
+        }
         g_mouse_down = 1;
         g_press_idx  = w_find_at(g_mouse.x, g_mouse.y);
         if (g_press_idx >= 0) { g_focus = g_press_idx; g_focus_ring = 0; }
@@ -3396,6 +3659,11 @@ static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM wp, LPARAM lp)
 
     case WM_LBUTTONUP: {
         g_mouse.x = GET_X_LPARAM(lp); g_mouse.y = GET_Y_LPARAM(lp);
+        if (g_drag_bar) {
+            g_drag_bar = 0;
+            ReleaseCapture();
+            return 0;
+        }
         g_mouse_down = 0;
         ReleaseCapture();
         int up = w_find_at(g_mouse.x, g_mouse.y);
@@ -3765,6 +4033,56 @@ static int nav_test(const char *dir)
         nt_check(!nav_allowed((page_id)p),
                  "every page past the checklist closes again");
 
+    if (g_nt) fprintf(g_nt, "\n5. the stop page fixes what it can, in a few words\n");
+    {
+        int ok = 1, n = 0;
+        for (const fix_info *f; (f = fix_at(n)) != NULL; n++) {
+            if (!f->problem[0] || !f->fix[0] || wcslen(f->problem) > 60 || wcslen(f->fix) > 90)
+                ok = 0;
+            if (f->kind == FIX_AUTO && (!f->after || !f->after[0])) ok = 0;
+            if (f->kind == FIX_UNKNOWN) ok = 0;
+        }
+        nt_check(ok && n > 10, "every known problem has one short line, and one short fix");
+    }
+    {
+        static const char *ids[] = { "not-on-ac", "insufficient-space", "removable-attached",
+                                     "test-block", "firmware-bios" };
+        memset(&g_report, 0, sizeof g_report);
+        g_report.system_disk = -1;
+        for (int i = 0; i < 5; i++) {
+            snprintf(g_report.results[i].id, sizeof g_report.results[i].id, "%s", ids[i]);
+            snprintf(g_report.results[i].title, sizeof g_report.results[i].title,
+                     "a synthetic problem");
+            snprintf(g_report.results[i].remedy, sizeof g_report.results[i].remedy,
+                     "a synthetic remedy");
+            g_report.results[i].sev = PF_BLOCK;
+        }
+        g_report.n = 4; g_report.n_block = 4;
+        g_pf_valid = 1;
+        g_page = PAGE_BLOCKED;
+        nt_check(fixable_now() == 1 && !wcscmp(primary_label(), L"Fix these for me"),
+                 "something a program can fix: the button fixes it");
+        g_page = PAGE_BLOCKED; g_scroll[PAGE_BLOCKED] = 0;
+        render();
+        snprintf(g_report.results[1].id, sizeof g_report.results[1].id, "pending-reboot");
+        nt_check(fixable_now() == 2, "a waiting restart is something the button does");
+        g_report.n = 5; g_report.n_block = 5;
+        nt_check(fixable_now() == 0 && !wcscmp(primary_label(), L"Check again"),
+                 "next to something unfixable, nothing is fixed and nothing restarts");
+        g_scroll[PAGE_BLOCKED] = 0;
+        render();
+        nt_check(g_content_h > 0 && g_content_h <= g_view_h,
+                 "five problems fit on the page without scrolling");
+        g_report.n = 4; g_report.n_block = 4;
+        snprintf(g_report.results[1].id, sizeof g_report.results[1].id, "battery-low");
+        nt_check(fixable_now() == 0 && !wcscmp(primary_label(), L"Check again"),
+                 "nothing a program can fix: the button only checks again");
+        g_view_h = 300; g_content_h = 900; g_scroll[PAGE_BLOCKED] = 0;
+        scroll_by(10000);
+        nt_check(g_scroll[PAGE_BLOCKED] == 600, "a long page scrolls to its end, and no further");
+        g_scroll[PAGE_BLOCKED] = 0;
+    }
+
     if (g_nt) {
         fprintf(g_nt, "\n%s (%d failures)\n", g_nt_fail ? "FAILED" : "ALL PASS", g_nt_fail);
         fclose(g_nt);
@@ -3782,8 +4100,10 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
      * Gate them behind a build flag before the first signed release
      * anyway — a shipped installer should have no undocumented modes. */
     const char *shot = NULL, *navtest = NULL;
+    int resume = 0;
     for (int i = 1; i < __argc; i++) {
-        if (!strcmp(__argv[i], "--shot") && i + 1 < __argc) shot = __argv[++i];
+        if (!strcmp(__argv[i], "--resume")) resume = 1;
+        else if (!strcmp(__argv[i], "--shot") && i + 1 < __argc) shot = __argv[++i];
         else if (!strcmp(__argv[i], "--navtest") && i + 1 < __argc) navtest = __argv[++i];
         else if (!strcmp(__argv[i], "--selftest") && i + 1 < __argc) {
             g_selftest = 1;
@@ -3795,6 +4115,20 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
     dpi_opt_in();
     if (shot) return shot_run(shot);
     if (navtest) return nav_test(navtest);
+
+    /* ONE INSTALLER AT A TIME. After a restart the installer opens itself
+     * (fix.h); somebody who also double-clicks it must not get two
+     * installers working on one disk. The second one says so and goes. */
+    HANDLE one = CreateMutexW(NULL, TRUE, L"Local\\AurOSInstaller");
+    if (one && GetLastError() == ERROR_ALREADY_EXISTS && !g_selftest) {
+        MessageBoxW(NULL, L"The AurOS installer is already open.", L"Install AurOS",
+                    MB_OK | MB_ICONINFORMATION);
+        return 0;
+    }
+
+    /* The task that opened this after a restart has done its job; take it
+     * away first, whether this start came from it or from a double-click. */
+    if (!g_selftest) fix_resume_done();
 
     detect_defaults();
 
@@ -3814,10 +4148,16 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
     RECT r = { 0, 0, S(1120), S(760) };
     AdjustWindowRect(&r, WS_OVERLAPPEDWINDOW, FALSE);
     int ww = r.right - r.left, wh = r.bottom - r.top;
-    int sx = (GetSystemMetrics(SM_CXSCREEN) - ww) / 2;
-    int sy = (GetSystemMetrics(SM_CYSCREEN) - wh) / 2;
-    if (sx < 0) sx = 0;
-    if (sy < 0) sy = 0;
+    /* Fit the screen, taskbar excluded. Taller than the screen, the page
+     * had nothing to scroll (it all "fitted" in a window whose bottom
+     * was off the screen) and its buttons could not be pressed. */
+    RECT wa;
+    if (!work_area(NULL, &wa)) SetRect(&wa, 0, 0, GetSystemMetrics(SM_CXSCREEN),
+                                       GetSystemMetrics(SM_CYSCREEN));
+    if (ww > wa.right - wa.left) ww = wa.right - wa.left;
+    if (wh > wa.bottom - wa.top) wh = wa.bottom - wa.top;
+    int sx = wa.left + ((wa.right - wa.left) - ww) / 2;
+    int sy = wa.top + ((wa.bottom - wa.top) - wh) / 2;
 
     HWND h = CreateWindowExW(0, wc.lpszClassName, L"Install AurOS",
                              WS_OVERLAPPEDWINDOW, sx, sy, ww, wh,
@@ -3826,6 +4166,13 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
 
     ShowWindow(h, g_selftest ? SW_SHOWNOACTIVATE : show);
     UpdateWindow(h);
+    /* Opened again after the restart it asked for: carry on where it
+     * stopped, with the check (which is where it stopped). */
+    if (resume && !g_selftest) {
+        g_resumed = 1;
+        SetForegroundWindow(h);
+        start_check(PAGE_BACKUP);
+    }
 
     MSG msg;
     if (g_selftest) {
