@@ -93,10 +93,10 @@ are given:
 
 https://github.com/ComputerDude771/auros-from-scratch/raw/image-desktop/AurOS-Installer-test.exe
 
-Right now: installer `04089423` (built from `ed67e18`), which downloads
-the v3 image `5dee5f44` from `image-desktop/v3/`. `windows.yml`'s
-`PUBLISHED_SHA256` and `IMAGE_*` are pinned to them; change them in the
-same commit as the files.
+Right now: installer `ef903efd` (built from `8593f7f`), which downloads
+the v4 image `b3610065` (5,333,057,536 bytes) from `image-desktop/v4/`.
+`windows.yml`'s `PUBLISHED_SHA256` and `IMAGE_*` are pinned to them;
+change them in the same commit as the files.
 
 ## What the user has asked for, standing
 
