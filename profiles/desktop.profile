@@ -92,7 +92,10 @@ packages_hardware="linux-image-generic linux-firmware
                    pciutils usbutils"
 
 # Boot chain. Signed, so Secure Boot does not have to be disabled.
-packages_boot="shim-signed grub-efi-amd64-signed grub-efi-amd64
+# python3-cryptography: auros-bootchain checks a new shim's signatures
+# the way firmware does before it installs one (sbverify trusts the
+# certificates a signature carries, so it cannot be the check).
+packages_boot="shim-signed grub-efi-amd64-signed grub-efi-amd64 python3-cryptography
                efibootmgr os-prober"
 
 # Minimum userland for a system that can repair and explain itself.

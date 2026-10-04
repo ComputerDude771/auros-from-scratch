@@ -89,6 +89,21 @@ S=$( { say "" "Putting Windows back." ; printf 'aurstage-progress 80\n'; } | st 
 case "$S" in "mode=1 "*"pct=80 "*"stopped=0"*) ok "a restore: its own mode, its own bar" ;;
     *) bad "a restore: its own mode, its own bar" "$S" ;; esac
 
+S=$( { say "" "── putting Windows back ──" \
+        "WARNING: there is no saved copy of this computer's Windows startup" \
+        "         Nothing has been changed." \
+        "aurstage-report v1 verdict=restore-nothing-saved record=none -"; } | st restore)
+case "$S" in *"stopped=1 "*"para=There is no saved copy"*) ok "a restore with nothing saved: stopped, and says why" ;;
+    *) bad "a restore with nothing saved: stopped, and says why" "$S" ;; esac
+S=$( { say "WARNING: no readable saved copy of this computer's Windows startup" \
+        "aurstage-report v1 verdict=restore-no-usable-copy record=none -"; } | st restore)
+case "$S" in *"stopped=1 "*) ok "a restore with no usable copy: stopped" ;;
+    *) bad "a restore with no usable copy: stopped" "$S" ;; esac
+S=$( { say "restoring /dev/vda" "" "aurstage-report v1 verdict=restored record=done -" "" \
+        "Windows is back. This computer will switch itself off;"; } | st restore)
+case "$S" in *"stopped=0 "*"finished=1 "*"para=Windows is back."*) ok "a restore that worked: finished, not stopped" ;;
+    *) bad "a restore that worked: finished, not stopped" "$S" ;; esac
+
 S=$( { head -c 20000 /dev/urandom; printf '\naurstage-progress 999\naurstage-progress -5\n'; } | st install)
 case "$S" in *"pct=0 "*) ok "garbage and out-of-range numbers: no crash, clamped" ;;
     *) bad "garbage and out-of-range numbers: no crash, clamped" "$S" ;; esac

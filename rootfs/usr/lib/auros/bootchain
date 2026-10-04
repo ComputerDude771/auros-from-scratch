@@ -6,7 +6,8 @@
 #    bootchain menu    write /boot/grub/grub.cfg from grub.cfg.in
 #    bootchain sync    put Ubuntu's newest signed shim + grub on
 #                      AurOS's own EFI partition, if this firmware
-#                      will start them
+#                      will start them AND they will start everything
+#                      this computer needs to start
 #    bootchain status  say what is installed, what is waiting, and why
 #
 #  WHY IT EXISTS. Ubuntu's kernel, grub and shim packages update the
@@ -14,45 +15,56 @@
 #  grub-install. On AurOS both are wrong:
 #
 #    - update-grub regenerates grub.cfg from /etc/grub.d. AurOS's menu
-#      is written by hand (build/mkimage), and the generated one has no
-#      "Put Windows back" and no Windows entry: the first kernel
-#      security update would take away the way back, silently.
+#      is its own, and the generated one has no "Put Windows back" and
+#      no Windows entry: the first kernel security update would take
+#      away the way back, silently.
 #    - grub-install writes to /boot/efi/EFI/ubuntu, which is not where
 #      AurOS's firmware entry points, so new shims and grubs would never
 #      be used -- and it adds its own entry at the head of BootOrder,
 #      which only `aurfirst confirm` may write.
 #
-#  So the image diverts both (build/forge, stage 4) to this. With them
-#  diverted, the kernel, grub and shim can come in with every other
-#  security update, which is what 51auros-unattended used to forbid.
+#  So the image diverts both (build/forge, stage 3) to this, and the
+#  kernel, grub and shim take security updates like everything else.
 #
-#  THE THREE GATES `sync` WILL NOT SKIP. A shim the firmware does not
-#  trust, or a grub the shim refuses, is a computer that starts nothing,
-#  on a machine whose person has no idea what a shim is. So before a
-#  byte is written:
+#  WHAT `sync` CHECKS BEFORE A BYTE IS WRITTEN. A shim the firmware does
+#  not trust, or one that refuses what it has to start, is a computer
+#  that starts nothing, owned by somebody who has never heard of a shim.
+#  Every check below is the firmware's or shim's own rule, done here
+#  first, against this machine's own variables:
 #
-#    1. trust: the candidate shim carries a signature that chains to a
-#       certificate in this firmware's db, and to nothing in its dbx --
-#       and its own hash is not in dbx. This is what the Microsoft 2011
-#       -> 2023 key change is about: Canonical's next shims are signed
-#       with the 2023 key only, and a PC whose db never got that key
-#       must keep the shim it has.
-#    2. SBAT: the candidate grub is not revoked by the candidate shim's
-#       own revocation level, nor by the level already in this
-#       firmware's NVRAM (which Windows Update also writes). The
-#       candidate shim is not revoked by the NVRAM level either.
-#    3. pair: shim and grub go down together, grub first. A power cut
-#       between the two leaves new grub + old shim, which starts: the
-#       old shim's level is lower, so it accepts the newer grub. The
-#       other order could leave a new shim that revokes the old grub.
+#    1. the firmware will start the shim. One of its signatures must be
+#       VALID -- the file's Authenticode digest is the signed one, the
+#       signed attributes verify under the signer's key -- and its
+#       signer must chain to a certificate in db. If ANY signature
+#       chains to dbx, or the file's hash is in dbx, the firmware
+#       refuses the whole image (EDK2's DxeImageVerificationLib), so we
+#       do too. sbverify cannot be this check: it trusts the
+#       certificates a signature carries, and passes a shim against a
+#       certificate made up a moment ago. This is the Microsoft
+#       2011 -> 2023 change: a PC whose db never got the 2023 key keeps
+#       the shim it has.
+#    2. the new shim will start everything this machine starts through
+#       it: the grub, every kernel in the menu, and the restore kernel
+#       the installer left on Windows' EFI partition (which AurOS can
+#       never update). Each must chain to the shim's own vendor
+#       certificate (or db), be revoked by neither its vendor dbx nor
+#       the firmware's dbx, and pass SBAT at the shim's own "latest"
+#       level and the level already in NVRAM. The shim WRITES its level
+#       into NVRAM the first time it runs, and nothing lowers it again
+#       -- so a shim newer than the grub it ships with is a machine that
+#       is broken for good, not until the next update.
+#    3. the pair goes down together, grub first, everything synced to
+#       the disk before the shim is touched. A power cut between the two
+#       leaves new grub + old shim, which starts: the old shim's level
+#       is the lower one.
 #
 #  A refusal changes nothing on disk and is not an error to apt: the
-#  machine keeps the pair it starts with today, and `status` says so.
+#  machine keeps the pair it starts with today, and `status` says why.
 # ═══════════════════════════════════════════════════════════════════
+import glob
 import hashlib
 import os
 import re
-import shutil
 import struct
 import subprocess
 import sys
@@ -65,15 +77,15 @@ GRUBCFG = "boot/grub/grub.cfg"
 THEMECFG = "etc/auros/grub-theme.cfg"
 STATE = "var/lib/auros/bootchain.state"
 
-# Same order as build/mkimage, which picks the first that exists. Here
-# the first that passes every gate wins, so a future archive whose
-# dualsigned shim is gone still offers the others.
-SHIM_CANDIDATES = [
-    "usr/lib/shim/shimx64.efi.dualsigned",
-    "usr/lib/shim/shimx64.efi.signed.latest",
-    "usr/lib/shim/shimx64.efi.signed",
-    "usr/lib/shim/shimx64.efi.signed.previous",
-]
+# Most wanted first; the first that passes every check wins. .previous
+# only when Ubuntu's own shim-signed postinst chose it (update-
+# alternatives' "Best"): it does that when an installed kernel is
+# signed with a key the newer shim revokes, and installing the newer
+# one anyway would undo that decision.
+SHIM_LATEST = ["usr/lib/shim/shimx64.efi.dualsigned",
+               "usr/lib/shim/shimx64.efi.signed.latest"]
+SHIM_PREVIOUS = "usr/lib/shim/shimx64.efi.signed.previous"
+SHIM_ALTERNATIVE = "usr/lib/shim/shimx64.efi.signed"
 GRUB_CANDIDATE = "usr/lib/grub/x86_64-efi-signed/grubx64.efi.signed"
 MOKMGR = "usr/lib/shim/mmx64.efi"
 FALLBACK = "usr/lib/shim/fbx64.efi"
@@ -83,6 +95,8 @@ EFI_IMAGE_SECURITY = "d719b2cb-3d3a-4596-a3bc-dad00e67656f"
 SHIM_LOCK = "605dab50-e046-4300-abb6-3dd810dd8b23"
 CERT_X509 = bytes.fromhex("a159c0a5e494a74a87b5ab155c2bf072")
 CERT_SHA256 = bytes.fromhex("2616c4c14c509240aca941f936934328")
+CERT_X509_SHA256 = bytes.fromhex("92a4d23bc0967940b420fcf98ef103ed")
+ESP_TYPE = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b"
 
 
 def die(msg, code=1):
@@ -91,8 +105,12 @@ def die(msg, code=1):
 
 
 def write_atomic(path, data, mode=0o644):
-    """Write PATH so that a reader -- or a power cut -- sees the old
-    file or the new one, never half of either."""
+    """PATH holds the old bytes or the new ones, never half of either.
+
+    On vfat a rename reuses the target's directory slot and frees the
+    old file's clusters, and fsync of the directory does not write the
+    renamed file's entry -- so the new file, the directory and then the
+    whole filesystem are synced before and after the rename."""
     d = os.path.dirname(path)
     os.makedirs(d, exist_ok=True)
     fd, tmp = tempfile.mkstemp(prefix=".bootchain.", dir=d)
@@ -105,6 +123,7 @@ def write_atomic(path, data, mode=0o644):
             os.chmod(tmp, mode)
         except OSError:
             pass                    # vfat: no modes, and that is fine
+        os.sync()
         os.rename(tmp, path)
     except BaseException:
         try:
@@ -112,11 +131,16 @@ def write_atomic(path, data, mode=0o644):
         except OSError:
             pass
         raise
-    dfd = os.open(d, os.O_RDONLY)
-    try:
-        os.fsync(dfd)
-    finally:
-        os.close(dfd)
+    for p in (path, d):
+        try:
+            fd = os.open(p, os.O_RDONLY)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+        except OSError:
+            pass
+    os.sync()
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -136,7 +160,7 @@ def kernels(root):
         if not n.startswith("vmlinuz-"):
             continue
         v = n[len("vmlinuz-"):]
-        if v.endswith((".bak", ".old", ".dpkg-tmp", ".dpkg-new")):
+        if v.endswith((".bak", ".old", ".dpkg-tmp", ".dpkg-new", ".efi.signed")):
             continue
         if os.path.isfile(os.path.join(boot, "initrd.img-" + v)):
             out.append(v)
@@ -145,9 +169,11 @@ def kernels(root):
 
 def root_uuid(root):
     """The UUID grub must search for and the kernel must mount: the one
-    /etc/fstab names for /. build/mkimage writes that line; reading it
-    back means the image build and every later update agree by
-    construction, and neither has to ask the running kernel."""
+    /etc/fstab names for /. build/mkimage writes that line. If somebody
+    has since edited fstab into another shape, the UUID yesterday's
+    menu booted is the next best answer -- failing here fails every
+    kernel postinst, and leaves apt half-configured on a machine nobody
+    is watching."""
     try:
         with open(os.path.join(root, "etc/fstab")) as f:
             for line in f:
@@ -156,12 +182,20 @@ def root_uuid(root):
                     return p[0][5:]
     except OSError:
         pass
+    try:
+        with open(os.path.join(root, GRUBCFG)) as f:
+            m = re.search(r"--fs-uuid --set=root ([0-9A-Fa-f-]{8,64})", f.read())
+            if m:
+                return m.group(1)
+    except OSError:
+        pass
     return None
 
 
 PREVIOUS = """
-# THE KERNEL BEFORE THIS ONE, kept by apt and started automatically if
-# the newest one cannot be (a signature this shim does not accept, a
+# THE KERNEL TO FALL BACK TO -- the one running when this menu was
+# written, or else the one before the newest -- started by grub on its
+# own if the newest cannot be (a signature this shim refuses, a
 # truncated file). Written by auros-bootchain; there is one only when
 # two kernels are installed.
 menuentry 'AurOS (previous kernel, {v})' --class auros --id auros-previous {{
@@ -171,7 +205,32 @@ menuentry 'AurOS (previous kernel, {v})' --class auros --id auros-previous {{
 """
 
 
-def render_menu(root, uuid=None):
+def fallback_index(cfg):
+    """grub's `fallback` takes an entry NUMBER. Ubuntu's grub 2.12 reads
+    it with grub_strtoul and unsets it on anything else
+    (normal/menu.c, get_and_remove_first_entry_number), so
+    `set fallback=auros-previous` -- what this file used to write --
+    was silently nothing, and a kernel that would not start was started
+    again at every timeout, forever. Found by tools/bootupdatetest.sh
+    boot 3 and by review. The number is counted here from the menu as
+    written, and refused if anything conditional comes before it,
+    because then the number would depend on the machine."""
+    n, depth = 0, 0
+    for line in cfg.splitlines():
+        if line.startswith(("if ", "if\t")):
+            depth += 1
+        elif line.startswith("fi"):
+            depth -= 1
+        elif line.startswith(("menuentry ", "submenu ")):
+            if "--id auros-previous" in line:
+                return n
+            if depth:
+                raise ValueError("a conditional menu entry comes before auros-previous")
+            n += 1
+    raise ValueError("no auros-previous entry")
+
+
+def render_menu(root, uuid=None, running=None):
     with open(os.path.join(root, TEMPLATE)) as f:
         t = f.read()
     ks = kernels(root)
@@ -183,13 +242,21 @@ def render_menu(root, uuid=None):
     theme = ""
     if os.path.isfile(os.path.join(root, THEMECFG)):
         theme = "source /" + THEMECFG
-    prev = fallback = ""
+    if running is None:
+        running = os.uname().release
+    prev = ""
     if len(ks) > 1:
-        prev = PREVIOUS.format(v=ks[1], u=uuid)
-        fallback = "set fallback=auros-previous\n"
+        # The kernel this machine is running has been seen to work; the
+        # one before the newest has only been seen to install.
+        back = running if running in ks[1:] else ks[1]
+        prev = PREVIOUS.format(v=back, u=uuid)
     out = (t.replace("@ROOT_UUID@", uuid).replace("@KVER@", ks[0])
-            .replace("@THEME@", theme).replace("@PREVIOUS@", prev)
-            .replace("@FALLBACK@", fallback))
+            .replace("@THEME@", theme).replace("@PREVIOUS@", prev))
+    if prev:
+        out = out.replace("@FALLBACK@", "set fallback=%d\n" % fallback_index(
+            out.replace("@FALLBACK@", "")))
+    else:
+        out = out.replace("@FALLBACK@", "")
     left = re.findall(r"@[A-Z_]+@", out)
     if left:
         raise ValueError("template has placeholders nothing fills: " + " ".join(sorted(set(left))))
@@ -204,7 +271,7 @@ def render_menu(root, uuid=None):
 def cmd_menu(args):
     root = args.get("root", "/")
     try:
-        out, ks = render_menu(root, args.get("root-uuid"))
+        out, ks = render_menu(root, args.get("root-uuid"), args.get("running"))
     except (OSError, ValueError) as e:
         # The old grub.cfg stays. A machine with yesterday's menu starts;
         # a machine with no menu does not.
@@ -212,12 +279,12 @@ def cmd_menu(args):
     path = os.path.join(root, GRUBCFG)
     write_atomic(path, out.encode())
     print("bootchain: grub.cfg: AurOS %s%s" % (
-        ks[0], (", previous %s" % ks[1]) if len(ks) > 1 else ""))
+        ks[0], (", %d kernels" % len(ks)) if len(ks) > 1 else ""))
     return 0
 
 
 # ═══════════════════════════════════════════════════════════════════
-#  PE / Authenticode / SBAT
+#  PE / SBAT
 # ═══════════════════════════════════════════════════════════════════
 class PE:
     def __init__(self, data):
@@ -228,6 +295,7 @@ class PE:
         if data[pe:pe + 4] != b"PE\0\0":
             raise ValueError("no PE signature")
         nsec, = struct.unpack_from("<H", data, pe + 6)
+        symtab, nsym = struct.unpack_from("<II", data, pe + 12)
         optsz, = struct.unpack_from("<H", data, pe + 20)
         opt = pe + 24
         magic, = struct.unpack_from("<H", data, opt)
@@ -242,17 +310,25 @@ class PE:
         self.cert_off, self.cert_size = struct.unpack_from("<II", data, self.certdir_off)
         self.sections = {}
         sh = opt + optsz
+        strtab = symtab + 18 * nsym
         for i in range(nsec):
             o = sh + 40 * i
             name = data[o:o + 8].rstrip(b"\0").decode("latin-1")
+            # A name longer than eight characters is "/N": an offset into
+            # the COFF string table. shim's .sbatlevel and .vendor_cert
+            # are both stored that way, which is how this parser once
+            # found neither and judged every grub against no level at all.
+            if name.startswith("/") and name[1:].isdigit() and symtab:
+                s = strtab + int(name[1:])
+                name = data[s:data.index(b"\0", s)].decode("latin-1")
             vsize, vaddr, rsize, roff = struct.unpack_from("<IIII", data, o + 8)
-            self.sections[name] = data[roff:roff + min(vsize, rsize) if vsize else rsize]
+            self.sections[name] = data[roff:roff + (min(vsize, rsize) if vsize else rsize)]
 
     def authenticode_sha256(self):
-        """The hash dbx lists, computed the way firmware computes it
-        for an image whose certificate table is its last thing -- which
-        is how every signing tool lays one out. tools/bootchaintest.sh
-        checks it against osslsigncode's."""
+        """The digest a signature signs and dbx lists, the way firmware
+        computes it for an image whose certificate table is its last
+        thing -- which is how every signing tool lays one out.
+        tools/bootchaintest.sh checks it against osslsigncode's."""
         d = self.data
         h = hashlib.sha256()
         h.update(d[:self.cksum_off])
@@ -276,6 +352,9 @@ class PE:
                 out.append(self.data[o + 8:o + ln])
             o += (ln + 7) & ~7
         return out
+
+    def sbat(self):
+        return sbat_csv(self.sections.get(".sbat", b"").decode("latin-1"))
 
 
 def sbat_csv(text):
@@ -309,6 +388,22 @@ def shim_levels(pe):
     return sbat_csv(at(op)), sbat_csv(at(ol))
 
 
+def shim_vendor(pe):
+    """(vendor certificates DER, vendor dbx (certs, hashes, tbs-hashes))
+    from shim's .vendor_cert: four u32s -- authorized size, deauthorized
+    size, authorized offset, deauthorized offset -- relative to the
+    section. Ubuntu builds the authorized half as one DER certificate
+    (Canonical's master CA); a build from a signature list is read as
+    one."""
+    s = pe.sections.get(".vendor_cert")
+    if not s or len(s) < 16:
+        return [], ([], set(), set())
+    asz, dsz, aoff, doff = struct.unpack_from("<IIII", s, 0)
+    a = s[aoff:aoff + asz]
+    certs = [a] if a[:1] == b"\x30" else sig_lists(a)[0]
+    return certs, sig_lists(s[doff:doff + dsz])[:3]
+
+
 def revoked_by(binary, level):
     """The (component, has, needs) a level revokes in BINARY, if any."""
     out = []
@@ -316,6 +411,209 @@ def revoked_by(binary, level):
         if name in level and gen < level[name]:
             out.append((name, gen, level[name]))
     return out
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  Authenticode, the way firmware checks it
+# ═══════════════════════════════════════════════════════════════════
+def der(b, o):
+    """(tag, header length, content length) of the DER element at O."""
+    tag = b[o]
+    ln = b[o + 1]
+    if ln < 0x80:
+        return tag, 2, ln
+    n = ln & 0x7F
+    if n == 0 or n > 4:
+        raise ValueError("bad DER length")
+    return tag, 2 + n, int.from_bytes(b[o + 2:o + 2 + n], "big")
+
+
+def children(b, o):
+    """The elements inside the constructed element at O."""
+    tag, h, n = der(b, o)
+    i, end, out = o + h, o + h + n, []
+    while i < end:
+        t, hh, nn = der(b, i)
+        out.append(i)
+        i += hh + nn
+    return out
+
+
+def whole(b, o):
+    t, h, n = der(b, o)
+    return b[o:o + h + n]
+
+
+def inner(b, o):
+    t, h, n = der(b, o)
+    return b[o + h:o + h + n]
+
+
+OID_SHA256 = bytes.fromhex("608648016503040201")
+OID_MSGDIGEST = bytes.fromhex("2a864886f70d010904")
+
+# SignedData's certificate bag can be large; every check below keeps to
+# public APIs that python3-cryptography 41 (Ubuntu 24.04's) also has.
+from cryptography import x509                                 # noqa: E402
+from cryptography.hazmat.primitives import hashes              # noqa: E402
+from cryptography.hazmat.primitives.asymmetric import padding, rsa, ec  # noqa: E402
+
+
+def load_cert(d):
+    try:
+        return x509.load_der_x509_certificate(d)
+    except Exception:
+        return None
+
+
+def issued(child, parent):
+    """Did PARENT sign CHILD? Names and the signature, both."""
+    if child.issuer != parent.subject:
+        return False
+    try:
+        child.verify_directly_issued_by(parent)
+        return True
+    except Exception:
+        return False
+
+
+def path_to(signer, bag, anchors, anchor_hashes=()):
+    """Walk from SIGNER up through BAG (the certificates the signature
+    carries, which are never trusted for themselves) until a
+    certificate in ANCHORS is reached -- by being one of them, or by
+    being signed by one. That is UEFI's rule: a db entry is a trust
+    anchor even when it is an intermediate. ANCHOR_HASHES are dbx's
+    EFI_CERT_X509_SHA256 entries: SHA-256 of a certificate's TBS."""
+    cur, seen = signer, set()
+    for _ in range(8):
+        dc = cur.public_bytes(_DER)
+        if dc in seen:
+            return None
+        seen.add(dc)
+        if hashlib.sha256(cur.tbs_certificate_bytes).digest() in anchor_hashes:
+            return cur
+        for a in anchors:
+            if a.public_bytes(_DER) == dc or issued(cur, a):
+                return a
+        up = [c for c in bag if c.public_bytes(_DER) != dc and issued(cur, c)]
+        if not up:
+            return None
+        cur = up[0]
+    return None
+
+
+from cryptography.hazmat.primitives.serialization import Encoding  # noqa: E402
+_DER = Encoding.DER
+
+
+class Signature:
+    """One PKCS#7 SignedData from a WIN_CERTIFICATE, checked for what it
+    signs (the image's Authenticode digest) and whether the signature
+    over it holds. Its signer is then judged against anchors."""
+
+    def __init__(self, p7, image_digest):
+        self.signer, self.bag, self.why = None, [], None
+        try:
+            ci = children(p7, 0)                       # ContentInfo
+            sd = children(p7, ci[1])[0]                # [0] -> SignedData
+            parts = children(p7, sd)
+            eci = parts[2]                             # encapContentInfo
+            spc = children(p7, children(p7, eci)[1])[0]  # [0] -> SpcIndirectData
+            k = 3
+            if p7[parts[k]] == 0xA0:                   # certificates
+                self.bag = [c for c in (load_cert(whole(p7, x)) for x in children(p7, parts[k])) if c]
+                k += 1
+            if p7[parts[k]] == 0xA1:                   # crls
+                k += 1
+            si = children(p7, children(p7, parts[k])[0])  # the one SignerInfo
+        except Exception as e:
+            self.why = "unreadable signature (%s)" % e
+            return
+
+        # what is signed: SpcIndirectDataContent's DigestInfo
+        di = children(p7, spc)[1]
+        alg, dig = children(p7, di)
+        if inner(p7, children(p7, alg)[0]) != OID_SHA256:
+            self.why = "not a SHA-256 Authenticode signature"
+            return
+        if inner(p7, dig) != image_digest:
+            self.why = "the file is not the file that was signed"
+            return
+
+        # which certificate signed it
+        ias = si[1]
+        iname, serial = children(p7, ias)
+        want_issuer = whole(p7, iname)
+        want_serial = int.from_bytes(inner(p7, serial), "big", signed=True)
+        for c in self.bag:
+            if c.serial_number == want_serial and \
+               c.issuer.public_bytes() == want_issuer:
+                self.signer = c
+                break
+        if not self.signer:
+            self.why = "its signer's certificate is not in it"
+            return
+
+        # the signed attributes: messageDigest must be the hash of the
+        # SpcIndirectData content (PKCS#7: its contents, without the
+        # outer tag and length), and the signature is over them as a SET
+        i = 3
+        if p7[si[i]] != 0xA0:
+            self.why = "no signed attributes"
+            return
+        attrs = si[i]
+        md = None
+        for a in children(p7, attrs):
+            oid, vals = children(p7, a)
+            if inner(p7, oid) == OID_MSGDIGEST:
+                md = inner(p7, children(p7, vals)[0])
+        if md != hashlib.sha256(inner(p7, spc)).digest():
+            self.why = "its signed attributes do not match what it signs"
+            return
+        signed = b"\x31" + whole(p7, attrs)[1:]
+        sig = inner(p7, si[i + 2])
+        key = self.signer.public_key()
+        try:
+            if isinstance(key, rsa.RSAPublicKey):
+                key.verify(sig, signed, padding.PKCS1v15(), hashes.SHA256())
+            elif isinstance(key, ec.EllipticCurvePublicKey):
+                key.verify(sig, signed, ec.ECDSA(hashes.SHA256()))
+            else:
+                raise ValueError("key type")
+        except Exception:
+            self.why = "the signature does not verify"
+            self.signer = None
+
+
+def judge_image(data, anchors, deny_certs, deny_hashes, deny_tbs):
+    """None if a verifier holding ANCHORS (db, or a shim's vendor
+    certificate) and the DENY lists (dbx, vendor dbx) would start DATA;
+    else why not."""
+    try:
+        pe = PE(data)
+    except ValueError as e:
+        return "not a PE image (%s)" % e
+    digest = pe.authenticode_sha256()
+    if digest in deny_hashes:
+        return "its hash is revoked"
+    sigs = [Signature(p, digest) for p in pe.signatures()]
+    if not sigs:
+        return "it is not signed"
+    good = []
+    for s in sigs:
+        if s.signer is None:
+            continue
+        # ANY valid signature that chains to a revoked certificate is a
+        # refusal of the whole image, even if another one is trusted.
+        if path_to(s.signer, s.bag, deny_certs, deny_tbs) is not None:
+            return "one of its signatures is from a revoked certificate (%s)" % \
+                s.signer.subject.rfc4514_string()
+        good.append(s)
+    for s in good:
+        if path_to(s.signer, s.bag, anchors):
+            return None
+    why = [s.why for s in sigs if s.why]
+    return "no signature chains to a trusted certificate" + (" (%s)" % "; ".join(why) if why else "")
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -331,8 +629,9 @@ def efivar(efivars, name, guid):
 
 
 def sig_lists(data):
-    """(x509 certs DER, sha256 hashes) from EFI_SIGNATURE_LISTs."""
-    certs, hashes = [], []
+    """(x509 certs DER, sha256 hashes, x509-tbs sha256 hashes) from
+    EFI_SIGNATURE_LISTs."""
+    certs, hashes_, tbs = [], set(), set()
     o = 0
     while data and o + 28 <= len(data):
         typ = data[o:o + 16]
@@ -345,66 +644,72 @@ def sig_lists(data):
             if typ == CERT_X509:
                 certs.append(body)
             elif typ == CERT_SHA256:
-                hashes.append(body)
+                hashes_.add(body)
+            elif typ == CERT_X509_SHA256:
+                tbs.add(body[:32])
             p += ssize
         o += lsize
-    return certs, hashes
+    return certs, hashes_, tbs
 
 
-def pem(der):
-    import base64
-    b = base64.encodebytes(der).decode().replace("\n", "")
-    return "-----BEGIN CERTIFICATE-----\n%s\n-----END CERTIFICATE-----\n" % "\n".join(
-        b[i:i + 64] for i in range(0, len(b), 64))
+def certs_of(ders):
+    return [c for c in (load_cert(d) for d in ders) if c]
 
 
-def chain_certs(pkcs7, tmp):
-    p = os.path.join(tmp, "sig.p7")
-    with open(p, "wb") as f:
-        f.write(pkcs7)
-    r = subprocess.run(["openssl", "pkcs7", "-inform", "DER", "-in", p, "-print_certs"],
-                       capture_output=True, text=True)
-    if r.returncode != 0:
-        return []
-    return re.findall(r"-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----\n?",
-                      r.stdout, re.S)
-
-
-def subject(certpem, tmp):
-    p = os.path.join(tmp, "c.pem")
-    with open(p, "w") as f:
-        f.write(certpem)
-    r = subprocess.run(["openssl", "x509", "-in", p, "-noout", "-subject", "-nameopt", "RFC2253"],
-                       capture_output=True, text=True)
-    m = re.search(r"CN=([^,]+)", r.stdout)
-    return m.group(1) if m else r.stdout.strip()
-
-
-def anchored(certs, anchors, tmp):
-    """Does any certificate of this signature chain to one of ANCHORS
-    (a db or dbx)? openssl's -partial_chain makes a db certificate a
-    trust anchor even when it is an intermediate, which is what UEFI
-    does; -no_check_time because firmware has no trustworthy clock and
-    does not look at expiry -- the 2011 CA "expiring" in 2026 stops
-    Microsoft signing with it, not firmware trusting it."""
-    if not anchors or not certs:
+def firmware(efivars):
+    """This machine's Secure Boot state, or None if it cannot be read.
+    A machine whose variables cannot be read is not a machine whose
+    Secure Boot is off: it is one we know nothing about, and a shim
+    nobody checked is not installed on it."""
+    sb = efivar(efivars, "SecureBoot", EFI_GLOBAL)
+    db = efivar(efivars, "db", EFI_IMAGE_SECURITY)
+    if sb is None or db is None:
         return None
-    ca = os.path.join(tmp, "anchors.pem")
-    with open(ca, "w") as f:
-        f.write("".join(pem(c) for c in anchors))
-    chain = os.path.join(tmp, "chain.pem")
-    with open(chain, "w") as f:
-        f.write("".join(certs))
-    for c in certs:
-        one = os.path.join(tmp, "one.pem")
-        with open(one, "w") as f:
-            f.write(c)
-        r = subprocess.run(["openssl", "verify", "-partial_chain", "-no_check_time",
-                            "-CAfile", ca, "-untrusted", chain, one],
-                           capture_output=True, text=True)
-        if r.returncode == 0:
-            return subject(c, tmp)
-    return None
+    dbx = efivar(efivars, "dbx", EFI_IMAGE_SECURITY) or b""
+    lvl = efivar(efivars, "SbatLevelRT", SHIM_LOCK)
+    dbc, dbh, _ = sig_lists(db)
+    xc, xh, xt = sig_lists(dbx)
+    return {
+        "secureboot": sb[:1] == b"\x01",
+        "db": certs_of(dbc), "db_hashes": dbh,
+        "dbx": certs_of(xc), "dbx_hashes": xh, "dbx_tbs": xt,
+        "sbat": sbat_csv((lvl or b"").decode("latin-1")),
+    }
+
+
+def esp_roots(args):
+    """Where the restore kernel might be: every EFI partition that is
+    not AurOS's own, mounted READ-ONLY and unmounted again, exactly as
+    answer.sh looks for it. AurOS never writes there. --esp-roots (tests)
+    names directories instead."""
+    if "esp-roots" in args:
+        return [(d, None) for d in args["esp-roots"].split(":") if d]
+    out = []
+    try:
+        r = subprocess.run(["lsblk", "-rno", "PATH,PARTTYPE,MOUNTPOINT"],
+                           capture_output=True, text=True, timeout=20)
+    except Exception:
+        return out
+    for line in r.stdout.splitlines():
+        p = line.split()
+        if len(p) >= 2 and p[1].lower() == ESP_TYPE and (len(p) < 3 or p[2] != "/boot/efi"):
+            m = tempfile.mkdtemp(prefix="auros-esp.")
+            if subprocess.run(["mount", "-o", "ro", p[0], m],
+                              capture_output=True).returncode == 0:
+                out.append((m, m))
+            else:
+                os.rmdir(m)
+    return out
+
+
+def release(roots):
+    for _, m in roots:
+        if m:
+            subprocess.run(["umount", m], capture_output=True)
+            try:
+                os.rmdir(m)
+            except OSError:
+                pass
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -415,62 +720,52 @@ def read(path):
         return f.read()
 
 
-def judge(shim_path, grub_path, fw, tmp):
-    """None if this pair would start on this firmware, else why not."""
+def judge_pair(shim_path, grub_path, fw, loads):
+    """None if this firmware starts SHIM, and SHIM starts GRUB and every
+    image in LOADS (name -> bytes: the kernels, the restore kernel).
+    Else why not."""
     try:
-        shim = PE(read(shim_path))
-        grub = PE(read(grub_path))
+        sdata = read(shim_path)
+        gdata = read(grub_path)
+        shim = PE(sdata)
+        grub = PE(gdata)
     except (OSError, ValueError) as e:
         return "cannot read: %s" % e
 
-    # 1. trust
-    if fw["db"] is not None:
-        trusted = None
-        for sig in shim.signatures():
-            certs = chain_certs(sig, tmp)
-            if anchored(certs, fw["dbx_certs"], tmp):
-                continue                       # this signature is revoked
-            t = anchored(certs, fw["db_certs"], tmp)
-            if t:
-                trusted = t
-                break
-        if not trusted:
-            return "this firmware's db trusts none of its signatures"
-        if shim.authenticode_sha256() in fw["dbx_hashes"]:
-            return "its hash is in this firmware's dbx"
-    elif fw["secureboot"]:
-        return "Secure Boot is on and its db cannot be read"
+    # 1. the firmware starts the shim
+    w = judge_image(sdata, fw["db"], fw["dbx"], fw["dbx_hashes"], fw["dbx_tbs"])
+    if w:
+        return "the firmware would refuse the shim: " + w
+    r = revoked_by(shim.sbat(), fw["sbat"])
+    if r:
+        return "this firmware's SBAT level revokes the shim (%s %d < %d)" % r[0]
 
-    # 2. SBAT
-    shim_sbat = sbat_csv(shim.sections.get(".sbat", b"").decode("latin-1"))
-    grub_sbat = sbat_csv(grub.sections.get(".sbat", b"").decode("latin-1"))
-    if not grub_sbat:
-        return "the grub has no .sbat section, and shim refuses that"
+    # 2. the shim starts the rest
+    vend, (vx_c, vx_h, vx_t) = shim_vendor(shim)
+    anchors = certs_of(vend) + fw["db"]
+    deny = fw["dbx"] + certs_of(vx_c)
+    deny_h = fw["dbx_hashes"] | vx_h
+    deny_t = fw["dbx_tbs"] | vx_t
     _, latest = shim_levels(shim)
+    if not latest:
+        return "the shim has no SBAT level this program can read"
     level = dict(fw["sbat"])
     for k, v in latest.items():
         level[k] = max(level.get(k, 0), v)
-    r = revoked_by(shim_sbat, fw["sbat"])
-    if r:
-        return "this firmware's SBAT level revokes the shim (%s %d < %d)" % r[0]
-    r = revoked_by(grub_sbat, level)
-    if r:
-        return "SBAT revokes the grub (%s %d < %d)" % r[0]
+    for name, data in [("grub", gdata)] + sorted(loads.items()):
+        w = judge_image(data, anchors, deny, deny_h, deny_t)
+        if w:
+            return "it would refuse %s: %s" % (name, w)
+        try:
+            sb = PE(data).sbat()
+        except ValueError:
+            sb = {}
+        if name == "grub" and not sb:
+            return "the grub has no .sbat section, and shim refuses that"
+        r = revoked_by(sb, level)
+        if r:
+            return "its SBAT level revokes %s (%s %d < %d)" % ((name,) + r[0])
     return None
-
-
-def firmware(efivars):
-    sb = efivar(efivars, "SecureBoot", EFI_GLOBAL)
-    db = efivar(efivars, "db", EFI_IMAGE_SECURITY)
-    dbx = efivar(efivars, "dbx", EFI_IMAGE_SECURITY)
-    lvl = efivar(efivars, "SbatLevelRT", SHIM_LOCK)
-    dbc, _ = sig_lists(db or b"")
-    xc, xh = sig_lists(dbx or b"")
-    return {
-        "secureboot": bool(sb and sb[:1] == b"\x01"),
-        "db": db, "db_certs": dbc, "dbx_certs": xc, "dbx_hashes": set(xh),
-        "sbat": sbat_csv((lvl or b"").decode("latin-1")),
-    }
 
 
 def sha(path):
@@ -480,10 +775,6 @@ def sha(path):
         return None
 
 
-def put(src, dst):
-    write_atomic(dst, read(src))
-
-
 def record(root, **kv):
     kv["when"] = time.strftime("%Y-%m-%dT%H:%M:%S")
     body = "".join("%s=%s\n" % (k, str(v).replace("\n", " ")) for k, v in kv.items())
@@ -491,6 +782,72 @@ def record(root, **kv):
         write_atomic(os.path.join(root, STATE), body.encode())
     except OSError:
         pass
+
+
+def shim_candidates(root):
+    """Ubuntu's own choice first: if its postinst pointed the
+    alternative at .previous, a kernel installed here is signed with a
+    key the newer shim revokes, and only .previous is offered."""
+    alt = os.path.join(root, SHIM_ALTERNATIVE)
+    try:
+        target = os.readlink(alt)
+        if not target.startswith("/"):
+            target = os.path.join(os.path.dirname(alt), target)
+        else:
+            target = os.path.join(root, target.lstrip("/"))
+        if os.path.islink(target):
+            t2 = os.readlink(target)
+            target = os.path.join(root, t2.lstrip("/")) if t2.startswith("/") else \
+                os.path.join(os.path.dirname(target), t2)
+        if target.endswith(".previous"):
+            return [os.path.join(root, SHIM_PREVIOUS)]
+    except OSError:
+        pass
+    return [os.path.join(root, c) for c in SHIM_LATEST]
+
+
+def what_it_loads(root, args):
+    """name -> bytes of every image the shim will be asked to start
+    besides grub: each kernel the menu offers, and the restore kernel."""
+    out = {}
+    ks = kernels(root)
+    for v in ks[:2] + [os.uname().release]:
+        p = os.path.join(root, "boot", "vmlinuz-" + v)
+        if v in ks and os.path.isfile(p):
+            out["kernel " + v] = read(p)
+    roots = esp_roots(args)
+    try:
+        for d, _ in roots:
+            p = os.path.join(d, "EFI", "AurOS", "staging.efi")
+            if os.path.isfile(p):
+                out["the Put Windows back kernel"] = read(p)
+                break
+    finally:
+        release(roots)
+    return out
+
+
+def plan_for(root, esp, aur, shim, grub):
+    """(every copy, the ones whose target differs). Every destination
+    in every directory: a sync a power cut stopped after \\EFI\\AurOS
+    must not leave \\EFI\\BOOT behind for good. grub and the helpers
+    everywhere first, the shims last."""
+    dirs = [(aur, "shimx64.efi")]
+    boot = os.path.join(esp, "EFI", "BOOT")
+    if os.path.isfile(os.path.join(boot, "BOOTX64.EFI")):
+        dirs.append((boot, "BOOTX64.EFI"))
+    plan = []
+    mm = os.path.join(root, MOKMGR)
+    fb = os.path.join(root, FALLBACK)
+    for d, _ in dirs:
+        plan.append((grub, os.path.join(d, "grubx64.efi")))
+        if os.path.isfile(mm):
+            plan.append((mm, os.path.join(d, "mmx64.efi")))
+        if d == boot and os.path.isfile(fb):
+            plan.append((fb, os.path.join(d, "fbx64.efi")))
+    for d, shimname in dirs:
+        plan.append((shim, os.path.join(d, shimname)))
+    return plan, [(s, t) for s, t in plan if sha(s) != sha(t)]
 
 
 def cmd_sync(args, dry=False):
@@ -510,66 +867,85 @@ def cmd_sync(args, dry=False):
         print("bootchain: %s is not mounted; nothing to do" % esp)
         return 0
 
+    # Leftovers of a write a power cut stopped. They are ours by name.
+    for d in (aur, os.path.join(esp, "EFI", "BOOT")):
+        for t in glob.glob(os.path.join(d, ".bootchain.*")):
+            try:
+                os.unlink(t)
+            except OSError:
+                pass
+
     grub = os.path.join(root, GRUB_CANDIDATE)
     if not os.path.isfile(grub):
         print("bootchain: no signed grub installed; nothing to do")
         return 0
-    fw = firmware(efivars)
     cur_shim = os.path.join(aur, "shimx64.efi")
     cur_grub = os.path.join(aur, "grubx64.efi")
 
-    with tempfile.TemporaryDirectory(prefix="bootchain.") as tmp:
-        # Is what starts this computer today still something it will
-        # start? Not a reason to refuse anything -- it is the reason
-        # updating matters -- but it is the line a person helping on
-        # the phone needs first.
-        today = judge(cur_shim, cur_grub, fw, tmp)
+    # Nothing to change: no checks, no looking at other partitions. This
+    # runs after every dpkg invocation.
+    first = next((p for p in shim_candidates(root) if os.path.isfile(p)), None)
+    if first and not plan_for(root, esp, aur, first, grub)[1]:
+        print("bootchain: boot chain is current (%s)" % os.path.basename(first))
+        if not dry:
+            record(root, result="current", shim=sha(cur_shim), grub=sha(cur_grub))
+        return 0
 
-        chosen, why = None, []
-        for c in SHIM_CANDIDATES:
-            p = os.path.join(root, c)
-            if not os.path.isfile(p):
-                continue
-            w = judge(p, grub, fw, tmp)
-            if w is None:
-                chosen = p
-                break
-            why.append("%s: %s" % (os.path.basename(c), w))
+    fw = firmware(efivars)
+    if fw is None:
+        reason = "this computer's Secure Boot variables cannot be read"
+        print("bootchain: keeping the boot chain this computer has: " + reason)
+        if not dry:
+            record(root, result="refused", reason=reason,
+                   shim=sha(cur_shim), grub=sha(cur_grub))
+        return 3
+
+    loads = what_it_loads(root, args)
+    today = judge_pair(cur_shim, cur_grub, fw, loads)
+    chosen, why = None, []
+    for p in shim_candidates(root):
+        if not os.path.isfile(p):
+            continue
+        w = judge_pair(p, grub, fw, loads)
+        if w is None:
+            chosen = p
+            break
+        why.append("%s: %s" % (os.path.basename(p), w))
 
     if chosen is None:
         reason = "; ".join(why) or "no signed shim installed"
         print("bootchain: keeping the boot chain this computer has: " + reason)
-        record(root, result="refused", reason=reason,
-               installed_ok="no: " + today if today else "yes",
-               shim=sha(cur_shim), grub=sha(cur_grub))
+        if not dry:
+            record(root, result="refused", reason=reason,
+                   installed_ok="no: " + today if today else "yes",
+                   shim=sha(cur_shim), grub=sha(cur_grub))
         return 3
 
-    if sha(chosen) == sha(cur_shim) and sha(grub) == sha(cur_grub):
+    plan, todo = plan_for(root, esp, aur, chosen, grub)
+
+    if not todo:
         print("bootchain: boot chain is current (%s)" % os.path.basename(chosen))
-        record(root, result="current", shim=sha(cur_shim), grub=sha(cur_grub),
-               installed_ok="no: " + today if today else "yes")
+        if not dry:
+            record(root, result="current", shim=sha(cur_shim), grub=sha(cur_grub),
+                   installed_ok="no: " + today if today else "yes")
         return 0
-
     if dry:
-        print("bootchain: would install %s + %s" % (chosen, grub))
+        print("bootchain: would install %s + %s" % (os.path.basename(chosen), os.path.basename(grub)))
         return 0
 
-    # grub, then shim: see the header, gate 3.
     fail_after = os.environ.get("AUROS_BOOTCHAIN_FAIL_AFTER")   # tests only
-    dirs = [aur]
-    boot = os.path.join(esp, "EFI", "BOOT")
-    if os.path.isfile(os.path.join(boot, "BOOTX64.EFI")):
-        dirs.append(boot)
-    for d in dirs:
-        put(grub, os.path.join(d, "grubx64.efi"))
-        if fail_after == "grub":
-            die("stopped after grub (AUROS_BOOTCHAIN_FAIL_AFTER)", 9)
-        mm = os.path.join(root, MOKMGR)
-        if os.path.isfile(mm):
-            put(mm, os.path.join(d, "mmx64.efi"))
-        put(chosen, os.path.join(d, "shimx64.efi" if d == aur else "BOOTX64.EFI"))
-        if d == boot and os.path.isfile(os.path.join(root, FALLBACK)):
-            put(os.path.join(root, FALLBACK), os.path.join(d, "fbx64.efi"))
+    try:
+        for s, t in todo:
+            write_atomic(t, read(s))
+            if fail_after and os.path.basename(t) == fail_after:
+                die("stopped after %s (AUROS_BOOTCHAIN_FAIL_AFTER)" % t, 9)
+    except OSError as e:
+        # Whatever was written is a complete file (write_atomic), and
+        # grub went first, so what is there still starts. Say so.
+        record(root, result="failed", reason="writing the EFI partition: %s" % e,
+               shim=sha(cur_shim), grub=sha(cur_grub))
+        print("bootchain: could not finish writing the EFI partition: %s" % e, file=sys.stderr)
+        return 4
     print("bootchain: installed %s + %s" % (os.path.basename(chosen), os.path.basename(grub)))
     record(root, result="updated", shim=sha(chosen), grub=sha(grub), installed_ok="yes")
     return 0
@@ -585,10 +961,13 @@ def cmd_status(args):
     return cmd_sync(args, dry=True)
 
 
+USAGE = ("usage: bootchain menu|sync|status [--root DIR] [--esp DIR] [--efivars DIR]\n"
+         "                 [--esp-roots DIR:DIR] [--root-uuid UUID] [--running KVER]")
+
+
 def main(argv):
     if len(argv) < 2 or argv[1] not in ("menu", "sync", "status"):
-        print(__doc__ or "usage: bootchain menu|sync|status [--root DIR] [--esp DIR] "
-              "[--efivars DIR] [--root-uuid UUID]", file=sys.stderr)
+        print(USAGE, file=sys.stderr)
         return 2
     args = {}
     a = argv[2:]

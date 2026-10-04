@@ -11,5 +11,8 @@
 # keeps the pair the machine starts with today and is NOT a failure to
 # dpkg: failing here would leave apt with a half-configured package on
 # a machine nobody is watching. `bootchain status` says what happened.
+# Postinsts probe with `grub-install --help` to see what it supports;
+# that is not a request to install anything.
+case " $* " in *" --help "*|*" --version "*|*" -V "*) exit 0 ;; esac
 /usr/lib/auros/bootchain sync || true
 exit 0

@@ -93,6 +93,9 @@ typedef struct {
     int  ntail;
     char verdict[96];           /* from "aurstage-report v1 verdict=..." */
     int  stopped;               /* a refusal or failure was reported    */
+    int  finished;              /* the restore put Windows back         */
+    char warn[160];             /* the last WARNING:, which is where the
+                                 * restore says why it stopped          */
     int  handover;              /* the install finished                 */
     int  dirty;
 } state;
@@ -140,16 +143,30 @@ static void feed(state *s, char *line)
         size_t k = strcspn(v, " ");
         if (k >= sizeof s->verdict) k = sizeof s->verdict - 1;
         memcpy(s->verdict, v, k); s->verdict[k] = 0;
+        /* Every restore-* verdict is a restore that stopped: nothing
+         * saved, no usable copy, failed. "restored" is the one that
+         * did not. Missing these left "Putting Windows back" on the
+         * screen of a machine paused for good (found by review). */
+        s->finished = !strcmp(s->verdict, "restored");
         s->stopped = strstr(t, "record=refused") || strstr(t, "record=failed") ||
-                     !strncmp(s->verdict, "no-", 3) || strstr(s->verdict, "fail") ||
-                     strstr(s->verdict, "refus");
+                     !strncmp(s->verdict, "no-", 3) || !strncmp(s->verdict, "restore-", 8) ||
+                     strstr(s->verdict, "fail") || strstr(s->verdict, "refus");
         s->para_open = 0;
+        if (s->stopped && s->warn[0]) {
+            snprintf(s->para[0], sizeof s->para[0], "%s", s->warn);
+            s->npara = 1;
+        }
         return;
     }
     if (strstr(t, "handing over to the system on")) { s->handover = 1; s->pct = -1; return; }
 
     if (!*t) { s->para_open = 0; return; }          /* a blank line ends one */
-    if (!strncmp(t, "WARNING: ", 9) || is_detail(t)) return;
+    if (!strncmp(t, "WARNING: ", 9)) {
+        snprintf(s->warn, sizeof s->warn, "%s", t + 9);
+        if (s->warn[0] >= 'a' && s->warn[0] <= 'z') s->warn[0] -= 32;
+        return;
+    }
+    if (is_detail(t)) return;
     if (!(t[0] >= 'A' && t[0] <= 'Z') && !s->para_open) return;
 
     if (!s->para_open) {
@@ -184,7 +201,8 @@ static void text(surface *s, font *f, int x, int y, const char *t, uint32_t c, f
 static const char *title_of(const state *st)
 {
     if (st->mode == M_RESTORE)
-        return st->stopped ? "Windows was not put back" : "Putting Windows back";
+        return st->stopped ? "Windows was not put back"
+             : st->finished ? "Windows is back" : "Putting Windows back";
     if (st->mode == M_DRY) return "Checking this computer";
     if (st->stopped) return "AurOS was not installed";
     if (st->handover) return "AurOS is installed";
@@ -316,9 +334,9 @@ int main(int argc, char **argv)
         char line[1024];
         while (fgets(line, sizeof line, stdin)) feed(&st, line);
         if (dump) {
-            printf("mode=%d step=%d label=%s pct=%d stopped=%d handover=%d verdict=%s\n",
+            printf("mode=%d step=%d label=%s pct=%d stopped=%d handover=%d finished=%d verdict=%s\n",
                    st.mode, st.step, STEP[st.step].label, st.pct, st.stopped,
-                   st.handover, st.verdict[0] ? st.verdict : "-");
+                   st.handover, st.finished, st.verdict[0] ? st.verdict : "-");
             for (int i = 0; i < st.npara; i++) printf("para=%s\n", st.para[i]);
         }
         if (png) {

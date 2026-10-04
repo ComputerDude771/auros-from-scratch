@@ -31,12 +31,17 @@ signers() { sbverify --list "$1" 2>/dev/null | sed -n 's/.*issuer:.*CN=\(.*\)$/\
 seen=""
 for c in shimx64.efi.dualsigned shimx64.efi.signed.latest shimx64.efi.signed; do
     f="$RFS/usr/lib/shim/$c"
-    # -e, then -L: shimx64.efi.signed is an alternatives link whose
-    # absolute target only resolves inside the image.
-    if [ ! -e "$f" ] && [ -L "$f" ]; then
-        f="$RFS$(readlink "$f")"
-        [ -L "$f" ] && f="$RFS$(readlink "$f")"
-    fi
+    # -L FIRST, never -e: shimx64.efi.signed is an alternatives link
+    # whose target is absolute, so -e asks the BUILD HOST, and on a
+    # host with shim-signed installed it would answer with the host's
+    # own shim (docs/handoff/TRAPS.md: "[ -e link ] follows the link").
+    # Resolved inside the image, two levels (the link and
+    # /etc/alternatives).
+    for _ in 1 2; do
+        [ -L "$f" ] || break
+        l=$(readlink "$f")
+        case "$l" in /*) f="$RFS$l" ;; *) f="$(dirname "$f")/$l" ;; esac
+    done
     [ -f "$f" ] || continue
     s=$(signers "$f")
     seen="$seen

@@ -681,8 +681,22 @@ void install_run(const stage_machine *m)
     char rootdev[80];
     probe_result pr;
     probe_run_at(diskdev, root_off, &pr);
-    if (pr.verdict != PROBE_OK)
-        give_up(pr.why, pr.remedy, probe_verdict_name(pr.verdict), 1);
+    if (pr.verdict != PROBE_OK) {
+        /* NOT pr.remedy. probe.c's sentences are written for the dry
+         * run, where "Nothing has been changed" is true. Here Windows
+         * has already been made smaller (phase 5), so that sentence
+         * would be false at the one moment she most needs to believe
+         * the screen -- and "a fault in the AurOS memory stick" is
+         * about a stick the published installer does not use. Found
+         * by the website review on 2026-10-04. */
+        give_up(pr.why,
+                pr.verdict == PROBE_NO_NETWORK
+                  ? "The Windows drive is smaller but still works. Plug in "
+                    "a network cable and try again, or send us the support file."
+                  : "The Windows drive is smaller but still works. This is a "
+                    "fault in AurOS, not in this computer.",
+                probe_verdict_name(pr.verdict), 1);
+    }
     stage_say("checks   %s", pr.why);
     step(REC_PROBE_END, pr.why);
 

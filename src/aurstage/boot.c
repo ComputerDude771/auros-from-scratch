@@ -152,8 +152,16 @@ void stage_screen_stop(void)
         struct timespec t = { 0, 50 * 1000 * 1000 };
         nanosleep(&t, NULL);
     }
+    /* Bounded even now: a process stuck inside the display driver does
+     * not die on SIGKILL until it leaves it, and the handover to AurOS
+     * is not going to wait on a progress screen. If it is still there,
+     * it is left; switch_root does not need it gone, only quiet. */
     kill(screen_pid, SIGKILL);
-    waitpid(screen_pid, NULL, 0);
+    for (int i = 0; i < 40; i++) {
+        if (waitpid(screen_pid, NULL, WNOHANG) == screen_pid) break;
+        struct timespec t = { 0, 50 * 1000 * 1000 };
+        nanosleep(&t, NULL);
+    }
     screen_pid = 0;
 }
 

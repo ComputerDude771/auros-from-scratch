@@ -1682,6 +1682,7 @@ squash_preconditions() {
              usr/lib/auros/choices.sh \
              usr/lib/auros/bootchain \
              usr/lib/auros/grub.cfg.in \
+             usr/lib/python3/dist-packages/cryptography \
              usr/sbin/update-grub.ubuntu \
              usr/sbin/grub-install.ubuntu \
              etc/apt/apt.conf.d/52auros-bootchain \

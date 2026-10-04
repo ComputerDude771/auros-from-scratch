@@ -174,15 +174,17 @@ grep -q "vmlinuz-$KVER " "$MNT/boot/grub/grub.cfg" \
 } > "$MNT/boot/grub/grubenv"
 [ "$(wc -c < "$MNT/boot/grub/grubenv")" = 1024 ] || die "grubenv is not 1024 bytes"
 
-# grub needs its modules on the root filesystem at the prefix the ESP
-# config points to.
-if [ -d "$MNT/usr/lib/grub/x86_64-efi" ]; then
-    mkdir -p "$MNT/boot/grub/x86_64-efi"
-    cp -a "$MNT/usr/lib/grub/x86_64-efi/." "$MNT/boot/grub/x86_64-efi/" 2>/dev/null || true
-    note "grub modules staged ($(ls "$MNT/boot/grub/x86_64-efi"/*.mod 2>/dev/null | wc -l) .mod files)"
-fi
-mkdir -p "$MNT/boot/grub/fonts"
-[ -f /usr/share/grub/unicode.pf2 ] && cp /usr/share/grub/unicode.pf2 "$MNT/boot/grub/fonts/" 2>/dev/null || true
+# NO MODULES AT grub's PREFIX, AND NO FONT.
+#
+# This used to copy every .mod into /boot/grub/x86_64-efi "because grub
+# needs its modules". Canonical's signed grub has what this menu uses
+# built in, and under Secure Boot it refuses to load any module from
+# disk -- so all the copy did was give `search` a list of filesystem
+# modules to try for every partition it probed, each one refused out
+# loud: 54 lines of "error: prohibited by secure boot policy" on every
+# start, found by tools/bootupdatetest.sh once the menu reached the
+# serial line. Without fs.lst grub does not try. The font went with
+# gfxterm (rootfs/usr/lib/auros/grub.cfg.in says why).
 
 # ── The signed Secure Boot chain ─────────────────────────────────
 #
