@@ -194,6 +194,26 @@ espput "$T/older.efi" /EFI/AurOS/shimx64.efi && espput "$T/older.efi" /EFI/BOOT/
   || bad "the EFI partition starts one shim behind"
 ESP_UBUNTU_BEFORE=$(mdir -b -i "$DISK@@$ESPOFF" ::/EFI/ubuntu 2>/dev/null | sort)
 
+# The "Windows" disk: an EFI partition holding the Put Windows back
+# kernel where the installer leaves it. A new shim is installed only if
+# it would start that kernel, so AurOS has to find it -- by mounting
+# this partition read-only -- and judge it. Its bytes must not change.
+WIN="$T/windows.img"
+truncate -s 256M "$WIN"
+sgdisk -n1:2048:+200M -t1:EF00 -c1:"EFI system partition" "$WIN" >/dev/null
+dd if=/dev/zero of="$T/wesp.fat" bs=1M count=200 2>/dev/null
+mkfs.vfat -F 32 "$T/wesp.fat" >/dev/null
+mmd -i "$T/wesp.fat" ::/EFI ::/EFI/AurOS ::/EFI/Microsoft ::/EFI/Microsoft/Boot
+if [ -f out/auros-staging-vmlinuz ]; then
+    mcopy -i "$T/wesp.fat" out/auros-staging-vmlinuz ::/EFI/AurOS/staging.efi
+else
+    mount_root && cp "$(ls "$T"/m/boot/vmlinuz-*-generic | head -1)" "$T/stg.efi"; umount_root
+    mcopy -i "$T/wesp.fat" "$T/stg.efi" ::/EFI/AurOS/staging.efi
+fi
+dd if="$T/wesp.fat" of="$WIN" bs=512 seek=2048 conv=notrunc 2>/dev/null
+rm -f "$T/wesp.fat"
+WIN_BEFORE=$(md5sum "$WIN" | cut -d' ' -f1)
+
 # Firmware as a confirmed install leaves it: AurOS first, Windows' entry
 # still in the list.
 NV="$T/vars.fd"; cp "$VARS" "$NV"
@@ -215,6 +235,7 @@ power_on() { # mode
         -drive if=pflash,format=raw,unit=0,readonly=on,file="$CODE" \
         -drive if=pflash,format=raw,unit=1,file="$NV" \
         -drive file="$DISK",format=raw,if=none,id=d0 -device virtio-blk-pci,drive=d0 \
+        -drive file="$WIN",format=raw,if=none,id=d1 -device virtio-blk-pci,drive=d1 \
         -device virtio-vga -display none -serial file:"$SER" -net none \
         -monitor unix:"$T/mon.sock",server,nowait \
         >/dev/null 2>&1 &
@@ -272,6 +293,9 @@ umount_root
 [ "$A1" = "$DUALSHA" ] \
   && ok "the packages' own scripts installed the new shim (dpkg, no apt hook)" \
   || bad "the packages' own scripts installed the new shim (dpkg, no apt hook)" "$SD" "$DL"
+case "$SD" in *"judged="*"the Put Windows back kernel on /dev/"*) 
+    ok "...after finding and judging the Put Windows back kernel on Windows' disk" ;;
+    *) bad "...after finding and judging the Put Windows back kernel on Windows' disk" "$SD" ;; esac
 case "$L" in *"1 apt exit 0"*) ok "apt-get install --reinstall shim-signed: exit 0" ;;
     *) bad "apt-get install --reinstall shim-signed: exit 0" "$AL" ;; esac
 [ "$A0" = "$OLDSHA" ] && [ "$A2" = "$DUALSHA" ] \
@@ -298,8 +322,12 @@ case "$L" in *"1 kernel hook exit 0"*) ok "the kernel's zz-update-grub hook: exi
 echo "$CFG" | grep -A1 -- "--id auros {" | grep -q "vmlinuz-$NEWK " \
   && ok "the menu starts the new kernel" \
   || bad "the menu starts the new kernel" "$(echo "$CFG" | grep vmlinuz | head -3)"
-echo "$CFG" | grep -q "^set fallback=auros-previous" && echo "$CFG" | grep -q -- "--id auros-previous" \
-  && ok "...and falls back to the one before it" || bad "...and falls back to the one before it"
+# grub's fallback is an entry NUMBER; counted here the way grub does.
+FB_WANT=$(echo "$CFG" | awk '/^(menuentry|submenu) /{ if ($0 ~ /--id auros-previous/) {print n; exit} n++ }')
+FB_GOT=$(echo "$CFG" | sed -n 's/^set fallback=\([0-9]*\)$/\1/p')
+[ -n "$FB_WANT" ] && [ "$FB_GOT" = "$FB_WANT" ] \
+  && ok "...and falls back, by entry number ($FB_GOT), to the one before it" \
+  || bad "...and falls back, by entry number, to the one before it" "fallback=$FB_GOT, entry $FB_WANT"
 echo "$CFG" | grep -q -- "--id put-windows-back-yes" \
   && ok "...and still has Put Windows back" || bad "...and still has Put Windows back"
 
@@ -343,6 +371,10 @@ case "$U3" in *"BOOT_IMAGE=/boot/vmlinuz-$NEWK "*|"")
     *) bad "grub fell back to the previous kernel" "$U3" ;; esac
 case "$L" in *"3 desktop after"*) ok "...and the desktop came up" ;;
     *) bad "...and the desktop came up" "$(echo "$L" | tail -3)" ;; esac
+
+[ "$(md5sum "$WIN" | cut -d' ' -f1)" = "$WIN_BEFORE" ] \
+  && ok "Windows' disk: byte-for-byte what it was, after three starts and an update" \
+  || bad "Windows' disk: byte-for-byte what it was, after three starts and an update"
 
 echo
 echo "bootupdatetest: $((checked - fail))/$checked"

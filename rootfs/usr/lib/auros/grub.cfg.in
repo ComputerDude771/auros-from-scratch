@@ -36,8 +36,14 @@ if [ -s ($root)/boot/grub/grubenv ]; then
   load_env --file ($root)/boot/grub/grubenv next_entry aurstage_extra
   export aurstage_extra
 fi
+@FALLBACK@
 if [ "${next_entry}" ]; then
   set default="${next_entry}"
+  # No fallback for this one start: if the restore cannot be started,
+  # starting AurOS instead -- silently, with next_entry already used
+  # up -- would leave the person who asked for Windows back in AurOS
+  # with no idea why. The menu stays up instead.
+  unset fallback
   set next_entry=
   save_env --file ($root)/boot/grub/grubenv next_entry
   # TEN SECONDS WITH IT ON SCREEN, not three. The only next_entry
@@ -47,7 +53,7 @@ if [ "${next_entry}" ]; then
   set timeout=10
   set timeout_style=menu
 fi
-@FALLBACK@
+
 menuentry 'AurOS' --class auros --id auros {
     linux  /boot/vmlinuz-@KVER@ root=UUID=@ROOT_UUID@ ro quiet splash console=tty0 console=ttyS0,115200n8
     initrd /boot/initrd.img-@KVER@
@@ -61,7 +67,7 @@ menuentry 'AurOS (verbose boot)' --class auros --id auros-verbose {
 # aurinit is AurOS's own PID 1. It supervises our service model; the
 # Ubuntu userland in this image still expects systemd, so this entry is
 # for appliance and kiosk builds where the service set is entirely ours.
-menuentry 'AurOS (aurinit — experimental)' --class auros --id auros-aurinit {
+menuentry 'AurOS (aurinit, experimental)' --class auros --id auros-aurinit {
     linux  /boot/vmlinuz-@KVER@ root=UUID=@ROOT_UUID@ ro init=/usr/sbin/aurinit console=tty0 console=ttyS0,115200n8
     initrd /boot/initrd.img-@KVER@
 }

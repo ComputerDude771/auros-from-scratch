@@ -96,6 +96,10 @@ got=$(sed -n 's/^set fallback=\([0-9]*\)$/\1/p' "$C")
 [ -n "$want" ] && [ "$got" = "$want" ] \
   && ok "...and grub falls back to it, by number ($got), if the newest will not start" \
   || bad "...and grub falls back to it, by number, if the newest will not start" "fallback=$got, entry is number $want"
+awk '/set default="\$\{next_entry\}"/{d=1} d && /^fi/{exit} d && /unset fallback/{f=1} END{exit !f}' "$C" \
+  && awk '/^set fallback=/{s=NR} /set default="\$\{next_entry\}"/{n=NR} END{exit !(s && n && s < n)}' "$C" \
+  && ok "...but not for Put Windows back: that start unsets it" \
+  || bad "...but not for Put Windows back: that start unsets it"
 : > "$M/boot/vmlinuz-6.8.0-8-generic"; : > "$M/boot/initrd.img-6.8.0-8-generic"
 python3 "$BC" menu --root "$M" --running 6.8.0-8-generic >/dev/null 2>&1
 grep -A1 -- "--id auros-previous" "$C" | grep -q "vmlinuz-6.8.0-8-generic" \
@@ -116,7 +120,7 @@ grep -q "@[A-Z_]*@" "$C" && bad "no placeholder left unfilled" "$(grep -o '@[A-Z
   || ok "no placeholder left unfilled"
 rm -f "$M/boot/vmlinuz-6.8.0-9-generic"
 python3 "$BC" menu --root "$M" --running none >/dev/null 2>&1
-if grep -q "fallback\|auros-previous" "$C"; then bad "one kernel: no fallback to a kernel that is not there"
+if grep -q "^set fallback=\|--id auros-previous" "$C"; then bad "one kernel: no fallback to a kernel that is not there"
 else ok "one kernel: no fallback to a kernel that is not there"; fi
 cp "$C" "$T/good.cfg"
 mv "$M/boot/initrd.img-6.8.0-10-generic" "$T/"
@@ -209,7 +213,7 @@ FWN="$T/fwn"; mkfw "$FWN" "$VARS"; rm -f "$FWN/SecureBoot-$G_GLB"
 # signatures on the dual-signed shim -- in dbx. The other (Microsoft
 # 2011) is still trusted; firmware refuses the image anyway.
 pyc() { python3 -c "
-src=open('$BC').read(); m={}
+src=open('${B:-$BC}').read(); m={}
 exec(compile(src.replace('if __name__ == \"__main__\":', 'if False:'), 'bc', 'exec'), m)
 $1"; }
 FWC="$T/fwc"; mkfw "$FWC" "$VARS"
@@ -255,9 +259,12 @@ v() { pyc "
 fw=m['firmware']('$1')
 print(m['judge_image'](open('$2','rb').read(), fw['db'], fw['dbx'], fw['dbx_hashes'], fw['dbx_tbs']))"; }
 [ "$(v "$FW" "$SHIM")" = None ] && ok "the real dual-signed shim: trusted" || bad "the real dual-signed shim: trusted" "$(v "$FW" "$SHIM")"
-[ -s "$FORGED" ] && grep -q "UEFI CA 2011" "$T/ms2011.pem" 2>/dev/null || openssl x509 -in "$T/ms2011.pem" -noout -subject | grep -q "UEFI CA 2011" \
-  && ok "fixture: a forged shim carrying Microsoft's 2011 CA was made" \
-  || bad "fixture: a forged shim carrying Microsoft's 2011 CA was made"
+FB=$(pyc "
+pe=m['PE'](open('$FORGED','rb').read()); s=m['Signature'](pe.signatures()[0], pe.authenticode_sha256())
+print(s.signer is not None, any('UEFI CA 2011' in c.subject.rfc4514_string() for c in s.bag))" 2>&1)
+[ "$FB" = "True True" ] \
+  && ok "fixture: a forged shim, validly signed, carrying Microsoft's 2011 CA" \
+  || bad "fixture: a forged shim, validly signed, carrying Microsoft's 2011 CA" "$FB"
 case "$(v "$FW" "$FORGED")" in None) bad "the forged shim: refused" ;;
     *) ok "the forged shim: refused ($(v "$FW" "$FORGED" | cut -c1-40)...)" ;; esac
 case "$(v "$FW" "$TAMPERED")" in None) bad "the real shim with one byte changed: refused" ;;
@@ -314,8 +321,18 @@ refused "Secure Boot variables that cannot be read" "$FWN"
 grep -q "^result=refused" "$SR/var/lib/auros/bootchain.state" \
   && ok "...and the refusal is written down for status" \
   || bad "...and the refusal is written down for status"
-candidate "$FORGED";    refused "a forged shim in the archive (Microsoft's CA in its bag)" "$FW"
-candidate "$TAMPERED";  refused "a damaged shim in the archive" "$FW"
+shim_kept() { # name fw: the shim refused, the grub the old shim starts goes in alone
+    newesp "$ESP"
+    out=$(run "$2" 2>&1); rc=$?
+    if [ "$rc" = 0 ] && cmp -s "$ESP/EFI/AurOS/shimx64.efi" "$OLDSHIM" && \
+       cmp -s "$ESP/EFI/BOOT/BOOTX64.EFI" "$OLDSHIM" && \
+       cmp -s "$ESP/EFI/AurOS/grubx64.efi" "$GRUB" && cmp -s "$ESP/EFI/BOOT/grubx64.efi" "$GRUB" && \
+       grep -q "^result=updated-grub-only" "$SR/var/lib/auros/bootchain.state"; then
+        ok "$1: shim refused, the new grub alone installed"
+    else bad "$1: shim refused, the new grub alone installed" "rc=$rc" "$out"; fi
+}
+candidate "$FORGED";    shim_kept "a forged shim in the archive (Microsoft's CA in its bag)" "$FW"
+candidate "$TAMPERED";  shim_kept "a damaged shim in the archive" "$FW"
 candidate "$SHIM"
 cp "$T/k.forged" "$SR/boot/vmlinuz-6.8.0-1-generic"; : > "$SR/boot/initrd.img-6.8.0-1-generic"
 refused "a kernel in the menu the new shim would refuse" "$FW"
@@ -379,31 +396,284 @@ sh "$W" --help >/dev/null 2>&1; rc=$?
   && ok "...and grub-install --help (a postinst's probe) syncs nothing" \
   || bad "...and grub-install --help (a postinst's probe) syncs nothing" "rc=$rc"
 
-# ── proving the checks are not decorative ───────────────────────────
+# ── the restore kernel, looked for the way an installed AurOS does ──
+# Every other case names a directory (--esp-roots). This one gives the
+# scan a real disk -- a loop device with an EFI partition -- so the
+# read-only mount and the refusal when it fails run for real.
 echo
-echo "  each check, switched off, must let its bad case through"
-mutant() { # name, from, to, fw, candidate
-    sed "s|$2|$3|" "$BC" > "$T/mut"
-    cmp -s "$T/mut" "$BC" && { bad "$1" "the mutation matched nothing"; return; }
-    candidate "${5:-$SHIM}"
-    newesp "$ESP"
-    python3 "$T/mut" sync --root "$SR" --esp "$ESP" --efivars "$4" --esp-roots "$STG" >/dev/null 2>&1
-    if cmp -s "$ESP/EFI/AurOS/shimx64.efi" "${5:-$SHIM}"; then ok "$1"
-    else bad "$1" "the bad case was still refused: the test does not test the check"; fi
-    candidate "$SHIM"
+echo "  the Put Windows back kernel, found on a real EFI partition"
+WD="$T/windisk.img"
+truncate -s 64M "$WD"
+sgdisk -n1:2048:+40M -t1:EF00 "$WD" >/dev/null
+LD=$(losetup --find --show -P "$WD" 2>/dev/null) && { [ -b "${LD}p1" ] || partx -a "$LD" 2>/dev/null; }
+if [ -z "$LD" ] || [ ! -b "${LD}p1" ]; then
+    bad "a loop device with partitions for the scan" "losetup -P failed"
+else
+    mkfs.vfat -F 32 "${LD}p1" >/dev/null
+    export MTOOLS_SKIP_CHECK=1
+    mmd -i "${LD}p1" ::/EFI ::/EFI/AurOS 2>/dev/null
+    scan() { python3 "$BC" sync --root "$SR" --esp "$ESP" --efivars "$FW" --esp-scan "$LD"; }
+    mcopy -o -i "${LD}p1" "$KREAL" ::/EFI/AurOS/staging.efi 2>/dev/null
+    md5sum "${LD}p1" > "$T/p1.md5"
+    if grep -qw vfat /proc/filesystems || modprobe vfat 2>/dev/null; then
+        mcopy -o -i "${LD}p1" "$T/k.forged" ::/EFI/AurOS/staging.efi 2>/dev/null
+        newesp "$ESP"; out=$(scan 2>&1); rc=$?
+        case "$out" in *"refuse the Put Windows back kernel"*)
+            [ "$rc" = 3 ] && same "$ESP" && ! grep -q "auros-esp" /proc/mounts \
+              && ok "a restore kernel the new shim would refuse, found by mounting: refused" \
+              || bad "a restore kernel the new shim would refuse, found by mounting: refused" "rc=$rc" ;;
+            *) bad "a restore kernel the new shim would refuse, found by mounting: refused" "$out" ;; esac
+        mcopy -o -i "${LD}p1" "$KREAL" ::/EFI/AurOS/staging.efi 2>/dev/null
+        md5sum "${LD}p1" > "$T/p1.md5"
+        newesp "$ESP"; out=$(scan 2>&1); rc=$?
+        [ "$rc" = 0 ] && cmp -s "$ESP/EFI/AurOS/shimx64.efi" "$SHIM" && ! grep -q "auros-esp" /proc/mounts \
+          && ok "the real one: installed, and the partition unmounted again" \
+          || bad "the real one: installed, and the partition unmounted again" "rc=$rc" "$out"
+    else
+        # This kernel cannot mount FAT at all (a container). What can be
+        # shown here is the half that matters most: a partition that
+        # cannot be looked inside refuses the update. The finding and
+        # judging of a real one runs inside AurOS, in bootupdatetest.
+        echo "    (this kernel has no vfat: mounting is proven in tools/bootupdatetest.sh)"
+        newesp "$ESP"; out=$(scan 2>&1); rc=$?
+        case "$out" in *"could not look inside ${LD}p1"*)
+            [ "$rc" = 3 ] && same "$ESP" \
+              && ok "an EFI partition it cannot mount: refused, not taken as empty" \
+              || bad "an EFI partition it cannot mount: refused, not taken as empty" "rc=$rc" ;;
+            *) bad "an EFI partition it cannot mount: refused, not taken as empty" "$out" ;; esac
+    fi
+    md5sum -c --quiet "$T/p1.md5" && ok "...and Windows' partition was only read" \
+      || bad "...and Windows' partition was only read"
+    dd if=/dev/zero of="${LD}p1" bs=512 count=1 conv=notrunc 2>/dev/null
+    newesp "$ESP"; out=$(scan 2>&1); rc=$?
+    [ "$rc" = 3 ] && same "$ESP" \
+      && ok "a damaged EFI partition: refused, not taken as empty" \
+      || bad "a damaged EFI partition: refused, not taken as empty" "rc=$rc" "$out"
+    losetup -d "$LD"
+fi
+
+# ── more fixtures, one per check ────────────────────────────────────
+# dbx listing the 2011 CA by the SHA-256 of its TBS (EFI_CERT_X509_SHA256)
+FWT="$T/fwt"; mkfw "$FWT" "$VARS"
+pyc "
+import struct, hashlib
+c=m['load_cert'](open('$T/ms2011.der','rb').read())
+h=hashlib.sha256(c.tbs_certificate_bytes).digest()
+G=bytes.fromhex('92a4d23bc0967940b420fcf98ef103ed')
+open('$FWT/dbx-$G_SEC','ab').write(G+struct.pack('<III',28+64,0,64)+bytes(16)+h+bytes(16))"
+# NVRAM already above this shim's own generation
+FWL="$T/fwl"; mkfw "$FWL" "$VARS"
+printf 'sbat,1,2099010100\nshim,99\n' > "$T/lvl2"; efi "$FWL" SbatLevelRT $G_SHIM "$T/lvl2"
+
+# Microsoft's real signature on a changed program, its digests rewritten
+# to match: GRAFT_RSA has the messageDigest rewritten too (only the RSA
+# signature is wrong); GRAFT_MD leaves it (the signed attributes still
+# verify, but no longer describe what is signed).
+pyc "
+import struct, hashlib
+real=bytearray(open('$OLDSHIM','rb').read()); p=m['PE'](bytes(real))
+real[8192]^=1
+nd=m['PE'](bytes(real)).authenticode_sha256()
+ln,=struct.unpack_from('<I',real,p.cert_off)
+P=bytes(real[p.cert_off+8:p.cert_off+ln]); p7=bytearray(P)
+ci=m['children'](P,0); sd=m['children'](P,ci[1])[0]; parts=m['children'](P,sd)
+spc=m['children'](P,m['children'](P,parts[2])[1])[0]
+di=m['children'](P,spc)[1]; alg,dig=m['children'](P,di)
+t,h,n=m['der'](P,dig); p7[dig+h:dig+h+n]=nd
+oldmd=hashlib.sha256(m['inner'](P,spc)).digest()
+real[p.cert_off+8:p.cert_off+ln]=p7
+open('$T/graft_md.efi','wb').write(bytes(real))
+P2=bytes(p7); newmd=hashlib.sha256(m['inner'](P2,spc)).digest()
+i=P2.find(oldmd); assert i>0 and P2.count(oldmd)==1
+p7[i:i+32]=newmd; real[p.cert_off+8:p.cert_off+ln]=p7
+open('$T/graft_rsa.efi','wb').write(bytes(real))"
+
+# A certificate table EDK2 would not walk (eight zero bytes after the
+# last entry), and a second, broken SignerInfo beside the real one.
+pyc "
+import struct
+real=open('$OLDSHIM','rb').read(); p=m['PE'](real)
+table=real[p.cert_off:p.cert_off+p.cert_size]
+def with_table(tb):
+    o=bytearray(real[:p.cert_off]+tb); struct.pack_into('<II',o,p.certdir_off,p.cert_off,len(tb)); return bytes(o)
+open('$T/tablepad.efi','wb').write(with_table(table+bytes(8)))
+def tlv(tag,body):
+    n=len(body)
+    ln=bytes([n]) if n<0x80 else (lambda b: bytes([0x80|len(b)])+b)(n.to_bytes((n.bit_length()+7)//8,'big'))
+    return bytes([tag])+ln+body
+ln,rev,typ=struct.unpack_from('<IHH',table,0); p7=table[8:ln]
+C=m['children']; W=m['whole']; I=m['inner']
+ci=C(p7,0); sd=C(p7,ci[1])[0]; parts=C(p7,sd); sis=parts[-1]
+si=bytearray(W(p7,C(p7,sis)[0])); si[-5]^=0xff
+body=b''.join(W(p7,x) for x in parts[:-1])+tlv(0x31,I(p7,sis)+bytes(si))
+np7=tlv(0x30,W(p7,ci[0])+tlv(0xA0,tlv(0x30,body)))
+wc=struct.pack('<IHH',8+len(np7),rev,typ)+np7; wc+=bytes((8-len(wc)%8)%8)
+open('$T/twosi.efi','wb').write(with_table(wc))"
+
+# A small PKI: a root; an intermediate that is a CA (the control) and one
+# that is not; a signer with an unknown CRITICAL extension.
+K="$T/pki"; mkdir -p "$K"
+cat > "$K/ext" <<'EOX'
+[ca]
+basicConstraints=critical,CA:TRUE
+keyUsage=critical,keyCertSign,cRLSign
+[notca]
+basicConstraints=critical,CA:FALSE
+[leaf]
+basicConstraints=critical,CA:FALSE
+extendedKeyUsage=codeSigning
+[weird]
+basicConstraints=critical,CA:FALSE
+extendedKeyUsage=codeSigning
+1.3.6.1.4.1.99999.1=critical,ASN1:NULL
+EOX
+mkcert() { # name subject issuer-name extsection
+    openssl req -new -newkey rsa:2048 -nodes -keyout "$K/$1.key" -out "$K/$1.csr" -subj "/CN=$2" 2>/dev/null
+    if [ "$3" = self ]; then
+        openssl x509 -req -in "$K/$1.csr" -signkey "$K/$1.key" -out "$K/$1.pem" -days 30 \
+            -extfile "$K/ext" -extensions "$4" 2>/dev/null
+    else
+        openssl x509 -req -in "$K/$1.csr" -CA "$K/$3.pem" -CAkey "$K/$3.key" -CAcreateserial \
+            -out "$K/$1.pem" -days 30 -extfile "$K/ext" -extensions "$4" 2>/dev/null
+    fi
 }
-mutant "no db chain: the 2023-only firmware gets the shim" \
-       'if path_to(s.signer, s.bag, anchors):' 'if True:' "$FW23"
-mutant "no digest check: a damaged shim gets through" \
-       'if inner(p7, dig) != image_digest:' 'if False:' "$FW" "$TAMPERED"
-mutant "signer = any certificate in the bag: the forged shim gets through" \
-       'if path_to(s.signer, s.bag, anchors):' 'if any(path_to(c, s.bag, anchors) for c in s.bag):' "$FW" "$FORGED"
-mutant "no dbx-hash check: a revoked hash gets through" \
-       'if digest in deny_hashes:' 'if False:' "$FWH"
-mutant "no dbx-certificate check: Canonical revoked, shim through anyway" \
-       'if path_to(s.signer, s.bag, deny_certs, deny_tbs) is not None:' 'if False:' "$FWC"
-mutant "no SBAT check: a revoked grub gets through" \
-       'r = revoked_by(sb, level)' 'r = []' "$FWS"
+mkcert root "Test Root" self ca
+mkcert ica "Test Intermediate CA" root ca
+mkcert inot "Test Intermediate Not A CA" root notca
+mkcert lp "Test Signer" ica leaf
+mkcert ln "Test Signer Under A Leaf" inot leaf
+mkcert lw "Test Signer Weird" root weird
+openssl x509 -in "$K/root.pem" -outform DER -out "$K/root.der"
+pkisign() { osslsigncode sign -certs "$K/$1.pem" -key "$K/$1.key" ${2:+-ac "$K/$2.pem"} -h sha256 \
+    -in "$RFS/usr/lib/shim/shimx64.efi" -out "$T/pki_$1.efi" >/dev/null 2>&1; }
+pkisign lp ica; pkisign ln inot; pkisign lw
+
+# ── each check: its bad case is refused, and with the check removed it is not ──
+echo
+echo "  every check refuses its own bad case -- and, switched off, does not"
+# Each case prints "refused" or "accepted"; anything else (a traceback)
+# is neither and fails both ways.
+js() { pyc "
+fw=m['firmware']('$1'); w=m['judge_shim'](open('$2','rb').read(), fw)
+print('accepted' if w is None else 'refused')" 2>/dev/null; }
+jl() { pyc "
+$3
+fw=m['firmware']('$1'); loads=$4
+w=m['judge_loads'](open('$SHIM','rb').read(), open('$2','rb').read(), fw, loads)
+print('accepted' if w is None else 'refused')" 2>/dev/null; }
+jroot() { pyc "
+r=m['load_cert'](open('$K/root.der','rb').read())
+w=m['judge_image'](open('$1','rb').read(), [r], [], set(), set())
+print('accepted' if w is None else 'refused')" 2>/dev/null; }
+KL="{'k': open('$KREAL','rb').read()}"
+c_db23()     { js "$FW23" "$SHIM"; }
+c_digest()   { js "$FW" "$TAMPERED"; }
+c_forged()   { js "$FW" "$FORGED"; }
+c_rsa()      { js "$FW" "$T/graft_rsa.efi"; }
+c_md()       { js "$FW" "$T/graft_md.efi"; }
+c_dbxhash()  { js "$FWH" "$SHIM"; }
+c_dbxcert()  { js "$FWC" "$SHIM"; }
+c_dbxtbs()   { js "$FWT" "$SHIM"; }
+c_shimsbat() { js "$FWL" "$SHIM"; }
+c_pad()      { js "$FW" "$T/tablepad.efi"; }
+c_twosi()    { js "$FW" "$T/twosi.efi"; }
+c_notca()    { jroot "$T/pki_ln.efi"; }
+c_crit()     { jroot "$T/pki_lw.efi"; }
+c_grubsbat() { jl "$FWS" "$GRUB" "" "{}"; }
+c_nosbat()   { jl "$FW" "$KREAL" "" "{}"; }
+c_merge()    { jl "$FW" "$GRUB" "m['shim_levels']=lambda pe: ({}, {'grub': 99})" "{}"; }
+c_nolevel()  { jl "$FW" "$GRUB" "m['shim_levels']=lambda pe: ({}, {})" "{}"; }
+c_vdbxcert() { jl "$FW" "$GRUB" "
+pe=m['PE'](open('$KREAL','rb').read()); s=m['Signature'](pe.signatures()[0], pe.authenticode_sha256())
+real=m['shim_vendor']; d=s.signer.public_bytes(m['_DER'])
+m['shim_vendor']=lambda p: (real(p)[0], ([d], set(), set()))" "$KL"; }
+c_vdbxhash() { jl "$FW" "$GRUB" "
+h=m['PE'](open('$KREAL','rb').read()).authenticode_sha256(); real=m['shim_vendor']
+m['shim_vendor']=lambda p: (real(p)[0], ([], {h}, set()))" "$KL"; }
+c_fallback() {
+    F="$T/fb"; rm -rf "$F"; mkdir -p "$F/boot/grub" "$F/etc" "$F/usr/lib/auros"
+    awk '/^menuentry .AurOS. /{print "if true ; then\nmenuentry '"'"'early'"'"' --id early { true }\nfi"} {print}' \
+        rootfs/usr/lib/auros/grub.cfg.in > "$F/usr/lib/auros/grub.cfg.in"
+    cp "$M/etc/fstab" "$F/etc/"
+    for v in 6.8.0-1-generic 6.8.0-2-generic; do : > "$F/boot/vmlinuz-$v"; : > "$F/boot/initrd.img-$v"; done
+    python3 "${B:-$BC}" menu --root "$F" --running none >/dev/null 2>&1 && echo accepted || echo refused; }
+c_previous() {
+    newesp "$ESP"; candidate "$SHIM"
+    ln -sf /etc/alternatives/shimx64.efi.signed "$SR/usr/lib/shim/shimx64.efi.signed"
+    mkdir -p "$SR/etc/alternatives"; ln -sf /usr/lib/shim/shimx64.efi.signed.previous "$SR/etc/alternatives/shimx64.efi.signed"
+    cp "$RFS/usr/lib/shim/shimx64.efi.signed.previous" "$SR/usr/lib/shim/"
+    B="${B:-$BC}" python3 "${B:-$BC}" sync --root "$SR" --esp "$ESP" --efivars "$FW" --esp-roots "$STG" >/dev/null 2>&1
+    cmp -s "$ESP/EFI/AurOS/shimx64.efi" "$SHIM" && echo accepted || echo refused
+    rm -f "$SR/usr/lib/shim/shimx64.efi.signed" "$SR/etc/alternatives/shimx64.efi.signed" "$SR/usr/lib/shim/shimx64.efi.signed.previous"; }
+c_older() {
+    newesp "$ESP"; candidate "$SHIM"
+    cp "$KREAL" "$SR/boot/vmlinuz-6.8.0-1-generic"
+    cp "$T/k.forged" "$SR/boot/vmlinuz-6.8.0-0-generic"; : > "$SR/boot/initrd.img-6.8.0-0-generic"
+    python3 "${B:-$BC}" sync --root "$SR" --esp "$ESP" --efivars "$FW" --esp-roots "$STG" >/dev/null 2>&1
+    same "$ESP" && echo refused || echo accepted
+    rm -f "$SR/boot/vmlinuz-6.8.0-0-generic" "$SR/boot/initrd.img-6.8.0-0-generic"; }
+
+[ "$(jroot "$T/pki_lp.efi")" = accepted ] \
+  && ok "control: a proper root -> CA -> signer chain is accepted" \
+  || bad "control: a proper root -> CA -> signer chain is accepted" "$(jroot "$T/pki_lp.efi")"
+[ "$(js "$FW" "$OLDSHIM")" = accepted ] && [ "$(jl "$FW" "$GRUB" "" "$KL")" = accepted ] \
+  && ok "control: the real shim, grub and kernel are accepted" \
+  || bad "control: the real shim, grub and kernel are accepted"
+
+check() { # case, name, from, to
+    r=$($1)
+    if [ "$r" != refused ]; then bad "$2" "the real code said: ${r:-nothing (a traceback?)}"; return; fi
+    d=$(printf '\001')
+    sed "s$d$3$d$4$d" "$BC" > "$T/mut"
+    if cmp -s "$T/mut" "$BC"; then bad "$2" "the mutation matched nothing"; return; fi
+    r=$(B="$T/mut" $1)
+    if [ "$r" = accepted ]; then ok "$2"
+    else bad "$2" "with the check removed it still said: ${r:-nothing}"; fi
+}
+check c_db23     "firmware without the 2011 key" \
+      'if path_to(s.signer, s.bag, anchors):' 'if True:'
+check c_digest   "a changed byte: the file's digest is not the signed one" \
+      'if inner(p7, dig) != image_digest:' 'if False:'
+check c_forged   "a signer nobody trusts, Microsoft's CA in its bag" \
+      'if path_to(s.signer, s.bag, anchors):' 'if any(path_to(c, s.bag, anchors) for c in s.bag):'
+check c_rsa      "Microsoft's signature grafted onto a changed program (RSA)" \
+      'key.verify(sig, signed, padding.PKCS1v15(), hashes.SHA256())' 'pass'
+check c_md       "...with its messageDigest left stale" \
+      'if md != hashlib.sha256(inner(p7, spc)).digest():' 'if False:'
+check c_dbxhash  "the shim's hash in dbx" \
+      'if digest in deny_hashes:' 'if False:'
+check c_dbxcert  "one of two signers in dbx" \
+      'if path_to(s.signer, s.bag, deny_certs, deny_tbs) is not None:' 'if False:'
+check c_dbxtbs   "the 2011 CA in dbx by its TBS hash" \
+      'if hashlib.sha256(cur.tbs_certificate_bytes).digest() in anchor_hashes:' 'if False:'
+check c_shimsbat "NVRAM's SBAT level above the shim's own generation" \
+      'r = revoked_by(PE(shim_data).sbat(), fw\["sbat"\])' 'r = []'
+check c_pad      "a certificate table EDK2 would not walk" \
+      'if o != end:' 'if False:'
+check c_twosi    "a second, broken SignerInfo" \
+      'if len(sis) != 1:' 'if False:'
+check c_notca    "a signer under a certificate that is not a CA" \
+      'if not bc.ca:' 'if False:'
+check c_crit     "a signer with an unknown critical extension" \
+      'if e.critical and type(e.value) not in KNOWN_EXT:' 'if False:'
+check c_grubsbat "NVRAM's SBAT level revokes the grub" \
+      'r = revoked_by(sb, level)' 'r = []'
+check c_nosbat   "a grub with no .sbat section" \
+      'if name == "grub" and not sb:' 'if False:'
+check c_merge    "the new shim's own latest level revokes the grub" \
+      'level\[k\] = max(level.get(k, 0), v)' 'pass'
+check c_nolevel  "a shim whose level cannot be read" \
+      'return "the shim has no SBAT level this program can read"' 'pass'
+check c_vdbxcert "the shim's vendor dbx revokes the kernel's signer" \
+      'deny = fw\["dbx"\] + certs_of(vx_c)' 'deny = fw["dbx"]'
+check c_vdbxhash "the shim's vendor dbx lists the kernel's hash" \
+      'deny_h = fw\["dbx_hashes"\] | vx_h' 'deny_h = fw["dbx_hashes"]'
+check c_older    "the fallback kernel, not only the newest, is judged" \
+      'for v in ks\[:2\] + \[os.uname().release\]:' 'for v in ks[:1]:'
+check c_previous "Ubuntu chose .previous: the newer shim is not installed" \
+      'return \[os.path.join(root, SHIM_PREVIOUS)\]' 'pass'
+check c_fallback "an entry under an if before the fallback: menu refused" \
+      'raise ValueError("a conditional menu entry comes before auros-previous")' 'pass'
 
 # ── the hash dbx is compared with ───────────────────────────────────
 echo

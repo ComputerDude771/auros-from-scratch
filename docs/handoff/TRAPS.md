@@ -92,6 +92,37 @@ reasonable until they bite.
   disk's sector size. GPT LBAs are in logical-sector units, so a 4Kn
   disk is 8x off if you mix them.
 
+## The boot chain (2026-10-04)
+
+- **`sbverify --cert X` is not a trust check.** It trusts the
+  certificates a signature carries, and passes a real shim against a
+  certificate made up a moment ago. `osslsigncode verify -CAfile` is
+  stricter but refuses an intermediate as the anchor, which is what UEFI
+  db holds. `rootfs/usr/lib/auros/bootchain` verifies the Authenticode
+  digest, the signed attributes and the chain itself
+  (python3-cryptography); `tools/bootchaintest.sh` has a forged shim
+  that carries Microsoft's real 2011 CA to keep it honest.
+- **grub's `fallback` is a number.** Ubuntu's 2.12 reads it with
+  `grub_strtoul` and unsets anything else, so `set fallback=some-id`
+  is silently nothing, and a kernel that does not start is retried at
+  every timeout forever.
+- **The shim and grub postinsts do nothing without
+  `/boot/grub/x86_64-efi/core.efi`.** A machine whose grub was never
+  installed by grub-install gets new packages and the old boot chain.
+- **Under Secure Boot, Canonical's grub refuses `loadfont` and every
+  module from disk.** Each refusal prints "prohibited by secure boot
+  policy"; `search` with a `fs.lst` beside it prints one per filesystem
+  module per partition. No modules at the prefix, no gfxterm.
+- **PE section names over eight bytes are `/N`**, an offset into the
+  COFF string table. shim's `.sbatlevel` and `.vendor_cert` are both
+  stored that way; a parser keyed on the raw name finds neither, and an
+  SBAT check against an empty level passes everything.
+- **A shim writes its SBAT level into NVRAM the first time it runs**,
+  and nothing lowers it. A shim newer than the grub beside it is a
+  machine broken for good, not until the next update.
+- **`rm -rf *` after a `cd` in the same command is refused by the
+  harness**, rightly. Extract into a fresh `mktemp -d` instead.
+
 ## Environment
 
 - The cloud container is **ephemeral**. `out/` and `work/` are not in

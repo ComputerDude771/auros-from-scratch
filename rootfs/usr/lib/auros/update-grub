@@ -5,4 +5,12 @@
 # grub-mkconfig's. Kernel packages call this after every install and
 # removal; it writes the same menu build/mkimage wrote, for whichever
 # kernels are in /boot now. See /usr/lib/auros/bootchain.
-exec /usr/lib/auros/bootchain menu
+#
+# A failure leaves yesterday's menu in place (it still starts AurOS and
+# still has Put Windows back) and is logged, not returned: an exit
+# status here fails the kernel package's postinst, and unattended-
+# upgrades would then sit on a half-configured kernel on a machine
+# nobody is watching. `auros-bootchain menu` by hand shows the reason.
+/usr/lib/auros/bootchain menu && exit 0
+logger -t auros-bootchain "update-grub: menu not rewritten; the previous one is kept" 2>/dev/null
+exit 0
