@@ -352,6 +352,11 @@ else bad "trusted pair, real kernel, real restore kernel: installed, both direct
 out=$(run "$FW" 2>&1); rc=$?
 case "$out" in *"is current"*) [ "$rc" = 0 ] && ok "run again: nothing to do" || bad "run again: nothing to do" "rc=$rc";;
     *) bad "run again: nothing to do" "$out";; esac
+grep -q "^result=current" "$SR/var/lib/auros/bootchain.state" && \
+  grep -q "^last_update=" "$SR/var/lib/auros/bootchain.state" && \
+  grep -q "^judged=grub; .*Put Windows back kernel" "$SR/var/lib/auros/bootchain.state" \
+  && ok "...and status still says when it last updated, and what it judged" \
+  || bad "...and status still says when it last updated, and what it judged" "$(cat "$SR/var/lib/auros/bootchain.state")"
 
 newesp "$ESP"
 out=$(AUROS_BOOTCHAIN_FAIL_AFTER=grubx64.efi run "$FW" 2>&1); rc=$?

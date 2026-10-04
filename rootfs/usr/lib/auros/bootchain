@@ -942,7 +942,22 @@ def sha(path):
 
 
 def record(root, **kv):
+    """Write the state `status` shows. The last update is kept across
+    the runs that find nothing to do -- dpkg runs this several times per
+    upgrade, and the one that installed something is the one a person
+    helping on the phone needs to see: when, and what it checked."""
     kv["when"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+    if kv.get("result", "").startswith("updated"):
+        kv["last_update"] = kv["when"]
+    else:
+        try:
+            with open(os.path.join(root, STATE)) as f:
+                for line in f:
+                    k, _, v = line.rstrip("\n").partition("=")
+                    if k in ("last_update", "judged") and k not in kv:
+                        kv[k] = v
+        except OSError:
+            pass
     body = "".join("%s=%s\n" % (k, str(v).replace("\n", " ")) for k, v in kv.items())
     try:
         write_atomic(os.path.join(root, STATE), body.encode())
