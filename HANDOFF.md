@@ -70,6 +70,16 @@ link, the file behind it untouched); the task that reopens the
 installer after a restart is made and removed; the whole image
 downloads through the installer's own code.
 
+**Added 2026-10-04 (branch `claude/admiring-shannon-xm1g0e`):**
+the installed system takes kernel, grub and shim updates
+(`rootfs/usr/lib/auros/bootchain`, which `update-grub` and `grub-install`
+are diverted to; `tools/bootchaintest.sh`, `tools/bootupdatetest.sh`),
+the staging environment has a progress screen (`src/aurscreen`,
+`tools/screentest.sh`), the start-up menu no longer prints Secure Boot
+errors, and grub's fallback works. Two independent reviews of the boot
+chain; every finding fixed. `docs/issues/v3/STATUS.md` 5.5, 5.7, 7.4 and
+"Found on 2026-10-04". The website was rebuilt (`website/`, `IDEAS.md`).
+
 **Not proven: a real PC's disk being resized and written.** The first
 real-PC attempt (2026-09-26) could not start the installer at all; that
 is fixed, and the tester has the fixed build. Their result is the next
