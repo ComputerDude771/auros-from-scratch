@@ -35,7 +35,11 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PROFILE="${1:-desktop}"
 RFS="$ROOT/work/forge/$PROFILE/rootfs"
-OUT="$ROOT/out"
+# AUROS_STAGING_OUT: somewhere else to put it. tools/nvramtest.sh
+# builds this to prove its gate fires; doing that into out/ rewrote the
+# staging image the end-to-end tests had just tested (new mtimes, new
+# bytes) -- and the installer embeds whatever is in out/.
+OUT="${AUROS_STAGING_OUT:-$ROOT/out}"
 # A fault-injection image never overwrites the real one.
 SUF=""
 [ "${AURSTAGE_FAULT:-0}" = 1 ] && SUF="-fault"
