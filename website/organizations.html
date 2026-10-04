@@ -3,51 +3,53 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>AurOS for schools and organizations</title>
-<meta name="description" content="Profiles, lockdown, kiosk mode and languages: one plain-text file describes a whole fleet of AurOS machines. Plus an honest account of what is not ready.">
-<meta name="color-scheme" content="dark">
-<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2032%2032'%3E%3Crect%20width='32'%20height='32'%20rx='7'%20fill='%230B0E14'/%3E%3Cpath%20d='M16%205L25%2016L16%2027L7%2016Z'%20fill='%237DD3C0'/%3E%3C/svg%3E">
+<title>Schools and organizations — AurOS</title>
+<meta name="description" content="One plain-text profile describes a whole fleet of revived PCs: branding, language, apps and lockdown.">
+<meta name="color-scheme" content="dark light">
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2032%2032'%3E%3Crect%20width='32'%20height='32'%20rx='6'%20fill='%230E1013'/%3E%3Cpath%20d='M16%206L25%2016L16%2026L7%2016Z'%20fill='%23C89B4A'/%3E%3C/svg%3E">
+<script>document.documentElement.classList.add("js");try{var t=localStorage.getItem("auros-site-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);}catch(e){}</script>
 <link rel="stylesheet" href="assets/nocturne.css">
 </head>
 <body>
 <a class="skip" href="#main">Skip to content</a>
-
 <header class="site-head">
   <div class="shell">
     <a class="brand" href="index.html">
-      <span class="glyph" aria-hidden="true">&#9670;</span>
-      AurOS
-      <span class="ver">0.1.0 Nocturne</span>
+      <span class="glyph" aria-hidden="true">&#9670;</span>AurOS
+      <span class="ver">pre-release</span>
     </a>
-    <nav class="site-nav" aria-label="Main">
-      <a href="index.html">Home</a>
+    <button class="menu-btn" type="button" data-menu aria-expanded="false" aria-controls="site-nav">Menu</button>
+    <nav class="site-nav" id="site-nav" aria-label="Main">
+      <a href="desktop.html">Try it</a>
+      <a href="restart.html">The restart</a>
       <a href="how-it-works.html">How it works</a>
-      <a href="safety.html">Safety</a>
+      <a href="safety.html">Honesty</a>
       <a href="organizations.html" aria-current="page">Organizations</a>
-      <a class="btn btn-primary" href="download.html">Download</a>
+      <a class="btn btn-primary btn-sm" href="download.html">Download</a>
+      <button class="theme-toggle" type="button" data-theme-toggle><span class="sw" aria-hidden="true"></span><span data-theme-name>Nocturne</span></button>
     </nav>
   </div>
 </header>
-
 <main id="main">
 
-  <section class="hero hero-sm">
-    <div class="hero-rule" aria-hidden="true"></div>
-    <div class="shell">
-      <p class="eyebrow">Schools &amp; organizations</p>
-      <h1>One plain-text file describes the whole fleet.</h1>
-      <p class="lede">
-        A room of ageing Windows machines that are too slow for the current
-        operating system and too functional to throw away is a common problem with
-        an expensive default answer. AurOS is an attempt at a cheaper one: branding,
-        language, the app list, and exactly what students are allowed to change, all
-        in a single readable file that produces a bootable image.
-      </p>
+  <section class="page-hero">
+    <div class="shell sheet">
+      <div class="margin"><p class="kicker">Schools &amp; organizations</p></div>
+      <div class="body">
+        <h1>One plain-text file describes the whole fleet.</h1>
+        <p class="lede">
+          A room of Windows PCs too old for the current Windows and too good to
+          throw away has an expensive default answer. AurOS is an attempt at a
+          cheaper one: branding, language, the app list and exactly what people
+          may change, in one readable file that builds a bootable image.
+        </p>
+        <p class="small">Pre-release. Only the desktop image is published today; the others below are built from the same tree but not yet rebuilt or tested to the same depth.</p>
+      </div>
     </div>
   </section>
 
   <!-- ───────────────────── what a profile is ──────────────────── -->
-  <section>
+  <section class="sec">
     <div class="shell" id="profiles">
       <div class="sec-head">
         <h2>Profiles</h2>
@@ -58,7 +60,7 @@
         </p>
       </div>
 
-      <div class="grid grid-2">
+      <div class="cols cols-2">
         <div>
           <h3>Inheritance, so you only write the differences</h3>
           <p>
@@ -119,7 +121,7 @@
   </section>
 
   <!-- ───────────────────────── lockdown ───────────────────────── -->
-  <section class="alt">
+  <section class="sec tint">
     <div class="shell" id="lockdown">
       <div class="sec-head">
         <h2>Lockdown</h2>
@@ -204,7 +206,7 @@
         </table>
       </div>
 
-      <div class="note note-warn" style="margin-top:1.6rem">
+      <div class="panel err" style="margin-top:1.6rem">
         <span class="note-title">What lockdown here means, precisely</span>
         <p>
           These controls shape what the desktop offers and what the system will start.
@@ -222,7 +224,7 @@
   </section>
 
   <!-- ───────────────────────── languages ──────────────────────── -->
-  <section>
+  <section class="sec">
     <div class="shell" id="languages">
       <div class="sec-head">
         <h2>Languages</h2>
@@ -232,7 +234,7 @@
         </p>
       </div>
 
-      <div class="grid grid-2">
+      <div class="cols cols-2">
         <div>
           <p>
             A profile sets the system language, any number of additional languages,
@@ -274,9 +276,10 @@
                  language-pack-zh-hans
                  language-pack-es language-pack-ar"</span></code></pre>
           <p class="small">
-            Right-to-left layout for Arabic and Hebrew is a desktop-shell feature
-            that is implemented but has not been tested at the depth a deployment
-            deserves. Ask us about it before committing to it.
+            Right-to-left layout for Arabic and Hebrew is not built into AurOS&rsquo;s
+            own desktop yet, and AurOS&rsquo;s own menus are English for now:
+            programs that carry their own translations follow the language,
+            AurOS&rsquo;s words do not yet.
           </p>
         </div>
       </div>
@@ -284,7 +287,7 @@
   </section>
 
   <!-- ───────────────────── apps and hardware ──────────────────── -->
-  <section class="alt">
+  <section class="sec tint">
     <div class="shell" id="apps">
       <div class="sec-head">
         <h2>Applications, and the one that decides procurement</h2>
@@ -298,12 +301,13 @@
         exactly this reason.
       </p>
       <p>
-        The result is that mainstream Linux builds of browsers and conferencing
-        clients install and run normally, and the browser comes from a real package
-        repository rather than a container format that is slow to start on old
-        hardware &mdash; which matters when the machine you are reviving is from 2014.
+        AurOS is built on Ubuntu 24.04 packages, so mainstream Linux builds of
+        browsers and conferencing clients are what it runs. Profiles ask for
+        Firefox from Mozilla&rsquo;s own repository; the image published today
+        ships the GNOME Web browser instead, because the machine that built it
+        could not reach Mozilla&rsquo;s servers.
       </p>
-      <div class="note note-info">
+      <div class="panel info">
         <span class="note-title">Test it, do not take our word for it</span>
         <p>
           We will not claim your specific testing platform, proctoring client or
@@ -317,7 +321,7 @@
   </section>
 
   <!-- ─────────────────── what is not ready ────────────────────── -->
-  <section>
+  <section class="sec">
     <div class="shell" id="not-ready">
       <div class="sec-head">
         <h2>What is not ready for you</h2>
@@ -328,28 +332,29 @@
         </p>
       </div>
 
-      <div class="grid grid-2">
-        <article class="card card-warn">
-          <h3>The installer is not finished</h3>
+      <div class="cols cols-2">
+        <article class="panel">
+          <h3>The installer is a test build</h3>
           <p>
-            The read-only compatibility check is real and will honestly tell you how
-            many machines in a room would be accepted. Everything that changes a disk
-            is still being built. Nothing gets deployed to a student machine until the
-            rescue path is tested by deliberately failing installs.
+            It installs and puts Windows back on simulated PCs, and starts and
+            checks on real Windows. It has not yet resized a real PC&rsquo;s drive,
+            it is unsigned, and it has no memory-stick page. Nothing should be
+            deployed to a machine someone depends on.
             <a href="safety.html#status">Full status</a>.
           </p>
         </article>
-        <article class="card card-warn">
-          <h3>Every machine will show one firmware prompt</h3>
+        <article class="panel">
+          <h3>Every machine will show an unsigned-program warning</h3>
           <p>
-            Until our boot chain is signed by a recognised authority, each machine
-            needs a one-time approval on a firmware screen during its first start. On
-            one laptop that is a mild curiosity. On two hundred it is two hundred
-            people standing in front of two hundred screens, and you should price that
-            in. <a href="safety.html#secure-boot">Why</a>.
+            Until the installer is signed, Windows says &ldquo;Windows protected your
+            PC&rdquo; on each machine, and refuses it outright where Smart App Control
+            is on. There is no firmware screen to click through: AurOS starts with
+            Secure Boot on through Microsoft-signed shim, except on Secured-core PCs
+            set to trust only Windows, where one setting has to change.
+            <a href="how-it-works.html#secure-boot">How</a>.
           </p>
         </article>
-        <article class="card card-warn">
+        <article class="panel">
           <h3>There is no management console</h3>
           <p>
             There is a profile file, a build, and an optional check-in endpoint your
@@ -358,18 +363,17 @@
             requires one, we are not a candidate this year.
           </p>
         </article>
-        <article class="card card-warn">
+        <article class="panel">
           <h3>There is no certified hardware list</h3>
           <p>
             Comparable products ship with a list of tested models and tiers of
-            support. We do not have one yet. What we have instead is a rescue
-            environment that tests Wi-Fi, brightness, sound and sleep on each machine
-            before anything is committed, and aborts if they fail &mdash; which turns
-            an unknown model into a wasted twenty minutes rather than a broken
-            computer.
+            support. We do not have one yet. What there is instead: before the partition list changes, AurOS loads its
+            own drivers on each machine and stops if it finds no way to get online,
+            which turns an unknown Wi-Fi card into a wasted hour rather than a
+            machine with no network.
           </p>
         </article>
-        <article class="card card-warn">
+        <article class="panel">
           <h3>There is no support contract</h3>
           <p>
             No legal entity, no insurance, no service-level agreement, no invoice to
@@ -378,14 +382,13 @@
             backups.
           </p>
         </article>
-        <article class="card card-warn">
-          <h3>Dual-boot at scale needs a decision</h3>
+        <article class="panel">
+          <h3>Keeping Windows costs disk</h3>
           <p>
-            Keeping Windows on every machine is the safety property that makes this
-            product defensible, and it costs roughly half the disk. For a lab of small
-            drives you may want the replace-everything path instead &mdash; which is
-            supported, and which removes every undo described on this site. Decide
-            that deliberately, not by accident.
+            Keeping Windows on every machine is the safety property this product
+            rests on, and AurOS needs about 28&nbsp;GB beside it. The installer has
+            no &ldquo;replace Windows&rdquo; choice today, so a lab of small drives
+            may simply not have room.
           </p>
         </article>
       </div>
@@ -393,19 +396,19 @@
   </section>
 
   <!-- ───────────────────── what a pilot is ────────────────────── -->
-  <section class="alt">
+  <section class="sec tint">
     <div class="shell" id="pilot">
       <div class="sec-head">
         <h2>What an honest pilot looks like</h2>
       </div>
-      <ol class="steps">
+      <ol class="numbered">
         <li>
-          <h3>Run the read-only check on every machine in one room</h3>
+          <h3>Run Check this PC on every machine in one room</h3>
           <p>
-            It writes nothing and takes under a minute per machine. You get a list of
-            which machines would be accepted, which would be refused, and why. Several
-            of the refusals &mdash; failing drives especially &mdash; are worth knowing
-            about regardless of whether you ever install anything.
+            The installer&rsquo;s first page reads the machine and writes nothing;
+            close it afterwards and nothing has changed. You learn which machines
+            would be accepted, which refused, and why. Some refusals, a failing
+            drive especially, are worth knowing whether or not you install anything.
           </p>
         </li>
         <li>
@@ -420,9 +423,8 @@
           <h3>Install on spare machines that nobody depends on</h3>
           <p>
             With backups, on machines that are not in a timetable. Then try to break
-            the lockdown yourself, and try the restore path deliberately &mdash; boot
-            the rescue entry and press &ldquo;Put Windows back&rdquo; on at least one
-            machine, so you have seen it work with your own eyes.
+            the lockdown yourself, and try the restore path deliberately &mdash; use
+            Settings &rarr; Put Windows back on at least one machine, so you have seen it work with your own eyes.
           </p>
         </li>
         <li>
@@ -435,66 +437,75 @@
         </li>
       </ol>
 
-      <div class="cta" style="margin-top:2.6rem">
+      <div class="panel accent" style="margin-top:2.6rem">
         <h2>Start with the check</h2>
         <p>
-          It is the only part that is finished, and it is the part that tells you
-          whether the rest is worth your time. It is read-only, it takes under a
-          minute, and it changes nothing on the machine.
+          The first page of the installer only reads. It tells you whether the
+          rest is worth your time, and closing it leaves the machine exactly as it
+          was.
         </p>
         <p class="btn-row">
-          <a class="btn btn-primary btn-lg" href="download.html">Download page</a>
-          <a class="btn btn-ghost btn-lg" href="safety.html">What can go wrong</a>
+          <a class="btn btn-primary btn-lg" href="download.html">The test build</a>
+          <a class="btn btn-lg" href="safety.html">What can go wrong</a>
         </p>
       </div>
     </div>
   </section>
 
 </main>
-
 <footer class="site-foot">
   <div class="shell">
     <div class="foot-grid">
       <div>
-        <a class="brand" href="index.html">
-          <span class="glyph" aria-hidden="true">&#9670;</span> AurOS
-        </a>
-        <p class="small" style="margin-top:.8rem">
-          A Linux desktop for old Windows PCs. Pre-release: the read-only
-          compatibility check builds and runs; the installer is still being
-          written and tested.
+        <a class="brand" href="index.html"><span class="glyph" aria-hidden="true">&#9670;</span>AurOS</a>
+        <p class="small" style="margin-top:.9rem">
+          A Linux desktop for the Windows PC you already have. Pre-release:
+          installed and put back many times on simulated machines under real
+          firmware; not yet proven on a real PC&rsquo;s disk.
         </p>
       </div>
-      <nav aria-labelledby="foot-pages">
-        <h2 id="foot-pages">Pages</h2>
+      <nav aria-labelledby="f-see">
+        <h2 id="f-see">See it</h2>
         <ul>
-          <li><a href="index.html">Home</a></li>
-          <li><a href="how-it-works.html">How it works</a></li>
-          <li><a href="safety.html">Safety</a></li>
-          <li><a href="organizations.html">Organizations</a></li>
-          <li><a href="download.html">Download</a></li>
+          <li><a href="desktop.html">Try the desktop</a></li>
+          <li><a href="wallpaper.html">The wallpaper press</a></li>
+          <li><a href="restart.html">The one restart</a></li>
         </ul>
       </nav>
-      <nav aria-labelledby="foot-honest">
-        <h2 id="foot-honest">The honest bits</h2>
+      <nav aria-labelledby="f-decide">
+        <h2 id="f-decide">Before you decide</h2>
         <ul>
-          <li><a href="safety.html#what-can-go-wrong">What can go wrong</a></li>
-          <li><a href="safety.html#refuse">What we refuse to do</a></li>
-          <li><a href="safety.html#cannot-migrate">What can&rsquo;t be migrated</a></li>
-          <li><a href="download.html#requirements">Hard requirements</a></li>
-          <li><a href="how-it-works.html#undo">How to go back to Windows</a></li>
+          <li><a href="check.html">Will my PC make it?</a></li>
+          <li><a href="how-it-works.html">How it works</a></li>
+          <li><a href="safety.html">The honesty page</a></li>
+          <li><a href="guide.html">A one-page guide to print</a></li>
+        </ul>
+      </nav>
+      <nav aria-labelledby="f-proj">
+        <h2 id="f-proj">The project</h2>
+        <ul>
+          <li><a href="download.html">Download (test build)</a></li>
+          <li><a href="organizations.html">Schools and organizations</a></li>
+          <li><a href="https://github.com/ComputerDude771/auros-from-scratch">Source code</a></li>
         </ul>
       </nav>
     </div>
-    <div class="foot-bottom">
-      <p>
-        No analytics, no cookies, no advertising, no external fonts. This page
-        loads one stylesheet and one small script from this server, and makes no
-        other network request. You can save it and read it offline.
-      </p>
-      <p>AurOS is MIT-licensed. &copy; 2026 AurOS contributors.</p>
+    <div class="colophon-text">
+      <p><b>Colophon</b></p>
+      <div>
+        <p>
+          Coloured by two AurOS theme files, <code>nocturne.theme</code> and
+          <code>sandstone.theme</code>, copied value for value. Set in whatever
+          fonts your computer already has. No analytics, no cookies, no
+          advertising, and no request to any server but this one. If you press
+          the Nocturne/Sandstone switch, this browser remembers the choice in
+          its own storage; nothing is sent.
+        </p>
+        <p>AurOS is MIT-licensed. &copy; 2026 AurOS contributors.</p>
+      </div>
     </div>
   </div>
 </footer>
+<script src="assets/site.js"></script>
 </body>
 </html>

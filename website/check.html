@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Will my PC make it? — AurOS</title>
+<meta name="description" content="What a web browser can honestly tell about this computer, what only the installer can check, and how long Windows 10 has left.">
+<meta name="color-scheme" content="dark light">
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2032%2032'%3E%3Crect%20width='32'%20height='32'%20rx='6'%20fill='%230E1013'/%3E%3Cpath%20d='M16%206L25%2016L16%2026L7%2016Z'%20fill='%23C89B4A'/%3E%3C/svg%3E">
+<script>document.documentElement.classList.add("js");try{var t=localStorage.getItem("auros-site-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);}catch(e){}</script>
+<link rel="stylesheet" href="assets/nocturne.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="site-head">
+  <div class="shell">
+    <a class="brand" href="index.html">
+      <span class="glyph" aria-hidden="true">&#9670;</span>AurOS
+      <span class="ver">pre-release</span>
+    </a>
+    <button class="menu-btn" type="button" data-menu aria-expanded="false" aria-controls="site-nav">Menu</button>
+    <nav class="site-nav" id="site-nav" aria-label="Main">
+      <a href="desktop.html">Try it</a>
+      <a href="restart.html">The restart</a>
+      <a href="how-it-works.html">How it works</a>
+      <a href="safety.html">Honesty</a>
+      <a href="organizations.html">Organizations</a>
+      <a class="btn btn-primary btn-sm" href="download.html">Download</a>
+      <button class="theme-toggle" type="button" data-theme-toggle><span class="sw" aria-hidden="true"></span><span data-theme-name>Nocturne</span></button>
+    </nav>
+  </div>
+</header>
+<main id="main">
+
+  <section class="page-hero">
+    <div class="shell sheet">
+      <div class="margin"><p class="kicker">Will my PC make it?</p></div>
+      <div class="body">
+        <h1>What a web page can honestly tell about this PC.</h1>
+        <p class="lede">
+          A little, and nothing about its disk. Below is everything this
+          browser will say, read on this page and sent nowhere, and then the
+          things only the installer&rsquo;s own <b>Check this PC</b> can see.
+          That check only reads, and it changes nothing.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <section class="sec" style="padding-top:0">
+    <div class="shell sheet">
+      <div class="margin">
+        <p class="kicker">This browser says</p>
+        <p class="margin-note">Open this page on the PC you are thinking about. Browsers round some of these numbers, and some browsers say less than others.</p>
+      </div>
+      <div class="body">
+        <ul class="readout" data-readout aria-live="polite">
+          <li><noscript>Reading the browser needs JavaScript. The list below, of what only the installer can see, works without it.</noscript></li>
+        </ul>
+        <p class="small" style="margin-top:1rem">AurOS has no published minimum for memory or processor yet. The project&rsquo;s own example starts it in a virtual machine with 3&nbsp;GB of memory.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="sec tint">
+    <div class="shell sheet">
+      <div class="margin">
+        <p class="kicker">Only the installer can see</p>
+        <p class="margin-note">These are what <b>Check this PC</b> reads. Where a program can fix something, its <b>Fix these for me</b> button does; where nothing can, it says so in one line and changes nothing.</p>
+      </div>
+      <div class="body">
+        <div class="table-wrap">
+          <table>
+            <caption>From <span class="mono">docs/TRY-IT.md</span>, which is what a person testing on a spare PC is told.</caption>
+            <thead><tr><th scope="col">What</th><th scope="col">What the installer does</th><th scope="col">To look yourself, in Windows</th></tr></thead>
+            <tbody>
+              <tr><th scope="row">Starts the modern way (UEFI)</th><td>Required. A PC that starts the old way (BIOS) is refused, and nothing on it is changed. Almost every PC from 2013 on is UEFI.</td><td>Start &rarr; type <span class="mono">msinfo32</span> &rarr; &ldquo;BIOS Mode&rdquo; says <b>UEFI</b>.</td></tr>
+              <tr><th scope="row">About 50&nbsp;GB free on C:</th><td>For the test build: AurOS needs 28&nbsp;GB once installed, Windows keeps 8&nbsp;GB, and the 5&nbsp;GB copy of AurOS stays on C: while it installs. If there is too little, it empties the Recycle Bin, Windows&rsquo; temp folders and Disk Cleanup&rsquo;s leftovers (not Downloads).</td><td>Settings &rarr; System &rarr; Storage.</td></tr>
+              <tr><th scope="row">A healthy drive</th><td>A failing drive is refused. Nothing can fix that, and the honest advice is to back it up today.</td><td>The installer reads this; Windows does not show it plainly.</td></tr>
+              <tr><th scope="row">Drive encryption (BitLocker)</th><td>Switches it off, then waits for Windows to finish.</td><td>Settings &rarr; Privacy &amp; security &rarr; Device encryption, or Control Panel &rarr; BitLocker.</td></tr>
+              <tr><th scope="row">Fast Startup</th><td>Switches it off, always, as its first step.</td><td>Nothing to do.</td></tr>
+              <tr><th scope="row">Updates waiting for a restart</th><td>Restarts Windows once, and opens again by itself after you sign in.</td><td>Nothing to do.</td></tr>
+              <tr><th scope="row">Charger, battery, USB drives</th><td>Waits: plug the charger in, unplug USB drives, and the page carries on by itself.</td><td>Look at the PC.</td></tr>
+              <tr><th scope="row">Secure Boot</th><td>Leave it on; AurOS starts with it on. On the rare PC set to start only Windows (some Secured-core laptops), the installer stops and shows the one firmware setting to switch on.</td><td><span class="mono">msinfo32</span> &rarr; &ldquo;Secure Boot State&rdquo;.</td></tr>
+              <tr><th scope="row">Smart App Control</th><td>If it is on, Windows will not run an unsigned installer at all, and the test build is unsigned. Use a different PC.</td><td>Windows Security &rarr; App &amp; browser control.</td></tr>
+              <tr><th scope="row">Several drives</th><td>Some multi-drive setups are refused, in one line.</td><td>File Explorer &rarr; This PC.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="sec">
+    <div class="shell sheet">
+      <div class="margin">
+        <p class="kicker">The one firmware screen</p>
+        <p class="margin-note">The exception to &ldquo;no firmware screens&rdquo;, and it is rare.</p>
+      </div>
+      <div class="body">
+        <figure>
+          <img src="assets/shots/installer-secured-core-setting.jpg" width="1120" height="760" loading="lazy"
+               alt="The installer's stop page: this PC trusts Microsoft's key for Windows but not for other software. What to do: switch on Allow Microsoft 3rd Party UEFI CA in the PC's firmware settings, and leave Secure Boot on. A sketch of the settings screen highlights that one row.">
+          <figcaption>
+            The installer&rsquo;s stop page on a PC set to trust only Windows, from
+            an earlier build (the colours have changed since). It explains the
+            one setting and how to reach it, and Secure Boot stays on. A PC that
+            trusts only Microsoft&rsquo;s newer 2023 key is refused instead, with
+            &ldquo;This PC needs a newer AurOS installer&rdquo;: no setting fixes it.
+          </figcaption>
+        </figure>
+      </div>
+    </div>
+  </section>
+
+  <section class="sec tint">
+    <div class="shell sheet">
+      <div class="margin"><p class="kicker">The calendar</p></div>
+      <div class="body">
+        <div class="deadline">
+          <div>
+            <div class="num" data-days-until="2027-10-12">&mdash;</div>
+            <div class="unit">days to 12 October 2027</div>
+          </div>
+          <div>
+            <p>
+              If this PC runs Windows 10 and is enrolled in Microsoft&rsquo;s
+              Extended Security Updates, that is when its free security updates
+              stop. Regular support ended on 14 October 2025. The PC will work
+              exactly as well the day after.
+            </p>
+            <p class="btn-row"><a class="btn" href="desktop.html">See what it could run instead</a></p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer class="site-foot">
+  <div class="shell">
+    <div class="foot-grid">
+      <div>
+        <a class="brand" href="index.html"><span class="glyph" aria-hidden="true">&#9670;</span>AurOS</a>
+        <p class="small" style="margin-top:.9rem">
+          A Linux desktop for the Windows PC you already have. Pre-release:
+          installed and put back many times on simulated machines under real
+          firmware; not yet proven on a real PC&rsquo;s disk.
+        </p>
+      </div>
+      <nav aria-labelledby="f-see">
+        <h2 id="f-see">See it</h2>
+        <ul>
+          <li><a href="desktop.html">Try the desktop</a></li>
+          <li><a href="wallpaper.html">The wallpaper press</a></li>
+          <li><a href="restart.html">The one restart</a></li>
+        </ul>
+      </nav>
+      <nav aria-labelledby="f-decide">
+        <h2 id="f-decide">Before you decide</h2>
+        <ul>
+          <li><a href="check.html">Will my PC make it?</a></li>
+          <li><a href="how-it-works.html">How it works</a></li>
+          <li><a href="safety.html">The honesty page</a></li>
+          <li><a href="guide.html">A one-page guide to print</a></li>
+        </ul>
+      </nav>
+      <nav aria-labelledby="f-proj">
+        <h2 id="f-proj">The project</h2>
+        <ul>
+          <li><a href="download.html">Download (test build)</a></li>
+          <li><a href="organizations.html">Schools and organizations</a></li>
+          <li><a href="https://github.com/ComputerDude771/auros-from-scratch">Source code</a></li>
+        </ul>
+      </nav>
+    </div>
+    <div class="colophon-text">
+      <p><b>Colophon</b></p>
+      <div>
+        <p>
+          Coloured by two AurOS theme files, <code>nocturne.theme</code> and
+          <code>sandstone.theme</code>, copied value for value. Set in whatever
+          fonts your computer already has. No analytics, no cookies, no
+          advertising, and no request to any server but this one. If you press
+          the Nocturne/Sandstone switch, this browser remembers the choice in
+          its own storage; nothing is sent.
+        </p>
+        <p>AurOS is MIT-licensed. &copy; 2026 AurOS contributors.</p>
+      </div>
+    </div>
+  </div>
+</footer>
+<script src="assets/check.js"></script>
+<script src="assets/site.js"></script>
+</body>
+</html>

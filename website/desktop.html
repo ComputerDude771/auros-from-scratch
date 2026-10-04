@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Try the AurOS desktop</title>
+<meta name="description" content="Click around a working model of the AurOS desktop in your browser, in all six of its real themes.">
+<meta name="color-scheme" content="dark light">
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2032%2032'%3E%3Crect%20width='32'%20height='32'%20rx='6'%20fill='%230E1013'/%3E%3Cpath%20d='M16%206L25%2016L16%2026L7%2016Z'%20fill='%23C89B4A'/%3E%3C/svg%3E">
+<script>document.documentElement.classList.add("js");try{var t=localStorage.getItem("auros-site-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);}catch(e){}</script>
+<link rel="stylesheet" href="assets/nocturne.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="site-head">
+  <div class="shell">
+    <a class="brand" href="index.html">
+      <span class="glyph" aria-hidden="true">&#9670;</span>AurOS
+      <span class="ver">pre-release</span>
+    </a>
+    <button class="menu-btn" type="button" data-menu aria-expanded="false" aria-controls="site-nav">Menu</button>
+    <nav class="site-nav" id="site-nav" aria-label="Main">
+      <a href="desktop.html" aria-current="page">Try it</a>
+      <a href="restart.html">The restart</a>
+      <a href="how-it-works.html">How it works</a>
+      <a href="safety.html">Honesty</a>
+      <a href="organizations.html">Organizations</a>
+      <a class="btn btn-primary btn-sm" href="download.html">Download</a>
+      <button class="theme-toggle" type="button" data-theme-toggle><span class="sw" aria-hidden="true"></span><span data-theme-name>Nocturne</span></button>
+    </nav>
+  </div>
+</header>
+<main id="main">
+
+  <section class="page-hero">
+    <div class="shell sheet">
+      <div class="margin"><p class="kicker">Try it</p></div>
+      <div class="body">
+        <h1>Click around in AurOS.</h1>
+        <p class="lede">
+          A working model of the AurOS desktop, made from its real theme files
+          and the words on its real buttons. It runs inside this page. Nothing
+          is installed, nothing is sent, and the &ldquo;Put Windows back&rdquo;
+          button cannot put anything anywhere.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <section class="demo-sec">
+    <div class="shell">
+      <div class="demo-controls" role="group" aria-label="Demo controls">
+        <div class="demo-themes">
+          <span class="demo-label" id="theme-label">Theme</span>
+          <div class="swatches" data-theme-chips role="group" aria-labelledby="theme-label"></div>
+        </div>
+        <div class="demo-actions">
+          <div class="seg" role="group" aria-label="Zoom">
+            <button type="button" data-zoom="fit" aria-pressed="true">Fit</button>
+            <button type="button" data-zoom="actual" aria-pressed="false">Actual size</button>
+          </div>
+          <button class="btn btn-sm" type="button" data-demo-restart>Start over, as on first boot</button>
+          <button class="btn btn-sm" type="button" data-demo-full>Full screen</button>
+        </div>
+      </div>
+
+      <div class="demo-frame" data-demo-frame>
+        <div class="demo-scroll" data-demo-scroll>
+          <div id="demo" class="demo" data-demo aria-label="AurOS desktop model, 1024 by 600 pixels" role="region" tabindex="-1">
+            <noscript><p style="padding:2rem">The desktop model needs JavaScript. Everything else on this site works without it.</p></noscript>
+          </div>
+        </div>
+      </div>
+      <p class="demo-caption small">
+        Shown at <b>1024&times;600</b>, the smallest screen AurOS is designed to
+        work on. Keys inside the model: <kbd>&larr;</kbd> <kbd>&rarr;</kbd> slide
+        between pages, <kbd>Enter</kbd> opens, <kbd>Esc</kbd> goes back, <kbd>Tab</kbd>
+        moves between buttons.
+        <span class="demo-phone-note">On a phone it is small: choose <b>Actual size</b> and slide it around, or turn the phone sideways and use <b>Full screen</b>.</span>
+      </p>
+    </div>
+  </section>
+
+  <section class="sec">
+    <div class="shell sheet">
+      <div class="margin">
+        <p class="kicker">Things to try</p>
+      </div>
+      <div class="body">
+        <ol class="numbered">
+          <li><div><h3>Answer the question AurOS asks first</h3>
+            <p>On its first start AurOS asks whether it works, and does not hurry you: &ldquo;Right now, switching this computer on still starts Windows. That stays true until you press Yes.&rdquo; Those are its words, from <span class="mono">src/aurshell/welcome.c</span>.</p></div></li>
+          <li><div><h3>Bring your files across, and read the report</h3>
+            <p>After Yes, AurOS offers to bring your files across from the Windows part of the disk, which it only reads. Some things cannot come, and it says which, in a report instead of a silence.</p></div></li>
+          <li><div><h3>Change how it looks</h3>
+            <p>Settings &rarr; How it looks. The six themes above are the six in AurOS; Settings lists four of them, and the other two are a command away (<span class="mono">aurora set ember</span>). Each one redraws the wallpaper from its own numbers, so there is no photograph to go stale.</p></div></li>
+          <li><div><h3>Try to put Windows back</h3>
+            <p>Settings &rarr; Put Windows back. As in the real one, the remove button has to be pressed twice, and the second press only counts if it comes at least a second and a half after the first, so a double-click or a held Enter key cannot do it by accident.</p></div></li>
+        </ol>
+      </div>
+    </div>
+  </section>
+
+  <section class="sec tint">
+    <div class="shell sheet">
+      <div class="margin">
+        <p class="kicker">What a theme is</p>
+        <p class="margin-note">Run <span class="mono">aurora set &lt;name&gt;</span> and the wallpaper, bar, terminal, text console and start-up menu are all regenerated from one of these files.</p>
+      </div>
+      <div class="body">
+        <h2 class="sec-title">This is the whole of <span data-theme-title>Nocturne</span>&rsquo;s look, as text.</h2>
+        <pre class="theme-file" data-theme-file aria-live="polite"></pre>
+        <p class="small">Excerpt of <span class="mono" data-theme-path>themes/nocturne.theme</span>. The full file also carries sixteen terminal colours, type sizes and spacing.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="sec">
+    <div class="shell sheet">
+      <div class="margin"><p class="kicker">What this is not</p></div>
+      <div class="body">
+        <div class="cols cols-2">
+          <div>
+            <h3>It is a model</h3>
+            <p>AurOS&rsquo;s shell is a C program that draws every pixel itself and hands the frame to the graphics hardware. This page is HTML pretending to be that. The layout (&ldquo;Everything in a row&rdquo;, the one the desktop image ships with), the words, the colours and the wallpapers come from the source; the apps inside are stand-ins.</p>
+          </div>
+          <div>
+            <h3>The screenshots are older than the theme</h3>
+            <p>The real screendumps elsewhere on this site were taken before Nocturne was redrawn from teal to brass. This model uses the theme files as they are today, so it is closer to what an install now looks like than those pictures are.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer class="site-foot">
+  <div class="shell">
+    <div class="foot-grid">
+      <div>
+        <a class="brand" href="index.html"><span class="glyph" aria-hidden="true">&#9670;</span>AurOS</a>
+        <p class="small" style="margin-top:.9rem">
+          A Linux desktop for the Windows PC you already have. Pre-release:
+          installed and put back many times on simulated machines under real
+          firmware; not yet proven on a real PC&rsquo;s disk.
+        </p>
+      </div>
+      <nav aria-labelledby="f-see">
+        <h2 id="f-see">See it</h2>
+        <ul>
+          <li><a href="desktop.html">Try the desktop</a></li>
+          <li><a href="wallpaper.html">The wallpaper press</a></li>
+          <li><a href="restart.html">The one restart</a></li>
+        </ul>
+      </nav>
+      <nav aria-labelledby="f-decide">
+        <h2 id="f-decide">Before you decide</h2>
+        <ul>
+          <li><a href="check.html">Will my PC make it?</a></li>
+          <li><a href="how-it-works.html">How it works</a></li>
+          <li><a href="safety.html">The honesty page</a></li>
+          <li><a href="guide.html">A one-page guide to print</a></li>
+        </ul>
+      </nav>
+      <nav aria-labelledby="f-proj">
+        <h2 id="f-proj">The project</h2>
+        <ul>
+          <li><a href="download.html">Download (test build)</a></li>
+          <li><a href="organizations.html">Schools and organizations</a></li>
+          <li><a href="https://github.com/ComputerDude771/auros-from-scratch">Source code</a></li>
+        </ul>
+      </nav>
+    </div>
+    <div class="colophon-text">
+      <p><b>Colophon</b></p>
+      <div>
+        <p>
+          Coloured by two AurOS theme files, <code>nocturne.theme</code> and
+          <code>sandstone.theme</code>, copied value for value. Set in whatever
+          fonts your computer already has. No analytics, no cookies, no
+          advertising, and no request to any server but this one. If you press
+          the Nocturne/Sandstone switch, this browser remembers the choice in
+          its own storage; nothing is sent.
+        </p>
+        <p>AurOS is MIT-licensed. &copy; 2026 AurOS contributors.</p>
+      </div>
+    </div>
+  </div>
+</footer>
+<script src="assets/themes.js"></script>
+<script src="assets/wall.js"></script>
+<script src="assets/desktop.js"></script>
+<script src="assets/site.js"></script>
+</body>
+</html>

@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>A one-page guide — AurOS</title>
+<meta name="description" content="A printable one-page guide to trying AurOS on a spare PC, written for the person you are helping.">
+<meta name="color-scheme" content="dark light">
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2032%2032'%3E%3Crect%20width='32'%20height='32'%20rx='6'%20fill='%230E1013'/%3E%3Cpath%20d='M16%206L25%2016L16%2026L7%2016Z'%20fill='%23C89B4A'/%3E%3C/svg%3E">
+<script>document.documentElement.classList.add("js");try{var t=localStorage.getItem("auros-site-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);}catch(e){}</script>
+<link rel="stylesheet" href="assets/nocturne.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="site-head">
+  <div class="shell">
+    <a class="brand" href="index.html">
+      <span class="glyph" aria-hidden="true">&#9670;</span>AurOS
+      <span class="ver">pre-release</span>
+    </a>
+    <button class="menu-btn" type="button" data-menu aria-expanded="false" aria-controls="site-nav">Menu</button>
+    <nav class="site-nav" id="site-nav" aria-label="Main">
+      <a href="desktop.html">Try it</a>
+      <a href="restart.html">The restart</a>
+      <a href="how-it-works.html">How it works</a>
+      <a href="safety.html">Honesty</a>
+      <a href="organizations.html">Organizations</a>
+      <a class="btn btn-primary btn-sm" href="download.html">Download</a>
+      <button class="theme-toggle" type="button" data-theme-toggle><span class="sw" aria-hidden="true"></span><span data-theme-name>Nocturne</span></button>
+    </nav>
+  </div>
+</header>
+<main id="main">
+
+  <section class="page-hero no-print">
+    <div class="shell sheet">
+      <div class="margin"><p class="kicker">A page to print</p></div>
+      <div class="body">
+        <h1>One sheet, for the person you&rsquo;re helping.</h1>
+        <p class="lede">
+          Large type, no jargon, and the one moment not to switch off. Fill in
+          the two blanks, print it, and leave it next to the PC. It is the
+          test build&rsquo;s instructions (<span class="mono">docs/TRY-IT.md</span>),
+          shortened.
+        </p>
+        <p class="btn-row"><button class="btn btn-primary" type="button" onclick="window.print()">Print this page</button></p>
+      </div>
+    </div>
+  </section>
+
+  <section class="guide-wrap">
+    <article class="guide" aria-label="The printable guide">
+      <header class="g-head">
+        <p class="g-brand"><span aria-hidden="true">&#9670;</span> AurOS</p>
+        <h2>Trying AurOS on this computer</h2>
+        <p class="g-blanks"><span>Helping you: <i></i></span><span>Their phone: <i></i></span></p>
+      </header>
+
+      <p class="g-warn"><b>This is a test version.</b> Use it only on a computer whose files you do not need, or whose files are copied somewhere else first.</p>
+
+      <ol class="g-steps">
+        <li><h3>Before you start</h3>
+          <p>Charger plugged in. Memory sticks and USB drives <b>unplugged</b>. Internet working: it downloads about 1.8&nbsp;GB.</p></li>
+        <li><h3>Open the file</h3>
+          <p>Windows says <b>&ldquo;Windows protected your PC&rdquo;</b>. Press <b>More info</b>, then <b>Run anyway</b>. Then <b>Yes</b> when it asks to make changes.</p>
+          <p class="g-small">No &ldquo;Run anyway&rdquo;? Stop here: this computer will not run it.</p></li>
+        <li><h3>Follow the pages</h3>
+          <p>If a page lists problems, press <b>Fix these for me</b>. On <b>Ready</b>, tick the box and press <b>Start installing</b>. The download is the long part.</p></li>
+        <li><h3>Press &ldquo;Restart now&rdquo;</h3>
+          <p>Do not close the window instead. Closing it cancels everything, on purpose.</p></li>
+        <li class="g-stop"><h3>After the restart: words on a black screen</h3>
+          <p>That is normal. <b>Do not switch the computer off while it says &ldquo;Making room on the Windows drive&rdquo;.</b> It can take a while.</p>
+          <p class="g-small">If it stops with a sentence and <span class="mono">verdict=</span>, take a photo of the screen and send it.</p></li>
+        <li><h3>&ldquo;AurOS is on this computer&rdquo;</h3>
+          <p><b>Yes, it all works</b> keeps AurOS. <b>No, go back to Windows</b> makes Windows start again. Windows is still there either way.</p></li>
+      </ol>
+
+      <div class="g-cols">
+        <div><h3>To start Windows</h3>
+          <p>As the computer switches on, press the menu key (often <b>F12</b>, <b>F9</b> or <b>Esc</b>; the maker&rsquo;s logo often says which) and choose <b>Windows Boot Manager</b>.</p></div>
+        <div><h3>To remove AurOS</h3>
+          <p>In AurOS: <b>Settings &rarr; Put Windows back</b>, then press <b>Remove AurOS and put Windows back</b> twice. Anything saved in AurOS goes with it.</p></div>
+      </div>
+      <p class="g-foot">auros &middot; pre-release test build &middot; the full instructions are in docs/TRY-IT.md in the AurOS source</p>
+    </article>
+  </section>
+
+</main>
+
+<footer class="site-foot">
+  <div class="shell">
+    <div class="foot-grid">
+      <div>
+        <a class="brand" href="index.html"><span class="glyph" aria-hidden="true">&#9670;</span>AurOS</a>
+        <p class="small" style="margin-top:.9rem">
+          A Linux desktop for the Windows PC you already have. Pre-release:
+          installed and put back many times on simulated machines under real
+          firmware; not yet proven on a real PC&rsquo;s disk.
+        </p>
+      </div>
+      <nav aria-labelledby="f-see">
+        <h2 id="f-see">See it</h2>
+        <ul>
+          <li><a href="desktop.html">Try the desktop</a></li>
+          <li><a href="wallpaper.html">The wallpaper press</a></li>
+          <li><a href="restart.html">The one restart</a></li>
+        </ul>
+      </nav>
+      <nav aria-labelledby="f-decide">
+        <h2 id="f-decide">Before you decide</h2>
+        <ul>
+          <li><a href="check.html">Will my PC make it?</a></li>
+          <li><a href="how-it-works.html">How it works</a></li>
+          <li><a href="safety.html">The honesty page</a></li>
+          <li><a href="guide.html">A one-page guide to print</a></li>
+        </ul>
+      </nav>
+      <nav aria-labelledby="f-proj">
+        <h2 id="f-proj">The project</h2>
+        <ul>
+          <li><a href="download.html">Download (test build)</a></li>
+          <li><a href="organizations.html">Schools and organizations</a></li>
+          <li><a href="https://github.com/ComputerDude771/auros-from-scratch">Source code</a></li>
+        </ul>
+      </nav>
+    </div>
+    <div class="colophon-text">
+      <p><b>Colophon</b></p>
+      <div>
+        <p>
+          Coloured by two AurOS theme files, <code>nocturne.theme</code> and
+          <code>sandstone.theme</code>, copied value for value. Set in whatever
+          fonts your computer already has. No analytics, no cookies, no
+          advertising, and no request to any server but this one. If you press
+          the Nocturne/Sandstone switch, this browser remembers the choice in
+          its own storage; nothing is sent.
+        </p>
+        <p>AurOS is MIT-licensed. &copy; 2026 AurOS contributors.</p>
+      </div>
+    </div>
+  </div>
+</footer>
+<script src="assets/site.js"></script>
+</body>
+</html>

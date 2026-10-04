@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The wallpaper press — AurOS</title>
+<meta name="description" content="AurOS draws its wallpaper from numbers instead of shipping photographs. This is that code, running in your browser. Draw one and keep it.">
+<meta name="color-scheme" content="dark light">
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2032%2032'%3E%3Crect%20width='32'%20height='32'%20rx='6'%20fill='%230E1013'/%3E%3Cpath%20d='M16%206L25%2016L16%2026L7%2016Z'%20fill='%23C89B4A'/%3E%3C/svg%3E">
+<script>document.documentElement.classList.add("js");try{var t=localStorage.getItem("auros-site-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);}catch(e){}</script>
+<link rel="stylesheet" href="assets/nocturne.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="site-head">
+  <div class="shell">
+    <a class="brand" href="index.html">
+      <span class="glyph" aria-hidden="true">&#9670;</span>AurOS
+      <span class="ver">pre-release</span>
+    </a>
+    <button class="menu-btn" type="button" data-menu aria-expanded="false" aria-controls="site-nav">Menu</button>
+    <nav class="site-nav" id="site-nav" aria-label="Main">
+      <a href="desktop.html">Try it</a>
+      <a href="restart.html">The restart</a>
+      <a href="how-it-works.html">How it works</a>
+      <a href="safety.html">Honesty</a>
+      <a href="organizations.html">Organizations</a>
+      <a class="btn btn-primary btn-sm" href="download.html">Download</a>
+      <button class="theme-toggle" type="button" data-theme-toggle><span class="sw" aria-hidden="true"></span><span data-theme-name>Nocturne</span></button>
+    </nav>
+  </div>
+</header>
+<main id="main">
+
+  <section class="page-hero">
+    <div class="shell sheet">
+      <div class="margin"><p class="kicker">The wallpaper press</p></div>
+      <div class="body">
+        <h1>No photographs. Just numbers, and a press.</h1>
+        <p class="lede">
+          AurOS ships no wallpaper images. It draws the wallpaper at your
+          screen&rsquo;s exact size from a few lines in the theme file, so a new
+          theme never strands an old picture. This page runs that drawing code
+          in your browser. Pick a theme, pull a fresh seed, keep the one you like.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <section class="wp-sec">
+    <div class="shell">
+      <div class="wp">
+        <div class="wp-stage">
+          <canvas class="wp-canvas" data-wp-canvas width="960" height="540" role="img" aria-label="Wallpaper preview"></canvas>
+          <p class="wp-status small" data-wp-status role="status">Drawing&hellip;</p>
+        </div>
+
+        <form class="wp-panel" data-wp-form onsubmit="return false">
+          <fieldset>
+            <legend>Theme</legend>
+            <div class="swatches" data-wp-themes></div>
+          </fieldset>
+
+          <fieldset>
+            <legend>Seed</legend>
+            <div class="wp-seed">
+              <label class="sr" for="wp-seed">Seed number</label>
+              <input id="wp-seed" type="number" min="0" max="999999" step="1" value="0" data-wp-seed inputmode="numeric">
+              <button class="btn btn-sm" type="button" data-wp-roll>New seed</button>
+              <button class="btn btn-sm" type="button" data-wp-zero>AurOS&rsquo;s own (0)</button>
+            </div>
+            <p class="small" style="margin:.5rem 0 0">Seed 0 is the wallpaper AurOS draws. Any other seed is this page&rsquo;s addition: the same rules, with the noise and a few positions moved.</p>
+          </fieldset>
+
+          <details class="fold wp-more">
+            <summary>Change the numbers</summary>
+            <div class="fold-body">
+              <label class="wp-field">Style
+                <select data-wp-style>
+                  <option value="letterpress">letterpress</option>
+                  <option value="aurora">aurora</option>
+                  <option value="mesh">mesh</option>
+                  <option value="waves">waves</option>
+                  <option value="gradient">gradient</option>
+                  <option value="noise">noise</option>
+                  <option value="solid">solid</option>
+                </select>
+              </label>
+              <div class="wp-colors">
+                <label class="wp-field">wall_c1 <input type="color" data-wp-c="c1"></label>
+                <label class="wp-field">wall_c2 <input type="color" data-wp-c="c2"></label>
+                <label class="wp-field">wall_c3 <input type="color" data-wp-c="c3"></label>
+                <label class="wp-field">wall_c4 <input type="color" data-wp-c="c4"></label>
+              </div>
+              <label class="wp-field">wall_intensity <output data-wp-o="intensity"></output><input type="range" min="0" max="1" step="0.01" data-wp-n="intensity"></label>
+              <label class="wp-field">wall_grain <output data-wp-o="grain"></output><input type="range" min="0" max="0.2" step="0.005" data-wp-n="grain"></label>
+              <label class="wp-field">wall_vignette <output data-wp-o="vignette"></output><input type="range" min="0" max="1" step="0.01" data-wp-n="vignette"></label>
+            </div>
+          </details>
+
+          <fieldset>
+            <legend>Keep it</legend>
+            <label class="wp-field">Size
+              <select data-wp-size></select>
+            </label>
+            <p class="btn-row" style="margin-top:.8rem">
+              <button class="btn btn-primary" type="button" data-wp-download>Download PNG</button>
+              <a class="btn btn-sm" href="#" data-wp-link>Link to this one</a>
+            </p>
+          </fieldset>
+        </form>
+      </div>
+    </div>
+  </section>
+
+  <section class="sec">
+    <div class="shell sheet">
+      <div class="margin">
+        <p class="kicker">As a theme file</p>
+        <p class="margin-note">Paste these into a copy of any theme and run <span class="mono">aurora set</span>. AurOS itself has no seed key, so it will draw this at seed 0.</p>
+      </div>
+      <div class="body">
+        <pre class="theme-file" data-wp-snippet></pre>
+        <p class="btn-row" style="margin-top:.8rem"><button class="btn btn-sm" type="button" data-wp-copy>Copy these lines</button></p>
+      </div>
+    </div>
+  </section>
+
+  <section class="sec tint">
+    <div class="shell sheet">
+      <div class="margin"><p class="kicker">Why draw it</p></div>
+      <div class="body">
+        <h2 class="sec-title">A picture that is also a recipe.</h2>
+        <div class="cols cols-2">
+          <p>
+            A photograph is the same size forever and the wrong size for most
+            screens. A recipe is drawn at whatever size the screen is, weighs a
+            few lines of text, and changes with the theme: switch to Sandstone
+            and the wallpaper is redrawn in Sandstone&rsquo;s colours, not left
+            behind in Nocturne&rsquo;s.
+          </p>
+          <p>
+            The code here is a line-by-line port of
+            <span class="mono">src/common/wall.c</span>. At seed 0 it was checked
+            against the C program for every theme and every style, and differs
+            from it by at most one step in one colour channel, because C does
+            the arithmetic in smaller numbers than JavaScript does.
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer class="site-foot">
+  <div class="shell">
+    <div class="foot-grid">
+      <div>
+        <a class="brand" href="index.html"><span class="glyph" aria-hidden="true">&#9670;</span>AurOS</a>
+        <p class="small" style="margin-top:.9rem">
+          A Linux desktop for the Windows PC you already have. Pre-release:
+          installed and put back many times on simulated machines under real
+          firmware; not yet proven on a real PC&rsquo;s disk.
+        </p>
+      </div>
+      <nav aria-labelledby="f-see">
+        <h2 id="f-see">See it</h2>
+        <ul>
+          <li><a href="desktop.html">Try the desktop</a></li>
+          <li><a href="wallpaper.html">The wallpaper press</a></li>
+          <li><a href="restart.html">The one restart</a></li>
+        </ul>
+      </nav>
+      <nav aria-labelledby="f-decide">
+        <h2 id="f-decide">Before you decide</h2>
+        <ul>
+          <li><a href="check.html">Will my PC make it?</a></li>
+          <li><a href="how-it-works.html">How it works</a></li>
+          <li><a href="safety.html">The honesty page</a></li>
+          <li><a href="guide.html">A one-page guide to print</a></li>
+        </ul>
+      </nav>
+      <nav aria-labelledby="f-proj">
+        <h2 id="f-proj">The project</h2>
+        <ul>
+          <li><a href="download.html">Download (test build)</a></li>
+          <li><a href="organizations.html">Schools and organizations</a></li>
+          <li><a href="https://github.com/ComputerDude771/auros-from-scratch">Source code</a></li>
+        </ul>
+      </nav>
+    </div>
+    <div class="colophon-text">
+      <p><b>Colophon</b></p>
+      <div>
+        <p>
+          Coloured by two AurOS theme files, <code>nocturne.theme</code> and
+          <code>sandstone.theme</code>, copied value for value. Set in whatever
+          fonts your computer already has. No analytics, no cookies, no
+          advertising, and no request to any server but this one. If you press
+          the Nocturne/Sandstone switch, this browser remembers the choice in
+          its own storage; nothing is sent.
+        </p>
+        <p>AurOS is MIT-licensed. &copy; 2026 AurOS contributors.</p>
+      </div>
+    </div>
+  </div>
+</footer>
+<script src="assets/themes.js"></script>
+<script src="assets/wall.js"></script>
+<script src="assets/wallpaper.js"></script>
+<script src="assets/site.js"></script>
+</body>
+</html>
