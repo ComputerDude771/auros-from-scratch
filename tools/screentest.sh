@@ -21,6 +21,8 @@
 #    sh tools/screentest.sh [SERIAL-LOG-OF-A-REAL-INSTALL]
 # ═══════════════════════════════════════════════════════════════════
 set -u
+LOG="${1:-}"       # before anything below uses `set --`
+case "$LOG" in ""|/*) ;; *) LOG="$PWD/$LOG" ;; esac
 cd "$(dirname "$0")/.."
 
 fail=0; checked=0
@@ -104,6 +106,17 @@ S=$( { say "restoring /dev/vda" "" "aurstage-report v1 verdict=restored record=d
 case "$S" in *"stopped=0 "*"finished=1 "*"para=Windows is back."*) ok "a restore that worked: finished, not stopped" ;;
     *) bad "a restore that worked: finished, not stopped" "$S" ;; esac
 
+S=$( say "AurOS staging environment" "this is the one restart; nothing has been changed yet" \
+         "5 drivers loaded" "this machine has 3 disks" | st install)
+case "$S" in *"para=Getting ready. Nothing on this computer has been changed yet."*)
+    case "$S" in *"drivers loaded"*) bad "start-up: her sentence, not the technician's lines" "$S" ;;
+        *) ok "start-up: her sentence, not the technician's lines" ;; esac ;;
+    *) bad "start-up: her sentence, not the technician's lines" "$S" ;; esac
+S=$( say "AurOS staging environment" "5 drivers loaded" "── putting Windows back ──" \
+         "checking the saved copy on /dev/vdb" "restoring /dev/vda" | st restore)
+case "$S" in *"para=Putting Windows and its drive back exactly as they were."*) ok "a restore under way: says what it is doing" ;;
+    *) bad "a restore under way: says what it is doing" "$S" ;; esac
+
 S=$( { head -c 20000 /dev/urandom; printf '\naurstage-progress 999\naurstage-progress -5\n'; } | st install)
 case "$S" in *"pct=0 "*) ok "garbage and out-of-range numbers: no crash, clamped" ;;
     *) bad "garbage and out-of-range numbers: no crash, clamped" "$S" ;; esac
@@ -118,10 +131,10 @@ for sz in "1024 768" "1366 768" "1920 1080" "800 600"; do
     else bad "paints at $1x$2"; fi
 done
 
-if [ -n "${1:-}" ] && [ -f "$1" ]; then
+if [ -n "$LOG" ]; then
     echo
-    echo "  a real install's serial log: $1"
-    S=$(tr -d '\r' < "$1" | grep -a '^aurstage' | st install)
+    echo "  a real install's serial log: $LOG"
+    S=$(tr -d '\r' < "$LOG" | grep -a '^aurstage' | st install)
     case "$S" in *"step=6 "*"handover=1 "*) ok "followed it to the end: every step, handed over" ;;
         *) bad "followed it to the end: every step, handed over" "$S" ;; esac
 fi

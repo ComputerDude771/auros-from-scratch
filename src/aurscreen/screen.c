@@ -161,6 +161,31 @@ static void feed(state *s, char *line)
     if (strstr(t, "handing over to the system on")) { s->handover = 1; s->pct = -1; return; }
 
     if (!*t) { s->para_open = 0; return; }          /* a blank line ends one */
+
+    /* What PID 1 says first is for a technician ("5 drivers loaded",
+     * "this machine has 3 disks"). Until aurstage has a sentence for
+     * her, the screen has its own. */
+    if (!strcmp(t, "AurOS staging environment")) {
+        snprintf(s->para[0], sizeof s->para[0], "%s",
+                 s->mode == M_RESTORE ? "Getting ready to put Windows back."
+                 : s->mode == M_INSTALL ? "Getting ready. Nothing on this computer has been changed yet."
+                 : "Looking at this computer. Nothing will be changed.");
+        s->npara = 1; s->para_open = 0;
+        return;
+    }
+    /* The restore speaks in detail lines only; these two are its steps. */
+    if (s->mode == M_RESTORE && !s->stopped) {
+        const char *say = !strncmp(t, "checking the saved copy", 23)
+                            ? "Checking the copy of how Windows started that was saved before AurOS went on."
+                        : !strncmp(t, "restoring ", 10)
+                            ? "Putting Windows and its drive back exactly as they were."
+                        : NULL;
+        if (say) {
+            snprintf(s->para[0], sizeof s->para[0], "%s", say);
+            s->npara = 1; s->para_open = 0;
+            return;
+        }
+    }
     if (!strncmp(t, "WARNING: ", 9)) {
         snprintf(s->warn, sizeof s->warn, "%s", t + 9);
         if (s->warn[0] >= 'a' && s->warn[0] <= 'z') s->warn[0] -= 32;

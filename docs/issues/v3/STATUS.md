@@ -72,9 +72,9 @@ is marked as the build that does not start.
 | 5.2 | Memory-stick page, R11 typed confirmation | **not done**: a new wizard page with drive selection; the engine and tests for stick mode exist. |
 | 5.3 | Screen readers | **not done**: needs a UI Automation or MSAA provider for the owner-drawn wizard. |
 | 5.4 | Profile picker | **not done**: only the desktop image is published, so a picker would offer images that cannot be downloaded. |
-| 5.5 | Staging has no screen of its own | **not done**. |
+| 5.5 | Staging has no screen of its own | **done** (2026-10-04): `src/aurscreen` paints the seven steps, aurstage's own sentence, a bar, and "Do not turn the computer off" from the first irreversible write; a refusal says "AurOS was not installed" in red with the `verdict=` line at the foot for a photo. Fed by PID 1 through a non-blocking pipe, so a screen that fails costs the install nothing. `tools/screentest.sh` 25/25 (including following a real install's serial log to the handover); `installtest` 37/37 with it running, screenshots in `docs/shots/staging-*.png`. |
 | 5.6 | AurOS's own text is English only | **not done**. |
-| 5.7 | PCs that trust only the 2023 key | **cannot be done in code**: needs a shim signed with Microsoft's 2023 key; the build picks one up automatically. |
+| 5.7 | PCs that trust only the 2023 key | **cannot be done in code**: needs a shim signed with Microsoft's 2023 key. Checked 2026-10-04: no Ubuntu shim has one (shim-signed 1.59 is Canonical + 2011; README used to claim 2011 + 2023, corrected). `build/shimpick` now refuses a shim without the 2011 signature instead of falling back to whatever file exists; an installed AurOS takes a 2023-signed shim by itself the day the archive has one and its firmware trusts it (7.4). |
 | 5.8 | Secured-core firmware setting | unchanged; the installer shows the setting. |
 | 5.9 | Staging grub.cfg found its files by search | **done**: the partition grub started from (`$cmdpath`) first, the search as fallback. |
 | 5.10 | Closing the window threw a ready install away | **done**: it asks, with No as the default. |
@@ -113,7 +113,7 @@ is marked as the build that does not start.
 | 7.1 | No Firefox | **cannot be done here**: this environment's network refuses every Mozilla host. The environment's network policy is the fix. |
 | 7.2 | Rebuild images | **partly**: the desktop image is rebuilt and published as `v3/` (`5dee5f44`); the other four profiles are not rebuilt (nothing downloads them yet). |
 | 7.3 | Image hosted on a git branch | **not done**: moving to GitHub Releases needs a release made from the GitHub page or an account with that permission. |
-| 7.4 | No update channel | **partly**: `unattended-upgrades` installs Ubuntu's security updates daily, **except the kernel, grub and shim**. A kernel update runs `update-grub`, which regenerates `grub.cfg` and would drop AurOS's hand-written menu (Put Windows back and the Windows entry with it), and a grub or shim update runs `grub-install`, which puts its own entry first in `BootOrder`. They stay out until `update-grub` regenerates AurOS's menu (a `/etc/grub.d` generator, or a diverted `update-grub`) and `grub-install` is told to leave NVRAM alone. The same applies to a person running `apt upgrade` by hand, which is open. AurOS's own programs are built into the image and still have no update path. |
+| 7.4 | No update channel | **done for the boot chain** (2026-10-04): the kernel, grub and shim take security updates like everything else. `update-grub` and `grub-install` are diverted to `rootfs/usr/lib/auros/bootchain`, which rewrites AurOS's own menu (the previous kernel as grub's automatic fallback, by entry number) and installs a new shim + grub on AurOS's EFI partition only after checking, the way EDK2 and shim do, that this firmware starts the shim and the shim starts the grub, every kernel in the menu and the Put Windows back kernel on Windows' partition (SBAT included). When no new shim passes, a new grub goes in alone if the installed shim starts it. BootOrder is never written; `grub-multi-install` never lists or mounts Windows' partition. `tools/bootchaintest.sh` 71/71 (every check also switched off and shown to stop refusing); `tools/bootupdatetest.sh` boots the real image under Secure Boot through a real `dpkg`/`apt` update, a new kernel, and a damaged kernel grub must fall back from. Two independent reviews; their findings are fixed. **Still open:** AurOS's own programs have no update path. |
 | 7.5 | Azure Artifact Signing step | **not done**: cannot be tested without an account. |
 | 7.6 | Manifest unchecked by the build | **done** (item 1). |
 
@@ -188,3 +188,25 @@ that ran commands on the build host.
 A legal entity, a code-signing certificate, a licence and support
 path, insurance, a tested hardware list. `docs/RELEASE.md` has the
 steps and costs.
+
+## Found on 2026-10-04, while closing 5.5 and 7.4
+
+Each was found by a test or a reviewer, and each has a test now.
+
+- **The start-up menu printed "error: prohibited by secure boot policy"**
+  on every start, up to 54 times: Canonical's grub refuses `loadfont`
+  and every module from disk under Secure Boot, and the menu fell back to
+  grub's ASCII font (its frame drawn in `?`). The menu is on the
+  firmware's text console now, and no modules are copied to the prefix.
+- **grub's fallback never worked.** `set fallback=<id>` is silently
+  ignored by Ubuntu's grub 2.12 (it takes a number); with a kernel that
+  would not start, the machine sat at the menu for ever. Seen in
+  `bootupdatetest` boot 3 before the fix, passing after.
+- **Shim and grub package updates changed nothing that starts the PC**:
+  their postinsts only call grub-install when `/boot/grub/x86_64-efi/core.efi`
+  exists, which only grub-install makes.
+- **"Nothing has been changed" after Windows had been shrunk.** The
+  hardware check after the shrink reused the dry run's sentence. It now
+  says the drive is smaller but still works.
+- **`sbverify --cert` is not a trust check**: it passes a shim against a
+  certificate made up a moment ago. See `docs/handoff/TRAPS.md`.
