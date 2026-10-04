@@ -189,4 +189,12 @@ void stage_say_secure(void);
 void stage_say(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 void stage_warn(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 
+/* The progress screen (src/aurscreen), fed through a pipe from
+ * stage_say. Starting it is optional and failing to is silent: the
+ * console is always written first. Stopped before switch_root so the
+ * installed desktop can take the display. */
+void stage_screen_start(void);
+void stage_screen_stop(void);
+void stage_progress(int pct);
+
 #endif

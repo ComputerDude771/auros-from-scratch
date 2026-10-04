@@ -1,0 +1,8 @@
+#!/bin/sh
+# /usr/sbin/update-grub on AurOS. Ubuntu's is diverted to
+# update-grub.ubuntu (build/forge, stage 3) because it would replace
+# AurOS's menu -- Put Windows back, the Windows entry -- with
+# grub-mkconfig's. Kernel packages call this after every install and
+# removal; it writes the same menu build/mkimage wrote, for whichever
+# kernels are in /boot now. See /usr/lib/auros/bootchain.
+exec /usr/lib/auros/bootchain menu

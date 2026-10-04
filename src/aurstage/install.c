@@ -134,6 +134,7 @@ static void step(rec_step s, const char *note)
 static void dots(int pct)
 {
     static int last = -1;
+    stage_progress(pct);
     if (pct == last || pct % 5) return;
     last = pct;
     fprintf(stderr, " %d%%", pct);

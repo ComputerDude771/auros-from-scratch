@@ -1,20 +1,17 @@
-// AurOS: automatic security updates for everything EXCEPT the kernel,
-// grub and shim. Found by review on 2026-09-26, before anything shipped:
+// AurOS: automatic security updates for everything, the kernel, grub
+// and shim included.
 //
-//  - a kernel update runs zz-update-grub, which regenerates
-//    /boot/grub/grub.cfg with grub-mkconfig -- and build/mkimage writes
-//    that file by hand. AurOS's start-up menu, its "Put Windows back"
-//    entry and its Windows entry would all disappear on the first
-//    security update, with nothing on screen to connect the two.
-//  - a grub or shim update runs grub-install, which by default adds its
-//    own firmware entry at the head of BootOrder. BootOrder is written
-//    only by `aurfirst confirm`: on a machine whose person said AurOS
-//    does not work, that would make AurOS the default anyway.
+// Until 2026-10 these three were blacklisted here, because Ubuntu's
+// update-grub would have replaced AurOS's start-up menu (and with it
+// "Put Windows back") and grub-install would have reordered BootOrder.
+// Both are diverted to /usr/lib/auros/bootchain now (build/forge,
+// stage 3): kernel updates rewrite AurOS's own menu with the previous
+// kernel as an automatic fallback, and a new shim or grub is installed
+// on AurOS's EFI partition only after checking this firmware trusts it
+// (the Microsoft 2011 -> 2023 key change) and its SBAT level allows it.
+// tools/bootchaintest.sh is the proof.
 //
-// These stay out until update-grub regenerates AurOS's own menu and
-// grub-install is told to leave NVRAM alone. docs/issues/v3/STATUS.md, 7.4.
-Unattended-Upgrade::Package-Blacklist {
-    "linux-";
-    "grub";
-    "shim";
-};
+// Leaving them out was not the safe side: a grub that SBAT revokes
+// later, by a Windows update writing the firmware's revocation level,
+// is a computer that stops starting AurOS one morning.
+// (No Package-Blacklist: nothing is held back.)

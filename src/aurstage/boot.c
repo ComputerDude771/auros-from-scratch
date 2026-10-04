@@ -28,6 +28,7 @@
 #include <sys/mount.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <signal.h>
 #include <time.h>
 
 #include "aurstage.h"
@@ -88,6 +89,84 @@ uint64_t stage_mem_available(void)
 
 static int log_fd = -1;
 
+/* ── the screen ──────────────────────────────────────────────────
+ *
+ * src/aurscreen paints what this says as a progress screen instead of
+ * console text (docs/issues/v3/05, 5.5). It is fed through a PIPE, not
+ * a file: the write gate above allows no new open() of anything
+ * writable in this directory, and a pipe needs none. The write end is
+ * non-blocking and SIGPIPE is ignored, so a screen that is slow,
+ * crashed or absent drops lines and costs the install nothing -- the
+ * console line above has already been written either way.
+ *
+ * Lines said before the screen starts (the first three) are kept and
+ * handed over when it does, so its first picture is not blank. */
+static int   screen_fd  = -1;
+static pid_t screen_pid = -1;
+static char  early[8][512];
+static int   n_early;
+
+static void screen_line(const char *line, size_t n)
+{
+    if (screen_fd >= 0) {
+        ssize_t ignored = write(screen_fd, line, n); (void)ignored;
+    } else if (screen_pid < 0 && n_early < 8) {
+        snprintf(early[n_early++], sizeof early[0], "%s", line);
+    }
+}
+
+void stage_screen_start(void)
+{
+    static const char *const PROG = "/usr/bin/aurscreen";
+    if (screen_pid >= 0) return;
+    if (access(PROG, X_OK) != 0 || stage_cmdline_has("aurstage.noscreen")) return;
+    signal(SIGPIPE, SIG_IGN);
+    int p[2];
+    if (pipe2(p, O_CLOEXEC) != 0) return;
+    pid_t pid = fork();
+    if (pid < 0) { close(p[0]); close(p[1]); return; }
+    if (pid == 0) {
+        dup2(p[0], 0);           /* dup2 clears close-on-exec on 0 */
+        execl(PROG, PROG, (char *)NULL);
+        _exit(127);
+    }
+    close(p[0]);
+    fcntl(p[1], F_SETFL, fcntl(p[1], F_GETFL) | O_NONBLOCK);
+    screen_fd = p[1];
+    screen_pid = pid;
+    for (int i = 0; i < n_early; i++) {
+        ssize_t ignored = write(screen_fd, early[i], strlen(early[i])); (void)ignored;
+    }
+}
+
+/* Before switch_root: the screen holds the display, and AurOS's own
+ * desktop has to be able to take it. Closing the pipe tells it to
+ * stop listening; SIGTERM tells it to let go of the display. */
+void stage_screen_stop(void)
+{
+    if (screen_fd >= 0) { close(screen_fd); screen_fd = -1; }
+    if (screen_pid <= 0) return;
+    kill(screen_pid, SIGTERM);
+    for (int i = 0; i < 40; i++) {
+        if (waitpid(screen_pid, NULL, WNOHANG) == screen_pid) { screen_pid = 0; return; }
+        struct timespec t = { 0, 50 * 1000 * 1000 };
+        nanosleep(&t, NULL);
+    }
+    kill(screen_pid, SIGKILL);
+    waitpid(screen_pid, NULL, 0);
+    screen_pid = 0;
+}
+
+/* A long step's percentage, to the screen only: the console already
+ * has its own dots, and a hundred lines of numbers there helps nobody. */
+void stage_progress(int pct)
+{
+    if (screen_fd < 0) return;
+    char b[32];
+    int n = snprintf(b, sizeof b, "aurstage-progress %d\n", pct);
+    if (n > 0) { ssize_t ignored = write(screen_fd, b, (size_t)n); (void)ignored; }
+}
+
 static void say_v(const char *tag, const char *fmt, va_list ap)
 {
     char line[512];
@@ -110,6 +189,7 @@ static void say_v(const char *tag, const char *fmt, va_list ap)
      * the machine dies before it is, the screen is what is left. */
     ssize_t ignored = write(2, line, (size_t)n); (void)ignored;
     if (log_fd >= 0) { ignored = write(log_fd, line, (size_t)n); (void)ignored; }
+    screen_line(line, (size_t)n);
 }
 
 void stage_say(const char *fmt, ...)
@@ -333,6 +413,7 @@ static void wipe_initramfs(int root_dev, const char *dir, int depth)
 int stage_switch_root(const char *root_dev)
 {
     const char *NEW = "/newroot";
+    stage_screen_stop();
     mkdir(NEW, 0755);
 
     /* READ-ONLY *AND* noload, AND THE SECOND HALF IS THE POINT.

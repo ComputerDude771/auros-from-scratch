@@ -856,6 +856,44 @@ stage_overlay() {
     chmod 755 "$RFS/usr/lib/auros/firstboot.sh" 2>/dev/null || true
     chmod 755 "$RFS/usr/lib/auros/choices.sh" 2>/dev/null || true
 
+    # THE BOOT CHAIN BELONGS TO AUROS, NOT TO update-grub AND grub-install.
+    #
+    # Ubuntu's kernel, grub and shim packages call both from their
+    # maintainer scripts. update-grub would replace AurOS's hand-made
+    # menu -- the Windows entry and "Put Windows back" -- and
+    # grub-install would write to /boot/efi/EFI/ubuntu (where AurOS's
+    # firmware entry does not point) and reorder BootOrder. Diverted,
+    # both reach /usr/lib/auros/bootchain, and the three packages can
+    # take security updates like everything else (51auros-unattended).
+    # `--rename` keeps Ubuntu's own as *.ubuntu; a later package upgrade
+    # installs its new version there too, never over ours.
+    for _t in update-grub grub-install; do
+        inchroot "dpkg-divert --local --rename --divert /usr/sbin/$_t.ubuntu \
+                  --add /usr/sbin/$_t" >/dev/null \
+            || die "could not divert /usr/sbin/$_t"
+        install -m755 "$ROOT/rootfs/usr/lib/auros/$_t" "$RFS/usr/sbin/$_t"
+    done
+    ln -sf /usr/lib/auros/bootchain "$RFS/usr/sbin/auros-bootchain"
+    # And if anything does reach the real grub-install (a person typing
+    # update-grub.ubuntu's sibling by hand), it does not touch NVRAM.
+    #
+    # cloud_style_installation is the one that matters most, and it is
+    # not about clouds. Without it, grub-multi-install -- which the shim
+    # and grub postinsts run -- lists EVERY EFI System partition on the
+    # machine, offers them as install targets, and MOUNTS any it is told
+    # to use that is not mounted already. On an AurOS PC one of them is
+    # Windows' own, which R12 says this product never mounts. With it
+    # set, grub-multi-install calls grub-install (ours) once and exits:
+    # no list, no mount.
+    inchroot "printf '%s\n' \
+        'grub-efi-amd64 grub2/update_nvram boolean false' \
+        'grub-efi-amd64-signed grub2/update_nvram boolean false' \
+        'grub-efi-amd64 grub-efi/cloud_style_installation boolean true' \
+        | debconf-set-selections" || die "could not preseed grub's debconf answers"
+    inchroot "debconf-show grub-efi-amd64 | grep -q 'cloud_style_installation: true'" \
+        || die "grub-efi/cloud_style_installation did not take; grub-multi-install
+     would enumerate (and could mount) Windows' EFI partition"
+
     enable_unit auros-firstboot.service multi-user.target
     # Phases 9 and 10. The hold runs on every boot until somebody has
     # answered; the path unit is how the desktop asks for the three
@@ -1642,6 +1680,11 @@ squash_preconditions() {
              usr/lib/auros/answer.sh \
              usr/lib/auros/firstboot.sh \
              usr/lib/auros/choices.sh \
+             usr/lib/auros/bootchain \
+             usr/lib/auros/grub.cfg.in \
+             usr/sbin/update-grub.ubuntu \
+             usr/sbin/grub-install.ubuntu \
+             etc/apt/apt.conf.d/52auros-bootchain \
              etc/systemd/system/auros-hold.service \
              etc/systemd/system/auros-answer.path \
              etc/systemd/system/auros-answer.service \
@@ -1658,6 +1701,13 @@ squash_preconditions() {
         [ -L "$RFS/etc/systemd/system/$f" ] ||
         [ -e "$RFS/etc/systemd/system/$f" ] || missing="$missing
        etc/systemd/system/$f  (enabled?)"
+    done
+    # Present is not enough for these two: a grub package upgrade that
+    # ran before the divert put Ubuntu's back over ours.
+    for f in update-grub grub-install; do
+        grep -q /usr/lib/auros/bootchain "$RFS/usr/sbin/$f" 2>/dev/null ||
+            missing="$missing
+       usr/sbin/$f  (is Ubuntu's, not auros-bootchain)"
     done
     if [ -n "$missing" ]; then
         die "this rootfs is not ready to become an image. Missing:$missing

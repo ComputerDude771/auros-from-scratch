@@ -1,0 +1,57 @@
+#!/bin/bash
+# ═══════════════════════════════════════════════════════════════════
+#  shimpick ROOTFS — which signed shim an image (or the installer) carries
+#
+#  Prints the path of the shim to copy, or refuses. Used by
+#  build/mkimage and build/staging, which used to pick "the first of
+#  three files that exists" -- so the day Ubuntu's shim-signed stops
+#  shipping shimx64.efi.dualsigned (Canonical has said its next shims
+#  are signed with Microsoft's 2023 key only), both would have copied
+#  a 2023-only shim without a word, and the image would stop starting
+#  on every PC whose firmware has only the 2011 key: the old PCs this
+#  product exists for.
+#
+#  THE RULE: the shim must carry a signature from "Microsoft
+#  Corporation UEFI CA 2011". A 2023 signature as well is better (it
+#  also starts on firmware that has dropped 2011), but no Ubuntu shim
+#  has one yet (checked 2026-10-04: shim-signed 1.59 is Canonical +
+#  2011). AUROS_ALLOW_SHIM_WITHOUT_2011=1 builds anyway, for a build
+#  that knows its machines have the 2023 key; the image says so.
+#
+#  An installed AurOS makes the same choice per machine, against that
+#  machine's own db: /usr/lib/auros/bootchain.
+# ═══════════════════════════════════════════════════════════════════
+set -euo pipefail
+RFS="${1:?usage: shimpick ROOTFS}"
+die() { printf '\033[38;2;242;120;141m::\033[0m %s\n' "$*" >&2; exit 1; }
+command -v sbverify >/dev/null || die "shimpick needs sbverify (sbsigntool)"
+
+signers() { sbverify --list "$1" 2>/dev/null | sed -n 's/.*issuer:.*CN=\(.*\)$/\1/p'; }
+
+seen=""
+for c in shimx64.efi.dualsigned shimx64.efi.signed.latest shimx64.efi.signed; do
+    f="$RFS/usr/lib/shim/$c"
+    # -e, then -L: shimx64.efi.signed is an alternatives link whose
+    # absolute target only resolves inside the image.
+    if [ ! -e "$f" ] && [ -L "$f" ]; then
+        f="$RFS$(readlink "$f")"
+        [ -L "$f" ] && f="$RFS$(readlink "$f")"
+    fi
+    [ -f "$f" ] || continue
+    s=$(signers "$f")
+    seen="$seen
+   $c: $(printf '%s' "$s" | tr '\n' ';')"
+    if printf '%s\n' "$s" | grep -qx 'Microsoft Corporation UEFI CA 2011'; then
+        printf '%s\n' "$f"; exit 0
+    fi
+    if [ "${AUROS_ALLOW_SHIM_WITHOUT_2011:-0}" = 1 ] &&
+       printf '%s\n' "$s" | grep -q '^Microsoft'; then
+        printf 'shimpick: %s has no 2011 signature; built anyway (AUROS_ALLOW_SHIM_WITHOUT_2011=1)\n' "$c" >&2
+        printf '%s\n' "$f"; exit 0
+    fi
+done
+die "no shim in $RFS is signed with Microsoft's 2011 UEFI CA.
+   Found:${seen:- nothing}
+   A shim without it does not start on firmware that has only the 2011
+   key, which is most PCs made before 2024. If every machine this build
+   is for has the 2023 key, AUROS_ALLOW_SHIM_WITHOUT_2011=1."

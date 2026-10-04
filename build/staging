@@ -326,6 +326,30 @@ fi
 unset FLAGS
 note "init $(du -h init | cut -f1)"
 
+# ── the screen ─────────────────────────────────────────────────────
+#
+# src/aurscreen: the progress screen PID 1 feeds through a pipe
+# (docs/issues/v3/05, 5.5). Static for the same reason as init, and
+# outside src/aurstage so the write gate above keeps covering every
+# file in that directory without an exception. It needs the kernel's
+# simpledrm (built in on Ubuntu's kernel: the firmware's own
+# framebuffer, no GPU driver) and two fonts; without either it exits
+# and the console text is what is left, as before.
+mkdir -p usr/bin usr/share/fonts/truetype/dejavu
+gcc -O2 -std=gnu11 -Wall -Wextra -static -o usr/bin/aurscreen \
+    "$ROOT/src/aurscreen/screen.c" "$ROOT/src/aurshell/kms.c" \
+    "$ROOT/src/aurshell/draw.c" "$ROOT/src/common/font.c" "$ROOT/src/common/png.c" -lm \
+    || die "aurscreen did not build"
+case "$(file usr/bin/aurscreen 2>/dev/null || true)" in
+  *"statically linked"*) ;;
+  *) die "aurscreen is not statically linked" ;;
+esac
+for f in DejaVuSans.ttf DejaVuSans-Bold.ttf; do
+    cp "$RFS/usr/share/fonts/truetype/dejavu/$f" usr/share/fonts/truetype/dejavu/ \
+        || die "no $f in $RFS for the staging screen"
+done
+note "aurscreen $(du -h usr/bin/aurscreen | cut -f1), with DejaVu Sans"
+
 # ── the programs it shells out to ──────────────────────────────────
 #
 # Each is here because writing our own would be worse:
@@ -539,10 +563,9 @@ cp -a "$RFS/boot/vmlinuz-$KVER" "$OUT/auros-staging$SUF-vmlinuz"
 # build/mkimage copies for the installed system -- and carries them in
 # the installer beside the kernel. Taken from the image, never rebuilt:
 # their signatures are the whole point of them.
-SHIM_SRC=""
-for c in shimx64.efi.dualsigned shimx64.efi.signed.latest shimx64.efi.signed; do
-    [ -f "$RFS/usr/lib/shim/$c" ] && { SHIM_SRC="$RFS/usr/lib/shim/$c"; break; }
-done
+# The same choice as build/mkimage, by the same program: one rule for
+# which shim is good enough, refused rather than fallen back from.
+SHIM_SRC=$("$ROOT/build/shimpick" "$RFS") || die "no shim the installer can carry"
 GRUB_SRC="$RFS/usr/lib/grub/x86_64-efi-signed/grubx64.efi.signed"
 [ -n "$SHIM_SRC" ] && [ -f "$GRUB_SRC" ] \
     || die "no signed shim and grub in $RFS; the installer could not start

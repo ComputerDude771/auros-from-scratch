@@ -549,6 +549,8 @@ int main(void)
     if (!stage_mount_pseudo())
         stage_warn("some of the kernel's own filesystems are missing; "
                    "going on, because what follows only reads");
+    /* /dev and /proc are there now, which is all the screen needs. */
+    stage_screen_start();
 
     /* AFTER /proc IS MOUNTED, AND NOT BEFORE. The flag lives in
      * /proc/cmdline, so reading it any earlier reads nothing and every
