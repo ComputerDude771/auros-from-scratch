@@ -65,6 +65,24 @@ mkstick() { mach_stick "${1:-}"; }
 # install left it, which is the only honest way to ask whether the way
 # back works.
 SRCDISK="$DISK"
+# AUROS_SHOTS=DIR: what the screen showed, every fifteen seconds, and
+# each run's serial log. For looking at src/aurscreen on a real install
+# (tools/screentest.sh takes the log); nothing is asserted on it here.
+MON=""
+if [ -n "${AUROS_SHOTS:-}" ]; then
+    mkdir -p "$AUROS_SHOTS"
+    MON="-monitor unix:$TMP/mon.sock,server,nowait"
+fi
+shot() { # run-name seconds
+    python3 - "$TMP/mon.sock" "$AUROS_SHOTS/$(printf %s "$1" | tr -c 'A-Za-z0-9' _).$2.ppm" <<'EOP' 2>/dev/null || true
+import socket, sys, time
+s = socket.socket(socket.AF_UNIX); s.settimeout(3)
+s.connect(sys.argv[1]); time.sleep(0.2)
+try: s.recv(4096)
+except Exception: pass
+s.send(("screendump %s\n" % sys.argv[2]).encode()); time.sleep(1.5); s.close()
+EOP
+}
 run() { # name  kargs  expect  stick-file  want-unchanged
     cp --sparse=always "$SRCDISK" "$TMP/run.img"
     cp --sparse=always "${4:-$STICK}" "$TMP/stk.img"
@@ -82,17 +100,23 @@ run() { # name  kargs  expect  stick-file  want-unchanged
         -drive file="$TMP/stk.img",format=raw,if=none,id=d1 \
         -device virtio-blk-pci,drive=d1,serial=AUROSSTICK \
         -netdev user,id=n0 -device virtio-net-pci,netdev=n0 \
-        -display none -serial stdio > "$TMP/out.txt" 2>&1 &
+        -display none -serial stdio $MON > "$TMP/out.txt" 2>&1 &
     qp=$!
     seen=0; i=0
     while [ "$i" -lt 900 ]; do
         kill -0 "$qp" 2>/dev/null || break
+        if [ -n "${AUROS_SHOTS:-}" ] && [ $((i % 15)) -eq 7 ]; then
+            shot "$1" "$i"
+        fi
         if [ "$seen" -eq 0 ] && grep -aq "$3" "$TMP/out.txt" 2>/dev/null; then
             seen=1; i=880
         fi
         sleep 1; i=$((i+1))
     done
     kill -9 "$qp" 2>/dev/null; wait "$qp" 2>/dev/null
+    if [ -n "${AUROS_SHOTS:-}" ]; then
+        cp "$TMP/out.txt" "$AUROS_SHOTS/$(printf %s "$1" | tr -c 'A-Za-z0-9' _).serial.txt"
+    fi
     after=$(md5sum "$TMP/run.img" | cut -d' ' -f1)
     if grep -aq "$3" "$TMP/out.txt"; then ok "$1"
     else bad "$1" "expected: $3"
