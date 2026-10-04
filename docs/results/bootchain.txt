@@ -1,0 +1,89 @@
+
+auros-bootchain: the menu, and the three gates in front of the EFI partition
+
+  menu
+    the newest COMPLETE kernel is the default (10, not 9 or 11)      ok
+    a kernel without its initrd is left out                          ok
+    the previous kernel has its own entry                            ok
+    ...and grub falls back to it, by number (4), if the newest will not start ok
+    ...but not for Put Windows back: that start unsets it            ok
+    the fallback is the kernel running now, when it is not the newest ok
+    fstab without a / line: the UUID yesterday's menu booted         ok
+    Put Windows back and the Windows entry are still there           ok
+    no placeholder left unfilled                                     ok
+    one kernel: no fallback to a kernel that is not there            ok
+    no kernel at all: refused, and yesterday's menu kept             ok
+    a template that lost the restore entry: refused                  ok
+    fixture: OVMF's db has the 2011 UEFI CA                          ok
+    fixture: the 2023-only db really lacks the 2011 CA               ok
+
+  the signature check, against OVMF's Microsoft db
+    the real dual-signed shim: trusted                               ok
+    fixture: a forged shim, validly signed, carrying Microsoft's 2011 CA ok
+    the forged shim: refused (no signature chains to a trusted certifi...) ok
+    the real shim with one byte changed: refused                     ok
+    one of two signatures revoked in dbx: the whole shim refused     ok
+    ...while the shim without that signature is still trusted        ok
+    the shim's own SBAT levels are read (a '/N' section name)        ok
+    ...and its vendor certificate: Canonical's master CA             ok
+
+  sync
+    the 2011 key removed from db (the 2023 change): refused, partition unchanged ok
+    the 2011 CA revoked in dbx: refused, partition unchanged         ok
+    the shim's own hash in dbx: refused, partition unchanged         ok
+    the NVRAM SBAT level above this grub's generation: refused, partition unchanged ok
+    Canonical's signing certificate in dbx (one of two signatures): refused, partition unchanged ok
+    Secure Boot variables that cannot be read: refused, partition unchanged ok
+    ...and the refusal is written down for status                    ok
+    a forged shim in the archive (Microsoft's CA in its bag): shim refused, the new grub alone installed ok
+    a damaged shim in the archive: shim refused, the new grub alone installed ok
+    a kernel in the menu the new shim would refuse: refused, partition unchanged ok
+    a Put Windows back kernel the new shim would refuse: refused, partition unchanged ok
+    trusted pair, real kernel, real restore kernel: installed, both directories ok
+    ...with MokManager beside it                                     ok
+    run again: nothing to do                                         ok
+    ...and status still says when it last updated, and what it judged ok
+    stopped half way: grub went first, the old shim is still there   ok
+    stopped after \EFI\AurOS: the next run finishes \EFI\BOOT        ok
+    a power cut's half-written file is cleared                       ok
+    no AurOS EFI partition (forge's chroot): nothing, and not an error ok
+    as grub-install under dpkg: it reaches bootchain, which installs ok
+    ...and a refusal exits 0, changing nothing                       ok
+    ...and grub-install --help (a postinst's probe) syncs nothing    ok
+
+  the Put Windows back kernel, found on a real EFI partition
+    (this kernel has no vfat: mounting is proven in tools/bootupdatetest.sh)
+    an EFI partition it cannot mount: refused, not taken as empty    ok
+    ...and Windows' partition was only read                          ok
+    a damaged EFI partition: refused, not taken as empty             ok
+
+  every check refuses its own bad case -- and, switched off, does not
+    control: a proper root -> CA -> signer chain is accepted         ok
+    control: the real shim, grub and kernel are accepted             ok
+    firmware without the 2011 key                                    ok
+    a changed byte: the file's digest is not the signed one          ok
+    a signer nobody trusts, Microsoft's CA in its bag                ok
+    Microsoft's signature grafted onto a changed program (RSA)       ok
+    ...with its messageDigest left stale                             ok
+    the shim's hash in dbx                                           ok
+    one of two signers in dbx                                        ok
+    the 2011 CA in dbx by its TBS hash                               ok
+    NVRAM's SBAT level above the shim's own generation               ok
+    a certificate table EDK2 would not walk                          ok
+    a second, broken SignerInfo                                      ok
+    a signer under a certificate that is not a CA                    ok
+    a signer with an unknown critical extension                      ok
+    NVRAM's SBAT level revokes the grub                              ok
+    a grub with no .sbat section                                     ok
+    the new shim's own latest level revokes the grub                 ok
+    a shim whose level cannot be read                                ok
+    the shim's vendor dbx revokes the kernel's signer                ok
+    the shim's vendor dbx lists the kernel's hash                    ok
+    the fallback kernel, not only the newest, is judged              ok
+    Ubuntu chose .previous: the newer shim is not installed          ok
+    an entry under an if before the fallback: menu refused           ok
+
+  Authenticode
+    matches osslsigncode's (724de6844dd0fe618ba5776c7bca0728be38a6544e24e44ef259b987b7abce80) ok
+
+bootchaintest: 72/72
