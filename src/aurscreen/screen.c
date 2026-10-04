@@ -92,6 +92,7 @@ typedef struct {
     char tail[NTAIL][160];      /* the last raw lines, for a photo      */
     int  ntail;
     char verdict[96];           /* from "aurstage-report v1 verdict=..." */
+    char report[160];           /* that whole line, kept for the photo   */
     int  stopped;               /* a refusal or failure was reported    */
     int  finished;              /* the restore put Windows back         */
     char warn[160];             /* the last WARNING:, which is where the
@@ -147,6 +148,7 @@ static void feed(state *s, char *line)
          * saved, no usable copy, failed. "restored" is the one that
          * did not. Missing these left "Putting Windows back" on the
          * screen of a machine paused for good (found by review). */
+        snprintf(s->report, sizeof s->report, "%s", v - 27);
         s->finished = !strcmp(s->verdict, "restored");
         s->stopped = strstr(t, "record=refused") || strstr(t, "record=failed") ||
                      !strncmp(s->verdict, "no-", 3) || !strncmp(s->verdict, "restore-", 8) ||
@@ -306,11 +308,20 @@ static void paint(surface *s, const state *st)
         draw_round_rect(s, (rect){ L, by, W, bh }, corners_all(8.f * k), WARN, 0.14f);
         draw_rect(s, (rect){ L, by, (int)(4 * k), bh }, WARN, 1.f);
         text(s, body, L + (int)(18 * k), by + (bh - (body ? (int)font_line_height(body) : 20)) / 2,
-             "Do not turn the computer off. It will restart by itself.", WARN, 1.f);
+             st->mode == M_RESTORE
+                 ? "Do not turn the computer off. It will switch itself off when it is done."
+                 : "Do not turn the computer off. It will restart by itself.", WARN, 1.f);
     }
 
-    /* the raw lines, small, for a photo */
+    /* the raw lines, small, for a photo -- and the verdict line pinned
+     * above them once there is one: the sentences after it would push
+     * it off, and it is the line a tester is asked to photograph. */
+    if (st->report[0]) foot -= mono ? (int)font_line_height(mono) : 16;
     draw_hrule(s, L, foot - (int)(10 * k), W, 1, FAINT, 0.6f);
+    if (st->report[0]) {
+        text(s, mono, L, foot, st->report, st->stopped ? BAD : ACCENT, 1.f);
+        foot += mono ? (int)font_line_height(mono) : 16;
+    }
     for (int i = 0; i < st->ntail; i++) {
         uint32_t c = strstr(st->tail[i], "verdict=") ? (st->stopped ? BAD : ACCENT) : DIM;
         text(s, mono, L, foot, st->tail[i], c, 0.85f);
