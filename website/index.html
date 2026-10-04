@@ -2,314 +2,330 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>AurOS — keep the computer, change what it runs</title>
-<meta name="description" content="AurOS is a Linux desktop you install from inside Windows by downloading one file. One restart, Secure Boot stays on, and Windows can be put back. Pre-release.">
-<meta name="color-scheme" content="dark light">
-<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2032%2032'%3E%3Crect%20width='32'%20height='32'%20rx='6'%20fill='%230E1013'/%3E%3Cpath%20d='M16%206L25%2016L16%2026L7%2016Z'%20fill='%23C89B4A'/%3E%3C/svg%3E">
-<script>document.documentElement.classList.add("js");try{var t=localStorage.getItem("auros-site-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);}catch(e){}</script>
-<link rel="stylesheet" href="assets/nocturne.css">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>AurOS</title>
+<meta name="description" content="An old PC explains, in its own words, how AurOS keeps it going: one download, one restart, Secure Boot left on, and Windows can come back exactly as it was. Pre-release.">
+<meta name="theme-color" content="#0E1013">
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2032%2032'%3E%3Crect%20width='32'%20height='32'%20rx='7'%20fill='%230E1013'/%3E%3Cpath%20d='M16%206L26%2016L16%2026L6%2016Z'%20fill='%23C89B4A'/%3E%3C/svg%3E">
+<link rel="preload" href="assets/fonts/atkinson-700.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="assets/drive.css">
 </head>
 <body>
-<a class="skip" href="#main">Skip to content</a>
-<header class="site-head">
-  <div class="shell">
-    <a class="brand" href="index.html" aria-current="page">
-      <span class="glyph" aria-hidden="true">&#9670;</span>AurOS
-      <span class="ver">pre-release</span>
-    </a>
-    <button class="menu-btn" type="button" data-menu aria-expanded="false" aria-controls="site-nav">Menu</button>
-    <nav class="site-nav" id="site-nav" aria-label="Main">
-      <a href="desktop.html">Try it</a>
-      <a href="restart.html">The restart</a>
-      <a href="how-it-works.html">How it works</a>
-      <a href="safety.html">Honesty</a>
-      <a href="organizations.html">Organizations</a>
-      <a class="btn btn-primary btn-sm" href="download.html">Download</a>
-      <button class="theme-toggle" type="button" data-theme-toggle><span class="sw" aria-hidden="true"></span><span data-theme-name>Nocturne</span></button>
-    </nav>
+<a class="skip" href="#p-win">Skip to what's on me</a>
+
+<!-- the ruler: where on my drive you are reading -->
+<div class="ruler" aria-hidden="true">
+  <div class="head" id="head"><i>head</i><b id="head-lba">LBA 0</b><span id="head-part">protective MBR</span></div>
+</div>
+
+<div class="page">
+  <div class="head-mobile" aria-hidden="true"><span id="hm-part">protective MBR</span><b id="hm-lba">LBA 0</b></div>
+
+  <div class="wrap">
+    <div class="lba0">
+      <span class="brand"><span class="diamond" aria-hidden="true"></span>AurOS</span>
+      <span>LBA 0 &middot; protective MBR &middot; You are reading a hard drive. Scroll down it.</span>
+      <span>pre-release &middot; v4</span>
+    </div>
+
+    <!-- ── who is talking ───────────────────────────────────── -->
+    <header class="hero" id="top">
+      <h1>I&rsquo;m <span class="age"><button type="button" id="age-down" aria-label="Younger">&minus;</button><output id="age" aria-live="polite">11</output><button type="button" id="age-up" aria-label="Older">+</button></span> years old. I still work.</h1>
+      <p class="lede">In <span class="countdown" id="days">373 days</span>, on 12 October 2027, Microsoft stops sending me security updates. <span id="why">Not because anything in me broke. Windows 11 won&rsquo;t install on me: my processor is older than its list allows.</span> <strong>AurOS lets me keep going.</strong> You download one file in Windows, answer a few plain questions, and I restart once.</p>
+      <p class="aside">Whoever uses me keeps their files. Windows stays on my drive the whole time, and if you don&rsquo;t like AurOS, it comes back exactly as it was. That last part is the one we tested hardest.</p>
+
+      <!-- ── my drive ──────────────────────────────────────── -->
+      <section class="drive" id="drive" aria-label="My drive">
+        <div class="drive-top">
+          <span>Model: whatever came in the box &middot; 256 GB &middot; 512-byte sectors</span>
+          <span class="screws" aria-hidden="true"><i style="--r:20deg"></i><i style="--r:70deg"></i><i style="--r:140deg"></i></span>
+        </div>
+        <div class="bar" id="bar" role="img" aria-label="My drive's partitions, drawn to a squashed scale"></div>
+        <div class="drive-label">
+          <p class="says" id="drive-says">This is my drive, on a squashed scale. <b>Windows has almost all of it.</b> Press Restart and I&rsquo;ll do here what the installer does to a real PC. You can pull my plug whenever you like.</p>
+          <div class="actions">
+            <button class="btn btn-brass" type="button" id="restart">Restart me into AurOS</button>
+            <a class="btn btn-ghost" href="#p-efi">Show me your insides</a>
+          </div>
+        </div>
+        <div class="stickers" id="stickers" aria-hidden="true">
+          <div class="sticker round" style="--rot:-9deg; right:4%; top:-34px">Still<br>works</div>
+          <div class="sticker" style="--rot:3deg; left:3%; top:-22px">Secure Boot: on<small>nobody touches my settings</small></div>
+          <div class="sticker dark" style="--rot:-4deg; left:42%; top:-16px">1 restart</div>
+          <div class="sticker" style="--rot:5deg; right:20%; bottom:-14px">Windows: still here</div>
+          <div class="sticker" style="--rot:-2deg; left:16%; bottom:-18px">18 power cuts<small>survived, in testing</small></div>
+        </div>
+      </section>
+
+      <!-- ── the partition table, which is also the menu ──────── -->
+      <div class="gpt">
+        <table>
+          <caption><b>GPT</b> &middot; LBA 1 &middot; The table every computer reads first. It is also this page&rsquo;s menu.</caption>
+          <thead><tr><th>#</th><th>Name</th><th>Type</th><th class="num">First LBA</th><th class="num">Last LBA</th><th class="num">Size</th><th>What it is</th></tr></thead>
+          <tbody id="gpt-rows"></tbody>
+        </table>
+      </div>
+    </header>
   </div>
-</header>
-<main id="main">
 
-  <!-- ── the press sheet ──────────────────────────────────────────── -->
-  <section class="press" aria-labelledby="hero-title">
-    <canvas class="wall" data-press role="img" aria-label="A wallpaper drawn by AurOS's own wallpaper code, running in this browser."></canvas>
-    <div class="over">
-      <div class="colophon">
-        <dl>
-          <div><dt>What it is</dt><dd>A Linux desktop for the Windows PC you already have</dd></div>
-          <div><dt>You download</dt><dd>One <span class="mono">.exe</span></dd></div>
-          <div><dt>Restarts</dt><dd>Exactly one</dd></div>
-          <div><dt>Secure Boot</dt><dd>Stays on</dd></div>
-          <div><dt>Windows</dt><dd>Stays on the disk; one button puts it back</dd></div>
-          <div><dt>Proven on a real PC&rsquo;s disk</dt><dd>Not yet</dd></div>
-        </dl>
-        <p class="marks small">Sheet 1 of 1 &middot; pre-release</p>
-      </div>
-      <div class="type">
-        <p class="kicker">For the PC that &ldquo;can&rsquo;t run Windows&nbsp;11&rdquo;</p>
-        <h1 id="hero-title">Keep the computer. <em>Change what it runs.</em></h1>
-        <p class="lede">
-          AurOS is a Linux desktop you install from inside Windows by
-          downloading one file. A wizard explains and asks. The PC restarts
-          exactly once and comes up in AurOS. Windows stays on the disk, and
-          until you say &ldquo;it works&rdquo;, it is still what the PC
-          starts.
-        </p>
-        <p class="btn-row">
-          <a class="btn btn-primary btn-lg" href="desktop.html">Try the desktop, here</a>
-          <a class="btn btn-lg" href="restart.html">Watch the one restart</a>
-        </p>
-        <p class="seed-note">
-          This sheet is AurOS&rsquo;s own wallpaper code, ported to your
-          browser and drawn for this visit. Seed <b data-press-seed>&hellip;</b>.
-          <button type="button" data-press-again>Draw another</button> &middot;
-          <a href="wallpaper.html" data-press-keep>Keep this one</a>
-        </p>
-      </div>
-    </div>
-  </section>
-
-  <!-- ── §1 the restart ───────────────────────────────────────────── -->
-  <section class="sec">
-    <div class="shell sheet">
-      <div class="margin"><p class="kicker">&sect;1 &nbsp;The restart</p></div>
-      <div class="body">
-        <h2 class="sec-title">Everything that matters happens in one restart, and it is written down.</h2>
-        <p class="lede">
-          Nothing on the drive changes before the restart. After it, the PC
-          shows plain text while it makes room, copies AurOS, checks it, and
-          switches the disk to its new layout by writing one sector. Then
-          AurOS starts, in the same boot.
-        </p>
-
-        <div class="acts" aria-label="The install in three acts">
-          <div class="act">
-            <p class="act-n">Before</p>
-            <h3>In Windows</h3>
-            <p>The installer checks the PC, reading only. It fixes what it can (Fast Startup, low space, BitLocker), downloads AurOS into <span class="mono">C:\AurOS</span>, and sets a start-up entry that is used once.</p>
-            <p class="act-disk">Drive: <b>unchanged</b></p>
-          </div>
-          <div class="act">
-            <p class="act-n">The restart</p>
-            <h3>Text on the screen</h3>
-            <p>Windows is made smaller, a copy of how the PC starts Windows is kept, AurOS is written into the freed space and read back, and the new layout is committed in one sector.</p>
-            <p class="act-disk">Drive: <b>Windows smaller, AurOS beside it</b></p>
-          </div>
-          <div class="act">
-            <p class="act-n">After</p>
-            <h3>AurOS asks</h3>
-            <p>&ldquo;AurOS is on this computer. Have a look around. Nothing has been decided yet.&rdquo; Yes makes AurOS the default. No sends the PC back to Windows.</p>
-            <p class="act-disk">Windows: <b>still there either way</b></p>
-          </div>
+  <!-- ── partition 1 ─────────────────────────────────────────── -->
+  <section class="partition" id="p-efi" data-part="efi" style="--edge: var(--p-efi)">
+    <div class="wrap">
+      <div class="ptag"><span class="n">Partition 1</span><span>EFI system partition</span><span class="range"></span><span>FAT32</span></div>
+      <div class="two">
+        <div>
+          <h2>How I start, with Secure Boot left on.</h2>
+          <p class="big">My firmware only starts programs signed by someone it trusts. AurOS comes in through that front door. Nobody has to switch the lock off, open a settings screen, or press a key at the right moment.</p>
+          <p>AurOS never writes to this partition from Linux. The installer leaves one folder here, <span class="mono">\EFI\AurOS</span>, written from Windows. Everything else belongs to Windows and to my maker.</p>
+          <p>When an update brings a new start-up file, AurOS checks it the way my firmware will before using it: who signed it, whether that signature is revoked, whether it would still start everything after it. If my firmware wouldn&rsquo;t trust it, I keep the one that works.</p>
         </div>
-
-        <p class="btn-row"><a class="btn" href="restart.html">Scrub through it, and pull the plug anywhere &rarr;</a></p>
+        <ol class="chain">
+          <li><div><b>My firmware</b><span class="who">checks the next file against the keys it trusts</span></div></li>
+          <li><div><b>shim, signed by Microsoft</b><span class="who">checks the next one against Canonical&rsquo;s key</span><code>\EFI\AurOS\shimx64.efi</code></div></li>
+          <li><div><b>GRUB, signed by Canonical</b><span class="who">shows my menu: AurOS, Windows, Put Windows back</span><code>\EFI\AurOS\grubx64.efi</code></div></li>
+          <li><div><b>Linux, signed by Canonical</b><span class="who">the kernel, with its lockdown on</span></div></li>
+          <li><div><b>AurOS&rsquo;s desktop</b><span class="who">drawn straight onto my screen</span></div></li>
+        </ol>
       </div>
     </div>
   </section>
 
-  <!-- ── §2 the desktop ───────────────────────────────────────────── -->
-  <section class="sec tint">
-    <div class="shell sheet">
-      <div class="margin">
-        <p class="kicker">&sect;2 &nbsp;The desktop</p>
-        <p class="margin-note">The shell is called <span class="mono">aurshell</span>. It paints straight to the screen through the kernel&rsquo;s display interface (DRM/KMS): no X11, no Wayland compositor.</p>
-      </div>
-      <div class="body">
-        <h2 class="sec-title">Big buttons, plain words, and one colour that means &ldquo;you are here&rdquo;.</h2>
-        <figure>
-          <img src="assets/shots/booted-desktop-secureboot.jpg" width="1280" height="800" loading="lazy"
-               alt="The AurOS desktop: a thin bar across the top reading AurOS, the date and the time, over a dark wallpaper of aurora ribbons above a mountain ridge.">
-          <figcaption>
-            Not a mock-up: a screendump of AurOS running in a virtual machine
-            with Secure Boot <b>on</b>, <span class="mono">aurshell</span>
-            painting directly to the screen. It was taken before the default
-            theme was redrawn (the accent was teal then; it is brass now). The live model uses today&rsquo;s theme files.
-          </figcaption>
-        </figure>
-        <p class="btn-row">
-          <a class="btn btn-primary" href="desktop.html">Click around in it, in six themes</a>
-          <a class="btn" href="wallpaper.html">Draw yourself a wallpaper</a>
-        </p>
-      </div>
-    </div>
-  </section>
-
-  <!-- ── §3 the ledger ────────────────────────────────────────────── -->
-  <section class="sec">
-    <div class="shell sheet">
-      <div class="margin">
-        <p class="kicker">&sect;3 &nbsp;The ledger</p>
-        <p class="margin-note">Every line names where it was proven, because &ldquo;tested&rdquo; without a place is a word, not evidence.</p>
-      </div>
-      <div class="body">
-        <h2 class="sec-title">Where it actually is, without rounding up.</h2>
-        <ul class="ledger">
-          <li><span class="chip ok">Real Windows</span>
-            <div><p class="what">The installer starts, checks the PC, fixes what it finds, and downloads the whole of AurOS.</p>
-            <p class="how">On a Windows machine on every change to the code, including the published file, fetched from its public link.</p></div></li>
-          <li><span class="chip sim">Simulated PC</span>
-            <div><p class="what">Install, and putting Windows back, end to end, with Secure Boot on.</p>
-            <p class="how">Virtual machines running real UEFI firmware with Microsoft&rsquo;s keys. With and without a memory stick.</p></div></li>
-          <li><span class="chip sim">Simulated PC</span>
-            <div><p class="what">The power cut at 18 named instants of the install and the restore. Windows came back every time, every file byte-identical.</p>
-            <p class="how">138 checks. <a href="restart.html">Pull the plug yourself</a>.</p></div></li>
-          <li><span class="chip no">Not yet</span>
-            <div><p class="what">A real PC&rsquo;s disk being made smaller and written.</p>
-            <p class="how">The first real-PC attempt could not start the installer at all. That is fixed; the next result is the next piece of evidence.</p></div></li>
-          <li><span class="chip no">Not yet</span>
-            <div><p class="what">A signed installer. Windows will say &ldquo;Windows protected your PC&rdquo;.</p>
-            <p class="how">Signing needs a legal entity and a certificate. It is paperwork and money, not code.</p></div></li>
-        </ul>
-        <p class="btn-row"><a class="btn" href="safety.html">The whole honesty page &rarr;</a></p>
+  <!-- ── partition 3: Windows ────────────────────────────────── -->
+  <section class="partition" id="p-win" data-part="win" style="--edge: var(--p-win)">
+    <div class="wrap">
+      <div class="ptag"><span class="n">Partition 3</span><span>Windows (C:)</span><span class="range"></span><span>NTFS</span></div>
+      <h2>Everything you have on me now.</h2>
+      <p class="shrunk-note">Smaller now. AurOS took 28.5 GB of the space Windows wasn&rsquo;t using, from the end. Every file below is exactly what it was.</p>
+      <div class="two">
+        <div>
+          <p class="big">Your documents, pictures and settings live here. The installer only ever makes this partition smaller, from the end, in space Windows isn&rsquo;t using. After the restart, AurOS reads it and never writes to it.</p>
+          <p>AurOS&rsquo;s mover, Ferry, brings these across when you say so:</p>
+          <div class="files" id="files">
+            <div class="file"><i class="ic"></i><b>Documents</b><span>every file, checked after</span></div>
+            <div class="file"><i class="ic"></i><b>Pictures</b><span>every file, checked after</span></div>
+            <div class="file"><i class="ic"></i><b>Desktop</b><span>what&rsquo;s on it</span></div>
+            <div class="file"><i class="ic"></i><b>Music &amp; Videos</b><span>every file</span></div>
+            <div class="file"><i class="ic"></i><b>Downloads</b><span>every file</span></div>
+            <div class="file"><i class="ic"></i><b>Firefox</b><span>bookmarks, history, saved logins</span></div>
+            <div class="file"><i class="ic"></i><b>Wi-Fi networks</b><span>names; passwords typed once</span></div>
+          </div>
+          <p class="mono" id="yours-note" style="margin-top:14px;color:var(--muted)"></p>
+        </div>
+        <div>
+          <h3 style="margin:0 0 10px;color:var(--fg-hi);font-size:1.25em">What I can&rsquo;t carry across, and why.</h3>
+          <table class="cant">
+            <tr><td>Chrome and Edge passwords</td><td>Locked to your Windows sign-in. Sign back into the browser and it syncs.</td></tr>
+            <tr><td>OneDrive files that are online only</td><td>They live on Microsoft&rsquo;s servers, not on me. Make them local first, or sign in to OneDrive.</td></tr>
+            <tr><td>Windows programs</td><td>They&rsquo;re made for Windows. AurOS has its own for the same jobs.</td></tr>
+            <tr><td>Printer drivers</td><td>Linux brings its own.</td></tr>
+            <tr><td>Windows Hello PIN or fingerprint</td><td>Sealed to my security chip. Set them up again.</td></tr>
+            <tr><td>Files on a locked BitLocker drive</td><td>The installer switches BitLocker off first, when you press the button.</td></tr>
+            <tr><td>Kindle and other copy-protected books and music</td><td>Licensed to Windows. Download them again.</td></tr>
+          </table>
+          <p class="mono" style="color:var(--muted);margin-top:14px">Ferry prints this list at the end of every run, whether or not it hit each item.</p>
+        </div>
       </div>
     </div>
   </section>
 
-  <!-- ── §4 the calendar ──────────────────────────────────────────── -->
-  <section class="sec tint">
-    <div class="shell sheet">
-      <div class="margin">
-        <p class="kicker">&sect;4 &nbsp;The calendar</p>
-        <p class="margin-note">Microsoft ended regular support for Windows 10 on 14 October 2025, then extended free security updates for enrolled home PCs to 12 October 2027.</p>
-      </div>
-      <div class="body">
-        <div class="deadline">
+  <!-- ── the gap / partition 5: AurOS ───────────────────────── -->
+  <section class="partition" id="p-aur" data-part="aur" style="--edge: var(--p-aur)">
+    <div class="wrap">
+      <div class="only-before">
+        <div class="ptag"><span class="n" style="color:var(--muted)">Unused space inside C:</span><span>for now</span><span class="range"></span></div>
+        <h2>Where AurOS would go.</h2>
+        <div class="two">
           <div>
-            <div class="num" data-days-until="2027-10-12">&mdash;</div>
-            <div class="unit">days to 12 October 2027</div>
+            <p class="big">AurOS lives in space Windows isn&rsquo;t using. Here&rsquo;s what I need for that to work:</p>
+            <ul class="need">
+              <li><b>Windows</b><span>10 or 11, started the modern way (UEFI). Almost every PC from the last ten years is.</span></li>
+              <li><b>Free space</b><span>About 50 GB on C:. AurOS keeps 28 GB; the rest is room to work while it copies.</span></li>
+              <li><b>Internet</b><span>A 1.8 GB download, wired or reliable wireless.</span></li>
+              <li><b>Time</b><span>An evening. Most of it is the copy.</span></li>
+              <li><b>Secure Boot</b><span>Leave it on.</span></li>
+            </ul>
           </div>
+          <div class="unalloc" id="unalloc">Nothing is written here until you press Restart, and nothing before the restart writes here at all. Before then, the installer only reads.</div>
+        </div>
+      </div>
+      <div class="only-installed">
+        <div class="ptag"><span class="n">Partition 5</span><span>AUROS-ROOT</span><span class="range"></span><span>ext4</span></div>
+        <h2>And this is AurOS.</h2>
+        <div class="two">
           <div>
-            <h2 class="sec-title" style="margin-bottom:.5rem">Windows 10&rsquo;s last free security update is a date, not a fault.</h2>
-            <p>
-              On that day a PC enrolled in Microsoft&rsquo;s Extended Security
-              Updates for Windows 10 stops getting them. Nothing about the
-              machine changes. Its screen, its keyboard and the photos on it
-              are exactly as good on the 13th.
-            </p>
+            <p class="big">Big buttons, plain words, and one colour that means &ldquo;you are here&rdquo;. It draws straight onto my screen, starts in seconds, and asks you once whether it works before it changes what I start.</p>
+            <p>Security updates come in by themselves every day, the kernel and the start-up files included, and none of them can take away the way back.</p>
+            <p><a class="btn btn-brass" href="desktop.html">Click around in it</a></p>
+          </div>
+          <figure class="screen" style="margin:0"><img src="assets/shots/booted-desktop-secureboot.jpg" alt="The AurOS desktop, running with Secure Boot on" loading="lazy"><figcaption class="cap">A screendump, not a mock-up: AurOS under real UEFI firmware, Secure Boot on.</figcaption></figure>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── partition 6: the way back ───────────────────────────── -->
+  <section class="partition" id="p-back" data-part="aboot" style="--edge: var(--p-aboot)">
+    <div class="wrap">
+      <div class="ptag"><span class="n">Partition 6</span><span>AUROS-BOOT</span><span class="range"></span><span>FAT32</span><span class="only-before">(made during the restart)</span></div>
+      <div class="two">
+        <div>
+          <h2>The way back.</h2>
+          <p class="big">Before the installer changes a single byte of Windows, it saves exactly how I started, and keeps that copy in two places.</p>
+          <p>Until you tell AurOS it works, switching me on still starts Windows. &ldquo;Put Windows back&rdquo; is in AurOS&rsquo;s Settings and in my start-up menu, behind a question whose answer starts at No. It gives Windows all of its drive back and switches me off; switched on again, Windows starts.</p>
+          <p>The tests do it twice on every build, then check every file in Windows against its fingerprint from before the install. They all match.</p>
+          <p class="only-installed"><button class="btn btn-ghost" type="button" id="putback">Put Windows back</button> <span class="mono" id="putback-say" style="color:var(--muted)"></span></p>
+        </div>
+        <div>
+          <p style="margin-top:0">This page keeps the same promise. When you pressed Restart it saved Windows&rsquo; section first, and &ldquo;Put Windows back&rdquo; puts it back from that copy. Here are both fingerprints:</p>
+          <div class="proof" id="proof">
+            <div><span>before</span><span id="h-before">&mdash; press Restart first</span></div>
+            <div><span>after</span><span id="h-after">&mdash;</span></div>
+            <div><span>verdict</span><span id="h-verdict">&mdash;</span></div>
           </div>
         </div>
-        <div class="calendar-strip" data-month-strip="2025-10,2027-10" aria-hidden="true"></div>
-        <div class="calendar-legend" aria-hidden="true"><span>Oct 2025 &middot; regular support ends</span><span>today</span><span>Oct 2027 &middot; extended updates end</span></div>
-        <p style="margin-top:1.6rem">
-          AurOS is being built for that PC. It is not ready to be trusted with
-          your only computer yet, and this site will say so until it is. If
-          you have a spare one, it is ready to be tried.
-        </p>
-        <p class="btn-row"><a class="btn" href="check.html">Will this PC make it? &rarr;</a></p>
       </div>
     </div>
   </section>
 
-  <!-- ── §5 why ───────────────────────────────────────────────────── -->
-  <section class="sec">
-    <div class="shell sheet">
-      <div class="margin"><p class="kicker">&sect;5 &nbsp;Why bother</p></div>
-      <div class="body">
-        <h2 class="sec-title">A working computer is the most finished thing most people own.</h2>
-        <div class="cols cols-2">
-          <p>
-            It was mined, refined, assembled and shipped once. Replacing it
-            does all of that again, and the old one usually goes in a drawer
-            or a skip, still working. The cheapest computer is nearly always
-            the one already on the desk.
-          </p>
-          <p>
-            The hard part was never Linux. It was the install: a memory stick,
-            a firmware menu, a word like &ldquo;partition&rdquo;. AurOS is an
-            attempt to make that part a wizard, and to be exactly as careful
-            with someone&rsquo;s disk as they would be if they understood it.
-          </p>
+  <!-- ── partition 4: recovery ───────────────────────────────── -->
+  <section class="partition" id="p-rec" data-part="rec" style="--edge: var(--p-rec)">
+    <div class="wrap">
+      <div class="ptag"><span class="n">Partition 4</span><span>Recovery</span><span class="range"></span><span>Windows RE</span></div>
+      <h2>My maker&rsquo;s recovery tools.</h2>
+      <p class="big">Factory reset lives here, at the very end of my drive. AurOS goes in before it and never touches it. That&rsquo;s why making room leaves a gap in the middle of the drive rather than space at the end, and why the tests build their disks this way on purpose.</p>
+    </div>
+  </section>
+
+  <!-- ── firmware: health ─────────────────────────────────────── -->
+  <section class="partition" id="smart" data-label="drive firmware · SMART" style="--edge: var(--ok)">
+    <div class="wrap">
+      <div class="ptag"><span class="n" style="color:var(--ok)">Not on the platter</span><span>drive firmware &middot; SMART attributes</span></div>
+      <h2>My health report.</h2>
+      <p class="big">Drives keep a log of how they&rsquo;re doing. This is mine, written by the test suite on the build you can download. The installs run on simulated PCs under real UEFI firmware with Secure Boot on; the installer itself also runs on a real Windows machine on every change.</p>
+      <div class="smart">
+        <table>
+          <thead><tr><th>ID</th><th>Attribute</th><th>Value</th><th>Worst</th><th>Thresh</th><th>Raw</th></tr></thead>
+          <tbody>
+            <tr><td>01</td><td class="attr">Installs AurOS, starts it, puts Windows back<small>every Windows file checked against its fingerprint</small></td><td class="val">37/37</td><td>37</td><td>37</td><td class="where">tools/installtest.sh</td></tr>
+            <tr><td>02</td><td class="attr">The same with no memory stick<small>the way the downloadable build does it</small></td><td class="val">45/45</td><td>45</td><td>45</td><td class="where">tools/nosticktest.sh</td></tr>
+            <tr><td>03</td><td class="attr">The power cut at 18 named moments<small>Windows comes back from every one</small></td><td class="val">138/138</td><td>138</td><td>138</td><td class="where">tools/powercuttest.sh (v3, with a stick)</td></tr>
+            <tr><td>04</td><td class="attr">Updates keep me starting<small>a new kernel, a new shim, a damaged kernel to fall back from</small></td><td class="val">27/27</td><td>27</td><td>27</td><td class="where">tools/bootupdatetest.sh</td></tr>
+            <tr><td>05</td><td class="attr">Put Windows back, from the button in AurOS</td><td class="val">16/16</td><td>16</td><td>16</td><td class="where">tools/putbacktest.sh</td></tr>
+            <tr><td>06</td><td class="attr">First start asks &ldquo;does this work?&rdquo;<small>and only Yes changes what I start</small></td><td class="val">32/32</td><td>32</td><td>32</td><td class="where">tools/firstboottest.sh</td></tr>
+            <tr><td>07</td><td class="attr">Each start-up file check refuses what it should<small>and stops refusing when it&rsquo;s switched off</small></td><td class="val">72/72</td><td>72</td><td>72</td><td class="where">tools/bootchaintest.sh</td></tr>
+            <tr><td>08</td><td class="attr">The installer starts on real Windows</td><td class="val">pass</td><td>pass</td><td>pass</td><td class="where">.github/workflows/windows.yml</td></tr>
+            <tr><td>C5</td><td class="attr">Real PCs whose drive was resized and written<small>this is the number that matters next</small></td><td style="color:var(--bad)">0</td><td>0</td><td>1</td><td class="where">a spare PC near you</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── firmware: grown defects ──────────────────────────────── -->
+  <section class="partition" id="defects" data-label="drive firmware · grown defect list" style="--edge: var(--bad)">
+    <div class="wrap">
+      <div class="ptag"><span class="n" style="color:var(--bad)">Not on the platter</span><span>drive firmware &middot; grown defect list</span></div>
+      <h2>Bad sectors I know about.</h2>
+      <p class="big">A drive that hides its bad sectors is lying to you. These are mine: what&rsquo;s still wrong, and what was wrong and has been fixed.</p>
+      <div class="sectors">
+        <div class="sector bad"><span class="addr"><span>open</span><i>bad</i></span><b>Not yet tried on a real PC&rsquo;s drive.</b><p>Everything above is simulation plus a real Windows machine running the installer. A spare PC is the next piece of evidence.</p></div>
+        <div class="sector bad"><span class="addr"><span>open</span><i>bad</i></span><b>Windows will warn you about the download.</b><p>The installer isn&rsquo;t code-signed yet; that takes a company and a certificate. Avast and AVG hold it for a few hours.</p></div>
+        <div class="sector bad"><span class="addr"><span>open</span><i>bad</i></span><b>No Firefox in this build.</b><p>The machine that builds it can&rsquo;t reach Mozilla, so it ships GNOME Web instead and says so.</p></div>
+        <div class="sector bad"><span class="addr"><span>open</span><i>bad</i></span><b>Wi-Fi passwords don&rsquo;t come across yet.</b><p>The network names do. You type each password once.</p></div>
+        <div class="sector bad"><span class="addr"><span>open</span><i>bad</i></span><b>Some PCs are turned away.</b><p>Ones that start the old way (BIOS), failing drives, some setups with several drives. Always before anything changes.</p></div>
+        <div class="sector bad"><span class="addr"><span>open</span><i>bad</i></span><b>AurOS&rsquo;s own programs don&rsquo;t update yet.</b><p>Ubuntu&rsquo;s parts do, the kernel and start-up files included.</p></div>
+        <div class="sector remapped"><span class="addr"><span>v4</span><i>remapped</i></span><b>My start-up menu printed security errors.</b><p>Up to 54 lines on every start with Secure Boot on. Gone.</p></div>
+        <div class="sector remapped"><span class="addr"><span>v4</span><i>remapped</i></span><b>A kernel that wouldn&rsquo;t start meant I never started.</b><p>The fallback to the previous kernel didn&rsquo;t work. It does now, and it&rsquo;s tested with a broken kernel.</p></div>
+        <div class="sector remapped"><span class="addr"><span>v4</span><i>remapped</i></span><b>&ldquo;Nothing has been changed&rdquo;, after Windows was made smaller.</b><p>A sentence that was true in a dry run and false there. It says what happened now.</p></div>
+        <div class="sector remapped"><span class="addr"><span>v4</span><i>remapped</i></span><b>Updates to my start-up files changed nothing.</b><p>The packages installed and my drive kept the old files. Fixed, and tested inside a running AurOS.</p></div>
+        <div class="sector remapped"><span class="addr"><span>site</span><i>remapped</i></span><b>This website said two restarts and a required USB stick.</b><p>It&rsquo;s one restart, and no stick.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── the last LBA ─────────────────────────────────────────── -->
+  <footer class="backup" id="backup" data-label="backup GPT header · last LBA">
+    <div class="wrap">
+      <div class="ptag"><span class="n">LBA 500,118,191</span><span>backup GPT header &middot; the last sector</span></div>
+      <div class="two">
+        <div>
+          <h2>Try me on a spare PC.</h2>
+          <p>The last sector of every drive holds a second copy of the partition table, in case the first one is damaged. This is the end of mine.</p>
+          <p>If you have a PC whose files you don&rsquo;t need, the test build is here. Read the guide first, and keep a phone handy for a photo if a red screen appears.</p>
+          <p><a href="guide.html">The one-page guide, for whoever&rsquo;s helping</a><br><a href="desktop.html">Click around AurOS in your browser</a><br><a href="wallpaper.html">Press your own AurOS wallpaper</a><br><a href="https://github.com/ComputerDude771/auros-from-scratch">The source, and every test transcript</a></p>
+        </div>
+        <div class="download">
+          <ul class="checks">
+            <li><label><input type="checkbox" id="c1"> This PC&rsquo;s files don&rsquo;t matter to me.</label></li>
+            <li><label><input type="checkbox" id="c2"> I&rsquo;ve read what Windows and antivirus will say about an unsigned file.</label></li>
+            <li><label><input type="checkbox" id="c3"> If a screen turns red, I&rsquo;ll take a photo of its last line.</label></li>
+          </ul>
+          <a class="btn btn-brass" id="dl" href="https://github.com/ComputerDude771/auros-from-scratch/raw/image-desktop/AurOS-Installer-test.exe" aria-disabled="true" tabindex="-1">Download the test installer</a>
+          <p class="sha">Unsigned test build. Check its SHA-256 against the list on the download branch&rsquo;s README before running it.</p>
         </div>
       </div>
+      <div class="foot"><span>MIT licensed</span><span>built from source on Ubuntu 24.04</span><span>this page draws everything itself and tracks no one</span><span>fonts: Atkinson Hyperlegible, Martian Mono (<a href="assets/fonts/LICENSE.md">OFL</a>)</span></div>
     </div>
-  </section>
+  </footer>
+</div>
 
-  <!-- ── three doors ──────────────────────────────────────────────── -->
-  <section class="sec tint">
-    <div class="shell sheet">
-      <div class="margin"><p class="kicker">Three doors</p></div>
-      <div class="body">
-        <div class="doors">
-          <a class="door" href="desktop.html">
-            <span class="door-n">01</span>
-            <span class="door-t">Try it in this browser</span>
-            <span class="door-d">Nothing to install. Six themes. The &ldquo;does it work?&rdquo; question, as AurOS asks it.</span>
-          </a>
-          <a class="door" href="guide.html">
-            <span class="door-n">02</span>
-            <span class="door-t">Print a page for the person you&rsquo;re helping</span>
-            <span class="door-d">Large type, one sheet: what they will see, what to press, and the one moment not to switch off.</span>
-          </a>
-          <a class="door" href="download.html">
-            <span class="door-n">03</span>
-            <span class="door-t">Get the test installer</span>
-            <span class="door-d">For a spare PC whose files you do not need. Unsigned. Read the five questions first.</span>
-          </a>
-        </div>
-      </div>
+<!-- ── my power button ────────────────────────────────────────── -->
+<button class="power" type="button" id="power" aria-label="My power button">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M12 3v8"/><path d="M6.4 6.6a8 8 0 1 0 11.2 0"/></svg>
+  <span class="tip" id="power-tip">My power button. Go on.</span>
+</button>
+
+<!-- ── the one restart, as the real screen draws it ───────────── -->
+<div class="stage" id="stage" role="dialog" aria-modal="true" aria-labelledby="st-title">
+  <div class="stage-in">
+    <div class="mark"><span class="diamond"></span>AurOS</div>
+    <h3 id="st-title">Installing AurOS</h3>
+    <p class="para" id="st-para">Getting ready. Nothing on this computer has been changed yet.</p>
+    <div class="pbar" aria-hidden="true"><i id="st-bar"></i></div>
+    <div class="pct" id="st-pct">&nbsp;</div>
+    <ol id="st-steps"></ol>
+    <div class="warn" id="st-warn">Do not turn the computer off. It will restart by itself.</div>
+    <div class="tail" id="st-tail" aria-hidden="true"></div>
+    <div class="ctl">
+      <button class="btn btn-ghost" type="button" id="st-fast">Faster</button>
+      <button class="btn btn-ghost" type="button" id="st-plug">Pull the plug</button>
     </div>
-  </section>
+    <p class="note">This is how the real restart screen looks (src/aurscreen). Here it takes about a minute instead of most of an evening.</p>
+  </div>
+</div>
 
-</main>
+<div class="dark" id="dark" role="dialog" aria-modal="true" aria-label="No power">
+  <div><div class="ow" id="ow">Ow.</div><div>No power. Press my power button to switch me back on.</div></div>
+</div>
 
-<footer class="site-foot">
-  <div class="shell">
-    <div class="foot-grid">
-      <div>
-        <a class="brand" href="index.html"><span class="glyph" aria-hidden="true">&#9670;</span>AurOS</a>
-        <p class="small" style="margin-top:.9rem">
-          A Linux desktop for the Windows PC you already have. Pre-release:
-          installed and put back many times on simulated machines under real
-          firmware; not yet proven on a real PC&rsquo;s disk.
-        </p>
-      </div>
-      <nav aria-labelledby="f-see">
-        <h2 id="f-see">See it</h2>
-        <ul>
-          <li><a href="desktop.html">Try the desktop</a></li>
-          <li><a href="wallpaper.html">The wallpaper press</a></li>
-          <li><a href="restart.html">The one restart</a></li>
-        </ul>
-      </nav>
-      <nav aria-labelledby="f-decide">
-        <h2 id="f-decide">Before you decide</h2>
-        <ul>
-          <li><a href="check.html">Will my PC make it?</a></li>
-          <li><a href="how-it-works.html">How it works</a></li>
-          <li><a href="safety.html">The honesty page</a></li>
-          <li><a href="guide.html">A one-page guide to print</a></li>
-        </ul>
-      </nav>
-      <nav aria-labelledby="f-proj">
-        <h2 id="f-proj">The project</h2>
-        <ul>
-          <li><a href="download.html">Download (test build)</a></li>
-          <li><a href="organizations.html">Schools and organizations</a></li>
-          <li><a href="https://github.com/ComputerDude771/auros-from-scratch">Source code</a></li>
-        </ul>
-      </nav>
-    </div>
-    <div class="colophon-text">
-      <p><b>Colophon</b></p>
-      <div>
-        <p>
-          Coloured by two AurOS theme files, <code>nocturne.theme</code> and
-          <code>sandstone.theme</code>, copied value for value. Set in whatever
-          fonts your computer already has. No analytics, no cookies, no
-          advertising, and no request to any server but this one. If you press
-          the Nocturne/Sandstone switch, this browser remembers the choice in
-          its own storage; nothing is sent.
-        </p>
-        <p>AurOS is MIT-licensed. &copy; 2026 AurOS contributors.</p>
-      </div>
+<div class="after" id="after" role="dialog" aria-modal="true" aria-labelledby="af-title">
+  <div class="card">
+    <div class="k" id="af-k"></div>
+    <h3 id="af-title"></h3>
+    <p id="af-text"></p>
+    <p class="from" id="af-from"></p>
+    <p><button class="btn btn-brass" type="button" id="af-go">Carry on</button></p>
+  </div>
+</div>
+
+<div class="ask" id="ask" role="dialog" aria-modal="true" aria-labelledby="ask-title">
+  <div class="ask-card">
+    <div class="k">First start &middot; AurOS asks, and asks again until you answer</div>
+    <h3 id="ask-title">AurOS is on this computer</h3>
+    <p class="sub">Have a look around. Nothing has been decided yet.</p>
+    <ul>
+      <li>Right now, switching this computer on still starts Windows.</li>
+      <li>That stays true until you press Yes.</li>
+      <li>This will ask again next time, so there is no hurry.</li>
+    </ul>
+    <div class="row">
+      <button class="btn btn-brass" type="button" data-answer="yes">Yes, it all works</button>
+      <button class="btn btn-ghost" type="button" data-answer="later">Let me look first</button>
+      <button class="btn btn-ghost" type="button" data-answer="no">No, go back to Windows</button>
     </div>
   </div>
-</footer>
-<script src="assets/themes.js"></script>
-<script src="assets/wall.js"></script>
-<script src="assets/site.js"></script>
+</div>
+
+<script src="assets/drive.js"></script>
 </body>
 </html>
