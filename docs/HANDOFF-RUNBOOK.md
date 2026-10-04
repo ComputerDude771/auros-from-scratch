@@ -75,7 +75,7 @@ and `mv` it over; the running shell keeps the old file open.
 | `sh tools/putbacktest.sh` | 16 | about 20 min (three desktop boots under TCG) | `out/auros-desktop.img`, staging, `OVMF_*_4M.ms.fd` |
 | `sh tools/firstboottest.sh desktop` | cases A, B, C | about 40 min | `out/auros-desktop.img` |
 | `sh tools/bootchaintest.sh` | 72 | under a minute | a forged rootfs (`work/forge/desktop/rootfs`), OVMF, osslsigncode, sbsigntool, losetup |
-| `sh tools/bootupdatetest.sh` | 28 | about 8 min (three desktop boots) | `out/auros-desktop.img`, `OVMF_*_4M.ms.fd`, network for `apt-get download` |
+| `sh tools/bootupdatetest.sh` | 27 | about 8 min (three desktop boots) | `out/auros-desktop.img`, `OVMF_*_4M.ms.fd`, network for `apt-get download` |
 | `sh tools/screentest.sh [SERIAL-LOG]` | 24 (+1 with a log) | seconds | gcc |
 | `AUROS_SHOTS=DIR sh tools/installtest.sh` | 37 | as installtest | also keeps a screenshot every 15 s and each run's serial log in DIR |
 
