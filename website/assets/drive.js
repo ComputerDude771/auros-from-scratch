@@ -585,7 +585,7 @@
     drawTable(false);
     drawRuler();
     bar.classList.remove("busy");
-    $("restart").textContent = "Restart me into AurOS";
+    $("restart").textContent = "\u25B6  Watch me become AurOS";
     says.innerHTML = saysDefault;
     collectZones(); lastHead = ""; moveHead();
     return sha256(winText()).then(function (h) {
