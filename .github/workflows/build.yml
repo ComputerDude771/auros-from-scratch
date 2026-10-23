@@ -312,6 +312,9 @@ jobs:
         run: |
           T=$(date +%s)
           sudo tar -C work/forge/desktop --numeric-owner -cf - rootfs | zstd -T0 -3 -q > dist/rootfs.tar.zst
+          # And build/staging's tree: tools/machine.sh puts its module
+          # tree into the synthetic AurOS the install tests hand over to.
+          sudo tar -C work --numeric-owner -cf - staging | zstd -T0 -3 -q > dist/installer/staging-work.tar.zst
           ls -la dist/rootfs.tar.zst
           echo "rootfs-tar $(( $(date +%s) - T )) s" >> dist/installer/timings.txt
           echo "build-total $(( $(date +%s) - T0 )) s" >> dist/installer/timings.txt

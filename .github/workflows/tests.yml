@@ -111,6 +111,16 @@ jobs:
           sudo mkdir -p work/forge/desktop
           zstd -dc dl/rootfs/rootfs.tar.zst | sudo tar -C work/forge/desktop --numeric-owner -xf -
           rm -rf dl/rootfs
+          # build/staging's tree (tools/machine.sh takes its modules).
+          # A build from before it was an artifact: remade from the same
+          # rootfs, which is where its modules come from, into a scratch
+          # out/ so the tested files are untouched.
+          if [ -f dl/installer/staging-work.tar.zst ]; then
+            zstd -dc dl/installer/staging-work.tar.zst | sudo tar -C work --numeric-owner -xf -
+          else
+            sudo AUROS_STAGING_OUT="$RUNNER_TEMP/staging-out" ./build/staging desktop > /dev/null
+          fi
+          sudo test -d work/staging/lib/modules
           cat dl/installer/build-info.txt
       - name: aurfirsttest
         if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
@@ -160,6 +170,15 @@ jobs:
           name: transcripts-unit
           path: transcripts/
           retention-days: 30
+      # The end of each transcript, at the end of the log, which is the
+      # part the GitHub tools show (artifacts cannot be fetched from the
+      # development container).
+      - name: summary
+        if: ${{ !cancelled() }}
+        run: |
+          for f in transcripts/*.txt; do
+            echo "=== $(basename "$f" .txt)"; tail -n 3 "$f"
+          done
 
   e2e:
     needs: which
@@ -188,7 +207,7 @@ jobs:
           sudo apt-get update -q
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends \
               qemu-system-x86 qemu-utils ovmf gdisk dosfstools mtools e2fsprogs cpio python3 \
-              zstd grub-common sbsigntool file binutils iproute2
+              zstd grub-common sbsigntool file binutils iproute2 gcc libc6-dev
           ls -l /dev/kvm
           [ -w /dev/kvm ] || { echo "no usable /dev/kvm"; exit 1; }
           ls -l /usr/share/OVMF/
@@ -236,6 +255,16 @@ jobs:
           sudo mkdir -p work/forge/desktop
           zstd -dc dl/rootfs/rootfs.tar.zst | sudo tar -C work/forge/desktop --numeric-owner -xf -
           rm -rf dl/rootfs
+          # build/staging's tree (tools/machine.sh takes its modules).
+          # A build from before it was an artifact: remade from the same
+          # rootfs, which is where its modules come from, into a scratch
+          # out/ so the tested files are untouched.
+          if [ -f dl/installer/staging-work.tar.zst ]; then
+            zstd -dc dl/installer/staging-work.tar.zst | sudo tar -C work --numeric-owner -xf -
+          else
+            sudo AUROS_STAGING_OUT="$RUNNER_TEMP/staging-out" ./build/staging desktop > /dev/null
+          fi
+          sudo test -d work/staging/lib/modules
           if [ -d dl/pieces ]; then
             # The pieces, joined and unpacked: the same bytes the
             # installer would write, checked against the same hash.
