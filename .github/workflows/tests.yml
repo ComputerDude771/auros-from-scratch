@@ -52,7 +52,8 @@ jobs:
           if [ -n "$IN_RUN" ]; then
             go=true; rid=$IN_RUN
           else
-            case "$MSG" in *'[test]'*)
+            # In the subject line only, as in build.yml.
+            case "$(printf '%s\n' "$MSG" | head -1)" in *'[test]'*)
               # The newest build of this branch with its artifacts still there.
               rid=$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=auros-installer&per_page=100" \
                      --jq ".artifacts[] | select(.expired == false and .workflow_run.head_branch == \"$BRANCH\") | .workflow_run.id" | head -1)

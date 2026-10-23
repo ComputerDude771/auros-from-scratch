@@ -17,10 +17,12 @@
 #             piece list of the release it would be published as baked in.
 #   tests     tests.yml: the unit-ish suites and the end-to-end QEMU tests
 #             under KVM, against this run's artifacts.
-#   release   only when the head commit says [release]: GitHub Release
-#             v<os_version>-<sha7> (a prerelease unless it also says
-#             [latest]), then re-downloaded and checked, and the image
-#             fetched back on real Windows by the installer's own WinHTTP.
+#   release   only when the head commit says [release]: release.yml
+#             publishes GitHub Release v<os_version>-<sha7> (a prerelease
+#             unless it also says [latest]), reads it back, and has the
+#             installer's own WinHTTP fetch the image from it on Windows.
+#             ([publish] promotes a build that already passed, without
+#             rebuilding: see release.yml.)
 #
 # docs/RELEASE.md has how to trigger each of these and what they prove.
 name: build
@@ -48,9 +50,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           build=false; release=false; latest=false
-          case "$MSG" in *'[build]'*) build=true ;; esac
-          case "$MSG" in *'[release]'*) build=true; release=true ;; esac
-          case "$MSG" in *'[latest]'*) latest=true ;; esac
+          # The words count in the SUBJECT line only: a body that explains
+          # what [release] does must not publish one.
+          SUBJ=$(printf '%s\n' "$MSG" | head -1)
+          case "$SUBJ" in *'[build]'*) build=true ;; esac
+          case "$SUBJ" in *'[release]'*) build=true; release=true ;; esac
+          case "$SUBJ" in *'[latest]'*) latest=true ;; esac
           # The files this push changed; the push payload does not list them.
           case "$BEFORE" in
             ''|0000000000000000000000000000000000000000)
@@ -279,129 +284,10 @@ jobs:
   release:
     needs: [gate, build, tests]
     if: needs.gate.outputs.release == 'true'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    uses: ./.github/workflows/release.yml
     permissions:
       contents: write
-    env:
-      TAG: ${{ needs.build.outputs.tag }}
-      GH_TOKEN: ${{ github.token }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with: { name: auros-installer, path: dist/installer }
-      - uses: actions/download-artifact@v4
-        with: { name: auros-pieces, path: dist/pieces }
-      - name: the files, and what was tested where
-        env:
-          LATEST: ${{ needs.gate.outputs.latest }}
-        run: |
-          mkdir -p rel
-          cp dist/installer/AurOS-Setup.exe dist/pieces/pieces.txt dist/pieces/auros-desktop.img.gz.* rel/
-          ( cd rel && sha256sum AurOS-Setup.exe pieces.txt auros-desktop.img.gz.* > SHA256SUMS )
-          img=$(cat dist/pieces/image.sha256); bytes=$(cat dist/pieces/image.bytes)
-          dl=$(du -cb rel/auros-desktop.img.gz.* | tail -1 | cut -f1)
-          n=$(ls rel/auros-desktop.img.gz.* | wc -l)
-          run="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
-          {
-            echo "AurOS desktop $TAG, built from \`$GITHUB_SHA\` by [Actions run $GITHUB_RUN_ID]($run)."
-            echo
-            echo "AurOS-Setup.exe is unsigned, by design. Windows asks twice before it starts it: in Edge, *Keep* and then *Keep anyway*; on the blue SmartScreen panel, *More info* and then *Run anyway*. On a PC with Smart App Control on, that has to be switched off first."
-            echo
-            echo "| | |"
-            echo "|---|---|"
-            echo "| Installer | \`AurOS-Setup.exe\`, $(stat -c %s rel/AurOS-Setup.exe) bytes, SHA-256 \`$(sha256sum rel/AurOS-Setup.exe | cut -d' ' -f1)\` |"
-            echo "| Image | $bytes bytes, SHA-256 \`$img\` |"
-            echo "| Download | $dl bytes of gzip in $n pieces of 90 MiB (\`pieces.txt\`); the installer fetches, checks and resumes them |"
-            echo
-            echo "**What was tested, and where** (all in [run $GITHUB_RUN_ID]($run)):"
-            echo
-            echo "- Built on GitHub's ubuntu-24.04 runner: \`build/all desktop\` without \`ALLOW_BROWSER_FALLBACK\`, \`build/staging\`, \`build/aurbridge\`."
-            echo "- The pieces were put back together and checked by the installer's own phase engine and inflater (\`aurbridge-sim getimage\`), and the installer's manifest by \`tools/manifesttest.sh\`."
-            echo "- Unit suites on Linux: aurfirsttest, choicestest, nvramtest, bridgetest, manifesttest, signtest, Ferry's suite, and \`aurbridge.exe selftest\` under Wine."
-            echo "- End to end under QEMU/KVM with OVMF (Microsoft's keys and Secure Boot on where the test asks for it): installtest, nosticktest, firstboottest, choicesboottest, putbacktest."
-            echo "- After publishing: \`AurOS-Setup.exe\` re-downloaded from this release and compared; every piece fetched through GitHub's redirect and checked, with a \`Range\` request answered 206; and on a real Windows Server runner the installer's own WinHTTP code fetched the image from this release and checked it, and the downloaded \`AurOS-Setup.exe\` started and passed its navigation test."
-            echo
-            echo "**Not tested here:** a real PC's disk being resized and written. See docs/RELEASE.md."
-            echo
-            echo "What the image recorded while it was built (\`/etc/auros/build-warnings\`):"
-            echo '```'
-            if [ -s dist/installer/build-warnings ]; then cat dist/installer/build-warnings; else echo "(nothing)"; fi
-            echo '```'
-          } > notes.md
-          cat notes.md
-          flags="--prerelease"
-          if [ "$LATEST" = true ]; then flags="--latest"; fi
-          gh release create "$TAG" --target "$GITHUB_SHA" $flags \
-              --title "AurOS $TAG" --notes-file notes.md \
-              rel/AurOS-Setup.exe rel/pieces.txt rel/SHA256SUMS rel/auros-desktop.img.gz.*
-
-      - name: what a person downloads is what was built
-        run: |
-          base="https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG"
-          mkdir -p back && cd back
-          curl -fsSL --retry 5 -o AurOS-Setup.exe "$base/AurOS-Setup.exe"
-          curl -fsSL --retry 5 -o pieces.txt "$base/pieces.txt"
-          cmp AurOS-Setup.exe ../rel/AurOS-Setup.exe
-          cmp pieces.txt ../rel/pieces.txt
-          sha256sum AurOS-Setup.exe
-          # Every piece through the address baked into the installer,
-          # which answers 302 to a signed storage URL.
-          base2=$(sed -n 's/^base //p' pieces.txt)
-          grep '^piece ' pieces.txt | while read -r _ name bytes sha; do
-            got=$(curl -fsSL --retry 5 "$base2$name" | sha256sum | cut -d' ' -f1)
-            [ "$got" = "$sha" ] || { echo "$name: $got, wanted $sha"; exit 1; }
-            echo "$name ok"
-          done
-          # And resuming: a Range request on the redirect target is a 206
-          # that starts where it was asked to.
-          first=$(grep -m1 '^piece ' pieces.txt | cut -d' ' -f2)
-          curl -fsSL -r 1000000-1000099 -D hdr.txt -o part.bin "$base2$first"
-          grep -i '^HTTP/.* 302' hdr.txt
-          grep -i '^HTTP/.* 206' hdr.txt
-          grep -i '^content-range: bytes 1000000-1000099/' hdr.txt
-          [ "$(stat -c %s part.bin)" = 100 ]
-          cmp part.bin <(tail -c +1000001 ../rel/$first | head -c 100)
-          echo "redirect followed, Range honoured"
-
-  release-windows:
-    needs: [build, release]
-    runs-on: windows-latest
-    timeout-minutes: 60
-    env:
-      TAG: ${{ needs.build.outputs.tag }}
-      SETUP_SHA256: ${{ needs.build.outputs.setup_sha256 }}
-      IMAGE_SHA256: ${{ needs.build.outputs.image_sha256 }}
-      IMAGE_BYTES: ${{ needs.build.outputs.image_bytes }}
-    steps:
-      - uses: actions/download-artifact@v4
-        with: { name: auros-installer, path: exe }
-      - name: the published installer, downloaded, starts
-        shell: pwsh
-        run: |
-          $base = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:TAG"
-          Invoke-WebRequest -Uri "$base/AurOS-Setup.exe" -OutFile AurOS-Setup.exe
-          $h = (Get-FileHash AurOS-Setup.exe -Algorithm SHA256).Hash.ToLower()
-          "SHA-256 $h"
-          if ($h -ne $env:SETUP_SHA256) { throw "the release's AurOS-Setup.exe is not the one built" }
-          "Authenticode (unsigned by design): $((Get-AuthenticodeSignature .\AurOS-Setup.exe).Status)"
-          $exe = (Resolve-Path .\AurOS-Setup.exe).Path
-          $d = New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP\pub"
-          $p = Start-Process -FilePath $exe -ArgumentList '--navtest', $d.FullName -Wait -PassThru
-          Get-Content "$d\navtest.log"
-          if ($p.ExitCode -ne 0) { throw "--navtest exited $($p.ExitCode)" }
-          if (Select-String -Path "$d\navtest.log" -Pattern '\[FAIL\]' -Quiet) { throw "navtest has FAIL lines" }
-          $p = Start-Process -FilePath $exe -PassThru
-          Start-Sleep -Seconds 8
-          if ($p.HasExited) { throw "the wizard exited on its own, code $($p.ExitCode)" }
-          $p.Kill()
-          "the published installer was running after 8 seconds"
-      - name: WinHTTP fetches the image from the release, through the redirect
-        shell: pwsh
-        run: |
-          $list = "$env:RUNNER_TEMP\pieces.txt"
-          Invoke-WebRequest -Uri "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:TAG/pieces.txt" -OutFile $list
-          $out = "$env:RUNNER_TEMP\auros-desktop.img"
-          .\exe\aurbridge.exe getimage $list $out $env:IMAGE_SHA256 $env:IMAGE_BYTES | Tee-Object -FilePath getimage.log
-          if ($LASTEXITCODE -ne 0) { throw "getimage exited $LASTEXITCODE" }
-          if (-not (Select-String -Path getimage.log -Pattern 'verdict=ok' -Quiet)) { throw "no verdict=ok" }
+      actions: read
+    with:
+      run-id: ${{ github.run_id }}
+      latest: ${{ needs.gate.outputs.latest == 'true' }}
