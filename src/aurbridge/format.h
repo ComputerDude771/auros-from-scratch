@@ -225,6 +225,23 @@ size_t fmt_gzip_store(const void *data, size_t len, uint8_t *out, size_t n);
 int fmt_gpt_sha256(int (*read_at)(void *ud, uint64_t off, void *buf, size_t n),
                    void *ud, uint32_t sector, char *hex, size_t n);
 
+/* ── where the partitions are, for the fast path's gap fence ──────────
+ *
+ * The fast path writes AurOS raw into the unallocated gap a shrink
+ * makes, on the system disk itself. The one safety property that makes
+ * that defensible is that a write can only land inside the gap and
+ * never on a partition -- re-checked against the LIVE table right
+ * before it is written. This reads that live table (through the same
+ * read-at callback fmt_gpt_sha256 uses, so both platform backends and
+ * the simulation share one parser) and returns each used partition's
+ * byte range on the disk, inclusive. Returns 0 with the count in
+ * `n_out`, or -1 with a sentence. */
+typedef struct { uint64_t first_byte, last_byte; } fmt_extent;
+
+int fmt_gpt_parts(int (*read_at)(void *ud, uint64_t off, void *buf, size_t n),
+                  void *ud, uint32_t sector, fmt_extent *out, int max,
+                  int *n_out, char *why, size_t wn);
+
 /* Every pure function above, checked against vectors. Returns the
  * number that failed. */
 int fmt_selftest(void);

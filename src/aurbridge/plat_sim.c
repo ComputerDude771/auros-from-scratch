@@ -210,6 +210,121 @@ int plat_reread(int index, char *why, size_t wn)
 
 void plat_release(void) { g_allowed = -1; }
 
+/* ── the fast path: the gap fence ────────────────────────────────── */
+
+static int      g_gap_disk = -1;
+static uint64_t g_gap_lo, g_gap_hi;
+static fmt_extent g_gap_parts[64];
+static int      g_gap_nparts;
+static int      g_gap_armed;
+
+/* The read-at callback fmt_gpt_parts wants, reading one disk. */
+static int gap_read_at(void *ud, uint64_t off, void *buf, size_t n)
+{
+    int idx = *(int *)ud;
+    char why[PLAT_WHY];
+    return plat_read(idx, off, buf, n, why, sizeof why);
+}
+
+int plat_disk_parts(int index, fmt_extent *out, int max, int *n_out,
+                    char *why, size_t wn)
+{
+    *n_out = 0;
+    int i = find_disk(index);
+    if (i < 0) { snprintf(why, wn, "there is no disk %d", index); return -1; }
+    uint32_t ss = g_disk[i].logical_sector ? g_disk[i].logical_sector : 512;
+    int idx = index;
+    return fmt_gpt_parts(gap_read_at, &idx, ss, out, max, n_out, why, wn);
+}
+
+int plat_gap_allow(int index, uint64_t lo, uint64_t hi, char *why, size_t wn)
+{
+    if (hi <= lo) { snprintf(why, wn, "the gap AurOS was given has no room"); return -1; }
+    fmt_extent parts[64];
+    int n = 0;
+    if (plat_disk_parts(index, parts, 64, &n, why, wn) != 0) return -1;
+    /* THE WINDOW MUST NOT OVERLAP A PARTITION, checked against the table
+     * as it is right now -- so a stale caller cannot arm a window over
+     * Windows. */
+    for (int k = 0; k < n; k++)
+        if (lo <= parts[k].last_byte && parts[k].first_byte < hi) {
+            snprintf(why, wn,
+                     "REFUSING: the gap AurOS was given overlaps a partition "
+                     "on this disk.");
+            return -1;
+        }
+    g_gap_disk = index; g_gap_lo = lo; g_gap_hi = hi;
+    memcpy(g_gap_parts, parts, (size_t)n * sizeof parts[0]);
+    g_gap_nparts = n; g_gap_armed = 1;
+    return 0;
+}
+
+void plat_gap_forbid(void) { g_gap_armed = 0; g_gap_disk = -1; g_gap_nparts = 0; }
+
+int plat_gap_write(int index, uint64_t off, const void *buf, size_t n,
+                   char *why, size_t wn)
+{
+    if (!g_gap_armed || index != g_gap_disk) {
+        snprintf(why, wn,
+                 "REFUSING to write to disk %d: AurOS only writes into the gap "
+                 "it was given, and no gap is armed on it.", index);
+        return -1;
+    }
+    if (n == 0) return 0;
+    if (off > UINT64_MAX - n) {
+        snprintf(why, wn, "a write was asked for at an impossible place");
+        return -1;
+    }
+    uint64_t last = off + n - 1;
+    if (off < g_gap_lo || last >= g_gap_hi) {
+        snprintf(why, wn,
+                 "REFUSING: a write would land outside the gap AurOS was "
+                 "given, and was refused.");
+        return -1;
+    }
+    for (int k = 0; k < g_gap_nparts; k++)
+        if (off <= g_gap_parts[k].last_byte && g_gap_parts[k].first_byte <= last) {
+            snprintf(why, wn,
+                     "REFUSING: a write would land on a partition on this "
+                     "disk, not in the gap, and was refused.");
+            return -1;
+        }
+    return io(index, off, (void *)buf, n, 1, why, wn);
+}
+
+int plat_gap_flush(int index, char *why, size_t wn)
+{ return plat_flush(index, why, wn); }
+
+/* THE SIMULATION DOES NOT RUN WINDOWS' SHRINK, for the same reason it
+ * does not run manage-bde, chkdsk or diskpart: there is no Windows
+ * here. A test that exercises the gap fence arranges the layout itself
+ * (sgdisk) and arms the gap over it; it does not call this. Written
+ * down and refused, rather than silently pretending. */
+int plat_shrink_system(int index, int part_number, uint64_t target_bytes,
+                       uint64_t *achieved_bytes, char *why, size_t wn)
+{
+    (void)index; (void)part_number; (void)target_bytes;
+    char cmd[128];
+    snprintf(cmd, sizeof cmd, "resize-partition disk=%d part=%d to=%llu",
+             index, part_number, (unsigned long long)target_bytes);
+    char tail[8]; plat_run(cmd, tail, sizeof tail);
+    if (achieved_bytes) *achieved_bytes = 0;
+    snprintf(why, wn,
+             "the simulation does not run Windows' online shrink; a test sets "
+             "the layout up itself");
+    return -1;
+}
+
+int plat_grow_system(int index, int part_number, char *why, size_t wn)
+{
+    (void)index; (void)part_number;
+    char cmd[64];
+    snprintf(cmd, sizeof cmd, "grow-partition disk=%d part=%d", index, part_number);
+    char tail[8]; plat_run(cmd, tail, sizeof tail);
+    snprintf(why, wn, "the simulation does not run Windows' partition resize");
+    return -1;
+}
+
 /* ── ordinary files ──────────────────────────────────────────────── */
 
 int plat_file_size(const char *path, uint64_t *out)

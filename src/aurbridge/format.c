@@ -614,6 +614,52 @@ int fmt_gpt_sha256(int (*read_at)(void *ud, uint64_t off, void *buf, size_t n),
     return 0;
 }
 
+int fmt_gpt_parts(int (*read_at)(void *ud, uint64_t off, void *buf, size_t n),
+                  void *ud, uint32_t sector, fmt_extent *out, int max,
+                  int *n_out, char *why, size_t wn)
+{
+    *n_out = 0;
+    if (sector < 512 || sector > 4096 || (sector & (sector - 1))) {
+        snprintf(why, wn, "this drive uses a block size AurOS cannot read");
+        return -1;
+    }
+    uint8_t h[4096];
+    if (read_at(ud, (uint64_t)sector, h, sector) != 0 ||
+        memcmp(h, "EFI PART", 8) != 0) {
+        snprintf(why, wn, "the way this drive is divided up could not be read");
+        return -1;
+    }
+    uint64_t elba = g64(h + 72);
+    uint32_t ne = g32(h + 80), es = g32(h + 84);
+    if (!ne || ne > 4096 || es < 128 || es > 4096) {
+        snprintf(why, wn, "the way this drive is divided up could not be read");
+        return -1;
+    }
+    int n = 0;
+    for (uint32_t k = 0; k < ne; k++) {
+        uint8_t e[4096];
+        if (read_at(ud, elba * sector + (uint64_t)k * es, e, es) != 0) {
+            snprintf(why, wn, "a partition entry on this drive could not be read");
+            return -1;
+        }
+        int used = 0;
+        for (int q = 0; q < 16; q++) if (e[q]) { used = 1; break; }
+        if (!used) continue;
+        uint64_t first = g64(e + 32), last = g64(e + 40);
+        if (last < first) continue;             /* an empty/odd entry */
+        if (n >= max) {
+            snprintf(why, wn, "this drive has more partitions than AurOS can "
+                              "hold at once");
+            return -1;
+        }
+        out[n].first_byte = first * (uint64_t)sector;
+        out[n].last_byte  = (last + 1) * (uint64_t)sector - 1;
+        n++;
+    }
+    *n_out = n;
+    return 0;
+}
+
 /* ── the selftest ────────────────────────────────────────────────── */
 /*
  * Vectors, not round trips. A round trip proves this file agrees with

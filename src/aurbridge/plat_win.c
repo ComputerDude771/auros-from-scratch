@@ -418,6 +418,267 @@ int plat_reread(int index, char *why, size_t wn)
     return 0;
 }
 
+/* ── the fast path: the gap fence ────────────────────────────────────
+ *
+ * Writes into the unallocated gap a shrink frees, on the system disk.
+ * It does NOT lock or dismount any volume: Windows' own refusal of raw
+ * writes inside a mounted volume's extents is kept as the second fence.
+ * The first fence is here -- a write may land only inside the armed
+ * window and only where the LIVE partition table says nothing is.
+ */
+static int    g_gap_disk = -1;
+static HANDLE g_gap_handle = INVALID_HANDLE_VALUE;
+static uint64_t g_gap_lo, g_gap_hi;
+static fmt_extent g_gap_parts[64];
+static int    g_gap_nparts;
+static int    g_gap_armed;
+
+static int gap_read_at(void *ud, uint64_t off, void *buf, size_t n)
+{
+    int idx = *(int *)ud;
+    char why[PLAT_WHY];
+    return plat_read(idx, off, buf, n, why, sizeof why);
+}
+
+static uint32_t disk_sector_of(int index)
+{
+    HANDLE h = open_disk(index, 0);
+    if (h == INVALID_HANDLE_VALUE) return 0;
+    uint32_t ss = disk_sector(h);
+    CloseHandle(h);
+    return ss;
+}
+
+int plat_disk_parts(int index, fmt_extent *out, int max, int *n_out,
+                    char *why, size_t wn)
+{
+    *n_out = 0;
+    uint32_t ss = disk_sector_of(index);
+    if (!ss) {
+        snprintf(why, wn, "this drive will not say how large its blocks are, "
+                          "and AurOS will not guess.");
+        return -1;
+    }
+    int idx = index;
+    return fmt_gpt_parts(gap_read_at, &idx, ss, out, max, n_out, why, wn);
+}
+
+static void gap_close(void)
+{
+    if (g_gap_handle != INVALID_HANDLE_VALUE) CloseHandle(g_gap_handle);
+    g_gap_handle = INVALID_HANDLE_VALUE;
+    g_gap_disk = -1; g_gap_nparts = 0; g_gap_armed = 0;
+}
+
+void plat_gap_forbid(void) { gap_close(); }
+
+int plat_gap_allow(int index, uint64_t lo, uint64_t hi, char *why, size_t wn)
+{
+    if (hi <= lo) { snprintf(why, wn, "the gap AurOS was given has no room"); return -1; }
+    gap_close();
+
+    /* THE LIVE TABLE, re-read now, immediately before the writes. */
+    fmt_extent parts[64];
+    int n = 0;
+    if (plat_disk_parts(index, parts, 64, &n, why, wn) != 0) return -1;
+    for (int k = 0; k < n; k++)
+        if (lo <= parts[k].last_byte && parts[k].first_byte < hi) {
+            snprintf(why, wn,
+                     "REFUSING: the gap AurOS was given overlaps a partition "
+                     "on this disk.");
+            return -1;
+        }
+
+    /* No lock, no dismount: Windows refuses a raw write inside a mounted
+     * volume by itself, and that is the second fence. WRITE_THROUGH and
+     * NO_BUFFERING so a flush means the platter and the read-back is not
+     * served from the cache. */
+    HANDLE h = open_disk_flags(index, 1,
+                               FILE_FLAG_NO_BUFFERING | FILE_FLAG_WRITE_THROUGH);
+    if (h == INVALID_HANDLE_VALUE) {
+        why_of(why, wn,
+               "the disk could not be opened to write AurOS into the free "
+               "space. AurBridge has to be run as an administrator", GetLastError());
+        return -1;
+    }
+    g_gap_handle = h;
+    g_gap_disk = index; g_gap_lo = lo; g_gap_hi = hi;
+    memcpy(g_gap_parts, parts, (size_t)n * sizeof parts[0]);
+    g_gap_nparts = n; g_gap_armed = 1;
+    return 0;
+}
+
+int plat_gap_write(int index, uint64_t off, const void *buf, size_t n,
+                   char *why, size_t wn)
+{
+    if (!g_gap_armed || index != g_gap_disk ||
+        g_gap_handle == INVALID_HANDLE_VALUE) {
+        snprintf(why, wn,
+                 "REFUSING to write to drive %d: AurOS only writes into the "
+                 "gap it was given, and no gap is armed on it.", index);
+        return -1;
+    }
+    if (n == 0) return 0;
+    if (off > UINT64_MAX - n) {
+        snprintf(why, wn, "a write was asked for at an impossible place");
+        return -1;
+    }
+    uint64_t last = off + n - 1;
+    if (off < g_gap_lo || last >= g_gap_hi) {
+        snprintf(why, wn,
+                 "REFUSING: a write would land outside the gap AurOS was "
+                 "given, and was refused.");
+        return -1;
+    }
+    for (int k = 0; k < g_gap_nparts; k++)
+        if (off <= g_gap_parts[k].last_byte && g_gap_parts[k].first_byte <= last) {
+            snprintf(why, wn,
+                     "REFUSING: a write would land on a partition on this "
+                     "disk, not in the gap, and was refused.");
+            return -1;
+        }
+
+    uint32_t ss = disk_sector(g_gap_handle);
+    if (!ss) { snprintf(why, wn, "this drive will not say its block size."); return -1; }
+    uint64_t alo = off - (off % ss);
+    uint64_t ahi = ((off + n + ss - 1) / ss) * ss;
+    size_t span = (size_t)(ahi - alo);
+    unsigned char *tmp = VirtualAlloc(NULL, span, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    if (!tmp) { snprintf(why, wn, "this computer ran out of memory"); return -1; }
+    int rc = 0;
+    if (alo != off || ahi != off + n) {
+        if (plat_read(index, alo, tmp, span, why, wn) != 0) { rc = -1; goto out; }
+    }
+    memcpy(tmp + (off - alo), buf, n);
+    {
+        LARGE_INTEGER li; li.QuadPart = (LONGLONG)alo;
+        if (!SetFilePointerEx(g_gap_handle, li, NULL, FILE_BEGIN)) {
+            why_of(why, wn, "the disk would not seek", GetLastError());
+            rc = -1; goto out;
+        }
+        size_t done = 0;
+        while (done < span) {
+            DWORD put = 0;
+            DWORD ask = (DWORD)((span - done) > (1u << 20) ? (1u << 20) : (span - done));
+            if (!WriteFile(g_gap_handle, tmp + done, ask, &put, NULL) || put == 0) {
+                /* ERROR_ACCESS_DENIED here is Windows' own second fence:
+                 * a write that reached a mounted volume's extent. The
+                 * first fence above should already have refused it, so
+                 * this is a belt-and-braces message, not the usual path. */
+                why_of(why, wn,
+                       "the disk would not accept a write into the free "
+                       "space (it may have landed on a partition)", GetLastError());
+                rc = -1; goto out;
+            }
+            done += put;
+        }
+    }
+out:
+    VirtualFree(tmp, 0, MEM_RELEASE);
+    return rc;
+}
+
+int plat_gap_flush(int index, char *why, size_t wn)
+{
+    if (index != g_gap_disk || g_gap_handle == INVALID_HANDLE_VALUE) return 0;
+    if (!FlushFileBuffers(g_gap_handle)) {
+        why_of(why, wn, "the disk would not confirm what was written", GetLastError());
+        return -1;
+    }
+    return 0;
+}
+
+/* ── Windows' own online shrink ──────────────────────────────────────
+ *
+ * Resize-Partition / Get-PartitionSupportedSize via a hidden
+ * PowerShell. It works with BitLocker on and decrypts nothing. The
+ * achieved size is read back from Get-Partition -- the LIVE layout --
+ * because unmovable files can stop the shrink short, and the planner
+ * must re-plan from what actually happened, never from what was asked.
+ */
+static uint64_t ps_number(const char *expr)
+{
+    char sys[MAX_PATH], cmd[MAX_PATH + 512], tail[1024];
+    if (!GetSystemDirectoryA(sys, sizeof sys)) snprintf(sys, sizeof sys, "C:\\Windows\\System32");
+    snprintf(cmd, sizeof cmd,
+             "\"%s\\WindowsPowerShell\\v1.0\\powershell.exe\" -NoProfile "
+             "-NonInteractive -Command \"%s\"", sys, expr);
+    if (plat_run(cmd, tail, sizeof tail) != 0) return 0;
+    /* The last run of digits in the output. */
+    uint64_t v = 0; int seen = 0;
+    for (char *p = tail; *p; p++) {
+        if (*p >= '0' && *p <= '9') {
+            if (!seen) { v = 0; seen = 1; }
+            v = v * 10 + (uint64_t)(*p - '0');
+        } else if (seen && (*p == ' ' || *p == '\r' || *p == '\n' || *p == '\t')) {
+            seen = 2;    /* a complete number; keep it unless another follows */
+        } else if (seen == 2) {
+            seen = 0;    /* reset only when a non-space breaks after a number */
+        }
+    }
+    return v;
+}
+
+int plat_shrink_system(int index, int part_number, uint64_t target,
+                       uint64_t *achieved, char *why, size_t wn)
+{
+    if (achieved) *achieved = 0;
+    char expr[256];
+    snprintf(expr, sizeof expr,
+             "(Get-PartitionSupportedSize -DiskNumber %d -PartitionNumber %d)"
+             ".SizeMin", index, part_number);
+    uint64_t smin = ps_number(expr);
+    uint64_t want = target;
+    if (smin && want < smin) want = smin;   /* cannot go below what Windows allows */
+    if (!want) {
+        snprintf(why, wn, "Windows would not say how small drive C: can get.");
+        return -1;
+    }
+
+    char sys[MAX_PATH], cmd[MAX_PATH + 512], tail[1024];
+    if (!GetSystemDirectoryA(sys, sizeof sys)) snprintf(sys, sizeof sys, "C:\\Windows\\System32");
+    snprintf(cmd, sizeof cmd,
+             "\"%s\\WindowsPowerShell\\v1.0\\powershell.exe\" -NoProfile "
+             "-NonInteractive -Command \"Resize-Partition -DiskNumber %d "
+             "-PartitionNumber %d -Size %llu\"",
+             sys, index, part_number, (unsigned long long)want);
+    if (plat_run(cmd, tail, sizeof tail) != 0) {
+        snprintf(why, wn,
+                 "Windows could not make drive C: smaller (%s). Nothing on "
+                 "this computer has been changed.", tail[0] ? tail : "no reason given");
+        return -1;
+    }
+    snprintf(expr, sizeof expr,
+             "(Get-Partition -DiskNumber %d -PartitionNumber %d).Size",
+             index, part_number);
+    uint64_t now = ps_number(expr);
+    if (!now) {
+        snprintf(why, wn, "Windows made drive C: smaller but would not say how "
+                          "big it now is.");
+        return -1;
+    }
+    if (achieved) *achieved = now;
+    return 0;
+}
+
+int plat_grow_system(int index, int part_number, char *why, size_t wn)
+{
+    char sys[MAX_PATH], cmd[MAX_PATH + 512], tail[1024];
+    if (!GetSystemDirectoryA(sys, sizeof sys)) snprintf(sys, sizeof sys, "C:\\Windows\\System32");
+    snprintf(cmd, sizeof cmd,
+             "\"%s\\WindowsPowerShell\\v1.0\\powershell.exe\" -NoProfile "
+             "-NonInteractive -Command \"$m=(Get-PartitionSupportedSize "
+             "-DiskNumber %d -PartitionNumber %d).SizeMax; Resize-Partition "
+             "-DiskNumber %d -PartitionNumber %d -Size $m\"",
+             sys, index, part_number, index, part_number);
+    if (plat_run(cmd, tail, sizeof tail) != 0) {
+        snprintf(why, wn, "Windows could not extend drive C: back (%s).",
+                 tail[0] ? tail : "no reason given");
+        return -1;
+    }
+    return 0;
+}
+
 /* ── ordinary files ──────────────────────────────────────────────── */
 
 /* MultiByteToWideChar returns 0 and leaves the destination PARTLY

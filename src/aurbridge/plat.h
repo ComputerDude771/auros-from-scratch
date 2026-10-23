@@ -50,6 +50,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include "format.h"       /* fmt_extent, for the gap fence below */
 
 /* One sentence, in her words, whenever something returns non-zero. */
 #define PLAT_WHY 400
@@ -84,6 +85,55 @@ int  plat_write(int disk_index, uint64_t off, const void *buf, size_t n,
 int  plat_flush(int disk_index, char *why, size_t wn);
 /* Tell the operating system the disk's layout changed. */
 int  plat_reread(int disk_index, char *why, size_t wn);
+
+/* ── the fast path: raw writes into the freed gap ─────────────────────
+ *
+ * The stick fence above refuses every disk but the nominated stick. The
+ * fast path (docs/AURBRIDGE.md D1) has no stick: it shrinks C: with
+ * Windows' own online shrink and writes AurOS's partitions into the
+ * unallocated gap that frees, ON THE SYSTEM DISK ITSELF. So the fence
+ * changes shape rather than being dropped, and it is STRICTER:
+ *
+ *   - A gap write may land only inside the window plat_gap_allow()
+ *     nominated, and only where no partition is. The live partition
+ *     table is re-read (not a cached copy) when the window is armed,
+ *     immediately before the write loop, and every write is checked
+ *     against both the window and those live extents -- a byte on or
+ *     past any partition is REFUSED, never clamped.
+ *   - Windows itself refuses a raw write inside a mounted volume's
+ *     extents, and the fast path does NOT lock or dismount anything, so
+ *     that refusal stands as a live second fence against a table that
+ *     changes mid-write.
+ *
+ * The stick path (plat_allow_write/plat_write) is untouched and still
+ * serves the legacy staging-shrink install. The two never share state:
+ * a disk armed for gap writes is not armed for stick writes and vice
+ * versa. plat_disk_parts() exposes the live extents for the planner and
+ * the self-test. */
+int  plat_disk_parts(int disk_index, fmt_extent *out, int max,
+                     int *n_out, char *why, size_t wn);
+int  plat_gap_allow(int disk_index, uint64_t lo, uint64_t hi,
+                    char *why, size_t wn);
+void plat_gap_forbid(void);
+int  plat_gap_write(int disk_index, uint64_t off, const void *buf, size_t n,
+                    char *why, size_t wn);
+int  plat_gap_flush(int disk_index, char *why, size_t wn);
+
+/* Shrink the system volume with WINDOWS' OWN online shrink (works with
+ * BitLocker on; no decryption). `part_number` is the 1-based GPT entry
+ * of C:. On return *achieved_bytes is the partition's new size read
+ * back from the LIVE table -- never assumed to be what was asked for,
+ * because unmovable files can stop the shrink short. 0, or -1 with a
+ * sentence. The simulation emulates it with ntfsresize + a GPT entry
+ * rewrite, exactly what Windows leaves behind. */
+int  plat_shrink_system(int disk_index, int part_number,
+                        uint64_t target_bytes, uint64_t *achieved_bytes,
+                        char *why, size_t wn);
+/* Grow the system volume back to fill to `end_byte` (the undo of a
+ * shrink, before the restart). On Windows, Resize-Partition to the
+ * supported maximum. 0, or -1 with a sentence. */
+int  plat_grow_system(int disk_index, int part_number,
+                      char *why, size_t wn);
 
 /* ── ordinary files ──────────────────────────────────────────────── */
 
