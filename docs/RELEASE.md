@@ -21,7 +21,14 @@ count only in the commit's subject line.**
 | Tests only, no build | says `[test]` in its subject | `tests.yml` against the newest build of the branch whose artifacts have not expired (14 days) |
 | A prerelease, built and tested | says `[release]` | `build.yml`, `tests.yml`, then `release.yml` if every test passed |
 | A prerelease of a build that already passed | says `[publish]` (newest passing build of the branch) or `[publish RUN-ID]` | `release.yml` only: nothing is rebuilt, so what is published is exactly what was tested |
-| A full release (moves `releases/latest/...`, which the website links to) | says `[release] [latest]` or `[publish] [latest]` | as above, without `--prerelease` |
+| The full release (moves `releases/latest/...`, which the website links to) | says `[publish] [latest]` or `[publish RUN-ID] [latest]` | `release.yml`: the prerelease (made, or found and checked to be the same file), its read-back and Windows checks, then `promote`, which requires a passing `e2e.yml` run whose `INSTALLER_SHA256` is this AurOS-Setup.exe |
+
+Every release starts as a prerelease; only `promote` makes one public.
+So the order for a release the website serves is: `[release]` (or
+`[publish]`) → pin `INSTALLER_URL`/`INSTALLER_SHA256` in `e2e.yml` to
+that prerelease's `AurOS-Setup.exe` and let it pass → `[publish RUN-ID]
+[latest]`. A flaky test: "Re-run failed jobs" on the build run (or the
+GitHub tools' `rerun_failed_jobs`), then `[publish RUN-ID]`.
 
 A commit can be empty (`git commit --allow-empty -m "[publish] ..."`).
 
@@ -51,7 +58,7 @@ the job puts a `qemu-system-x86_64` in `/usr/local/bin` that turns it
 into `accel=kvm` (or `$AUROS_QEMU_ACCEL`), so no test script is edited.
 Each job uploads its transcript as `transcripts-<test>`.
 
-**`release.yml`**: creates release `v<os_version>-<sha7>` (the tag baked
+**`release.yml`**: creates prerelease `v<os_version>-<sha7>` (the tag baked
 into that build's installer) with `AurOS-Setup.exe`, the pieces,
 `pieces.txt` and `SHA256SUMS`, and notes saying what was tested where;
 then reads every file back from its public address through GitHub's

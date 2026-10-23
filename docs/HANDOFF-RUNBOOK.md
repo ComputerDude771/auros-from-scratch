@@ -17,13 +17,25 @@ container has neither: its images had no Firefox and its QEMU tests ran
 under TCG). `docs/RELEASE.md` "How a release is made" has the detail;
 the short version, **trigger words in the commit subject only**:
 
+The words count **only in the commit subject** (the first line); a body
+that mentions them does nothing.
+
+| Subject contains | What happens |
+|---|---|
+| `[build]` (or any change to `build/ src/ rootfs/ profiles/ themes/ shells/` or the workflows) | build + every test |
+| `[test]` | the tests only, against the newest build of the branch with artifacts left (14 days) |
+| `[release]` | build + tests, then a **prerelease** `v<os_version>-<sha7>` if every test passed |
+| `[publish]` / `[publish RUN-ID]` | a **prerelease** of the newest build that passed every test (or of that run); nothing rebuilt |
+| `[publish] [latest]` / `[publish RUN-ID] [latest]` | the same, then **promoted** to the full, latest release (what the website's link serves) -- only if a passing `e2e.yml` run pinned that `AurOS-Setup.exe`'s SHA-256 |
+
 ```sh
-git commit --allow-empty -m "[build] ..."     # build + every test (also: any change to build/ src/ rootfs/ profiles/ themes/ shells/)
-git commit --allow-empty -m "[test] ..."      # tests only, against the newest build's artifacts
-git commit --allow-empty -m "[release] ..."   # build + tests + prerelease v<os_version>-<sha7>
-git commit --allow-empty -m "[publish] ..."   # prerelease of the newest build that passed everything; no rebuild
-git commit --allow-empty -m "[publish 12345] [latest] ..."  # that run, as a full release (moves releases/latest)
+git commit --allow-empty -m "[publish] the newest green build, as a prerelease"
+git commit --allow-empty -m "[publish 39893191009] [latest] that build, as the release"
 ```
+
+A flaky test: re-run the build run's failed jobs (run page, "Re-run
+failed jobs", or the GitHub tools' `rerun_failed_jobs`), then
+`[publish RUN-ID]`; the jobs API reports each job's latest attempt.
 
 What each job is, and what to read when it fails:
 
@@ -32,8 +44,9 @@ What each job is, and what to read when it fails:
 | `build / build` | the desktop image builds from Ubuntu's archive and Mozilla's Firefox, the staging environment builds, the installer carries both and the release address, and the pieces unpack to the image through the installer's own code | the job log; artifact `auros-installer` has `build-warnings`, `timings.txt`, `build-info.txt` |
 | `build / tests / unit` | the fast suites, Ferry, `aurbridge.exe selftest` under Wine | `transcripts-unit` |
 | `build / tests / e2e (NAME)` | that end-to-end test, under KVM | `transcripts-NAME` |
-| `release / publish` | the release exists and reads back byte for byte through GitHub's 302, with `Range` | the job log |
+| `release / publish` | the prerelease exists and reads back byte for byte through GitHub's 302, with `Range` | the job log |
 | `release / windows` | the published AurOS-Setup.exe starts on real Windows; WinHTTP fetches the image from the release | the job log |
+| `release / promote` | (`[latest]` only) a passing `e2e.yml` run installed this AurOS-Setup.exe on a real Windows 11 VM; then the release is made the latest and `releases/latest/download/AurOS-Setup.exe` is checked | the job log |
 
 **Artifacts cannot be downloaded into this container** (the storage host
 is blocked); job logs can, through the GitHub tools, and so can release
