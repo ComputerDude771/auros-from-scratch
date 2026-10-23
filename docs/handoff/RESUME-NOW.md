@@ -130,6 +130,15 @@ latest). The authoritative list is in `docs/HANDOFF-RUNBOOK.md` and the
 header comments of `.github/workflows/{build,tests,release}.yml` —
 check there, not here.
 
+
+### The release flow (release agent, `a3ba7c0`) — follow exactly
+
+1. A green `build` run (any push touching build/src/rootfs/profiles/themes/shells). Its KVM tests run when the subject has `[test]` (see runbook).
+2. Push a commit whose subject contains `[publish]` (or `[publish RUN-ID]` to name the build run, e.g. after re-running a flaky job with rerun-failed-jobs) → a **prerelease** tag with `AurOS-Setup.exe`, pieces, `pieces.txt`, `SHA256SUMS`, read-back + real-Windows-runner checks.
+3. Point `e2e.yml` env `INSTALLER_URL=https://github.com/ComputerDude771/auros-from-scratch/releases/download/<tag>/AurOS-Setup.exe` and `INSTALLER_SHA256=<that file's sha>`, push → the e2e run must pass (website → install → AurOS → program).
+4. Push `[publish RUN-ID] [latest]` → the `promote` job checks a passing e2e run whose e2e.yml pins THIS exe's SHA-256, then `gh release edit --prerelease=false --latest`, then re-downloads `releases/latest/download/AurOS-Setup.exe` and compares. Only then does the website button work.
+5. Update `windows.yml` `PUBLISHED_*`/`IMAGE_*` to the promoted release in a follow-up commit.
+
 ### First 30 minutes for a fresh session
 
 1. `git fetch origin claude/brave-hypatia-x72g1m`; read §0-§4 above and the
