@@ -1,6 +1,6 @@
 # Stream H: other systems (phase 2): official Ubuntu beside Windows
 
-Last updated 2026-10-23 04:16 UTC. Branch `claude/brave-hypatia-x72g1m`.
+Last updated 2026-10-23 04:20 UTC. Branch `claude/brave-hypatia-x72g1m`.
 Common rules: `docs/handoff/STREAMS.md`. Design and hooks: `docs/OTHER-SYSTEMS.md` (read it first).
 
 ## Goal
@@ -79,10 +79,20 @@ against Canonical's signature).
       BootNext `0004` (Ubuntu).
     - The helper recorded the install.
     - curtin did NOT delete the Windows Boot Manager entry.
-  - nofixup: the install finished in 488 s. Its result (it MUST show
-    "Windows-first check fails") was still pending when this was written.
-  - Pending when this was written: ntfs firstboot / windowsfirst /
-    confirm / afteryes / moknegative, and bitlocker (started 04:11).
+  - nofixup **green as a negative proof**:
+    - Without the fix-up, the installer leaves BootOrder
+      `0004,0002,0000,0001` (Ubuntu first).
+    - The Windows-first check FAILS, as it must. Install time: 584 s.
+  - ntfs **firstboot green**:
+    - Power on to her desktop, signed in automatically: 55 s.
+    - No MokManager screen in 8 screenshots.
+    - Windows still byte-identical.
+    - The ISO partition is deleted and Ubuntu has grown into its space.
+    - Still Windows first with BootNext = Ubuntu (the hold).
+  - ntfs **windowsfirst green**:
+    - BootNext cleared: Windows Boot Manager in 2 s; Ubuntu did not start.
+  - Pending at 04:20: ntfs confirm / afteryes / moknegative; bitlocker.
+
 - Local TCG smoke (no KVM in the container): under Secure Boot + MS keys,
   the path BootNext → the ISO's shim on the FAT seed → grub → our
   grub.cfg → kernel → casper mounts the raw ISO partition works.
