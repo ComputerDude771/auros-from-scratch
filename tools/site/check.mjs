@@ -19,7 +19,9 @@
 //     32-bit Windows visit does not show "AurOS can't go on this
 //     computer", each with an email link and a copy button;
 //   - a page asks any server but this one for anything;
-//   - the page scrolls sideways at 320px or at 200% zoom.
+//   - the page scrolls sideways at 320px or at 200% zoom;
+//   - advanced.html (the page the installer names when it cannot go on)
+//     is missing, unlinked from the footer, or fails the same text floors.
 //
 // Playwright: uses the one Node can find (a local install, the global
 // one, or the folder named by PLAYWRIGHT_DIR).
@@ -299,6 +301,34 @@ for (const v of [
   const r = await page.evaluate(rectOf, "#get");
   check(r && r.shown && r.right <= r.vw && r.left >= 0, `${v.name}: "Get AurOS" fits across the screen`);
   await ctx.close();
+}
+
+// 3b. The page the installer names when it cannot go on
+//     (src/aurbridge/fix_win.c ADVANCED): it exists, the front door's
+//     footer links it, and its text passes the same size and contrast
+//     floors -- the person reading it may be the one who could not read
+//     the installer either.
+{
+  const adv = path.join(SITE, "advanced.html");
+  check(fs.existsSync(adv), "advanced.html: the page the installer names exists");
+  const front = fs.readFileSync(path.join(SITE, "index.html"), "utf8");
+  check(/<footer[\s\S]*href="advanced\.html"[\s\S]*<\/footer>/.test(front), "advanced.html: linked from the front door's footer");
+  if (fs.existsSync(adv)) {
+    for (const v of [
+      { name: "advanced.html 1366x768", viewport: { width: 1366, height: 768 } },
+      { name: "advanced.html 390x844", viewport: { width: 390, height: 844 } },
+    ]) {
+      const { ctx, page } = await visit({ ...v, url: HOME + "advanced.html", ua: UA.winEdge, uad: UAD.winX64 });
+      textFindings(v.name, await page.evaluate(measureText));
+      const ids = await page.evaluate(() => ["bios", "rst"].filter((id) => document.getElementById(id)));
+      check(ids.length === 2, `${v.name}: has the BIOS and the Intel storage sections`, ids.join(","));
+      await ctx.close();
+    }
+    const { ctx, page } = await visit({ name: "advanced.html 320px", url: HOME + "advanced.html", ua: UA.winEdge, uad: UAD.winX64, viewport: { width: 320, height: 640 } });
+    const o = await page.evaluate(() => ({ sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth }));
+    check(o.sw <= o.cw + 1, "advanced.html 320px wide: no sideways scrolling", `${o.sw}px of content in ${o.cw}px`);
+    await ctx.close();
+  }
 }
 
 // 4. Keyboard: the first Tab reaches the skip link, which is then readable
