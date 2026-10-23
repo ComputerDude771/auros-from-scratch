@@ -18,3 +18,4 @@ to wherever you are. The branch is `claude/brave-hypatia-x72g1m`.
 
 If `docs/security/FINDINGS.md` or `docs/LAUNCH-READINESS.md` already exist
 on the branch, the run finished; read them instead of re-running.
+| `current-state.js` | six readers (install path, CI/release/e2e, desktop+security, theft/updates/portability, other OSes/profiles/Ferry, launch/business) → one writer | `docs/handoff/CURRENT-STATE.md` (newest, problems, plan, owner actions) |
