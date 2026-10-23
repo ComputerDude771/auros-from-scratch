@@ -30,7 +30,7 @@ Windows for someone who is not technical. The rules it keeps:
 |---|---|
 | `src/aurbridge/wizard.c` | The whole UI. Everything is drawn by hand into a GDI back buffer (`render()`). Widgets: `W_BUTTON`, `W_CARD` and `W_TOGGLE` (only the Wi-Fi box). Pages: `page_welcome/blocked/style/ready/progress`. Test modes: `--navtest DIR`, `--selftest DIR`, `--shot DIR`. The screen-reader object (MSAA `IAccessible` written in C, the `acc_*` functions) sits just above the "Window" section. `choices_from_page()` fills `ab_choice` for the engine. |
 | `src/aurbridge/preflight.{c,h}` | Read-only checks that produce a `pf_report`. `check_wifi()` sets `wifi_connected` and `wifi_name`, loads the WLAN API at run time and reads no key. The BitLocker policy depends on `AB_CHOICE_BITLOCKER_PAUSE`. |
-| `src/aurbridge/fix.h`, `fix_win.c` | A short line for each preflight id, the automatic fixes, and `fix_instead()` (the *What you can do* sentences; `ADVANCED` holds the address of the helper page). |
+| `src/aurbridge/fix.h`, `fix_win.c` | A short line for each preflight id, the automatic fixes, and `fix_instead()` (the *What you can do* sentences). `ADVANCED` is the helper page's address, built from `AUROS_SITE_W`, which `build/aurbridge` gets from `tools/repo.sh` (since `a2e7661`). |
 | `src/aurbridge/sbdb.*` | Secure Boot trust database. |
 | `src/aurbridge/aurbridge-info.rc`, `auros.ico` | VERSIONINFO ("AurOS Setup", OriginalFilename `AurOS-Setup.exe`, version from `AUROS_VERSION`) and the teal diamond icon. |
 | `docs/shots/wizard/*.png` | Every page as it is rendered now: 24 pictures, including the 150% and 1024x600 variants. |
@@ -74,8 +74,9 @@ superseded or cancelled. Two runs in a row hung in the `build` job's
 `toolchain` step (`apt-get update`): 39894915049 for about 35 minutes and
 39897928905 for 20 minutes. Both were cancelled by hand. `e6a888b` bounds that
 step: each apt call has a time limit, it tries three times, and the step stops
-at 12 minutes. The first run with all of this was **39899942038** (`df92af8`),
-pending at hand-off.
+at 12 minutes. Run 39899942038 (`df92af8`) then got through the toolchain step in 25 s but
+stopped at the manifest gate (see Traps). The gate was fixed in `1e31149`;
+the first windows.yml run at or after that commit is the one to watch.
 
 ## Half-done
 
@@ -116,9 +117,9 @@ pending at hand-off.
    `bitlocker_pause` is set, and that unticking the Wi-Fi box means no keyfile.
    That is A2's code; B's part is that `ab_choice` carries her answer
    (navtest checks this).
-4. **Check that stream K published `website/advanced.html`** at the address in
-   `fix_win.c` (`ADVANCED`). If the address changes, change it there and
-   re-shoot.
+4. **Check that stream K published `website/advanced.html`.** The address is
+   `sh tools/repo.sh host` plus `advanced.html`, written into the wizard at
+   build time (`ADVANCED` in `fix_win.c`). Re-shoot if the wording changes.
 5. **Narrator on a real PC** (manual): Win+Ctrl+Enter, then Tab and Enter
    through all three screens. Each page should be read once when it appears,
    not every second.
@@ -127,6 +128,11 @@ pending at hand-off.
 
 - **Disk fills.** The shots are 32-bpp BMPs. `check.sh` renders them in
   `/dev/shm` and keeps only PNGs.
+- **`tools/manifesttest.sh` builds a copy of only part of the tree:**
+  `build/`, `src/aurbridge/`, `tools/pe_payload.py` and `tools/repo.sh`. When
+  `build/aurbridge` starts needing another file, add it to that copy, or
+  windows.yml stops at the manifest gate, before anything runs on Windows.
+  This happened in run 39899942038 and was fixed in `1e31149`.
 - **build/aurbridge has a gate:** every `add(r, "<id>", …, PF_BLOCK` in
   `preflight.c` needs a line in `fix_win.c`, or the build stops.
 - **`BITLOCKER_REMEDY` is `#ifndef AB_CHOICE_BITLOCKER_PAUSE`**, to avoid an
