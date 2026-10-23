@@ -1,0 +1,66 @@
+# The website (website/), on GitHub Pages:
+#   https://computerdude771.github.io/auros-from-scratch/
+#
+# First the front door is checked the way she meets it (tools/site/
+# check.mjs: the "Get AurOS" button on the first screen, its address,
+# text size and contrast, every link, the message for Macs, phones and
+# ARM PCs, no request to any other server); then the folder is published
+# as it is. There is no build step.
+#
+# Once, by the owner: Settings -> Pages -> Build and deployment ->
+# Source: "GitHub Actions". If the github-pages environment only lets
+# the default branch deploy, also add this branch under Settings ->
+# Environments -> github-pages -> Deployment branches and tags.
+name: pages
+
+on:
+  push:
+    branches: ['claude/brave-hypatia-x72g1m']
+    paths:
+      - 'website/**'
+      - 'tools/site/**'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Playwright and Chromium
+        run: |
+          npm install --no-save --no-audit --no-fund --prefix "$RUNNER_TEMP/pw" playwright@1.56.1
+          "$RUNNER_TEMP/pw/node_modules/.bin/playwright" install --with-deps chromium
+      - name: Check the front door
+        env:
+          PLAYWRIGHT_DIR: ${{ runner.temp }}/pw
+        run: node tools/site/check.mjs
+
+  deploy:
+    needs: check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: website
+      - id: deployment
+        uses: actions/deploy-pages@v4

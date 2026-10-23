@@ -113,6 +113,8 @@ a:hover { color: var(--fg-hi); }
   font-family: var(--f-mono); font-size: 11px; color: var(--muted);
 }
 .lba0 .brand { font-family: var(--f-text); font-size: 18px; font-weight: 700; color: var(--fg-hi); letter-spacing: 0.01em; display: flex; align-items: center; gap: 10px; }
+.lba0 a { color: var(--brass); font-family: var(--f-text); font-size: 18px; }
+.lba0 a.brand { color: var(--fg-hi); text-decoration: none; }
 .diamond { width: 14px; height: 14px; background: var(--brass); transform: rotate(45deg); display: inline-block; border-radius: 2px; }
 
 /* ── the hero: who is talking ───────────────────────────────────── */
@@ -350,7 +352,7 @@ body.installed .only-before { display: none; }
 .backup .two { align-items: end; }
 .backup h2 { font-size: clamp(30px, 4.4vw, 54px); margin: 0 0 .3em; color: var(--fg-hi); line-height: 1.02; max-width: 14ch; }
 .download { border: 1px solid var(--brass); border-radius: 14px; padding: 20px; background: var(--surface); }
-.download .sha { font-family: var(--f-mono); font-size: 10.5px; color: var(--muted); overflow-wrap: anywhere; margin-top: 10px; }
+.download .sha { font-size: 18px; color: var(--fg); margin-top: 12px; }
 .checks { list-style: none; margin: 0 0 14px; padding: 0; display: grid; gap: 8px; font-size: 0.92em; }
 .checks label { display: flex; gap: 10px; align-items: flex-start; cursor: pointer; }
 .checks input { accent-color: var(--brass); width: 18px; height: 18px; margin-top: 3px; flex: none; }

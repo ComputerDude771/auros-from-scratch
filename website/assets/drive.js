@@ -681,17 +681,8 @@
     if (e.key === "Escape" && $("after").classList.contains("on")) $("af-go").click();
   });
 
-  /* ── the download, only for someone with a spare PC ─────────────── */
-  var dl = $("dl"), boxes = [$("c1"), $("c2"), $("c3")];
-  function gate() {
-    var ok = boxes.every(function (b) { return b.checked; });
-    if (ok) { dl.removeAttribute("aria-disabled"); dl.tabIndex = 0; }
-    else { dl.setAttribute("aria-disabled", "true"); dl.tabIndex = -1; }
-  }
-  boxes.forEach(function (b) { b.addEventListener("change", gate); });
-  dl.addEventListener("click", function (e) {
-    if (dl.getAttribute("aria-disabled") === "true") { e.preventDefault(); boxes.filter(function (b) { return !b.checked; })[0].focus(); }
-  });
+  /* ── the download lives on the front page (index.html#get) now, with
+   * no boxes to tick; this page links there. ─────────────────────── */
 
   /* ── start ──────────────────────────────────────────────────────── */
   buildBar();
@@ -702,7 +693,6 @@
   countdown();
   grain();
   yours();
-  gate();
   collectZones();
   moveHead();
   window.addEventListener("scroll", onScroll, { passive: true });
