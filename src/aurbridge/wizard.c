@@ -43,8 +43,13 @@
 #define _WIN32_WINNT 0x0601
 #endif
 
+/* C, not C++, view of the COM interfaces: the screen-reader object at
+ * the end of this file is an IAccessible written out by hand. */
+#define CINTERFACE
+#define COBJMACROS
 #include <windows.h>
 #include <windowsx.h>
+#include <oleacc.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -653,7 +658,10 @@ static void text_in(const wchar_t *s, HFONT f, uint32_t col, RECT box, UINT flag
  * ═══════════════════════════════════════════════════════════════════ */
 typedef enum { W_BUTTON, W_CARD } wkind;
 
-typedef struct { int id; wkind kind; RECT r; int enabled; } widget;
+typedef struct {
+    int id; wkind kind; RECT r; int enabled;
+    const wchar_t *name;      /* what a screen reader says it is (static text) */
+} widget;
 
 static widget g_w[96];
 static int    g_nw;
@@ -668,7 +676,7 @@ static int w_add(int id, wkind k, int x, int y, int w, int h, int enabled)
 {
     if (g_nw >= (int)(sizeof g_w / sizeof g_w[0])) return -1;
     widget *p = &g_w[g_nw];
-    p->id = id; p->kind = k; p->enabled = enabled;
+    p->id = id; p->kind = k; p->enabled = enabled; p->name = NULL;
     p->r.left = x; p->r.top = y; p->r.right = x + w; p->r.bottom = y + h;
     return g_nw++;
 }
@@ -708,6 +716,7 @@ static int draw_button(int id, const wchar_t *label, int x, int y, int w, int h,
                        int primary, int enabled, uint32_t tone)
 {
     int idx = w_add(id, W_BUTTON, x, y, w, h, enabled);
+    if (idx >= 0) g_w[idx].name = label;
     int hot = w_hot(idx);
     int down = hot && g_mouse_down && g_press_idx == idx;
     if (down) { y += S(1); h -= S(1); }
@@ -2311,6 +2320,7 @@ static void style_card(int i, int x, int y, int w, int h)
     const style_info *s = &STYLES[i];
     int sel = (g_sel_style == i);
     int idx = w_add(ID_STYLE + i, W_CARD, x, y, w, h, 1);
+    if (idx >= 0) g_w[idx].name = s->name;
     int hot = w_hot(idx);
     int pad = S(12);
     int pw = w - pad * 2, ph = pw * 10 / 16;
@@ -2903,6 +2913,8 @@ static int scroll_max(void)
     return m > 0 ? m : 0;
 }
 
+static void acc_after_render(void);
+
 static void render(void)
 {
     if (!g_px) return;
@@ -2963,6 +2975,7 @@ static void render(void)
     }
     if (g_focus >= g_nw) g_focus = -1;
     GdiFlush();
+    acc_after_render();
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -3323,6 +3336,338 @@ static int save_bmp(const char *path)
 }
 
 /* ═══════════════════════════════════════════════════════════════════
+ *  For a screen reader
+ *
+ *  Everything here is drawn by hand, so to Narrator the window was one
+ *  nameless rectangle: nothing to read, nothing to press. This answers
+ *  WM_GETOBJECT with a small MSAA object instead. The page has a name
+ *  (its heading, and where it stands), and every button and look card
+ *  on it is a child with its own name, role, state, place and default
+ *  action -- the same widget list the mouse and keyboard use, so what
+ *  is announced is what is there. When the page changes, the object
+ *  says so, and points at the button Enter would press.
+ * ═══════════════════════════════════════════════════════════════════ */
+static const IID ACC_IID_IUnknown   = { 0x00000000, 0x0000, 0x0000,
+                                       { 0xC0,0x00,0x00,0x00,0x00,0x00,0x00,0x46 } };
+static const IID ACC_IID_IDispatch  = { 0x00020400, 0x0000, 0x0000,
+                                       { 0xC0,0x00,0x00,0x00,0x00,0x00,0x00,0x46 } };
+static const IID ACC_IID_IAccessible = { 0x618736E0, 0x3C3D, 0x11CF,
+                                       { 0x81,0x0C,0x00,0xAA,0x00,0x38,0x9B,0x71 } };
+
+#define WM_ACC_ACTIVATE (WM_APP + 7)
+
+static IAccessible *g_acc_std;         /* Windows' own, for parent and siblings */
+static wchar_t      g_acc_name[600];   /* the page's name, as last announced    */
+static int          g_acc_page = -1;
+
+/* The page, in a sentence or two: what she would read first. Stable
+ * while the page stands still -- no seconds, no minutes -- so that a
+ * screen reader is told when something changed, not every second. */
+static void acc_page_name(wchar_t *out, int n)
+{
+    out[0] = 0;
+    switch (g_page) {
+    case PAGE_WELCOME:
+        _snwprintf(out, (size_t)n, L"Let’s put AurOS on this computer. %ls",
+                   welcome_passed() ? L"This computer can take AurOS. Press Enter for Next."
+                   : (g_pf_valid && !g_checking && !pf_is_go(&g_report))
+                       ? L"Something needs sorting out first."
+                       : L"Looking at this computer. This only looks; nothing is changed.");
+        break;
+    case PAGE_BLOCKED: {
+        int k = _snwprintf(out, (size_t)n, L"%ls. ", any_cannot()
+                           ? L"AurOS can’t go on this computer yet"
+                           : L"Almost there. A few things first");
+        for (int i = 0; i < g_report.n && k > 0 && k < n - 200; i++) {
+            const pf_result *r = &g_report.results[i];
+            if (r->sev != PF_BLOCK) continue;
+            const fix_info *f = fix_lookup(r->id);
+            if (f) k += _snwprintf(out + k, (size_t)(n - k), L"%ls. ", f->problem);
+        }
+        break;
+    }
+    case PAGE_STYLE:
+        _snwprintf(out, (size_t)n, L"Pick the look you want. Chosen: %ls.",
+                   STYLES[style_ok() ? g_sel_style : 0].name);
+        break;
+    case PAGE_READY: {
+        int lo, hi;
+        eta_range(&lo, &hi);
+        _snwprintf(out, (size_t)n, L"Ready to install. Windows and all your files stay "
+                   L"on this computer. %ls The computer restarts once. It takes about "
+                   L"%d to %d minutes. Press Enter to install AurOS.",
+                   STYLES[style_ok() ? g_sel_style : 0].ready, lo, hi);
+        break;
+    }
+    case PAGE_PROGRESS:
+        if (install_ok())
+            wcsncpy(out, L"Ready to restart. Save anything you’re working on. It "
+                         L"restarts by itself in a minute; press Enter to restart now, "
+                         L"or Escape for not yet.", (size_t)n);
+        else if (install_failed())
+            wcsncpy(out, L"The install stopped before the restart. Your files are safe. "
+                         L"Press Enter to try again.", (size_t)n);
+        else
+            wcsncpy(out, L"Setting up AurOS. You can leave it; it carries on by itself.",
+                    (size_t)n);
+        break;
+    default: break;
+    }
+    out[n - 1] = 0;
+}
+
+static int acc_primary_index(void)
+{
+    for (int i = 0; i < g_nw; i++) if (g_w[i].id == ID_PRIMARY) return i;
+    return -1;
+}
+
+/* -1 the page itself, 0.. a widget, -2 not one of ours */
+static int acc_child(VARIANT v)
+{
+    if (v.vt != VT_I4) return -2;
+    if (v.lVal == CHILDID_SELF) return -1;
+    if (v.lVal >= 1 && v.lVal <= g_nw) return (int)v.lVal - 1;
+    return -2;
+}
+
+static BSTR acc_str(const wchar_t *s) { return s ? SysAllocString(s) : NULL; }
+
+static HRESULT STDMETHODCALLTYPE acc_QueryInterface(IAccessible *t, REFIID riid, void **pv)
+{
+    if (IsEqualIID(riid, &ACC_IID_IUnknown) || IsEqualIID(riid, &ACC_IID_IDispatch) ||
+        IsEqualIID(riid, &ACC_IID_IAccessible)) {
+        *pv = t;
+        return S_OK;
+    }
+    *pv = NULL;
+    return E_NOINTERFACE;
+}
+/* One object for the life of the window: nothing to count, nothing to free. */
+static ULONG STDMETHODCALLTYPE acc_AddRef(IAccessible *t)  { (void)t; return 2; }
+static ULONG STDMETHODCALLTYPE acc_Release(IAccessible *t) { (void)t; return 1; }
+static HRESULT STDMETHODCALLTYPE acc_GetTypeInfoCount(IAccessible *t, UINT *n)
+{ (void)t; *n = 0; return S_OK; }
+static HRESULT STDMETHODCALLTYPE acc_GetTypeInfo(IAccessible *t, UINT i, LCID l, ITypeInfo **p)
+{ (void)t; (void)i; (void)l; *p = NULL; return E_NOTIMPL; }
+static HRESULT STDMETHODCALLTYPE acc_GetIDsOfNames(IAccessible *t, REFIID r, LPOLESTR *s,
+                                                   UINT c, LCID l, DISPID *d)
+{ (void)t; (void)r; (void)s; (void)c; (void)l; (void)d; return E_NOTIMPL; }
+static HRESULT STDMETHODCALLTYPE acc_Invoke(IAccessible *t, DISPID d, REFIID r, LCID l, WORD f,
+                                            DISPPARAMS *p, VARIANT *v, EXCEPINFO *e, UINT *a)
+{ (void)t; (void)d; (void)r; (void)l; (void)f; (void)p; (void)v; (void)e; (void)a;
+  return E_NOTIMPL; }
+
+static HRESULT STDMETHODCALLTYPE acc_get_accParent(IAccessible *t, IDispatch **p)
+{
+    (void)t;
+    if (g_acc_std) return g_acc_std->lpVtbl->get_accParent(g_acc_std, p);
+    *p = NULL;
+    return S_FALSE;
+}
+static HRESULT STDMETHODCALLTYPE acc_get_accChildCount(IAccessible *t, LONG *n)
+{ (void)t; *n = g_nw; return S_OK; }
+static HRESULT STDMETHODCALLTYPE acc_get_accChild(IAccessible *t, VARIANT v, IDispatch **p)
+{ (void)t; *p = NULL; return acc_child(v) == -2 ? E_INVALIDARG : S_FALSE; }
+
+static HRESULT STDMETHODCALLTYPE acc_get_accName(IAccessible *t, VARIANT v, BSTR *s)
+{
+    (void)t;
+    int c = acc_child(v);
+    if (c == -2) return E_INVALIDARG;
+    if (c == -1) { wchar_t b[600]; acc_page_name(b, 600); *s = acc_str(b); return S_OK; }
+    *s = acc_str(g_w[c].name);
+    return *s ? S_OK : S_FALSE;
+}
+static HRESULT STDMETHODCALLTYPE acc_get_accValue(IAccessible *t, VARIANT v, BSTR *s)
+{ (void)t; (void)v; *s = NULL; return S_FALSE; }
+static HRESULT STDMETHODCALLTYPE acc_get_accDescription(IAccessible *t, VARIANT v, BSTR *s)
+{
+    (void)t;
+    int c = acc_child(v);
+    if (c == -2) return E_INVALIDARG;
+    if (c >= 0 && g_w[c].id >= ID_STYLE && g_w[c].id < ID_STYLE + N_STYLES) {
+        *s = acc_str(STYLES[g_w[c].id - ID_STYLE].line);
+        return S_OK;
+    }
+    *s = c == -1 ? acc_str(footer_hint()) : NULL;
+    return *s ? S_OK : S_FALSE;
+}
+static HRESULT STDMETHODCALLTYPE acc_get_accRole(IAccessible *t, VARIANT v, VARIANT *r)
+{
+    (void)t;
+    int c = acc_child(v);
+    if (c == -2) return E_INVALIDARG;
+    r->vt = VT_I4;
+    r->lVal = c == -1 ? ROLE_SYSTEM_CLIENT
+            : g_w[c].kind == W_CARD ? ROLE_SYSTEM_RADIOBUTTON : ROLE_SYSTEM_PUSHBUTTON;
+    return S_OK;
+}
+static int acc_is_focused(int c)
+{
+    if (GetFocus() != g_hwnd) return 0;
+    if (g_focus >= 0) return c == g_focus;
+    return c == acc_primary_index();     /* what Enter presses */
+}
+static HRESULT STDMETHODCALLTYPE acc_get_accState(IAccessible *t, VARIANT v, VARIANT *r)
+{
+    (void)t;
+    int c = acc_child(v);
+    if (c == -2) return E_INVALIDARG;
+    r->vt = VT_I4;
+    if (c == -1) {
+        r->lVal = STATE_SYSTEM_FOCUSABLE | (GetFocus() == g_hwnd ? STATE_SYSTEM_FOCUSED : 0);
+        return S_OK;
+    }
+    LONG st = STATE_SYSTEM_FOCUSABLE;
+    if (!g_w[c].enabled) st |= STATE_SYSTEM_UNAVAILABLE;
+    if (acc_is_focused(c)) st |= STATE_SYSTEM_FOCUSED;
+    if (g_w[c].kind == W_CARD && g_w[c].id - ID_STYLE == g_sel_style)
+        st |= STATE_SYSTEM_CHECKED | STATE_SYSTEM_SELECTED;
+    r->lVal = st;
+    return S_OK;
+}
+static HRESULT STDMETHODCALLTYPE acc_get_accHelp(IAccessible *t, VARIANT v, BSTR *s)
+{ (void)t; (void)v; *s = NULL; return S_FALSE; }
+static HRESULT STDMETHODCALLTYPE acc_get_accHelpTopic(IAccessible *t, BSTR *f, VARIANT v, LONG *id)
+{ (void)t; (void)v; *f = NULL; *id = 0; return S_FALSE; }
+static HRESULT STDMETHODCALLTYPE acc_get_accKeyboardShortcut(IAccessible *t, VARIANT v, BSTR *s)
+{
+    (void)t;
+    int c = acc_child(v);
+    if (c == -2) return E_INVALIDARG;
+    *s = (c >= 0 && g_w[c].id == ID_PRIMARY) ? acc_str(L"Enter")
+       : (c >= 0 && (g_w[c].id == ID_BACK || g_w[c].id == ID_NOT_YET)) ? acc_str(L"Escape")
+       : NULL;
+    return *s ? S_OK : S_FALSE;
+}
+static HRESULT STDMETHODCALLTYPE acc_get_accFocus(IAccessible *t, VARIANT *r)
+{
+    (void)t;
+    if (GetFocus() != g_hwnd) { r->vt = VT_EMPTY; return S_FALSE; }
+    int c = g_focus >= 0 ? g_focus : acc_primary_index();
+    r->vt = VT_I4;
+    r->lVal = c >= 0 ? c + 1 : CHILDID_SELF;
+    return S_OK;
+}
+static HRESULT STDMETHODCALLTYPE acc_get_accSelection(IAccessible *t, VARIANT *r)
+{
+    (void)t;
+    for (int i = 0; i < g_nw; i++)
+        if (g_w[i].kind == W_CARD && g_w[i].id - ID_STYLE == g_sel_style) {
+            r->vt = VT_I4; r->lVal = i + 1; return S_OK;
+        }
+    r->vt = VT_EMPTY;
+    return S_FALSE;
+}
+static HRESULT STDMETHODCALLTYPE acc_get_accDefaultAction(IAccessible *t, VARIANT v, BSTR *s)
+{
+    (void)t;
+    int c = acc_child(v);
+    if (c == -2) return E_INVALIDARG;
+    *s = c < 0 ? NULL : acc_str(g_w[c].kind == W_CARD ? L"Choose" : L"Press");
+    return *s ? S_OK : S_FALSE;
+}
+static HRESULT STDMETHODCALLTYPE acc_accSelect(IAccessible *t, LONG flags, VARIANT v)
+{
+    (void)t; (void)flags;
+    int c = acc_child(v);
+    if (c < 0) return E_INVALIDARG;
+    PostMessageW(g_hwnd, WM_ACC_ACTIVATE, (WPARAM)g_w[c].id, 0);
+    return S_OK;
+}
+static HRESULT STDMETHODCALLTYPE acc_accLocation(IAccessible *t, LONG *x, LONG *y, LONG *w,
+                                                 LONG *h, VARIANT v)
+{
+    (void)t;
+    int c = acc_child(v);
+    if (c == -2) return E_INVALIDARG;
+    RECT r;
+    if (c == -1) GetClientRect(g_hwnd, &r); else r = g_w[c].r;
+    POINT p = { r.left, r.top };
+    ClientToScreen(g_hwnd, &p);
+    *x = p.x; *y = p.y; *w = r.right - r.left; *h = r.bottom - r.top;
+    return S_OK;
+}
+static HRESULT STDMETHODCALLTYPE acc_accNavigate(IAccessible *t, LONG dir, VARIANT from, VARIANT *r)
+{
+    (void)t;
+    int c = acc_child(from);
+    r->vt = VT_EMPTY;
+    if (c == -2) return E_INVALIDARG;
+    int to = -2;
+    if (c == -1) {
+        if (dir == NAVDIR_FIRSTCHILD) to = 0;
+        else if (dir == NAVDIR_LASTCHILD) to = g_nw - 1;
+        else if (g_acc_std) return g_acc_std->lpVtbl->accNavigate(g_acc_std, dir, from, r);
+    } else {
+        if (dir == NAVDIR_NEXT || dir == NAVDIR_DOWN || dir == NAVDIR_RIGHT) to = c + 1;
+        if (dir == NAVDIR_PREVIOUS || dir == NAVDIR_UP || dir == NAVDIR_LEFT) to = c - 1;
+    }
+    if (to < 0 || to >= g_nw) return S_FALSE;
+    r->vt = VT_I4; r->lVal = to + 1;
+    return S_OK;
+}
+static HRESULT STDMETHODCALLTYPE acc_accHitTest(IAccessible *t, LONG x, LONG y, VARIANT *r)
+{
+    (void)t;
+    POINT p = { x, y };
+    ScreenToClient(g_hwnd, &p);
+    RECT cr;
+    GetClientRect(g_hwnd, &cr);
+    if (!PtInRect(&cr, p)) { r->vt = VT_EMPTY; return S_FALSE; }
+    int i = w_find_at(p.x, p.y);
+    r->vt = VT_I4;
+    r->lVal = i >= 0 ? i + 1 : CHILDID_SELF;
+    return S_OK;
+}
+static HRESULT STDMETHODCALLTYPE acc_accDoDefaultAction(IAccessible *t, VARIANT v)
+{
+    (void)t;
+    int c = acc_child(v);
+    if (c < 0) return c == -1 ? DISP_E_MEMBERNOTFOUND : E_INVALIDARG;
+    if (!g_w[c].enabled) return E_FAIL;
+    /* On the window's own thread, between messages, as a click is. */
+    PostMessageW(g_hwnd, WM_ACC_ACTIVATE, (WPARAM)g_w[c].id, 0);
+    return S_OK;
+}
+static HRESULT STDMETHODCALLTYPE acc_put_accName(IAccessible *t, VARIANT v, BSTR s)
+{ (void)t; (void)v; (void)s; return E_NOTIMPL; }
+static HRESULT STDMETHODCALLTYPE acc_put_accValue(IAccessible *t, VARIANT v, BSTR s)
+{ (void)t; (void)v; (void)s; return E_NOTIMPL; }
+
+static IAccessibleVtbl ACC_VTBL = {
+    acc_QueryInterface, acc_AddRef, acc_Release,
+    acc_GetTypeInfoCount, acc_GetTypeInfo, acc_GetIDsOfNames, acc_Invoke,
+    acc_get_accParent, acc_get_accChildCount, acc_get_accChild, acc_get_accName,
+    acc_get_accValue, acc_get_accDescription, acc_get_accRole, acc_get_accState,
+    acc_get_accHelp, acc_get_accHelpTopic, acc_get_accKeyboardShortcut,
+    acc_get_accFocus, acc_get_accSelection, acc_get_accDefaultAction,
+    acc_accSelect, acc_accLocation, acc_accNavigate, acc_accHitTest,
+    acc_accDoDefaultAction, acc_put_accName, acc_put_accValue,
+};
+static IAccessible g_acc = { &ACC_VTBL };
+
+/* After each paint: when the page (or where it stands) changed, say so,
+ * and point at the button Enter would press. */
+static void acc_after_render(void)
+{
+    if (!g_hwnd || g_shot_mode || g_nav_mode) return;
+    wchar_t b[600];
+    acc_page_name(b, 600);
+    if (wcscmp(b, g_acc_name) != 0) {
+        wcscpy(g_acc_name, b);
+        NotifyWinEvent(EVENT_OBJECT_NAMECHANGE, g_hwnd, OBJID_CLIENT, CHILDID_SELF);
+    }
+    if (g_acc_page != (int)g_page) {
+        g_acc_page = (int)g_page;
+        int p = acc_primary_index();
+        if (p >= 0 && GetFocus() == g_hwnd)
+            NotifyWinEvent(EVENT_OBJECT_FOCUS, g_hwnd, OBJID_CLIENT, p + 1);
+    }
+}
+
+/* ═══════════════════════════════════════════════════════════════════
  *  Window
  * ═══════════════════════════════════════════════════════════════════ */
 static int g_paints;
@@ -3360,6 +3705,33 @@ static void selftest_log(void)
             (g_focus >= 0 && g_focus < g_nw) ? g_w[g_focus].id : -1);
     fprintf(f, "furthest page    : %d (%s)\n", g_max_page,
             g_max_page >= (int)PAGE_STYLE ? "PAST THE GATE" : "gate held");
+    /* WHAT A SCREEN READER GETS, asked the way one asks: through
+     * oleacc, from the window, not by calling our own object. */
+    {
+        IAccessible *a = NULL;
+        char nm[400] = "", bt[120] = "";
+        long kids = -1;
+        if (AccessibleObjectFromWindow(g_hwnd, (DWORD)OBJID_CLIENT, &ACC_IID_IAccessible,
+                                       (void **)&a) == S_OK && a) {
+            VARIANT self; self.vt = VT_I4; self.lVal = CHILDID_SELF;
+            BSTR s = NULL;
+            if (a->lpVtbl->get_accName(a, self, &s) == S_OK && s)
+                WideCharToMultiByte(CP_UTF8, 0, s, -1, nm, sizeof nm, NULL, NULL);
+            SysFreeString(s);
+            LONG n = 0;
+            if (a->lpVtbl->get_accChildCount(a, &n) == S_OK) kids = n;
+            int pi = acc_primary_index();
+            if (pi >= 0) {
+                VARIANT ch; ch.vt = VT_I4; ch.lVal = pi + 1;
+                s = NULL;
+                if (a->lpVtbl->get_accName(a, ch, &s) == S_OK && s)
+                    WideCharToMultiByte(CP_UTF8, 0, s, -1, bt, sizeof bt, NULL, NULL);
+                SysFreeString(s);
+            }
+            a->lpVtbl->Release(a);
+        }
+        fprintf(f, "screen reader    : \"%s\", %ld parts, button \"%s\"\n", nm, kids, bt);
+    }
     fprintf(f, "nav_allowed style..progress: ");
     for (int pg = (int)PAGE_STYLE; pg < (int)PAGE_COUNT; pg++)
         fprintf(f, "%d", nav_allowed((page_id)pg));
@@ -3543,6 +3915,22 @@ static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM wp, LPARAM lp)
 
     case WM_TIMER:
         tick();
+        return 0;
+
+    case WM_GETOBJECT:
+        if ((LONG)lp == (LONG)OBJID_CLIENT) {
+            if (!g_acc_std)
+                CreateStdAccessibleObject(h, OBJID_CLIENT, &ACC_IID_IAccessible,
+                                          (void **)&g_acc_std);
+            return LresultFromObject(&ACC_IID_IAccessible, wp, (IUnknown *)&g_acc);
+        }
+        break;
+
+    case WM_ACC_ACTIVATE:
+        /* a screen reader pressed a button or chose a card */
+        for (int i = 0; i < g_nw; i++)
+            if (g_w[i].id == (int)wp && g_w[i].enabled) { widget_activate((int)wp); break; }
+        InvalidateRect(h, NULL, FALSE);
         return 0;
 
     case WM_MOUSEMOVE: {
@@ -4150,6 +4538,52 @@ static int nav_test(const char *dir)
         InterlockedExchange(&g_dl_state, 0);
     }
 
+    if (g_nt) fprintf(g_nt, "\n11. a screen reader can read every page and find its button\n");
+    {
+        static const page_id P[] = { PAGE_WELCOME, PAGE_STYLE, PAGE_READY, PAGE_PROGRESS };
+        int named = 1, buttons = 1;
+        for (size_t i = 0; i < sizeof P / sizeof P[0]; i++) {
+            nt_fake_report(0);
+            g_page = P[i];
+            g_install_finished = (P[i] == PAGE_PROGRESS);
+            InterlockedExchange(&g_ab_state, P[i] == PAGE_PROGRESS ? 2 : 0);
+            render();
+            VARIANT self; self.vt = VT_I4; self.lVal = CHILDID_SELF;
+            BSTR s = NULL;
+            if (g_acc.lpVtbl->get_accName(&g_acc, self, &s) != S_OK || !s || wcslen(s) < 10)
+                named = 0;
+            SysFreeString(s);
+            int p = acc_primary_index();
+            if (p < 0) { buttons = 0; continue; }
+            VARIANT ch; ch.vt = VT_I4; ch.lVal = p + 1;
+            VARIANT role; role.vt = VT_EMPTY;
+            s = NULL;
+            g_acc.lpVtbl->get_accName(&g_acc, ch, &s);
+            g_acc.lpVtbl->get_accRole(&g_acc, ch, &role);
+            if (!s || wcscmp(s, primary_label()) || role.lVal != ROLE_SYSTEM_PUSHBUTTON)
+                buttons = 0;
+            SysFreeString(s);
+        }
+        nt_check(named, "every page has a name a screen reader reads");
+        nt_check(buttons, "every page's big button is a button, by its own label");
+        nt_fake_report(0);
+        g_page = PAGE_STYLE; g_sel_style = 1;
+        render();
+        int card = -1;
+        for (int i = 0; i < g_nw; i++) if (g_w[i].id == ID_STYLE + 1) card = i;
+        VARIANT ch; ch.vt = VT_I4; ch.lVal = card + 1;
+        VARIANT st; st.vt = VT_EMPTY;
+        BSTR s = NULL;
+        g_acc.lpVtbl->get_accName(&g_acc, ch, &s);
+        g_acc.lpVtbl->get_accState(&g_acc, ch, &st);
+        nt_check(card >= 0 && s && !wcscmp(s, L"Like a Mac") && (st.lVal & STATE_SYSTEM_CHECKED),
+                 "each look is read by its name, and the chosen one as chosen");
+        SysFreeString(s);
+        g_sel_style = STYLE_DEFAULT;
+        g_install_finished = 0;
+        InterlockedExchange(&g_ab_state, 0);
+    }
+
     if (g_nt) {
         fprintf(g_nt, "\n%s (%d failures)\n", g_nt_fail ? "FAILED" : "ALL PASS", g_nt_fail);
         fclose(g_nt);
@@ -4196,6 +4630,8 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
     if (!g_selftest) fix_resume_done();
 
     detect_defaults();
+    /* COM on this thread, for the screen-reader object (WM_GETOBJECT). */
+    CoInitialize(NULL);
 
     WNDCLASSEXW wc;
     memset(&wc, 0, sizeof wc);

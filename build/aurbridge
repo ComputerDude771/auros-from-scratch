@@ -275,6 +275,7 @@ step "aurbridge-wizard.exe"
 $CC -O2 $WARN $IMGDEF -I "$OUT" -mwindows -o "$OUT/aurbridge-wizard.exe" \
     "$SRC/wizard.c" $LIB $PAYLOAD_OBJ $MANIFEST_OBJ \
     -lgdi32 -lcomctl32 -lwinhttp -lsetupapi -lcfgmgr32 \
+    -loleacc -loleaut32 -lole32 -luuid \
     || die "the wizard did not build"
 note "$(du -h "$OUT/aurbridge-wizard.exe" | cut -f1)"
 if [ -n "$MANIFEST_OBJ" ]; then

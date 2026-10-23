@@ -235,6 +235,9 @@ jobs:
           Get-Content "$d\selftest.log"
           if (-not (Select-String -Path "$d\selftest.log" -Pattern 'window created   : yes' -Quiet)) { throw "no window" }
           if (-not (Select-String -Path "$d\selftest.log" -Pattern 'preflight done   : 1' -Quiet)) { throw "preflight did not finish" }
+          # A screen reader, asking Windows for the window's accessible
+          # object, gets the page's words and its button by name.
+          if (-not (Select-String -Path "$d\selftest.log" -Pattern 'screen reader    : "[^"]{10,}", [1-9][0-9]* parts, button "[^"]+"' -Quiet)) { throw "a screen reader gets nothing from the window" }
       - name: the installer says its own name, and has its icon
         shell: pwsh
         run: |
