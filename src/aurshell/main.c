@@ -40,6 +40,7 @@
 #include "bt.h"
 #include "welcome.h"
 #include "watch.h"
+#include "appwatch.h"
 #include "run.h"
 #include "../aurwl/aurwl.h"
 #include "pad.h"
@@ -794,6 +795,12 @@ int main(int argc, char **argv)
     else
         fprintf(stderr, "aurshell: no desktop entries found — "
                         "showing the built-in placeholder set\n");
+    /* And from now on, whenever they change. Not in the still-render
+     * path below, which paints once and exits. */
+    if (!png_out && !input_test && appwatch_open() < 0)
+        fprintf(stderr, "aurshell: cannot watch for new programs (%s) -- a "
+                        "program installed now appears after a restart\n",
+                strerror(errno));
 
     c.mouse_x = mouse_x0;
     c.mouse_y = mouse_y0;
@@ -1357,6 +1364,47 @@ int main(int argc, char **argv)
          * sure it is never the only way. */
         if (notify_pump(&c))  dirty = 1;
         if (notify_step(&c)) dirty = 1;
+
+        /* A PROGRAM WAS INSTALLED (or removed). Read the table again
+         * and show it, now -- see appwatch.h. The archetype is told
+         * where the pointer is so that whatever is highlighted is the
+         * thing under it in the new table and not in the old one. */
+        appwatch_pump();
+        if (appwatch_due()) {
+            int added[8];
+            int k = shell_rescan_apps(&c, added, 8);
+            if (k >= 0) {
+                fprintf(stderr, "aurshell: programs changed: %d on this "
+                                "computer, %d new\n", c.n_apps, k);
+                if (L->motion && c.mouse_x >= 0) L->motion(&c, c.mouse_x, c.mouse_y);
+                /* In her words, and the card is the shortcut: pressing
+                 * it opens the program. Three at most -- a system update
+                 * that adds a dozen helpers is not a dozen pieces of news. */
+                for (int i = 0; i < k && i < 3; i++) {
+                    char sum[96];
+                    snprintf(sum, sizeof sum, "%s is ready", c.apps[added[i]].name);
+                    notify_local_open(sum, "Press here to open it.", c.apps[added[i]].id);
+                }
+                dirty = 1;
+            }
+        }
+        /* A card asked for a program (she pressed "VLC is ready"), or a
+         * panel did. Started here, where the archetype's present() is,
+         * so the rail scrolls to it and the tiles grow into it. */
+        {
+            char oid[32];
+            if (notify_take_open(oid, sizeof oid))
+                for (int i = 0; i < c.n_apps; i++)
+                    if (!strcmp(c.apps[i].id, oid)) { c.want_launch = i + 1; break; }
+            if (c.want_launch > 0 && c.want_launch <= c.n_apps && !SHELL_PANEL_OPEN(&c)) {
+                int wi = shell_launch(&c, c.want_launch - 1);
+                if (wi >= 0) {
+                    if (L->present) L->present(&c, wi); else c.focus = wi;
+                }
+                dirty = 1;
+            }
+            c.want_launch = 0;
+        }
         power_step();
         if (settings_step(&c)) dirty = 1;
         /* The handful of things this computer should speak up about
@@ -1696,12 +1744,13 @@ int main(int argc, char **argv)
          * a full second; with damage tracking there is nothing to do
          * until an event arrives, and the clock is handled above. */
         /* The devices, plus EVERY other thing this loop waits on. The
-         * bound was `+ 4` and there are now five of them -- inotify,
-         * the compositor, nmcli, bluetoothctl and the bus -- so adding
+         * bound was `+ 4` and there are now six of them -- inotify,
+         * the compositor, nmcli, bluetoothctl, the bus and the program
+         * directories (appwatch.c) -- so adding
          * the fifth wrote one pollfd past the end of a stack array.
          * Counted from the list rather than from memory, and checked,
          * because the next one added would have done it again. */
-        #define POLL_EXTRAS 5
+        #define POLL_EXTRAS 6
         struct pollfd pfd[MAX_INPUT_DEV + POLL_EXTRAS];
         int np = 0;
         /* How many device slots pfd[] describes. The walk below indexes
@@ -1732,6 +1781,10 @@ int main(int argc, char **argv)
          * here -- see the note there. */
         int nofd = notify_fd();
         if (nofd >= 0) { pfd[np].fd = nofd; pfd[np].events = POLLIN; np++; }
+        /* A program being installed. Read at the top of the loop, like
+         * the bus; here so an idle desktop wakes for it. */
+        int awfd = appwatch_fd();
+        if (awfd >= 0) { pfd[np].fd = awfd; pfd[np].events = POLLIN; np++; }
         int btfd = -1, btslot = -1;
         if ((btfd = bt_fd()) >= 0) {
             btslot = np; pfd[np].fd = btfd;
@@ -1754,6 +1807,8 @@ int main(int argc, char **argv)
          * going to write is a laptop with an hour less battery. */
         int ww = welcome_wait_ms();
         if (ww >= 0 && ww < wait_ms) wait_ms = ww;
+        int aw = appwatch_wait_ms();
+        if (aw >= 0 && aw < wait_ms) wait_ms = aw;
         if (np > (int)(sizeof pfd / sizeof pfd[0])) {
             /* Unreachable by construction; here because the thing it
              * guards is a stack overflow and "unreachable" is what was
@@ -2157,6 +2212,7 @@ int main(int argc, char **argv)
     net_fini();
     bt_fini();
     notify_fini();
+    appwatch_close();
     if (c.wl) aurwl_destroy(c.wl);
     for (int i = 0; i < in.n; i++) { ioctl(in.fd[i], EVIOCGRAB, 0); close(in.fd[i]); }
     if (in.notify_fd >= 0) close(in.notify_fd);

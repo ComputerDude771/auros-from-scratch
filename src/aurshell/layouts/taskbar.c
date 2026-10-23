@@ -304,6 +304,21 @@ static rect menu_part(shell_ctx *c, int W, int H, int part)
     return row;
 }
 
+/* Which program is on menu row `row`. The menu lists every program in
+ * the table's order -- except that "Get more programs" is always the
+ * last row that fits (shell_display_order). It used to be wherever the
+ * store ranked, and a menu with more programs than rows replaced its
+ * last row with "...and 9 more", which on a full machine meant the way
+ * to install anything was one of the nine. */
+static int menu_app(shell_ctx *c, int W, int H, int row)
+{
+    int cols, rows, shown;
+    menu_shape(c, W, H, &cols, &rows, &shown);
+    int ord[SHELL_MAX_APPS];
+    int n = shell_display_order(c, shown, ord);
+    return (row >= 0 && row < n) ? ord[row] : -1;
+}
+
 /* ── stacking ───────────────────────────────────────────────────────── */
 static void stack_sync(shell_ctx *c)
 {
@@ -798,9 +813,13 @@ static void paint_menu(shell_ctx *c, surface *s, shell_fonts *f)
     draw_hrule(s, a.x + c->padding, a.y + c->padding + head - 7,
                a.w - c->padding * 2, 2, c->fg_hi, t * 0.85f);
 
+    int ord[SHELL_MAX_APPS];
+    shell_display_order(c, shown, ord);
     for (int i = 0; i < shown; i++) {
         rect row = menu_part(c, W, H, i);
         int hot = (p->hover_row == i);
+        int ai = ord[i];
+        int store = c->apps[ai].role == APP_ROLE_STORE;
         rect hit = { row.x + 2, row.y + 1, row.w - 4, row.h - 2 };
         uint32_t paper = c->surface_c;
         if (hot) {
@@ -810,18 +829,22 @@ static void paint_menu(shell_ctx *c, surface *s, shell_fonts *f)
         }
         /* One hairline between rows instead of a box around each: the
          * list is one object with divisions, not eight objects. */
-        if (i) draw_hrule(s, row.x + 8, row.y, row.w - 16, 1, c->overlay, t * 0.8f);
+        /* The store's row is set apart by a heavier rule above it: it
+         * is not one of her programs, it is the way to more of them. */
+        if (i) draw_hrule(s, row.x + 8, row.y, row.w - 16, store ? 2 : 1,
+                          store ? c->fg : c->overlay, t * 0.8f);
 
         float icx = (float)row.x + 26.f, icy = (float)row.y + (float)row.h * 0.5f;
-        shell_icon_draw(s, c->apps[i].icon, icx, icy, 20.f, c->apps[i].tint, paper, t);
+        shell_icon_draw(s, c->apps[ai].icon, icx, icy, 20.f,
+                        store ? c->accent : c->apps[ai].tint, paper, t);
 
         float tx = (float)row.x + 48.f;
         float room = (float)(row.x + row.w) - tx - 10.f;
         char nb[64], hb[80];
-        const char *nm = fit_text(f->dmid, c->apps[i].name, nb, sizeof nb, room);
+        const char *nm = fit_text(f->dmid, c->apps[ai].name, nb, sizeof nb, room);
         float ny = (float)row.y + (float)row.h * 0.5f - 3.f;
         shell_text(s, f->dmid, tx, ny, nm, c->fg_hi, t * 0.98f);
-        const char *ht = fit_text(f->small, c->apps[i].hint, hb, sizeof hb, room);
+        const char *ht = fit_text(f->small, c->apps[ai].hint, hb, sizeof hb, room);
         shell_text(s, f->small, tx, ny + (f->small ? font_ascent(f->small) : 11.f) + 5.f,
                    ht, c->subtle, t * 0.88f);
     }
@@ -918,7 +941,8 @@ static int l_click(shell_ctx *c, int x, int y)
     if (p->menu_open) {
         if (pt_in(menu_part(c, W, H, -1), x, y)) {
             int row = menu_hit(c, x, y);
-            if (row >= 0) { open_app(c, row); set_menu(c, 0); }
+            int app = menu_app(c, W, H, row);
+            if (app >= 0) { open_app(c, app); set_menu(c, 0); }
             return 1;
         }
         /* A click anywhere else dismisses it and goes no further, which
@@ -1034,7 +1058,8 @@ static void l_key(shell_ctx *c, int k)
         break;
     case 28:                                     /* KEY_ENTER */
         if (p->menu_open && p->hover_row >= 0 && p->hover_row < shown) {
-            open_app(c, p->hover_row); set_menu(c, 0);
+            int app = menu_app(c, c->screen_w, c->screen_h, p->hover_row);
+            if (app >= 0) { open_app(c, app); set_menu(c, 0); }
         }
         break;
     case 15:  cycle(c, 1); break;                /* KEY_TAB */

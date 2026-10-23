@@ -36,7 +36,11 @@
 #define CASCADE_STEP  110
 #define FIND_MAX      6
 
-enum { SLOT_FIND, SLOT_FAV, SLOT_RUN };
+/* SLOT_STORE is "Get more programs": a labelled button beside Find,
+ * outside the run of favourites so that it never moves and never moves
+ * them. An icon-only favourite would have said its name only under the
+ * pointer, and she does not hover to find out what things are. */
+enum { SLOT_FIND, SLOT_STORE, SLOT_FAV, SLOT_RUN };
 typedef struct { int kind, app; } dock_slot;
 
 #define MAX_SLOTS (1 + SHELL_MAX_APPS + SHELL_MAX_WINS)
@@ -93,13 +97,15 @@ static int dock_slots(shell_ctx *c, dock_slot *out)
 {
     int n = 0;
     out[n].kind = SLOT_FIND; out[n].app = -1; n++;
+    int store = shell_store_app(c);
+    if (store >= 0) { out[n].kind = SLOT_STORE; out[n].app = store; n++; }
 
     for (int i = 0; i < c->n_apps && n < MAX_SLOTS; i++)
-        if (c->apps[i].pinned) { out[n].kind = SLOT_FAV; out[n].app = i; n++; }
+        if (c->apps[i].pinned && i != store) { out[n].kind = SLOT_FAV; out[n].app = i; n++; }
 
     for (int w = 0; w < c->n_wins && n < MAX_SLOTS; w++) {
         int a = c->wins[w].app;
-        if (a < 0 || a >= c->n_apps || c->apps[a].pinned) continue;
+        if (a < 0 || a >= c->n_apps || c->apps[a].pinned || a == store) continue;
         int dup = 0;
         for (int k = 0; k < n; k++)
             if (out[k].kind == SLOT_RUN && out[k].app == a) dup = 1;
@@ -119,26 +125,39 @@ static int dock_slots(shell_ctx *c, dock_slot *out)
  * the target slides out from under you at the exact moment you are
  * aiming at it, and the muscle memory this archetype is selling is
  * undermined by its own animation. The icon grows; the slot does not. */
+/* The store's button is as wide as its words at her text size, so
+ * "Get more programs" is never cut to "Get more prog...". */
+static int store_w(const shell_ctx *c)
+{
+    float k = (c->text_scale > 0.1f) ? c->text_scale : 1.f;
+    return 74 + (int)(158.f * k);
+}
+
+static int slot_w(const shell_ctx *c, const dock_slot *sl, int cell)
+{
+    if (sl->kind == SLOT_FIND)  return DOCK_FIND_W;
+    if (sl->kind == SLOT_STORE) return store_w(c);
+    return cell;
+}
+
 static rect dock_rect(shell_ctx *c, int sw, int sh, int slot)
 {
     dock_slot sl[MAX_SLOTS];
     int n = dock_slots(c, sl);
-    int n_fav = 0, n_run = 0;
-    for (int i = 0; i < n; i++) {
-        if (sl[i].kind == SLOT_FAV) n_fav++;
-        else if (sl[i].kind == SLOT_RUN) n_run++;
-    }
 
     int cell = c->target_large ? DOCK_CELL : DOCK_CELL - 10;
     int gap = DOCK_GAP, sep = DOCK_SEP, pad = 12;
     int avail = sw - 2 * c->margin, inner;
 
     /* Shrink rather than scroll or wrap: a dock you have to scroll has
-     * stopped being a place and started being a list. */
+     * stopped being a place and started being a list. Measured by the
+     * same walk that places the cells below, so the two cannot differ. */
     for (;;) {
-        inner = DOCK_FIND_W + sep
-              + n_fav * cell + (n_fav ? (n_fav - 1) * gap : 0)
-              + (n_run ? sep + n_run * cell + (n_run - 1) * gap : 0);
+        inner = 0;
+        for (int i = 0; i < n; i++) {
+            inner += slot_w(c, &sl[i], cell);
+            if (i + 1 < n) inner += (sl[i + 1].kind != sl[i].kind) ? sep : gap;
+        }
         if (inner + 2 * pad <= avail || cell <= 34) break;
         cell -= 2;
         if (gap > 6) gap--;
@@ -160,7 +179,7 @@ static rect dock_rect(shell_ctx *c, int sw, int sh, int slot)
 
     int x = strip.x + pad;
     for (int i = 0; i < n; i++) {
-        int w = (sl[i].kind == SLOT_FIND) ? DOCK_FIND_W : cell;
+        int w = slot_w(c, &sl[i], cell);
         if (i == slot) return (rect){ x, strip.y + DOCK_PAD_T, w, cell };
         x += w;
         if (i + 1 < n) x += (sl[i + 1].kind != sl[i].kind) ? sep : gap;
@@ -224,23 +243,17 @@ static rect win_rect(shell_ctx *c, int sw, int sh, int i)
 }
 
 /* ── the finder ──────────────────────────────────────────────────
- * Find-by-name, not a command palette. The rows are things — programs
- * and the files you saved — with the icon they have everywhere else and
- * the name you would say out loud. Nothing here is a verb, because a
- * user who has to learn a vocabulary of commands to reach their fifth
- * program has been handed a worse dock, not a better one.
+ * Find-by-name, not a command palette. The rows are programs, with the
+ * icon they have everywhere else and the name you would say out loud.
+ * Nothing here is a verb, because a user who has to learn a vocabulary
+ * of commands to reach their fifth program has been handed a worse
+ * dock, not a better one.
  *
- * The ctx carries no file index, so this ships a small standing set to
- * show the row shape; a real build replaces find_docs with the
- * indexer's answer and changes nothing else. */
-static const struct { const char *name, *where; shell_icon ic; int tint; } find_docs[] = {
-    { "Holiday photos",        "Folder in My Files", ICON_PHOTOS, 2 },
-    { "Phone bill.pdf",        "In Downloads",       ICON_TEXT,   3 },
-    { "Photos of the garden",  "In My Files",        ICON_PHOTOS, 1 },
-    { "Letter to the council", "In My Files",        ICON_TEXT,   3 },
-    { "Shopping list",         "In My Files",        ICON_TEXT,   0 },
-    { "Music for the drive",   "In Music",           ICON_MUSIC,  1 },
-};
+ * It used to list six files as well -- "Phone bill.pdf", "Holiday
+ * photos" -- a standing set written to show the row shape, waiting for
+ * a file index that was never built. On her machine they were files
+ * she does not have, and pressing one did nothing. Programs only,
+ * until there is an index to ask. */
 
 typedef struct { const char *name, *where; shell_icon ic; uint32_t tint; int app; } find_hit;
 
@@ -249,11 +262,6 @@ typedef struct { const char *name, *where; shell_icon ic; uint32_t tint; int app
  * for variety — which is what docs/THEMING.md forbids in as many
  * words: accent_alt is for a different KIND of thing, not for making
  * a list look less samey. A list of files is one kind of thing. */
-static uint32_t tint_of(shell_ctx *c, int i)
-{
-    (void)i;
-    return c->fg;
-}
 static int lc(int ch) { return (ch >= 'A' && ch <= 'Z') ? ch + 32 : ch; }
 static int name_has(const char *hay, const char *needle)
 {
@@ -266,11 +274,8 @@ static int name_has(const char *hay, const char *needle)
     return 0;
 }
 
-/* Programs first, then saved things. Someone typing two letters is
- * usually reaching for a program; someone typing a whole phrase is
- * usually reaching for a document, and by then the match has narrowed
- * anyway. With nothing typed the list is the programs that are NOT on
- * the dock, which is exactly the set the dock cannot answer for. */
+/* With nothing typed the list is the programs that are NOT on the
+ * dock, which is exactly the set the dock cannot answer for. */
 static int find_search(shell_ctx *c, const char *q, find_hit *out)
 {
     int n = 0, empty = !q || !*q;
@@ -279,12 +284,6 @@ static int find_search(shell_ctx *c, const char *q, find_hit *out)
         out[n].name = c->apps[i].name; out[n].where = "Program";
         out[n].ic = c->apps[i].icon;   out[n].tint = c->apps[i].tint;
         out[n].app = i; n++;
-    }
-    for (int i = 0; i < (int)(sizeof find_docs / sizeof find_docs[0]) && n < FIND_MAX; i++) {
-        if (!name_has(find_docs[i].name, q)) continue;
-        out[n].name = find_docs[i].name; out[n].where = find_docs[i].where;
-        out[n].ic = find_docs[i].ic;     out[n].tint = tint_of(c, find_docs[i].tint);
-        out[n].app = -1; n++;
     }
     return n;
 }
@@ -323,10 +322,15 @@ static void l_init(shell_ctx *c)
 
     /* No pointer yet: a still frame, or the first frame before any
      * input arrives. Park the dock on the app the user is actually in
-     * so the strip shows its live state instead of sitting inert, and —
-     * with nothing open at all — start the finder, mid-word, because
-     * with no window to switch to, typing a name is the only move the
-     * archetype has and a blank screen should say so. */
+     * so the strip shows its live state instead of sitting inert.
+     *
+     * With nothing open it used to start the finder with "pho" already
+     * typed into it -- a demonstration for the preview renderer. init()
+     * runs before the host has a pointer on a real machine too, so the
+     * real first screen of this archetype was a search she had not
+     * typed, listing a "Phone bill.pdf" she does not have. Nothing open
+     * now means the dock, with its favourites and "Get more programs",
+     * and nothing else. */
     if (c->mouse_x < 0 && c->mouse_y < 0) {
         int app = (c->focus >= 0 && c->focus < c->n_wins) ? c->wins[c->focus].app : -1;
         if (app >= 0) {
@@ -335,12 +339,6 @@ static void l_init(shell_ctx *c)
             for (int i = 0; i < n; i++)
                 if (sl[i].app == app) { priv.hover = i; break; }
             if (priv.hover >= 0) tween_set(&priv.mag, 1.f);
-        }
-        if (c->n_wins == 0) {
-            snprintf(priv.q, sizeof priv.q, "pho");
-            priv.qn = 3;
-            priv.find_open = 1;
-            tween_set(&priv.veil, 1.f);
         }
     }
 }
@@ -470,6 +468,28 @@ static void paint_dock(shell_ctx *c, surface *s, shell_fonts *f, float alpha)
                        c->fg_hi, alpha);
             continue;
         }
+        if (sl[i].kind == SLOT_STORE) {
+            /* Filled, where Find is outlined: Find is a way to look, this
+             * is a way to get, and the two must not read as a pair of the
+             * same thing. The words are the button; the bag is in the
+             * signal colour, as on every other home. */
+            rect fp = { r.x, r.y + (r.h - 44) / 2, r.w, 44 };
+            int fhot = (i == p->hover);
+            uint32_t fpaper = fhot ? c->surface_hi : c->surface_c;
+            draw_round_rect(s, fp, corners_all((float)c->radius_sm), fpaper, alpha);
+            draw_frame(s, fp, fhot ? 2 : 1, fhot ? c->accent : c->fg, alpha);
+            shell_icon_draw(s, ICON_STORE, (float)fp.x + 22.f, (float)fp.y + 22.f,
+                            22.f, c->accent, fpaper, alpha);
+            shell_text_elided(s, f->mid, (float)fp.x + 42.f,
+                              shell_baseline(f->mid, (float)fp.y, 44.f),
+                              (float)fp.w - 50.f, c->apps[sl[i].app].name,
+                              c->fg_hi, alpha);
+            int wi = app_window(c, sl[i].app);
+            if (wi >= 0)
+                draw_hrule(s, fp.x + 42, (int)doty - 2, 28, 4,
+                           wi == c->focus ? c->accent : c->fg, alpha);
+            continue;
+        }
 
         const app_entry *ap = &c->apps[sl[i].app];
         int wi = app_window(c, sl[i].app);
@@ -505,7 +525,7 @@ static void paint_dock(shell_ctx *c, surface *s, shell_fonts *f, float alpha)
                 draw_hrule(s, (int)(cx - 6.f), (int)doty, 12, 2, c->fg, alpha * 0.8f);
         }
 
-        if (i == p->hover) { tip = sl[i].app; tip_x = cx; }
+        if (i == p->hover && sl[i].kind != SLOT_STORE) { tip = sl[i].app; tip_x = cx; }
     }
 
     /* Name above the hovered icon — drawn last so it sits over its
@@ -585,7 +605,8 @@ static void paint_find(shell_ctx *c, surface *s, shell_fonts *f)
     }
     if (!nres)
         shell_text(s, f->dmid, (float)(a.x + pad), (float)a.y + 110.f,
-                   "Nothing by that name.", c->muted, al * 0.9f);
+                   "Nothing by that name here. Get more programs has more.",
+                   c->muted, al * 0.9f);
 
     rect foot = { a.x, a.y + a.h - 36, a.w, 36 };
     draw_hrule(s, foot.x + pad, foot.y, foot.w - pad * 2, 1, c->overlay, al * 0.9f);

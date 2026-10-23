@@ -18,7 +18,12 @@
 #include "../common/theme.h"
 #include "../common/font.h"
 
-#define SHELL_MAX_APPS 32
+/* 64, not 32. A person who has installed a dozen programs from the
+ * store on top of the image's own was already past 32, and the table
+ * was cut at the bottom of its rank order -- the store itself is
+ * ranked there, so the more she installed the more likely the way to
+ * install anything was the thing that fell off. */
+#define SHELL_MAX_APPS 64
 /* More than any real Exec= line, and a bound on what a hostile one can
  * make us allocate. */
 #define APP_MAX_ARGS   16
@@ -29,8 +34,24 @@
 typedef enum {
     ICON_GLOBE, ICON_MAIL, ICON_PHOTOS, ICON_FILES,
     ICON_SETTINGS, ICON_HELP, ICON_WINDOW, ICON_PLUS,
-    ICON_TEXT, ICON_MUSIC, ICON_TERMINAL, ICON_CALC
+    ICON_TEXT, ICON_MUSIC, ICON_TERMINAL, ICON_CALC,
+    /* "Get more programs": a carrier bag with a plus cut out of it.
+     * "All my programs": a stack of rows. Both added for the store on
+     * every home screen; see shell_home_pick(). */
+    ICON_STORE, ICON_LIST
 } shell_icon;
+
+/* What an entry IS, beyond being something to start. */
+enum {
+    APP_ROLE_PROGRAM = 0,
+    /* The store. Exactly one at most, always called "Get more
+     * programs", and every archetype gives it a place that does not
+     * move as more programs are installed (shell_home_pick). */
+    APP_ROLE_STORE,
+    /* The shell's own Settings, which opens the Settings panel rather
+     * than starting a program. */
+    APP_ROLE_SETTINGS
+};
 
 typedef struct {
     char        id[32];
@@ -39,6 +60,12 @@ typedef struct {
     shell_icon  icon;
     uint32_t    tint;
     int         pinned;        /* appears in a dock / favourites strip */
+    int         role;          /* APP_ROLE_*                            */
+    /* Nonzero when this program arrived while the desktop was running:
+     * installed a moment ago, from the store. Larger is newer. The home
+     * screens put the newest one where she will see it; 0 for
+     * everything that was already here when the desktop started. */
+    unsigned    fresh;
     /* The argument vector that starts it: NUL-separated tokens, ending
      * in a second NUL, with n_args of them. NOT a shell command line --
      * a .desktop Exec= is parsed per the XDG quoting rules and handed
@@ -212,6 +239,12 @@ typedef struct shell_ctx_s {
      * is the one panel nothing on the band opens: it opens itself, on
      * the first frame of every session, until it has been answered. */
     int   welcome_open;
+    /* A program the host should start, as an index into apps plus one,
+     * or 0. Set by things that are not the archetype -- the "VLC is
+     * ready" card -- because only the host knows the archetype's
+     * present(), and starting a program without it leaves the rail
+     * looking at Home while the program opens off to the side. */
+    int   want_launch;
     /* Set by a panel that has changed something the shell reads from a
      * file -- the archetype, the theme. The host notices it, rereads
      * everything and rebuilds, which is the same path a SIGHUP takes.
@@ -374,6 +407,51 @@ int  shell_archetype_load(shell_ctx *c, const char *path);
  * it. Returns the number of apps found, or -1 if nothing was readable
  * (in which case the caller keeps the seeded table). */
 int  shell_scan_apps(shell_ctx *c);
+
+/* Scan again while the desktop is running -- a program was installed or
+ * removed. Windows keep pointing at their own program (the table is
+ * re-sorted, so indices move), programs that were not there before are
+ * marked fresh, and the dock's favourites stay the favourites they
+ * were. Writes the indices of the new arrivals into added[] (up to
+ * max) and returns how many; -1 if nothing could be read, in which
+ * case the table is left exactly as it was. */
+int  shell_rescan_apps(shell_ctx *c, int *added, int max);
+
+/* ── the store, on every home screen ─────────────────────────────────
+ *
+ * The index of "Get more programs", or -1 when this machine has none
+ * (no store installed, or a profile that forbids installing). */
+int  shell_store_app(const shell_ctx *c);
+
+/* What a home screen with room for `cap` entries shows, in order, into
+ * out[] (at least cap ints). Returns how many.
+ *
+ * The store is ALWAYS the last of them when there is one, however many
+ * programs are installed and however they rank: that is the fixed
+ * place, and it was missing -- on the default desktop the store ranked
+ * seventh on a home that shows six. The rest are the table's own order
+ * (most-reached-for first), except that the newest program installed
+ * while the desktop was running takes the last of those places, so
+ * the thing she has just installed is on the screen she goes back to. */
+int  shell_home_pick(const shell_ctx *c, int cap, int *out);
+
+/* Every entry, for a layout that pages or scrolls through all of them:
+ * shell_home_pick(c, first_cap) first, then everything else in table
+ * order. out[] must hold n_apps ints. Returns n_apps. */
+int  shell_display_order(const shell_ctx *c, int first_cap, int *out);
+
+/* ── what was drawn where, for harnesses ────────────────────────────
+ *
+ * Off unless a harness turns it on. While on, every shell_text*() call
+ * records the exact string it drew -- after eliding, so a label cut to
+ * "Get more prog…" does not count as "Get more programs" -- and the
+ * box it occupies. tools/storetest.c presses words by finding them
+ * here, which is how a person finds them. */
+typedef struct { char s[72]; int x, y, w, h; } shell_text_rec;
+#define SHELL_TEXT_LOG_MAX 512
+extern int            shell_text_log_on;
+extern int            shell_text_log_n;
+extern shell_text_rec shell_text_log[SHELL_TEXT_LOG_MAX];
 
 /* Start an application and give the user something to look at while it
  * loads. Safe to call with no compositor; it then only marks the slot,
