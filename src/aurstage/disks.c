@@ -174,8 +174,26 @@ static int sys_path(char *out, size_t n, const char *name, const char *leaf)
     return (k > 0 && (size_t)k < n) ? 0 : -1;
 }
 
+/* AN eMMC'S HARDWARE BOOT AREAS ARE NOT DISKS. An eMMC system disk
+ * (budget laptops; preflight accepts it as the PC's own drive) appears
+ * as mmcblk0, and beside it as mmcblk0boot0, mmcblk0boot1 and -- on some
+ * kernels -- mmcblk0rpmb: a few megabytes each, no GPT, read-only by
+ * default, and with a `device` link and no `partition` file, so the test
+ * below took them for whole disks. They also report the SAME serial as
+ * mmcblk0, so journal_disk()'s exact-serial match could land on a 4 MB
+ * boot area first (readdir order) and refuse the right machine with
+ * "the Windows part of this disk is not where it was". */
+static int is_mmc_aux(const char *name)
+{
+    if (strncmp(name, "mmcblk", 6) != 0) return 0;
+    const char *p = name + 6;
+    while (*p >= '0' && *p <= '9') p++;
+    return !strncmp(p, "boot", 4) || !strncmp(p, "rpmb", 4) || !strncmp(p, "gp", 2);
+}
+
 static int is_whole_disk(const char *name)
 {
+    if (is_mmc_aux(name)) return 0;
     char dir[64 + STAGE_NAME];
     if (sys_path(dir, sizeof dir, name, "device") != 0) return 0;
     struct stat st;

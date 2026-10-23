@@ -147,7 +147,7 @@ jobs:
         run: sh tools/shrinktargettest.sh 2>&1 | tee transcripts/shrinktargettest.txt
       - name: probetest
         if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
-        run: sh tools/probetest.sh 2>&1 | tee transcripts/probetest.txt
+        run: sudo sh tools/probetest.sh 2>&1 | tee transcripts/probetest.txt
       - name: gapfencetest
         if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
         run: sh tools/gapfencetest.sh 2>&1 | tee transcripts/gapfencetest.txt

@@ -72,6 +72,11 @@ typedef struct {
     int  wired_up;           /* a wired link with carrier               */
     int  backlight;          /* a controllable screen brightness        */
     int  sound_cards;
+    /* 1 the new root was unmounted, 2 it had to be detached lazily
+     * (still busy after retries), 0 it is STILL MOUNTED -- which
+     * probe_run() turns into a refusal, because the commit's e2fsck and
+     * resize2fs must never run on a filesystem mounted elsewhere. */
+    int  unmounted;
     char why[240];
     char remedy[240];
 } probe_result;

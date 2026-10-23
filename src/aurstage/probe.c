@@ -1,6 +1,7 @@
 /* probe.c — see probe.h. Mounts read-only; writes nothing. */
 #define _GNU_SOURCE
 #include <dirent.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <string.h>
@@ -258,6 +259,41 @@ void probe_run_at(const char *disk_dev, uint64_t off, probe_result *out)
     loop_detach(dev, bf);
 }
 
+/* LET GO OF THE NEW ROOT, AND CHECK THAT IT HAPPENED.
+ *
+ * This used to be a bare umount() whose answer nobody read. A firmware
+ * load the poll above triggered can still be in flight -- a driver that
+ * asks for a second blob once the first is in -- and holding a file in
+ * PROBE_AT, umount() then fails with EBUSY and the new root stays
+ * mounted through the loop device. Nothing said so, and two steps later
+ * commit_settle() runs e2fsck and resize2fs on that same filesystem
+ * while it is still mounted. So: settle and retry for a few seconds, and
+ * only if it is still busy detach it lazily (it then vanishes from the
+ * namespace and is released when the last reference goes). And the
+ * /lib/firmware symlink this run made points into PROBE_AT, so it is
+ * removed afterwards -- restored to "not there" -- rather than left
+ * dangling into an empty directory for anything later to follow. */
+static void probe_letgo(int made_link, probe_result *out)
+{
+    out->unmounted = 0;
+    for (int t = 0; t < 40; t++) {            /* up to ~10 s            */
+        if (umount(PROBE_AT) == 0) { out->unmounted = 1; break; }
+        if (errno != EBUSY) break;
+        struct timespec ts = { 0, 250 * 1000 * 1000 };
+        nanosleep(&ts, NULL);
+    }
+    if (!out->unmounted && umount2(PROBE_AT, MNT_DETACH) == 0)
+        out->unmounted = 2;                   /* detached lazily        */
+    if (made_link) {
+        char tgt[64];
+        ssize_t k = readlink("/lib/firmware", tgt, sizeof tgt - 1);
+        if (k > 0) {
+            tgt[k] = 0;
+            if (!strcmp(tgt, PROBE_AT "/lib/firmware")) unlink("/lib/firmware");
+        }
+    }
+}
+
 void probe_run(const char *root_dev, probe_result *out)
 {
     memset(out, 0, sizeof *out);
@@ -314,10 +350,9 @@ void probe_run(const char *root_dev, probe_result *out)
      * nor weakened. If /lib/firmware already exists this is a harmless
      * no-op, and a failure here only means a firmware-needing card is
      * not tested -- which is recorded, never fatal. */
-    if (symlink(PROBE_AT "/lib/firmware", "/lib/firmware") != 0) {
-        /* EEXIST, or no permission: the default search still covers
-         * whatever is already at /lib/firmware. Nothing to do. */
-    }
+    int made_link = symlink(PROBE_AT "/lib/firmware", "/lib/firmware") == 0;
+    /* EEXIST, or no permission: the default search still covers whatever
+     * is already at /lib/firmware, and it is not ours to remove later. */
 
     probe_modalias("/sys/devices", 0, &out->modules_loaded);
     probe_look(NULL, out);
@@ -334,8 +369,15 @@ void probe_run(const char *root_dev, probe_result *out)
         nanosleep(&ts, NULL);
         out->wifi_devices = count_class("/sys/class/ieee80211");
     }
-    umount(PROBE_AT);
+    probe_letgo(made_link, out);
     probe_judge(out);
+    if (!out->unmounted) {
+        out->verdict = PROBE_UNMOUNTABLE;
+        snprintf(out->why, sizeof out->why,
+                 "AurOS could not let go of the system it had just checked.");
+        snprintf(out->remedy, sizeof out->remedy,
+                 "Nothing has been committed and Windows will start as usual.");
+    }
 }
 
 void probe_look(const char *sysroot, probe_result *out)

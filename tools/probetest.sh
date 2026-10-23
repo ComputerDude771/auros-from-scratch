@@ -41,6 +41,9 @@ int main(int argc, char **argv)
     probe_result r;
     if (argc >= 2 && !strcmp(argv[1], "mount")) {
         probe_run(argv[2], &r);
+    } else if (argc >= 3 && !strcmp(argv[1], "at")) {
+        /* the install's own path: a loop over the extent, offset 0 */
+        probe_run_at(argv[2], 0, &r);
     } else {
         /* look <sysroot> <modules_loaded> <kernel_matches> */
         memset(&r, 0, sizeof r);
@@ -54,6 +57,7 @@ int main(int argc, char **argv)
     printf("wired=%d\n", r.wired_up);
     printf("backlight=%d\n", r.backlight);
     printf("sound=%d\n", r.sound_cards);
+    printf("unmounted=%d\n", r.unmounted);
     printf("why=%s\n", r.why);
     printf("remedy=%s\n", r.remedy);
     return r.verdict == PROBE_OK ? 0 : 1;
@@ -166,6 +170,48 @@ case "$(printf '%s\n' "$OUT" | G remedy)" in
   *"Nothing on this computer has been changed"*) ok "...and nothing has been changed" ;;
   *) bad "...and nothing has been changed" ;;
 esac
+
+echo
+echo "  and it lets go of the root it checked"
+# The commit's e2fsck and resize2fs run on this filesystem two steps
+# later, so the probe must leave it unmounted -- and must not leave a
+# /lib/firmware link of its own pointing into an empty directory. Needs
+# root for a real mount; skipped (and said so) without it.
+if [ "$(id -u)" = 0 ] && command -v mkfs.ext4 >/dev/null 2>&1; then
+    truncate -s 16M "$TMP/root.img"
+    mkfs.ext4 -q -F "$TMP/root.img" >/dev/null 2>&1
+    hadfw=0; [ -e /lib/firmware ] || [ -L /lib/firmware ] && hadfw=1
+    OUT=$("$TMP/p" at "$TMP/root.img" 2>/dev/null)
+    [ "$(printf '%s\n' "$OUT" | G unmounted)" = "1" ] \
+        && ok "the checked root is unmounted afterwards" \
+        || bad "the checked root is unmounted afterwards" "$(printf '%s\n' "$OUT" | G unmounted)"
+    if mountpoint -q /probe 2>/dev/null; then
+        bad "nothing is left mounted at /probe" "it is still mounted"
+    else
+        ok "nothing is left mounted at /probe"
+    fi
+    if [ "$hadfw" = 0 ] && { [ -L /lib/firmware ] || [ -e /lib/firmware ]; }; then
+        bad "the probe's /lib/firmware link is removed again" "$(ls -ld /lib/firmware)"
+    else
+        ok "the probe's /lib/firmware link is removed again (or was never ours)"
+    fi
+    # And busy: a file held open in /probe while the probe lets go. A
+    # background shell sits in /probe for 10 s -- past the ~8 s radio poll
+    # and into the unmount retry window -- so the probe must wait
+    # window, so the probe must wait and then succeed -- not give up and
+    # not leave it mounted.
+    mkdir -p "$TMP/busy"; truncate -s 16M "$TMP/busy.img"; mkfs.ext4 -q -F "$TMP/busy.img" >/dev/null 2>&1
+    ( for i in 1 2 3 4 5 6 7 8 9 10; do [ -d /probe/lost+found ] && break; sleep 0.2; done; cd /probe 2>/dev/null && sleep 10 ) &
+    HOLD=$!
+    OUT=$("$TMP/p" at "$TMP/busy.img" 2>/dev/null)
+    wait $HOLD 2>/dev/null
+    U=$(printf '%s\n' "$OUT" | G unmounted)
+    case "$U" in 1|2) ok "a root held busy is let go of after waiting (unmounted=$U)" ;;
+      *) bad "a root held busy is let go of after waiting" "unmounted=$U" ;; esac
+    mountpoint -q /probe 2>/dev/null && umount -l /probe
+else
+    echo "    (not root: the real-mount checks are skipped)"
+fi
 
 echo
 if [ "$fail" -gt 0 ]; then

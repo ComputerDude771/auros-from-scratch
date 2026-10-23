@@ -507,6 +507,11 @@ note "$n_lib libraries"
 # it; a module that is only ever loaded on purpose is not mounted by
 # accident.
 #
+# mmc is in it because preflight accepts an eMMC system disk as the PC's
+# own drive (32/64 GB budget laptops): without mmc_block and the sdhci
+# host drivers the staging environment would see no disk at all on the
+# machine it was told it could install on, after the restart.
+#
 # VMD is in this list for a specific reason: on Intel RST machines the
 # disk is invisible without it, and "this computer has no disk" is the
 # worst possible thing to tell somebody about a computer they are
@@ -521,6 +526,7 @@ kernel/drivers/usb/host
 kernel/drivers/usb/common
 kernel/drivers/block
 kernel/drivers/pci/controller
+kernel/drivers/mmc
 kernel/drivers/virtio
 kernel/fs/ext4
 kernel/fs/fat
@@ -549,6 +555,15 @@ done
     "$RFS/usr/sbin/depmod" -b "$WORK" "$KVER" \
     || die "depmod failed; modprobe would find nothing and no disk would appear"
 note "$(find lib/modules -name '*.ko*' | wc -l) modules, $(du -sh lib/modules | cut -f1)"
+# THE DRIVERS PREFLIGHT PROMISES, checked by name. A directory that moved
+# in a new kernel package is a directory this loop silently skips, and
+# the machine it was skipped for is told after the restart that it has
+# no disk.
+for need in nvme ahci mmc_block sdhci-pci vmd; do
+    find "lib/modules/$KVER" -name "$need.ko*" | grep -q . \
+        || die "the staging environment has no $need driver; a PC preflight
+     accepts would show no disk after the restart"
+done
 
 # ── the archive ────────────────────────────────────────────────────
 step "packing"
