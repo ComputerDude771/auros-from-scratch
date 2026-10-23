@@ -512,6 +512,34 @@ def test_helper(d):
     expect('early: a partition Windows did not see is refused', m.compare_layout(lay, extra), True)
     other = dict(good, id='BB')
     expect('early: another disk is refused', m.compare_layout(lay, other), True)
+    # autologin, for each login screen a system can have
+    for system, dm, paths in (
+            ('ubuntu-26.04.1-desktop', 'gdm3', ['etc/gdm3/custom.conf']),
+            ('xubuntu-26.04.1-desktop', 'lightdm', ['etc/lightdm/lightdm.conf.d/50-auros-othersys.conf']),
+            ('ubuntu-budgie-26.04.1-desktop', 'sddm', ['etc/sddm.conf.d/50-auros-othersys.conf'])):
+        t = os.path.join(d, 'target-' + dm)
+        shutil.rmtree(t, ignore_errors=True)
+        if dm == 'gdm3':
+            os.makedirs(os.path.join(t, 'etc/gdm3'))
+            open(os.path.join(t, 'etc/gdm3/custom.conf'), 'w').write('[daemon]\n#AutomaticLoginEnable = true\n')
+        elif dm == 'lightdm':
+            os.makedirs(os.path.join(t, 'etc/lightdm'))
+        else:
+            os.makedirs(os.path.join(t, 'usr/bin'))
+            open(os.path.join(t, 'usr/bin/sddm'), 'w').close()
+            os.makedirs(os.path.join(t, 'usr/share/wayland-sessions'))
+            for n in ('budgie-desktop', 'aaa-other'):
+                open(os.path.join(t, 'usr/share/wayland-sessions/%s.desktop' % n), 'w').close()
+        got = m.autologin(t, {'user': 'grandma', 'system': system})
+        text = ''.join(open(os.path.join(t, p)).read() for p in paths if os.path.exists(os.path.join(t, p)))
+        bad = [] if 'grandma' in text and got else ['configured %s: %r' % (got, text)]
+        if dm == 'gdm3' and 'AutomaticLoginEnable=true' not in text:
+            bad.append('gdm: not enabled')
+        if dm == 'sddm' and 'Session=budgie-desktop' not in text:
+            bad.append('sddm: wrong session in %r' % text)
+        expect('autologin with %s (%s)' % (dm, system.split('-2')[0]), bad, False)
+    expect('autologin: no login screen is reported, not guessed',
+           [] if m.autologin(os.path.join(d, 'nothing'), {'user': 'grandma', 'system': 'x'}) == [] else ['guessed'], False)
     del os.environ['OTHERSYS_TEST_EFIVARS']
 
 

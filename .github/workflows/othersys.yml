@@ -89,7 +89,7 @@ jobs:
       fail-fast: false
       max-parallel: 2
       matrix:
-        variant: [ntfs, powercut, nofixup, bitlocker]
+        variant: [ntfs, powercut, xubuntu, ubuntu-budgie, ubuntucinnamon, bitlocker, nofixup]
     steps:
       - uses: actions/checkout@v4
       - name: runner (disk, KVM, packages)

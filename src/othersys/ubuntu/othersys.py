@@ -411,6 +411,52 @@ def cancel_mok(state):
     log('late: MOK requests %s' % ('cancelled: %s' % pending if pending else 'none queued'))
 
 
+def session_name(target, system):
+    """The desktop session SDDM must start: the one named like the system
+    (budgie-desktop for ubuntu-budgie-...), else the first there is."""
+    found = []
+    for d in ('usr/share/wayland-sessions', 'usr/share/xsessions'):
+        try:
+            found += sorted(f[:-8] for f in os.listdir(os.path.join(target, d)) if f.endswith('.desktop'))
+        except OSError:
+            pass
+    words = set(system.split('-'))
+    for name in found:
+        if words & set(name.split('-')):
+            return name
+    return found[0] if found else None
+
+
+def autologin(target, plan):
+    """Sign her in by herself, whichever login screen the system has:
+    GDM (Ubuntu), LightDM (Xubuntu, Ubuntu Cinnamon), SDDM (Ubuntu
+    Budgie). Returns what was configured."""
+    user, done = plan['user'], []
+    if os.path.isdir(os.path.join(target, 'etc/gdm3')):
+        conf = os.path.join(target, 'etc/gdm3/custom.conf')
+        text = open(conf).read() if os.path.exists(conf) else '[daemon]\n'
+        text = re.sub(r'(?m)^#?\s*AutomaticLoginEnable\s*=.*\n', '', text)
+        text = re.sub(r'(?m)^#?\s*AutomaticLogin\s*=.*\n', '', text)
+        if '[daemon]' not in text:
+            text = '[daemon]\n' + text
+        text = text.replace('[daemon]\n', '[daemon]\nAutomaticLoginEnable=true\n'
+                            'AutomaticLogin=%s\n' % user, 1)
+        write(conf, text)
+        done.append('gdm3')
+    if os.path.isdir(os.path.join(target, 'etc/lightdm')):
+        write(os.path.join(target, 'etc/lightdm/lightdm.conf.d/50-auros-othersys.conf'),
+              '[Seat:*]\nautologin-user=%s\nautologin-user-timeout=0\n' % user)
+        done.append('lightdm')
+    if os.path.exists(os.path.join(target, 'usr/bin/sddm')):
+        sess = session_name(target, plan.get('system', ''))
+        write(os.path.join(target, 'etc/sddm.conf.d/50-auros-othersys.conf'),
+              '[Autologin]\nUser=%s\n%s' % (user, 'Session=%s\n' % sess if sess else ''))
+        done.append('sddm (%s)' % sess)
+    if not done:
+        log('late: no login screen found that AurOS knows; she will be asked for her password')
+    return done
+
+
 def install_helper(plan, target, state):
     lib = os.path.join(target, LIB.lstrip('/'))
     os.makedirs(lib, exist_ok=True)
@@ -451,15 +497,7 @@ def install_helper(plan, target, state):
     subprocess.run(['chroot', target, 'debconf-set-selections'], check=True,
                    input='grub-efi-amd64 grub2/update_nvram boolean false\n', text=True)
     if plan.get('autologin'):
-        conf = os.path.join(target, 'etc/gdm3/custom.conf')
-        text = open(conf).read() if os.path.exists(conf) else '[daemon]\n'
-        text = re.sub(r'(?m)^#?\s*AutomaticLoginEnable\s*=.*\n', '', text)
-        text = re.sub(r'(?m)^#?\s*AutomaticLogin\s*=.*\n', '', text)
-        if '[daemon]' not in text:
-            text = '[daemon]\n' + text
-        text = text.replace('[daemon]\n', '[daemon]\nAutomaticLoginEnable=true\n'
-                            'AutomaticLogin=%s\n' % plan['user'], 1)
-        write(conf, text)
+        state['autologin'] = autologin(target, plan)
     # the "Welcome to Ubuntu" tour asks about Ubuntu Pro and telemetry;
     # the defaults it would keep are what she gets without it
     gis = os.path.join(target, home.lstrip('/'), '.config/gnome-initial-setup-done')
@@ -468,7 +506,7 @@ def install_helper(plan, target, state):
     state['installed_at'] = int(time.time())
     write(os.path.join(st, 'state.json'), json.dumps(state, indent=1) + '\n')
     log('late: helper installed into the new system (user %s, autologin %s)'
-        % (plan['user'], bool(plan.get('autologin'))))
+        % (plan['user'], state.get('autologin')))
 
 
 def windows_first_again(plan, why):
