@@ -82,7 +82,34 @@ keyboard_variant=""
 # are the drivers for printers that do not speak a standard language,
 # and they are the difference between "it printed" and "it printed
 # nothing and said nothing".
-packages_hardware="linux-image-generic linux-firmware
+#
+# FIRMWARE, BY THE PIECE. `linux-firmware` in noble-updates is a
+# metapackage over eighteen pieces, and four of them are for machines
+# that are not in anybody's house: switch chips (mellanox-spectrum,
+# marvell-prestera) and server network cards (netronome, qlogic) --
+# about 170 MB of a download that is the floor of her ten minutes.
+# linux-firmware-minimal is the empty package that stands in for the
+# metapackage (it Provides linux-firmware, which linux-image-generic
+# depends on), so the pieces a home PC uses are named one by one.
+# build/forge removes the four if anything brought them back anyway,
+# and refuses to remove them if that would take the kernel with it.
+#
+# firmware-sof-signed is the sound on most Intel laptops since about
+# 2019 (Sound Open Firmware): without it the speakers and the built-in
+# microphone simply do not exist. It is only a Recommends of the
+# metapackage, and this build installs no Recommends -- so every image
+# before this one shipped with silent laptops. 12 MB.
+packages_hardware="linux-firmware-minimal linux-image-generic
+                   linux-firmware-amd-graphics linux-firmware-amd-misc
+                   linux-firmware-intel-graphics linux-firmware-intel-misc
+                   linux-firmware-intel-wireless
+                   linux-firmware-nvidia-graphics
+                   linux-firmware-qualcomm-graphics linux-firmware-qualcomm-misc
+                   linux-firmware-qualcomm-wireless
+                   linux-firmware-broadcom-wireless linux-firmware-marvell-wireless
+                   linux-firmware-mediatek linux-firmware-realtek
+                   linux-firmware-misc
+                   firmware-sof-signed
                    network-manager wireless-tools wpasupplicant
                    polkitd
                    bluez
@@ -107,7 +134,17 @@ packages_boot="shim-signed grub-efi-amd64-signed grub-efi-amd64 python3-cryptogr
 # it, so a machine installed today would have stayed exactly as it was
 # built. AurOS's own programs are built into the image, not packaged,
 # and are not covered: docs/issues/v3/07-images-and-build.md, 7.4.
-packages_base="systemd-sysv dbus udev sudo less nano
+#
+# apparmor: named so it is MANUALLY installed. It used to arrive only
+# as a dependency of snapd, which the build now keeps out -- and the
+# autoremove in stage 3 would then take it too. It is Ubuntu's normal
+# confinement (cupsd has a profile), and it is the configuration every
+# Ubuntu 24.04 machine running Flathub programs and Firefox has: its
+# sysctl restricts unprivileged user namespaces and its profiles for
+# /usr/bin/flatpak and firefox are the exceptions their sandboxes use.
+# Keeping it means this image is that tested configuration and not a
+# third one nobody runs. 3 MB.
+packages_base="systemd-sysv dbus udev sudo less nano apparmor
                    initramfs-tools
                ca-certificates curl wget
                e2fsprogs dosfstools ntfs-3g gdisk parted
