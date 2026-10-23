@@ -116,7 +116,7 @@ packages_hardware="linux-firmware-minimal linux-image-generic
                    network-manager wireless-tools wpasupplicant
                    polkitd
                    bluez
-                   cups cups-filters cups-browsed avahi-daemon avahi-utils
+                   cups cups-filters avahi-daemon avahi-utils
                    printer-driver-gutenprint printer-driver-hpcups
                    cups-pk-helper system-config-printer
                    pciutils usbutils"
@@ -157,6 +157,22 @@ packages_base="systemd-sysv dbus udev sudo less nano apparmor
                fonts-inter fonts-jetbrains-mono
                fonts-paratype
                unattended-upgrades"
+
+# ── Security and reliability (docs/security/HARDENING.md) ─────────
+#
+#   nftables     the firewall: nothing on the network can start a
+#                conversation with this computer (rootfs/etc/nftables.conf)
+#   zram-tools   compressed swap in RAM, so 4 GB behaves like ~6
+#   earlyoom     when memory runs out anyway, the biggest program is
+#                stopped while the machine still answers, never the desktop
+#
+# Under 1 MB together. cups-browsed is NOT in this image (build/harden
+# removes it whichever profile asks): it was the network listener of the
+# CVE-2024-47176 printing attack, and printing works without it.
+packages_security="nftables zram-tools earlyoom"
+zram_percent="50"
+zram_algorithm="zstd"
+earlyoom_min_free_percent="5"
 
 # The desktop. Kept deliberately small; aurshell provides the shell.
 # What an application needs before it can put a window on the screen.

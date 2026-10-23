@@ -1,0 +1,80 @@
+#!/bin/sh
+# ═══════════════════════════════════════════════════════════════════
+#  shell-guard — when the desktop keeps failing, start it plainly
+#
+#  aurshell.service restarts the desktop whenever it fails, for ever
+#  (StartLimitIntervalSec=0) and shows aursorry's apology in between.
+#  That is right for a one-off crash and useless for a crash LOOP: if
+#  what kills it is something she chose -- her own look, her own
+#  layout, written by Settings into ~/.config/auros -- it dies the
+#  same way every 45 seconds until somebody who knows Linux arrives.
+#
+#  So, from the unit's drop-in (aurshell.service.d/50-auros-safe-mode):
+#
+#    stopped   ExecStopPost, as root: a stop that was not a success is
+#              written down (time since boot, and how it ended).
+#    start     ExecStartPre, as root: 3 failures within 10 minutes
+#              move the desktop one step down, for the rest of this boot:
+#                1  the machine's own settings and the plain home
+#                   (--shell rail.shell --conf /etc/auros/shell.conf;
+#                   locked.shell on a kiosk) instead of her copies
+#                2  the shell's built-in look as well (no theme file)
+#              Restarting the computer tries her own settings again.
+#
+#  The step is handed to ExecStart as $AURSHELL_SAFE through
+#  /run/auros-guard/aurshell.env (EnvironmentFile=, read at each spawn).
+#  Nothing of hers is changed or deleted.
+#
+#  tools/hardentest.sh drives this script directly; tools/hardenboottest.sh
+#  crashes the real desktop three times and checks the fourth start.
+# ═══════════════════════════════════════════════════════════════════
+set -u
+D="${AUROS_GUARD_DIR:-/run/auros-guard}"
+POLICY="${AUROS_GUARD_POLICY:-/etc/auros/policy.conf}"
+LIMIT=3
+WINDOW=600
+
+mkdir -p "$D" && chmod 0755 "$D" || exit 0
+F="$D/failures"; E="$D/aurshell.env"; L="$D/level"
+now=$(cut -d. -f1 /proc/uptime 2>/dev/null || echo 0)
+now="${AUROS_GUARD_NOW:-$now}"
+level=$(cat "$L" 2>/dev/null || echo 0)
+case "$level" in 0|1|2) ;; *) level=0 ;; esac
+
+write_env() {
+    shell=/usr/share/auros/shells/rail.shell
+    if grep -Eq '^[[:space:]]*kiosk_mode[[:space:]]*=[[:space:]]*"?yes' "$POLICY" 2>/dev/null; then
+        shell=/usr/share/auros/shells/locked.shell
+    fi
+    case "$level" in
+        0) args="" ;;
+        1) args="--shell $shell --conf /etc/auros/shell.conf" ;;
+        2) args="--shell $shell --conf /usr/share/auros/safe-mode-has-no-theme" ;;
+    esac
+    printf 'AURSHELL_SAFE=%s\n' "$args" > "$E.tmp" && mv -f "$E.tmp" "$E"
+}
+
+case "${1:-}" in
+    stopped)
+        # A shutdown, `systemctl stop` or the band's Turn off is a
+        # success, and is not a crash.
+        [ "${SERVICE_RESULT:-success}" = success ] && exit 0
+        printf '%s %s %s %s\n' "$now" "${SERVICE_RESULT:-}" \
+            "${EXIT_CODE:-}" "${EXIT_STATUS:-}" >> "$F"
+        ;;
+    start)
+        n=$(awk -v now="$now" -v w="$WINDOW" '$1 + 0 >= now - w' "$F" 2>/dev/null | wc -l)
+        if [ "$n" -ge "$LIMIT" ] && [ "$level" -lt 2 ]; then
+            level=$((level + 1))
+            printf '%s\n' "$level" > "$L"
+            : > "$F"
+            echo "shell-guard: the desktop stopped $n times in $((WINDOW / 60)) minutes;" \
+                 "starting it in safe mode $level until the computer restarts" >&2
+        fi
+        write_env
+        ;;
+    *)
+        echo "usage: shell-guard start|stopped" >&2
+        exit 2 ;;
+esac
+exit 0

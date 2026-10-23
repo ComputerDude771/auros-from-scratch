@@ -46,6 +46,10 @@ warn_note() {
     printf '%s\n' "$*" >> "$RFS/etc/auros/build-warnings"
 }
 
+# The hardening stage and its seal-time check (stream S1).
+# shellcheck source=build/harden
+. "$ROOT/build/harden"
+
 # ── profile loading, with single-parent inheritance ────────────────
 load_profile() {
     local name=$1 chain="" cur=$1 depth=0 f
@@ -213,7 +217,7 @@ stage_packages() {
     # every image shipped LANG=en_US.UTF-8 naming a locale that did not
     # exist, which glibc quietly turns into C -- and the language chosen
     # in the installer had nothing to be generated with.
-    local pkgs="locales $packages_hardware $packages_boot $packages_base $packages_desktop $packages_files $packages_apps $packages_extra"
+    local pkgs="locales $packages_hardware $packages_boot $packages_base ${packages_security:-} $packages_desktop $packages_files $packages_apps $packages_extra"
     # The letters this image can draw in. Not decoration: a page in a
     # language with no font is a page of empty boxes, and this product
     # promises a school can ship it in its own language.
@@ -2041,6 +2045,7 @@ stage_squash() {
         || die "AurOS's update channel could not be set up (build/aptchannel, docs/security/UPDATES.md)"
     seal_rootfs
     squash_preconditions
+    harden_verify
     mkdir -p "$OUT"
     local sq="$OUT/$profile_id-$os_version.squashfs"
     rm -f "$sq"
@@ -2058,7 +2063,7 @@ stage_image() {
 run_stage() {
     case $1 in
         1) stage_bootstrap ;; 2) stage_packages ;; 3) stage_overlay ;;
-        4) stage_configure ;; 5) stage_theme ;; 6) stage_squash ;;
+        4) stage_configure; stage_harden ;; 5) stage_theme ;; 6) stage_squash ;;
         7) stage_image ;;
         *) die "no such stage: $1" ;;
     esac

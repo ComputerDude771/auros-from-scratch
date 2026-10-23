@@ -203,7 +203,7 @@ PREVIOUS = """
 # truncated file). Written by auros-bootchain; there is one only when
 # two kernels are installed.
 menuentry 'AurOS (previous kernel, {v})' --class auros --id auros-previous {{
-    linux  /boot/vmlinuz-{v} root=UUID={u} ro quiet splash console=tty0 console=ttyS0,115200n8
+    linux  /boot/vmlinuz-{v} root=UUID={u} ro quiet splash console=tty0 console=ttyS0,115200n8 init_on_alloc=1 slab_nomerge randomize_kstack_offset=on vsyscall=none debugfs=off panic=10 fsck.repair=yes
     initrd /boot/initrd.img-{v}
 }}
 """

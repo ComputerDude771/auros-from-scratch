@@ -1,0 +1,76 @@
+# shellcheck shell=bash
+# ═══════════════════════════════════════════════════════════════════
+#  build/harden — the hardening stage, sourced by build/forge
+#
+#  stage_harden  runs after stage 4 (configure): turns the firewall on,
+#                removes cups-browsed, stops avahi announcing the
+#                computer, enables the boot-time dpkg repair.
+#  harden_verify runs at the seal, before the squash: tools/hardentest.sh
+#                against the finished rootfs, and the build stops if any
+#                control is missing. The test that proves a control is
+#                the gate that ships it.
+#
+#  Everything else is plain files in rootfs/ (sysctl.d, modprobe.d,
+#  nftables.conf, journald.conf.d, the aurshell safe-mode drop-in,
+#  auros-dpkg-repair.service), laid down by stage 3 like the rest.
+#  docs/security/HARDENING.md has the why and the measured cost.
+# ═══════════════════════════════════════════════════════════════════
+
+# avahi-daemon.conf is a conffile with no .d directory, so its one line
+# is set in place: in [publish], disable-publishing=yes, whatever was
+# there before (commented or not).
+harden_avahi_conf() { # file
+    awk '
+        /^\[/ { if (inpub && !done) { print "disable-publishing=yes"; done = 1 }
+                inpub = ($0 == "[publish]") }
+        { if (inpub && $0 ~ /^[#[:space:]]*disable-publishing[[:space:]]*=/) next; print }
+        inpub && $0 == "[publish]" && !done { print "disable-publishing=yes"; done = 1 }
+        END { if (!done) { print ""; print "[publish]"; print "disable-publishing=yes" } }
+    ' "$1" > "$1.auros" && cat "$1.auros" > "$1" && rm -f "$1.auros"
+}
+
+stage_harden() {
+    step "hardening  firewall, printing, recovery"
+    chroot_prep
+
+    # ── the firewall ──────────────────────────────────────────────
+    [ -x "$RFS/usr/sbin/nft" ] || die "nftables is not installed, so this image would have no
+     firewall. It is in packages_security (profiles/desktop.profile)."
+    local err
+    err=$(inchroot "nft -c -f /etc/nftables.conf 2>&1") || die "/etc/nftables.conf does not load:
+     $err"
+    enable_unit nftables.service sysinit.target
+    note "firewall: nothing on the network can start a conversation"
+
+    # ── printing without cups-browsed ─────────────────────────────
+    # cups-browsed is the UDP 631 listener of the CVE-2024-47176 chain
+    # (a stranger's packet adds a printer whose driver runs a command).
+    # Printing does not need it: cups prints to USB and to network
+    # printers, and the print dialogs find Wi-Fi printers through avahi
+    # (CUPS temporary queues). Removed whichever profile brought it.
+    if pkg_installed cups-browsed; then
+        inchroot "apt-get purge -y cups-browsed >/dev/null 2>&1" || true
+        pkg_installed cups-browsed && die "could not remove cups-browsed"
+        note "printing: cups-browsed removed (CVE-2024-47176); cups and USB printing stay"
+    fi
+    if [ -f "$RFS/etc/avahi/avahi-daemon.conf" ]; then
+        harden_avahi_conf "$RFS/etc/avahi/avahi-daemon.conf"
+        note "avahi: looks for printers, announces nothing"
+    fi
+
+    # ── recovery ──────────────────────────────────────────────────
+    enable_unit auros-dpkg-repair.service multi-user.target
+    chmod 755 "$RFS/usr/lib/auros/shell-guard" "$RFS/usr/lib/auros/dpkg-repair"
+
+    chroot_done
+}
+
+harden_verify() {
+    local out
+    if ! out=$(RFS="$RFS" HARDEN_QUIET=1 sh "$ROOT/tools/hardentest.sh" 2>&1); then
+        printf '%s\n' "$out" >&2
+        die "this rootfs is missing hardening it must ship with (above).
+     Each line is a control in docs/security/HARDENING.md."
+    fi
+    note "hardening: $(printf '%s\n' "$out" | tail -1)"
+}
