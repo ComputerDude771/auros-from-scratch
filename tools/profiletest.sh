@@ -554,15 +554,19 @@ cat > "$M/usr/lib/auros-profiletest/probe.sh" <<'EOS'
 # of an image, and nothing else ever does. It reports, over the serial
 # port, what the running system is, once its desktop is up.
 S=/dev/ttyS0
-say() { printf 'PROFILETEST %s\n' "$*" > "$S"; }
+# A newline first: the kernel and systemd write to this console too, and
+# a report line must start a line of its own to be found.
+say() { printf '\nPROFILETEST %s\n' "$*" > "$S"; }
 say "probe started"
 i=0
 while [ ! -d /run/auros ] && [ "$i" -lt 600 ]; do sleep 1; i=$((i+1)); done
 [ -d /run/auros ] || { say "never-up after ${i}s: $(systemctl is-active aurshell.service)"; exit 0; }
 say "up $(cut -d. -f1 /proc/uptime)"
-# Give the start-up a moment to finish (first boot, the welcome, the
-# programs list) before asking what failed and what memory it took.
-sleep 45
+# Let the start-up FINISH (systemd-analyze answers only once it has),
+# then a little more for the desktop's own first minute, before asking
+# what failed and how much memory it took.
+i=0; until systemd-analyze time >/dev/null 2>&1 || [ "$i" -ge 180 ]; do sleep 1; i=$((i+1)); done
+sleep 30
 say "aurshell=$(systemctl is-active aurshell.service)"
 say "shell=$(readlink /etc/auros/shell/active.shell)"
 say "theme=$(cat /etc/auros/theme 2>/dev/null)"
@@ -574,7 +578,8 @@ say "failed=$(systemctl --failed --plain --no-legend 2>/dev/null | awk '{print $
 say "swap=$(swapon --show=NAME,TYPE,SIZE --noheadings 2>/dev/null | tr '\n' ';')"
 say "earlyoom=$(systemctl is-active earlyoom.service 2>/dev/null)"
 say "tty2=$(systemctl is-enabled getty@tty2.service 2>/dev/null)"
-say "boot=$(systemd-analyze time 2>/dev/null | head -1)"
+say "boot=$(systemd-analyze time 2>&1 | head -1)"
+say "jobs=$(systemctl list-jobs --no-legend 2>/dev/null | awk '{print $2}' | tr '\n' ' ')"
 say "mem=$(free -m | awk '/^Mem:/ {print "used " $3 " MiB of " $2}')"
 say "rootdf=$(df -BM --output=used,size / | tail -1)"
 say "kernel=$(uname -r)"
@@ -585,11 +590,14 @@ chmod 755 "$M/usr/lib/auros-profiletest/probe.sh"
 cat > "$M/etc/systemd/system/auros-profiletest.service" <<'EOU'
 [Unit]
 Description=NOT PART OF AUROS: tools/profiletest.sh's probe
-After=multi-user.target
+# Type=simple and no ordering: the start-up must not wait for the probe
+# (a oneshot wanted by multi-user.target holds the target, and the boot
+# never "finishes" while it runs, so systemd-analyze has no time to
+# give), and After=multi-user.target on a unit that target wants is an
+# ordering cycle systemd breaks by dropping a job.
 [Service]
-Type=oneshot
+Type=simple
 ExecStart=/usr/lib/auros-profiletest/probe.sh
-TimeoutStartSec=900
 [Install]
 WantedBy=multi-user.target
 EOU
