@@ -879,6 +879,106 @@ static int user_path(char *out, size_t n, const char *leaf)
     return 0;
 }
 
+/* Write `text` to `path` through a temporary file beside it, so a
+ * program starting at that moment reads the old file or the new one and
+ * never half of one. */
+static int put_file(const char *path, const char *text)
+{
+    char tmp[600];
+    snprintf(tmp, sizeof tmp, "%s.new", path);
+    FILE *f = fopen(tmp, "w");
+    if (!f) return -1;
+    int bad = fputs(text, f) < 0;
+    if (fclose(f) != 0) bad = 1;
+    if (bad || rename(tmp, path) != 0) { unlink(tmp); return -1; }
+    return 0;
+}
+
+/* THE PROGRAMS' HALF OF A LOOK.
+ *
+ * Choosing a look here changed the desktop and nothing else. Her
+ * programs take their colours from a gtk.css that imports
+ * /etc/auros/gtk/gtk.css -- the machine's, rendered from the machine's
+ * theme, which she cannot write -- and whether they are light or dark
+ * from gtk-application-prefer-dark-theme in her settings.ini, which the
+ * build wrote once. So after "Now using Sandstone." the next program she
+ * opened was still in the old colours, and dark on a light desktop.
+ *
+ * Now: aurora renders gtk.css into her own directory beside her
+ * shell.conf (see the AURORA_ONLY below), her two GTK imports point at
+ * that copy, and light or dark follows the theme's theme_variant.
+ * Programs she opens from now on follow it; ones already open keep the
+ * look they started with, which is GTK's rule and not ours.
+ *
+ * Her own gtk.css is only replaced if it is the one the build wrote --
+ * a single import of an AurOS file -- so a person who has written their
+ * own is not overwritten. */
+static void gtk_follow(const char *id, const char *css_dir)
+{
+    const char *home = getenv("HOME");
+    if (!home || !*home) return;
+    char tf[512], variant[32];
+    snprintf(tf, sizeof tf, "%s/%s.theme",
+             dir_of("AUROS_THEME_DIR", "/usr/share/auros/themes"), id);
+    int have_variant = field_of(tf, "theme_variant", variant, sizeof variant) == 0;
+    int dark = have_variant && strcmp(variant, "light") != 0;
+
+    static const char *vers[] = { "3.0", "4.0" };
+    for (int i = 0; i < 2; i++) {
+        char dir[512], css[600], ini[600], text[2048];
+        snprintf(dir, sizeof dir, "%s/.config/gtk-%s", home, vers[i]);
+        mkdir(dir, 0755);
+
+        snprintf(css, sizeof css, "%s/gtk.css", dir);
+        int ours = 1;
+        FILE *f = fopen(css, "r");
+        if (f) {
+            char line[512];
+            while (fgets(line, sizeof line, f)) {
+                if (line[0] == '/' || line[0] == ' ' || line[0] == '*' ||
+                    line[0] == '\n') continue;            /* the comment */
+                if (strncmp(line, "@import url(\"file://", 20) || !strstr(line, "auros/"))
+                    ours = 0;
+            }
+            fclose(f);
+        }
+        if (ours) {
+            snprintf(text, sizeof text,
+                     "/* Written by AurOS Settings when the look was chosen. It\n"
+                     "   makes the desktop's colours reach the programs on it. */\n"
+                     "@import url(\"file://%s/gtk/gtk.css\");\n", css_dir);
+            put_file(css, text);
+        }
+
+        if (!have_variant) continue;
+        /* settings.ini: the one line replaced, everything else kept. */
+        snprintf(ini, sizeof ini, "%s/settings.ini", dir);
+        size_t w = 0;
+        int seen = 0, group = 0;
+        text[0] = 0;
+        f = fopen(ini, "r");
+        if (f) {
+            char line[512];
+            while (fgets(line, sizeof line, f) && w + 600 < sizeof text) {
+                if (!strncmp(line, "[Settings]", 10)) group = 1;
+                if (!strncmp(line, "gtk-application-prefer-dark-theme=", 34)) {
+                    w += (size_t)snprintf(text + w, sizeof text - w,
+                                          "gtk-application-prefer-dark-theme=%d\n", dark);
+                    seen = 1;
+                    continue;
+                }
+                w += (size_t)snprintf(text + w, sizeof text - w, "%s", line);
+            }
+            fclose(f);
+        }
+        if (!group) w += (size_t)snprintf(text + w, sizeof text - w, "[Settings]\n");
+        if (!seen)
+            w += (size_t)snprintf(text + w, sizeof text - w,
+                                  "gtk-application-prefer-dark-theme=%d\n", dark);
+        put_file(ini, text);
+    }
+}
+
 static void choose(shell_ctx *c, int idx)
 {
     if (idx < 0 || idx >= S.n_ch) return;
@@ -1016,7 +1116,8 @@ static void choose(shell_ctx *c, int idx)
         if (dl && dir[dl-1] == '/') dir[dl-1] = 0;
         setenv("AURORA_STATE",  dir, 1);
         setenv("AURORA_OUTDIR", dir, 1);
-        setenv("AURORA_ONLY",   "shell.conf", 1);
+        /* And gtk.css, for the programs -- see gtk_follow(). */
+        setenv("AURORA_ONLY",   "shell.conf gtk.css", 1);
         setenv("AURORA_CACHE", cache, 1);
         const char *argv[] = { "aurora", "set", id, NULL };
         int rc = run_status(argv, 2500);
@@ -1026,6 +1127,7 @@ static void choose(shell_ctx *c, int idx)
             return;
         }
         S.cur_ch = idx;
+        gtk_follow(id, dir);
         if (rc == 0) {
             /* It has finished and the file is on disk, so the reload
              * can happen on this pass rather than on a timer. */
