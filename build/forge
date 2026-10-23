@@ -2034,6 +2034,11 @@ seal_rootfs() {
 
 stage_squash() {
     step "stage 6/7  compress"
+    # AurOS's own files become dpkg packages and the signed apt source is
+    # pinned, so a fix can reach a computer already installed. Last, so
+    # dpkg records the files as every earlier stage left them.
+    "$ROOT/build/aptchannel" image "$RFS" "$profile_id" "$os_version" \
+        || die "AurOS's update channel could not be set up (build/aptchannel, docs/security/UPDATES.md)"
     seal_rootfs
     squash_preconditions
     mkdir -p "$OUT"
