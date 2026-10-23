@@ -49,6 +49,7 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - name: toolchain
@@ -71,6 +72,7 @@ jobs:
   windows-source:
     needs: build
     runs-on: windows-latest
+    timeout-minutes: 25
     steps:
       - uses: actions/download-artifact@v4
         with: { name: exe, path: exe }
@@ -266,6 +268,7 @@ jobs:
 
   windows-published:
     runs-on: windows-latest
+    timeout-minutes: 20
     steps:
       - name: download what a person downloads
         shell: pwsh
@@ -296,6 +299,7 @@ jobs:
 
   windows-known-bad:
     runs-on: windows-latest
+    timeout-minutes: 15
     steps:
       - name: the build that failed on the first real PC fails here too
         shell: pwsh
