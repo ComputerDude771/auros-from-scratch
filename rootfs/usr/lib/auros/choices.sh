@@ -191,10 +191,38 @@ fi
 # By name, and only a name this system ships: /etc/auros/theme is read
 # by the next step of first boot (aurora set), and active.shell is the
 # one symlink build/forge makes to decide how the whole desktop behaves.
+# AND THE PROGRAMS' OWN LOOK FOLLOWS IT. build/forge writes
+# gtk-application-prefer-dark-theme into every account's GTK settings
+# from the theme the IMAGE was built in -- Nocturne, which is dark --
+# and every card in the installer picks Sandstone, which is light. So
+# the desktop came up light and Firefox, the store and her files came
+# up dark: two looks on one screen, the program she opens most in the
+# one she did not choose. The colours themselves follow already (aurora
+# renders /etc/auros/gtk/gtk.css, which those settings files import);
+# this is the light-or-dark switch that sits beside them.
+gtk_follow() { # theme
+    _variant=$(sed -n 's/^theme_variant="\{0,1\}\([a-z]*\)"\{0,1\}.*/\1/p' \
+               "$ROOT/usr/share/auros/themes/$1.theme" 2>/dev/null | head -n 1)
+    case "$_variant" in
+        light) _dark=0 ;;
+        dark)  _dark=1 ;;
+        *)     return 0 ;;           # the theme does not say; leave it
+    esac
+    for _ini in "$ROOT"/etc/skel/.config/gtk-[34].0/settings.ini \
+                "$ROOT"/home/*/.config/gtk-[34].0/settings.ini; do
+        # A regular file, never a link: this runs as root. sed -i keeps
+        # the file's owner, so it stays hers.
+        [ -f "$_ini" ] && [ ! -L "$_ini" ] || continue
+        sed -i "s/^gtk-application-prefer-dark-theme=.*/gtk-application-prefer-dark-theme=$_dark/" \
+            "$_ini" 2>/dev/null || say "could not set light/dark in $_ini"
+    done
+}
+
 v=$(get theme)
 if [ -n "$v" ]; then
     if matches "$v" '[a-z0-9-]{1,32}' && [ -f "$ROOT/usr/share/auros/themes/$v.theme" ]; then
         printf '%s\n' "$v" > "$ROOT/etc/auros/theme"
+        gtk_follow "$v"
         record theme "$v"
         say "theme: $v"
     else

@@ -50,8 +50,20 @@ mkroot() {
              "$R/usr/share/i18n" "$R/usr/share/zoneinfo/Europe" \
              "$R/usr/share/zoneinfo/America"
     cp src/ferry/data/klid.tab src/ferry/data/windowsZones.tab "$R/usr/share/ferry/"
+    # The real themes' light-or-dark line, so the GTK switch below has
+    # something true to follow.
     for t in nocturne moss sandstone synthwave ember slate; do
-        : > "$R/usr/share/auros/themes/$t.theme"; done
+        grep '^theme_variant=' "themes/$t.theme" > "$R/usr/share/auros/themes/$t.theme" \
+            2>/dev/null || : > "$R/usr/share/auros/themes/$t.theme"; done
+    # What build/forge's stage 5 leaves in her account and in /etc/skel:
+    # the image's own theme (Nocturne) is dark.
+    for h in "$R/etc/skel" "$R/home/auros"; do
+        for v in 3.0 4.0; do
+            mkdir -p "$h/.config/gtk-$v"
+            printf '[Settings]\ngtk-application-prefer-dark-theme=1\ngtk-cursor-theme-size=24\n' \
+                > "$h/.config/gtk-$v/settings.ini"
+        done
+    done
     for s in rail taskbar tiles dock locked workbench; do
         : > "$R/usr/share/auros/shells/$s.shell"; done
     for z in Europe/Madrid Europe/Paris Europe/London America/Los_Angeles \
@@ -98,6 +110,49 @@ check "the desktop is the taskbar one" \
 C="$R/etc/auros/installer-choices.conf"
 check "all five are recorded for Ferry" \
     test "$(grep -c '=' "$C")" -eq 5
+
+echo
+echo "  every card the installer offers (read out of src/aurbridge/wizard.c)"
+# { "taskbar", "sandstone", L"Like Windows", ... } -- the shell, the
+# theme and the words on the card, from the table the wizard draws.
+CARDS=$(sed -n 's/^ *{ *"\([a-z]*\)", *"\([a-z]*\)", *L"\([^"]*\)".*/\1 \2 \3/p' \
+        src/aurbridge/wizard.c)
+n_cards=$(printf '%s\n' "$CARDS" | grep -c .)
+check "the wizard offers at least four looks ($n_cards)" test "$n_cards" -ge 4
+# A here-document, not a pipe: a pipe runs the loop in a subshell and
+# every failure inside it would be counted there and lost.
+while read -r sh th words; do
+    [ -n "$sh" ] || continue
+    R=$TMP/card-$sh; mkroot "$R"
+    printf 'theme=%s\nshell=%s\n' "$th" "$sh" > "$TMP/card.conf"
+    run "$R" "$TMP/card.conf"
+    check "\"$words\": the desktop is $sh" \
+        test "$(readlink "$R/etc/auros/shell/active.shell")" = "/usr/share/auros/shells/$sh.shell"
+    check "\"$words\": the look is $th" grep -qx "$th" "$R/etc/auros/theme"
+    variant=$(sed -n 's/^theme_variant="\(.*\)"/\1/p' "themes/$th.theme")
+    want=1; [ "$variant" = light ] && want=0
+    check "\"$words\": her programs are $variant too (prefer-dark=$want)" \
+        grep -qx "gtk-application-prefer-dark-theme=$want" "$R/home/auros/.config/gtk-3.0/settings.ini"
+    check "\"$words\": ...in GTK 4 and for accounts made later" \
+        sh -c "grep -qx 'gtk-application-prefer-dark-theme=$want' '$R/home/auros/.config/gtk-4.0/settings.ini' &&
+               grep -qx 'gtk-application-prefer-dark-theme=$want' '$R/etc/skel/.config/gtk-3.0/settings.ini'"
+
+    # THE SESSION ITSELF, when there is a desktop to start: render the
+    # theme she chose the way first boot does (aurora), and start the
+    # shell on the files choices.sh wrote. It must say it is running the
+    # archetype on the card. AURSHELL names a built aurshell.
+    if [ -n "${AURSHELL:-}" ] && [ -x "${AURSHELL:-}" ]; then
+        AURORA_THEMES=themes AURORA_TEMPLATES=themes/templates AURORA_ONLY=shell.conf \
+            AURORA_OUTDIR="$R/etc/auros" AURORA_STATE="$R/state" AURORA_CACHE="$R/cache" \
+            sh src/aurora/aurora set "$(cat "$R/etc/auros/theme")" > /dev/null 2>&1
+        active="shells/$(basename "$(readlink "$R/etc/auros/shell/active.shell")")"
+        "$AURSHELL" --conf "$R/etc/auros/shell.conf" --shell "$active" --policy /nonexistent \
+            --png "$TMP/card.png" --size 1024 600 > "$TMP/shell.txt" 2>&1
+        check "\"$words\": the desktop starts as $sh" grep -q "archetype '$sh'" "$TMP/shell.txt"
+    fi
+done <<EOC
+$CARDS
+EOC
 
 echo
 echo "  Windows' own identifiers, mapped with Ferry's tables"
