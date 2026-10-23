@@ -43,6 +43,9 @@ defaults:
 
 jobs:
   which:
+    # Decided without a runner where it can be: every push to the
+    # branch starts this workflow, and runners are shared by them all.
+    if: inputs.run-id != '' || contains(github.event.head_commit.message, '[test]')
     runs-on: ubuntu-24.04
     outputs:
       go: ${{ steps.w.outputs.go }}
