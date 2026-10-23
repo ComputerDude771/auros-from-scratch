@@ -22,7 +22,10 @@ screenshot is kept with a magenta cross where the press lands
 driven by sight: its primary button is the only large solid block of the
 accent colour (#7DD3C0), and a page with no enabled button is either
 waiting (checking, downloading), has empty check boxes (found by shape),
-or names a word to type ("Type AGREE ...", read by OCR). Microsoft's own
+or names a word to type ("Type AGREE ...", read by OCR); a page with
+nothing to click that sits still for a minute gets Enter (the wizard's
+Enter is its primary action). A restart the installer makes by itself
+(a countdown after "Restart now") is noticed by QEMU's reset event. Microsoft's own
 dialogs and Edge are located by a small helper inside Windows
 (`guest/helper.ps1`) that reads UI Automation and reports names and
 rectangles; it never presses anything. UAC is on the secure desktop,
@@ -51,8 +54,14 @@ SmartScreen), `guest-diagnostics.log`, and `FAILED.txt` when it failed;
 
 All in `env:` at the top of `.github/workflows/e2e.yml`:
 
-- `INSTALLER_URL` / `INSTALLER_SHA256`: a published installer. The
-  website's download links are rewritten to it.
+- `INSTALLER_URL` / `INSTALLER_SHA256`: the installer to test, for
+  example a prerelease asset
+  (`https://github.com/ComputerDude771/auros-from-scratch/releases/download/TAG/AurOS-Setup.exe`).
+  The website's links to any `AurOS*.exe` are rewritten to it, the file
+  keeps the name the URL ends in, and the downloaded file must hash to
+  `INSTALLER_SHA256` (empty: accept and print). The installer carries its
+  own image URL, so nothing else changes. Editing these two lines in the
+  workflow is itself what starts a run.
 - `INSTALLER_PATH`: a file on the runner instead, for example an artifact
   a `build` job uploaded (add `needs: build` and an
   `actions/download-artifact` step before the flow step). It is served

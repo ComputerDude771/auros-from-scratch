@@ -43,7 +43,10 @@ INSTALLER_SHA256 = E("INSTALLER_SHA256", "")
 # A file on the runner instead (an artifact from an earlier job): served
 # from this host and the website's download links are pointed at it.
 INSTALLER_PATH = E("INSTALLER_PATH", "")
-INSTALLER_NAME = "AurOS-Installer-test.exe"
+# The file's name is whatever the link ends in (AurOS-Installer-test.exe,
+# AurOS-Setup.exe...); Edge saves it under that name.
+INSTALLER_NAME = os.path.basename(INSTALLER_PATH or INSTALLER_URL.split("?")[0])
+INSTALLER_STEM = re.sub(r"\.exe$", "", INSTALLER_NAME, flags=re.I)
 # The website a person starts from. Served from the runner; "none" gives
 # a one-link page instead.
 WEBSITE_DIR = E("WEBSITE_DIR") or os.path.join(REPO, "website")
@@ -174,8 +177,9 @@ class Flow:
         if INSTALLER_PATH:
             shutil.copyfile(INSTALLER_PATH, os.path.join(www, INSTALLER_NAME))
             target = f"{HUB}/{INSTALLER_NAME}"
-        # Whatever the pages link to as the installer, link to this one.
-        pat = re.compile(r'href="[^"]*' + re.escape(INSTALLER_NAME) + '"')
+        # Whatever the pages link to as the installer (any AurOS .exe),
+        # link to this one.
+        pat = re.compile(r'href="[^"]*/AurOS[^"/]*\.exe"')
         n = 0
         for dp, _, fs in os.walk(www):
             for fn in fs:
@@ -324,7 +328,6 @@ class Flow:
         """Edge's download warnings, answered the way a person who wants
         the file does; returns once the file is downloaded."""
         with self.rec.phase("edge: download, and keep it"):
-            dl = os.path.join("$env:USERPROFILE", "Downloads", INSTALLER_NAME)
             deadline = time.time() + 15 * 60
             pressed = []
             while time.time() < deadline:
@@ -340,12 +343,14 @@ class Flow:
                         time.sleep(3)
                         break
                 else:
-                    done = self.guest(f"$f='{dl}'; if (Test-Path $f) {{ (Get-FileHash $f).Hash }} "
-                                      f"else {{ 'missing' }}; "
-                                      f"Get-ChildItem \"$env:USERPROFILE\\Downloads\" | Format-Table Name,Length")
+                    # the newest finished .exe in Downloads (Edge may add " (1)")
+                    done = self.guest("$f = Get-ChildItem \"$env:USERPROFILE\\Downloads\" -Filter *.exe | "
+                                      "Sort-Object LastWriteTime -Descending | Select-Object -First 1; "
+                                      "if ($f) { (Get-FileHash $f.FullName).Hash; $f.Name } else { 'missing' }; "
+                                      "Get-ChildItem \"$env:USERPROFILE\\Downloads\" | Format-Table Name,Length")
                     h = done.split()[0].lower() if done.strip() else ""
                     if re.fullmatch(r"[0-9a-f]{64}", h):
-                        self.log(f"downloaded {INSTALLER_NAME}: SHA-256 {h}")
+                        self.log(f"downloaded {done.split()[1] if len(done.split()) > 1 else '?'}: SHA-256 {h}")
                         if INSTALLER_SHA256 and h != INSTALLER_SHA256.lower():
                             raise Failure(f"the downloaded installer is {h}, expected {INSTALLER_SHA256}")
                         self.m.shot("downloaded")
@@ -374,7 +379,7 @@ class Flow:
     def open_installer(self):
         with self.rec.phase("windows: open the installer (SmartScreen, UAC)"):
             els = self.elements("msedge", ["Button", "Hyperlink", "ListItem", "MenuItem"])
-            op = self.pick(els, r"^Open file$") or self.pick(els, INSTALLER_NAME.replace(".", r"\."))
+            op = self.pick(els, r"^Open file$") or self.pick(els, re.escape(INSTALLER_STEM))
             if op:
                 self.click_el(op, "edge open file")
             else:
@@ -382,7 +387,7 @@ class Flow:
                 self.m.key("ctrl", "j", label="Edge downloads")
                 time.sleep(4)
                 els = self.elements("msedge", ["Button", "Hyperlink", "ListItem"])
-                op = self.pick(els, r"^Open file$") or self.pick(els, INSTALLER_NAME.replace(".", r"\."))
+                op = self.pick(els, r"^Open file$") or self.pick(els, re.escape(INSTALLER_STEM))
                 if not op:
                     raise Failure("Edge offers no way to open the download")
                 self.click_el(op, "edge open file")
@@ -391,7 +396,7 @@ class Flow:
             while time.time() < deadline:
                 time.sleep(4)
                 ws = self.windows()
-                if any((w.get("name") or "") == "Install AurOS" for w in ws):
+                if self.wizard_rect(ws):
                     self.log("the installer's window is open")
                     return
                 ss = [w for w in ws if re.search(r"smartscreen", (w.get("proc") or "") + (w.get("name") or ""), re.I)
@@ -429,9 +434,16 @@ class Flow:
             raise Failure("the installer's window never opened")
 
     # -- 4. the wizard --
-    def wizard_rect(self):
-        for w in self.windows():
-            if (w.get("name") or "") == "Install AurOS" and w.get("rect"):
+    def wizard_rect(self, ws=None):
+        """The installer's window: its process is the downloaded file, or
+        its title names AurOS outside Edge and Explorer."""
+        for w in (self.windows() if ws is None else ws):
+            proc, name = w.get("proc") or "", w.get("name") or ""
+            if not w.get("rect") or w["rect"][2] < 200:
+                continue
+            if proc.lower().startswith(INSTALLER_STEM.lower()[:10]) or (
+                    re.search(r"AurOS", name) and proc.lower() not in
+                    ("msedge", "explorer", "searchhost", "shellexperiencehost")):
                 return w["rect"]
         return None
 
@@ -444,6 +456,9 @@ class Flow:
         type_tries = 0
         idle_since = time.time()
         last_label = None
+        installing = False          # pressed the button that starts the install
+        seen_events = len(self.m.qmp.events)
+        last_text, text_since = "", time.time()
         rect = self.wizard_rect()
         stage = [self.rec.phase("wizard: first page")]
         stage[0].__enter__()
@@ -457,6 +472,18 @@ class Flow:
             while left() > 0:
                 if not self.m.alive():
                     raise Failure("the machine switched off during the wizard")
+                resets = [e for e in self.m.qmp.events[seen_events:] if e[1] == "RESET"]
+                seen_events = len(self.m.qmp.events)
+                if resets and installing:
+                    # It restarted by itself (the countdown after "Restart
+                    # now"), which is what a person who walked away sees.
+                    self.log("the machine restarted by itself after the install was prepared")
+                    self.restart_clicked = resets[0][0]
+                    stage[0].__exit__(None, None, None)
+                    return
+                if resets:
+                    self.log("Windows restarted during the wizard (a fix that needs one?)")
+                    rect = None
                 if rect is None:
                     # Gone: closed, crashed, or Windows is restarting for
                     # a fix and the installer will reopen after sign-in.
@@ -486,6 +513,8 @@ class Flow:
                         raise Failure(f"pressed '{label}' six times and the page did not move on: " +
                                       vision.text_of(vision.ocr(img, rect))[:900])
                     self.m.click(*vision.centre(b), label="wizard " + label)
+                    if re.search(r"install|erase", label, re.I):
+                        installing = True
                     if re.search(r"restart", label, re.I):
                         self.restart_clicked = time.time()
                         stage[0].__exit__(None, None, None)
@@ -525,10 +554,24 @@ class Flow:
                     self.m.shot("wizard-typed")
                     idle_since = time.time()
                     continue
-                busy = re.search(r"Setting up AurOS|Checking this PC|We only read", text)
-                if not busy and time.time() - idle_since > 90:
-                    # nothing to press, tick or type on screen: perhaps below the fold
-                    self.m.key("end", label="scroll down: nothing to do on screen")
+                # Busy: words the old wizard shows while it works, or any
+                # number on the page moving (percent, MB, a countdown).
+                if text != last_text:
+                    if re.sub(r"\d", "", text) == re.sub(r"\d", "", last_text):
+                        text_since = time.time()     # only numbers moved
+                    last_text = text
+                busy = (re.search(r"Setting up AurOS|Checking this PC|We only read", text)
+                        or time.time() - text_since < 45)
+                if not busy and time.time() - idle_since > 60:
+                    # Nothing to press, tick or type that can be seen: the
+                    # page may be below the fold, or want Enter (the wizard's
+                    # Enter is its primary action).
+                    nudge = clicks.get("#nudge", 0)
+                    clicks["#nudge"] = nudge + 1
+                    if nudge % 2 == 0:
+                        self.m.key("ret", label="nothing to click: Enter")
+                    else:
+                        self.m.key("end", label="nothing to click: scroll to the end")
                     idle_since = time.time()
                 if time.time() - idle_since > 300 and int(time.time() - idle_since) % 300 < 15:
                     self.log("wizard waiting: " + text[-300:])
