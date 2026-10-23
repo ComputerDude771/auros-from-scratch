@@ -138,6 +138,7 @@ check there, not here.
 3. Point `e2e.yml` env `INSTALLER_URL=https://github.com/ComputerDude771/auros-from-scratch/releases/download/<tag>/AurOS-Setup.exe` and `INSTALLER_SHA256=<that file's sha>`, push → the e2e run must pass (website → install → AurOS → program).
 4. Push `[publish RUN-ID] [latest]` → the `promote` job checks a passing e2e run whose e2e.yml pins THIS exe's SHA-256, then `gh release edit --prerelease=false --latest`, then re-downloads `releases/latest/download/AurOS-Setup.exe` and compares. Only then does the website button work.
 5. Update `windows.yml` `PUBLISHED_*`/`IMAGE_*` to the promoted release in a follow-up commit.
+6. The website deploys from release.yml's `pages` job after `promote` (asked of the release agent 04:05; check it exists). `pages.yml` alone won't re-run after a release: GITHUB_TOKEN-made releases trigger no workflows, and dispatch only works on the default branch. pages.yml skips its deploy while the download 404s (`dd99d82`). Site check: 96/96.
 
 ### First 30 minutes for a fresh session
 
