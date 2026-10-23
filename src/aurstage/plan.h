@@ -93,6 +93,24 @@ int plan_compute(const gpt_table *t, int win_idx,
                  uint64_t min_root_bytes,
                  stage_layout *out, char *why, size_t n);
 
+/* THE FAST PATH'S PLAN (docs/AURBRIDGE.md, "Fast path"): Windows has
+ * already shrunk C: itself, with its own online shrink, so its entry is
+ * already the size it will stay. The gap is whatever is unallocated
+ * between the end of that entry and the next partition in the table,
+ * and the three partitions are carved out of it exactly as above.
+ * win_last_new == win_last_old, and commit_build() then leaves the
+ * Windows entry untouched.
+ *
+ * Called on BOTH sides of the restart with the same inputs: by
+ * AurBridge (src/aurbridge/phases.c) against the live table once the
+ * shrink has finished, to decide where to write; and by the staging
+ * environment against the table it finds, which must give the same
+ * answer the journal recorded or the install refuses. */
+int plan_compute_prepared(const gpt_table *t, int win_idx,
+                          uint64_t root_src_bytes, uint64_t rec_bytes,
+                          uint64_t rsc_bytes, uint64_t min_root_bytes,
+                          stage_layout *out, char *why, size_t n);
+
 /* Every bound, checked against the TABLE.
  *
  * Called at the end of plan_compute, and again in install.c
@@ -107,7 +125,12 @@ int plan_check(const gpt_table *t, const stage_layout *L,
                char *why, size_t n);
 
 /* Human-readable, for the log and for a support engineer reading a
- * thousand of them. */
+ * thousand of them. In plansay.c (the staging environment only). */
 void plan_say(const stage_layout *L);
+
+/* How small to make Windows; documented in shrink.h, defined in plan.c
+ * so the Windows half can link it without the staging environment. */
+uint64_t shrink_pick_target(uint64_t current, uint64_t smallest,
+                            uint64_t install_need);
 
 #endif

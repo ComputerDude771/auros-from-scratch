@@ -119,21 +119,42 @@ int  plat_gap_write(int disk_index, uint64_t off, const void *buf, size_t n,
                     char *why, size_t wn);
 int  plat_gap_flush(int disk_index, char *why, size_t wn);
 
+/* TEST ONLY (`aurbridge gapselftest`): does WINDOWS refuse a raw write
+ * at `off`, which the caller places inside a mounted volume? The first
+ * fence is bypassed on purpose, and the bytes written are the bytes
+ * that are already there, so the probe changes nothing even when the
+ * answer is "no". 1 = Windows refused (the second fence stands), 0 =
+ * Windows accepted it, -1 = the probe could not run. The simulation has
+ * no second fence and says so (-1). */
+int  plat_gap_os_fence_probe(int disk_index, uint64_t off, char *why, size_t wn);
+
+/* What Windows says partition `part_number` (1-based) on this disk is
+ * now, and the smallest and largest it could be resized to in place
+ * (Get-PartitionSupportedSize). Read-only, but slow: Windows analyses
+ * the volume to answer. Any of the three pointers may be NULL. */
+int  plat_shrink_limits(int disk_index, int part_number, uint64_t *now,
+                        uint64_t *smallest, uint64_t *largest,
+                        char *why, size_t wn);
+
 /* Shrink the system volume with WINDOWS' OWN online shrink (works with
  * BitLocker on; no decryption). `part_number` is the 1-based GPT entry
- * of C:. On return *achieved_bytes is the partition's new size read
- * back from the LIVE table -- never assumed to be what was asked for,
- * because unmovable files can stop the shrink short. 0, or -1 with a
+ * of C:. Never below what Windows allows, rounded up to a megabyte. On
+ * return *achieved_bytes is the partition's new size read back from the
+ * LIVE table -- never assumed to be what was asked for, because
+ * unmovable files can stop the shrink short (and it is filled in even
+ * when the shrink stopped part-way and this returns -1). 0, or -1 with a
  * sentence. The simulation emulates it with ntfsresize + a GPT entry
  * rewrite, exactly what Windows leaves behind. */
 int  plat_shrink_system(int disk_index, int part_number,
                         uint64_t target_bytes, uint64_t *achieved_bytes,
                         char *why, size_t wn);
-/* Grow the system volume back to fill to `end_byte` (the undo of a
- * shrink, before the restart). On Windows, Resize-Partition to the
- * supported maximum. 0, or -1 with a sentence. */
-int  plat_grow_system(int disk_index, int part_number,
-                      char *why, size_t wn);
+/* Grow it back (the undo of a shrink): to `to_bytes`, or to the largest
+ * Windows allows if that is less, or to the largest if `to_bytes` is 0.
+ * Never past the size it was, so space that was unallocated before the
+ * install stays unallocated. *achieved_bytes (may be NULL) is read back.
+ * 0, or -1 with a sentence. */
+int  plat_grow_system(int disk_index, int part_number, uint64_t to_bytes,
+                      uint64_t *achieved_bytes, char *why, size_t wn);
 
 /* ── ordinary files ──────────────────────────────────────────────── */
 

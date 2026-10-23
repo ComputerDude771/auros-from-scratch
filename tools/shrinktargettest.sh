@@ -42,7 +42,8 @@ int main(int argc, char **argv)
 }
 EOC
 cc -O2 -std=gnu11 -Wall -Wextra -I src/aurstage -o "$TMP/t" "$TMP/t.c" \
-   src/aurstage/shrink.c src/aurstage/ntfs.c src/aurstage/sha256.c src/aurstage/fde.c \
+   src/aurstage/shrink.c src/aurstage/plan.c src/aurstage/gpt.c \
+   src/aurstage/ntfs.c src/aurstage/sha256.c src/aurstage/fde.c \
    2>"$TMP/cc.log" || { echo "  harness did not build:"; sed -n 1,20p "$TMP/cc.log"; exit 2; }
 
 GIB=$((1024*1024*1024))

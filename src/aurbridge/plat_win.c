@@ -588,92 +588,214 @@ int plat_gap_flush(int index, char *why, size_t wn)
     return 0;
 }
 
+/* TEST ONLY: is Windows' own fence there? See plat.h. The sector at
+ * `off` is read and THE SAME BYTES are written back through a raw disk
+ * handle, bypassing the first fence entirely -- so if Windows lets the
+ * write through, nothing on the disk has changed. */
+int plat_gap_os_fence_probe(int index, uint64_t off, char *why, size_t wn)
+{
+    HANDLE h = open_disk_flags(index, 1,
+                               FILE_FLAG_NO_BUFFERING | FILE_FLAG_WRITE_THROUGH);
+    if (h == INVALID_HANDLE_VALUE) {
+        why_of(why, wn, "the disk could not be opened for the probe", GetLastError());
+        return -1;
+    }
+    uint32_t ss = disk_sector(h);
+    if (!ss) { CloseHandle(h); snprintf(why, wn, "no sector size"); return -1; }
+    uint64_t at = off - (off % ss);
+    unsigned char *b = VirtualAlloc(NULL, ss, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    if (!b) { CloseHandle(h); snprintf(why, wn, "out of memory"); return -1; }
+    int rc = -1;
+    LARGE_INTEGER li; li.QuadPart = (LONGLONG)at;
+    DWORD got = 0;
+    if (!SetFilePointerEx(h, li, NULL, FILE_BEGIN) ||
+        !ReadFile(h, b, ss, &got, NULL) || got != ss) {
+        why_of(why, wn, "the probe could not read the sector", GetLastError());
+        goto out;
+    }
+    if (!SetFilePointerEx(h, li, NULL, FILE_BEGIN)) {
+        why_of(why, wn, "the probe could not seek", GetLastError());
+        goto out;
+    }
+    DWORD put = 0;
+    if (WriteFile(h, b, ss, &put, NULL) && put == ss) {
+        snprintf(why, wn, "Windows accepted a raw write at byte %llu",
+                 (unsigned long long)at);
+        rc = 0;
+    } else {
+        DWORD e = GetLastError();
+        why_of(why, wn, "Windows refused a raw write there", e);
+        rc = 1;
+    }
+out:
+    VirtualFree(b, 0, MEM_RELEASE);
+    CloseHandle(h);
+    return rc;
+}
+
+/* ── PowerShell, for the storage and BitLocker cmdlets ───────────────
+ *
+ * Every number comes back on a line of its own behind a marker the
+ * script prints ("AURMIN=123"), and only that is read: PowerShell's
+ * warnings and progress text contain digits too, and "the last number
+ * in the output" (what this used to read) is whatever a warning said. */
+static int ps_run(const char *script, char *tail, size_t tn)
+{
+    char sys[MAX_PATH], cmd[4096];
+    if (!GetSystemDirectoryA(sys, sizeof sys))
+        snprintf(sys, sizeof sys, "C:\\Windows\\System32");
+    if ((size_t)snprintf(cmd, sizeof cmd,
+             "\"%s\\WindowsPowerShell\\v1.0\\powershell.exe\" -NoProfile "
+             "-NonInteractive -ExecutionPolicy Bypass -Command "
+             "\"$ProgressPreference='SilentlyContinue'; "
+             "$ErrorActionPreference='Stop'; %s\"", sys, script) >= sizeof cmd) {
+        if (tail && tn) snprintf(tail, tn, "the command was too long");
+        return -1;
+    }
+    return plat_run(cmd, tail, tn);
+}
+
+/* The value after `key` ("AURMIN=") in a tail, or -1 when it is not
+ * there or is not a number. */
+static int tail_value(const char *tail, const char *key, uint64_t *out)
+{
+    const char *p = strstr(tail, key);
+    if (!p) return -1;
+    p += strlen(key);
+    if (*p < '0' || *p > '9') return -1;
+    uint64_t v = 0;
+    while (*p >= '0' && *p <= '9') {
+        if (v > (UINT64_MAX - 9) / 10) return -1;
+        v = v * 10 + (uint64_t)(*p++ - '0');
+    }
+    *out = v;
+    return 0;
+}
+
 /* ── Windows' own online shrink ──────────────────────────────────────
  *
- * Resize-Partition / Get-PartitionSupportedSize via a hidden
- * PowerShell. It works with BitLocker on and decrypts nothing. The
- * achieved size is read back from Get-Partition -- the LIVE layout --
- * because unmovable files can stop the shrink short, and the planner
- * must re-plan from what actually happened, never from what was asked.
- */
-static uint64_t ps_number(const char *expr)
+ * Get-PartitionSupportedSize / Resize-Partition / Get-Partition, the
+ * cmdlets behind Disk Management's "Shrink Volume". They work with
+ * BitLocker on and decrypt nothing. Every size this reports is read
+ * back from the LIVE layout after the fact, because unmovable files can
+ * stop a shrink short and the plan must be made from what happened. */
+int plat_shrink_limits(int index, int part, uint64_t *now, uint64_t *smin,
+                       uint64_t *smax, char *why, size_t wn)
 {
-    char sys[MAX_PATH], cmd[MAX_PATH + 512], tail[1024];
-    if (!GetSystemDirectoryA(sys, sizeof sys)) snprintf(sys, sizeof sys, "C:\\Windows\\System32");
-    snprintf(cmd, sizeof cmd,
-             "\"%s\\WindowsPowerShell\\v1.0\\powershell.exe\" -NoProfile "
-             "-NonInteractive -Command \"%s\"", sys, expr);
-    if (plat_run(cmd, tail, sizeof tail) != 0) return 0;
-    /* The last run of digits in the output. */
-    uint64_t v = 0; int seen = 0;
-    for (char *p = tail; *p; p++) {
-        if (*p >= '0' && *p <= '9') {
-            if (!seen) { v = 0; seen = 1; }
-            v = v * 10 + (uint64_t)(*p - '0');
-        } else if (seen && (*p == ' ' || *p == '\r' || *p == '\n' || *p == '\t')) {
-            seen = 2;    /* a complete number; keep it unless another follows */
-        } else if (seen == 2) {
-            seen = 0;    /* reset only when a non-space breaks after a number */
-        }
+    char script[512], tail[1024];
+    snprintf(script, sizeof script,
+             "$p=Get-Partition -DiskNumber %d -PartitionNumber %d; "
+             "$s=Get-PartitionSupportedSize -DiskNumber %d -PartitionNumber %d; "
+             "'AURNOW='+$p.Size; 'AURMIN='+$s.SizeMin; 'AURMAX='+$s.SizeMax",
+             index, part, index, part);
+    uint64_t a = 0, b = 0, c = 0;
+    if (ps_run(script, tail, sizeof tail) != 0 ||
+        tail_value(tail, "AURNOW=", &a) != 0 ||
+        tail_value(tail, "AURMIN=", &b) != 0 ||
+        tail_value(tail, "AURMAX=", &c) != 0 || !a || !b || b > c) {
+        snprintf(why, wn, "Windows would not say how small or large drive C: "
+                          "can be made (%s).", tail[0] ? tail : "no answer");
+        return -1;
     }
-    return v;
+    if (now) *now = a;
+    if (smin) *smin = b;
+    if (smax) *smax = c;
+    return 0;
+}
+
+static int part_size(int index, int part, uint64_t *out, char *tail, size_t tn)
+{
+    char script[256];
+    snprintf(script, sizeof script,
+             "'AURSIZE='+(Get-Partition -DiskNumber %d -PartitionNumber %d).Size",
+             index, part);
+    if (ps_run(script, tail, tn) != 0) return -1;
+    return tail_value(tail, "AURSIZE=", out);
+}
+
+static int resize_to(int index, int part, uint64_t bytes, char *tail, size_t tn)
+{
+    char script[256];
+    snprintf(script, sizeof script,
+             "Resize-Partition -DiskNumber %d -PartitionNumber %d -Size %llu",
+             index, part, (unsigned long long)bytes);
+    return ps_run(script, tail, tn);
 }
 
 int plat_shrink_system(int index, int part_number, uint64_t target,
                        uint64_t *achieved, char *why, size_t wn)
 {
     if (achieved) *achieved = 0;
-    char expr[256];
-    snprintf(expr, sizeof expr,
-             "(Get-PartitionSupportedSize -DiskNumber %d -PartitionNumber %d)"
-             ".SizeMin", index, part_number);
-    uint64_t smin = ps_number(expr);
-    uint64_t want = target;
-    if (smin && want < smin) want = smin;   /* cannot go below what Windows allows */
-    if (!want) {
-        snprintf(why, wn, "Windows would not say how small drive C: can get.");
+    uint64_t now = 0, smin = 0, smax = 0;
+    if (plat_shrink_limits(index, part_number, &now, &smin, &smax, why, wn) != 0)
+        return -1;
+    /* Never below what Windows allows, and to a whole megabyte, which is
+     * what Disk Management itself asks for. */
+    uint64_t want = target < smin ? smin : target;
+    want = (want + (1u << 20) - 1) / (1u << 20) * (1u << 20);
+    if (want >= now) {
+        snprintf(why, wn,
+                 "Windows can only make drive C: %llu MB smaller, which is not "
+                 "enough. Nothing on this computer has been changed.",
+                 (unsigned long long)((now - (smin < now ? smin : now)) >> 20));
         return -1;
     }
-
-    char sys[MAX_PATH], cmd[MAX_PATH + 512], tail[1024];
-    if (!GetSystemDirectoryA(sys, sizeof sys)) snprintf(sys, sizeof sys, "C:\\Windows\\System32");
-    snprintf(cmd, sizeof cmd,
-             "\"%s\\WindowsPowerShell\\v1.0\\powershell.exe\" -NoProfile "
-             "-NonInteractive -Command \"Resize-Partition -DiskNumber %d "
-             "-PartitionNumber %d -Size %llu\"",
-             sys, index, part_number, (unsigned long long)want);
-    if (plat_run(cmd, tail, sizeof tail) != 0) {
+    char tail[1024];
+    if (resize_to(index, part_number, want, tail, sizeof tail) != 0) {
+        uint64_t after = 0; char t2[256];
+        /* A refusal may still have moved the end; say what is true. */
+        if (part_size(index, part_number, &after, t2, sizeof t2) == 0 && after < now) {
+            if (achieved) *achieved = after;
+            snprintf(why, wn, "Windows stopped part-way through making drive C: "
+                              "smaller (%s).", tail[0] ? tail : "no reason given");
+            return -1;
+        }
         snprintf(why, wn,
                  "Windows could not make drive C: smaller (%s). Nothing on "
                  "this computer has been changed.", tail[0] ? tail : "no reason given");
         return -1;
     }
-    snprintf(expr, sizeof expr,
-             "(Get-Partition -DiskNumber %d -PartitionNumber %d).Size",
-             index, part_number);
-    uint64_t now = ps_number(expr);
-    if (!now) {
+    uint64_t got = 0;
+    if (part_size(index, part_number, &got, tail, sizeof tail) != 0 || !got) {
         snprintf(why, wn, "Windows made drive C: smaller but would not say how "
                           "big it now is.");
         return -1;
     }
-    if (achieved) *achieved = now;
+    if (achieved) *achieved = got;
+    if (got >= now) {
+        snprintf(why, wn, "Windows said it made drive C: smaller, and it is not.");
+        return -1;
+    }
     return 0;
 }
 
-int plat_grow_system(int index, int part_number, char *why, size_t wn)
+int plat_grow_system(int index, int part_number, uint64_t to_bytes,
+                     uint64_t *achieved, char *why, size_t wn)
 {
-    char sys[MAX_PATH], cmd[MAX_PATH + 512], tail[1024];
-    if (!GetSystemDirectoryA(sys, sizeof sys)) snprintf(sys, sizeof sys, "C:\\Windows\\System32");
-    snprintf(cmd, sizeof cmd,
-             "\"%s\\WindowsPowerShell\\v1.0\\powershell.exe\" -NoProfile "
-             "-NonInteractive -Command \"$m=(Get-PartitionSupportedSize "
-             "-DiskNumber %d -PartitionNumber %d).SizeMax; Resize-Partition "
-             "-DiskNumber %d -PartitionNumber %d -Size $m\"",
-             sys, index, part_number, index, part_number);
-    if (plat_run(cmd, tail, sizeof tail) != 0) {
-        snprintf(why, wn, "Windows could not extend drive C: back (%s).",
-                 tail[0] ? tail : "no reason given");
+    if (achieved) *achieved = 0;
+    uint64_t now = 0, smin = 0, smax = 0;
+    if (plat_shrink_limits(index, part_number, &now, &smin, &smax, why, wn) != 0)
+        return -1;
+    /* UP TO WHAT IT WAS, never past it: the undo gives back what the
+     * install took and nothing that was unallocated before. */
+    uint64_t want = to_bytes && to_bytes < smax ? to_bytes : smax;
+    if (want > now) {
+        char tail[1024];
+        if (resize_to(index, part_number, want, tail, sizeof tail) != 0) {
+            snprintf(why, wn, "Windows could not make drive C: its full size "
+                              "again (%s).", tail[0] ? tail : "no reason given");
+            return -1;
+        }
+    }
+    uint64_t got = 0; char t2[256];
+    if (part_size(index, part_number, &got, t2, sizeof t2) != 0 || !got) {
+        snprintf(why, wn, "Windows would not say how big drive C: is now.");
+        return -1;
+    }
+    if (achieved) *achieved = got;
+    if (got < want) {
+        snprintf(why, wn, "drive C: is %llu MB short of its full size.",
+                 (unsigned long long)((want - got) >> 20));
         return -1;
     }
     return 0;
@@ -1165,8 +1287,8 @@ static size_t load_option(unsigned char *out, size_t n,
 int plat_run(const char *cmdline, char *tail, size_t n)
 {
     if (tail && n) tail[0] = 0;
-    wchar_t w[1024];
-    if (to_wide(cmdline, w, 1024) != 0) {
+    wchar_t w[8192];          /* 16 KB of stack: plat_run may run on two threads */
+    if (to_wide(cmdline, w, 8192) != 0) {
         if (tail && n) snprintf(tail, n, "the command could not be read");
         return -1;
     }

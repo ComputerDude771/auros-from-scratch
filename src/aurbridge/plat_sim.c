@@ -315,13 +315,31 @@ int plat_shrink_system(int index, int part_number, uint64_t target_bytes,
     return -1;
 }
 
-int plat_grow_system(int index, int part_number, char *why, size_t wn)
+int plat_grow_system(int index, int part_number, uint64_t to_bytes,
+                     uint64_t *achieved_bytes, char *why, size_t wn)
 {
-    (void)index; (void)part_number;
-    char cmd[64];
-    snprintf(cmd, sizeof cmd, "grow-partition disk=%d part=%d", index, part_number);
+    char cmd[96];
+    snprintf(cmd, sizeof cmd, "grow-partition disk=%d part=%d to=%llu",
+             index, part_number, (unsigned long long)to_bytes);
     char tail[8]; plat_run(cmd, tail, sizeof tail);
+    if (achieved_bytes) *achieved_bytes = 0;
     snprintf(why, wn, "the simulation does not run Windows' partition resize");
+    return -1;
+}
+
+int plat_shrink_limits(int index, int part_number, uint64_t *now,
+                       uint64_t *smallest, uint64_t *largest,
+                       char *why, size_t wn)
+{
+    (void)index; (void)part_number; (void)now; (void)smallest; (void)largest;
+    snprintf(why, wn, "the simulation does not run Windows' online shrink");
+    return -1;
+}
+
+int plat_gap_os_fence_probe(int index, uint64_t off, char *why, size_t wn)
+{
+    (void)index; (void)off;
+    snprintf(why, wn, "a simulated disk is a file; there is no Windows to refuse");
     return -1;
 }
 

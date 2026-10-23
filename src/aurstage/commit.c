@@ -18,7 +18,11 @@ int commit_build(const gpt_table *old, const stage_layout *L,
     *out = *old;
     out->from_backup = 0;
 
-    if (gpt_resize_entry(out, L->win_idx, L->win_last_new) != 0) {
+    /* THE FAST PATH'S WINDOWS IS ALREADY ITS NEW SIZE (Windows shrank it
+     * itself, plan_compute_prepared), so there is nothing to resize --
+     * and gpt_resize_entry() rightly refuses a "shrink" to the same end. */
+    if (L->win_last_new != old->ent[L->win_idx].last &&
+        gpt_resize_entry(out, L->win_idx, L->win_last_new) != 0) {
         snprintf(why, n,
                  "the Windows partition could not be made smaller in the "
                  "partition table");

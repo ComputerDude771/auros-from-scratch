@@ -1,21 +1,27 @@
-/* plan.c — see plan.h. Computes; writes nothing. */
-#define _GNU_SOURCE
+/* plan.c — see plan.h. Computes; writes nothing.
+ *
+ * SHARED WITH THE WINDOWS HALF: build/aurbridge compiles this file (and
+ * gpt.c) into AurBridge, so the fast path lays out the gap on Windows
+ * with the very function the commit here checks it with. That is why it
+ * includes nothing of the staging environment's -- plan_say(), which
+ * talks through stage_say(), lives in plansay.c. */
 #include <stdio.h>
 #include <string.h>
 
 #include "plan.h"
-#include "aurstage.h"
 
 static uint64_t align_up(uint64_t v, uint64_t a)
 { return a ? ((v + a - 1) / a) * a : v; }
 static uint64_t align_dn(uint64_t v, uint64_t a)
 { return a ? (v / a) * a : v; }
 
-int plan_compute(const gpt_table *t, int win_idx,
-                 uint64_t win_new_bytes, uint64_t root_src_bytes,
-                 uint64_t rec_bytes, uint64_t rsc_bytes,
-                 uint64_t min_root_bytes,
-                 stage_layout *L, char *why, size_t n)
+static int plan_gap(const gpt_table *t, uint64_t root_src_bytes,
+                    uint64_t rec_bytes, uint64_t rsc_bytes,
+                    uint64_t min_root_bytes,
+                    stage_layout *L, char *why, size_t n);
+
+static int plan_start(const gpt_table *t, int win_idx, stage_layout *L,
+                      char *why, size_t n)
 {
     memset(L, 0, sizeof *L);
     if (!t->valid || win_idx < 0 || (uint32_t)win_idx >= t->n_entries ||
@@ -23,14 +29,21 @@ int plan_compute(const gpt_table *t, int win_idx,
         snprintf(why, n, "there is no Windows partition to work from");
         return -1;
     }
-    uint32_t ss = t->sector;
-    uint64_t align = PLAN_ALIGN_BYTES / ss;
-    if (!align) align = 1;
-
-    L->sector       = ss;
+    L->sector       = t->sector;
     L->win_idx      = win_idx;
     L->win_first    = t->ent[win_idx].first;
     L->win_last_old = t->ent[win_idx].last;
+    return 0;
+}
+
+int plan_compute(const gpt_table *t, int win_idx,
+                 uint64_t win_new_bytes, uint64_t root_src_bytes,
+                 uint64_t rec_bytes, uint64_t rsc_bytes,
+                 uint64_t min_root_bytes,
+                 stage_layout *L, char *why, size_t n)
+{
+    if (plan_start(t, win_idx, L, why, n) != 0) return -1;
+    uint32_t ss = t->sector;
 
     /* The volume's new size, rounded UP to a whole block. The
      * partition entry must never end below the filesystem inside it:
@@ -48,6 +61,32 @@ int plan_compute(const gpt_table *t, int win_idx,
                  "the Windows drive cannot be made smaller than it already is");
         return -1;
     }
+    return plan_gap(t, root_src_bytes, rec_bytes, rsc_bytes, min_root_bytes,
+                    L, why, n);
+}
+
+int plan_compute_prepared(const gpt_table *t, int win_idx,
+                          uint64_t root_src_bytes, uint64_t rec_bytes,
+                          uint64_t rsc_bytes, uint64_t min_root_bytes,
+                          stage_layout *L, char *why, size_t n)
+{
+    if (plan_start(t, win_idx, L, why, n) != 0) return -1;
+    /* WINDOWS HAS ALREADY SHRUNK ITSELF. Its entry is the size it will
+     * stay, so the "new" end is the end the table already says, and the
+     * commit leaves that entry exactly as it is. */
+    L->win_last_new = L->win_last_old;
+    return plan_gap(t, root_src_bytes, rec_bytes, rsc_bytes, min_root_bytes,
+                    L, why, n);
+}
+
+static int plan_gap(const gpt_table *t, uint64_t root_src_bytes,
+                    uint64_t rec_bytes, uint64_t rsc_bytes,
+                    uint64_t min_root_bytes,
+                    stage_layout *L, char *why, size_t n)
+{
+    uint32_t ss = t->sector;
+    uint64_t align = PLAN_ALIGN_BYTES / ss;
+    if (!align) align = 1;
 
     /* THE GAP. Its far edge is the next partition in the TABLE, not
      * the end of the disk. See the header. */
@@ -221,19 +260,25 @@ int plan_check(const gpt_table *t, const stage_layout *L,
     return 0;
 }
 
-static void say_span(const char *what, uint64_t first, uint64_t last,
-                     uint32_t ss)
+/* ── how small to make Windows ─────────────────────────────────────
+ * See shrink.h. Here, beside the plan, because both halves of the
+ * installer have to arrive at the same number: the staging environment
+ * for the offline shrink, and the Windows half for its online one. */
+#define PLAN_GIB (1024ull * 1024 * 1024)
+uint64_t shrink_pick_target(uint64_t current, uint64_t smallest,
+                            uint64_t install_need)
 {
-    double g = (double)((last - first + 1) * (uint64_t)ss) / (1024.0*1024.0*1024.0);
-    stage_say("  %-10s %12llu .. %-12llu  %.1f GiB", what,
-              (unsigned long long)first, (unsigned long long)last, g);
-}
+    if (current <= smallest) return current;        /* nothing to reclaim */
+    uint64_t reclaimable = current - smallest;
+    uint64_t reserve = current / 100 * 15;
+    if (reserve < 20 * PLAN_GIB) reserve = 20 * PLAN_GIB;
+    uint64_t headroom = reclaimable > reserve ? reclaimable - reserve : 0;
 
-void plan_say(const stage_layout *L)
-{
-    stage_say("the new layout, in %u-byte blocks:", L->sector);
-    say_span("windows",  L->win_first,  L->win_last_new, L->sector);
-    say_span("auros",    L->root_first, L->root_last,    L->sector);
-    say_span("saved",    L->rsc_first,  L->rsc_last,     L->sector);
-    say_span("startup", L->rec_first,  L->rec_last,     L->sector);
+    uint64_t share = headroom < 40 * PLAN_GIB ? headroom : 40 * PLAN_GIB;
+    if (share < install_need)  share = install_need;    /* the install must fit */
+    if (share < 16 * PLAN_GIB) share = 16 * PLAN_GIB;   /* the stated floor    */
+    if (share > reclaimable)   share = reclaimable;     /* cannot free more     */
+
+    return current - share;
 }
+#undef PLAN_GIB

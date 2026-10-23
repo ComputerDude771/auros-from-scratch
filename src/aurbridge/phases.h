@@ -157,6 +157,32 @@ typedef struct {
     /* Minutes of the user's own time this is allowed to take before
      * saying so -- reserved; the phases report progress instead. */
     int  reserved;
+
+    /* ── THE FAST PATH (docs/AURBRIDGE.md, "Fast path: status") ───────
+     *
+     * The two lines the Ready page shows (decisions D10 and D11 in
+     * docs/handoff/SESSION-2026-10-23.md). Each is set by the wizard
+     * ONLY when the page showed the line to her and she pressed Install
+     * on it; the engine does neither thing without its field.
+     *
+     *   bring_wifi       "Bring my Wi-Fi across", pre-ticked, untickable:
+     *                    1 = shown AND still ticked. The connected
+     *                    network's name, security type and key go to
+     *                    \EFI\AurOS\ for the staging environment, which
+     *                    makes a NetworkManager keyfile of them and
+     *                    deletes the file. Never logged.
+     *   bitlocker_pause  "Windows' drive lock is paused for one restart
+     *                    and turns itself back on": shown, and she
+     *                    pressed Install. Protectors on C: are suspended
+     *                    (-RebootCount 2) right before the restart is
+     *                    armed; nothing is ever decrypted; an abort
+     *                    resumes them.
+     *
+     * The wizard shows the lines only when phases.h defines
+     * AB_CHOICE_BRING_WIFI / AB_CHOICE_BITLOCKER_PAUSE, which happens
+     * once the engine honours them end to end. */
+    int  bring_wifi;
+    int  bitlocker_pause;
 } ab_choice;
 
 /* What phases 0 and 2 learned, carried to 3 and written into the

@@ -335,3 +335,133 @@ jobs:
           $code = $LASTEXITCODE
           if ($code -ne 0) { throw "getimage exited $code" }
           if (-not (Select-String -Path getimage.log -Pattern 'verdict=ok' -Quiet)) { throw "no verdict=ok" }
+
+  # THE FAST PATH'S WINDOWS HALF, on real Windows (docs/AURBRIDGE.md,
+  # "Fast path"). A throwaway VHDX made with diskpart: GPT, an NTFS
+  # partition full of known files, a recovery-shaped partition after it
+  # (the OEM layout, so the shrink makes a GAP and not room at the end).
+  # Then the ENGINE'S OWN code (`aurbridge gapselftest`): Windows' online
+  # shrink, the shared planner, the gap writes, the read-back, both
+  # fences -- and, checked here independently, the files, chkdsk, and the
+  # raw bytes in the gap; then the undo grows it back. Never the runner's
+  # own disk: gapselftest refuses the system disk and any disk whose GPT
+  # GUID is not the one it is handed.
+  gapselftest:
+    needs: build
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { name: exe, path: exe }
+      - name: a throwaway disk shaped like a PC's, full of known files
+        shell: pwsh
+        run: |
+          $vhd = "$env:RUNNER_TEMP\gap.vhdx"
+          @"
+          create vdisk file="$vhd" maximum=3072 type=expandable
+          select vdisk file="$vhd"
+          attach vdisk
+          "@ | Set-Content "$env:RUNNER_TEMP\mk.txt"
+          diskpart /s "$env:RUNNER_TEMP\mk.txt" | Out-String | Write-Output
+          if ($LASTEXITCODE -ne 0) { throw "diskpart exited $LASTEXITCODE" }
+          $n = (Get-DiskImage -ImagePath $vhd).Number
+          if ($null -eq $n) { Get-Disk | Format-Table Number, FriendlyName, Location, PartitionStyle | Out-String | Write-Output; throw "the new disk is not visible" }
+          $d = Get-Disk -Number $n
+          if ($d.PartitionStyle -ne 'RAW' -or $d.IsSystem -or $d.IsBoot) { throw "disk $n is not the new empty disk" }
+          Initialize-Disk -Number $d.Number -PartitionStyle GPT
+          $p = New-Partition -DiskNumber $d.Number -Size 2048MB -AssignDriveLetter
+          Format-Volume -Partition $p -FileSystem NTFS -NewFileSystemLabel AURGAP -Confirm:$false | Out-Null
+          # WinRE's place: right after Windows, so the shrink makes a gap between them.
+          New-Partition -DiskNumber $d.Number -Size 512MB -GptType '{de94bba4-06d1-4d40-a16a-bfd50179d6ac}' | Out-Null
+          $p = Get-Partition -DiskNumber $d.Number -PartitionNumber $p.PartitionNumber
+          $L = "$($p.DriveLetter):"
+          # Known files: 300 of them, 1 KB to 2 MB, random content.
+          New-Item -ItemType Directory -Force "$L\photos" | Out-Null
+          $rng = [System.Random]::new(23)
+          for ($i = 0; $i -lt 300; $i++) {
+            $b = [byte[]]::new($rng.Next(1024, 2MB)); $rng.NextBytes($b)
+            [System.IO.File]::WriteAllBytes("$L\photos\img$i.bin", $b)
+          }
+          Get-ChildItem "$L\photos" | Get-FileHash -Algorithm SHA256 | ForEach-Object { "$($_.Hash) $([IO.Path]::GetFileName($_.Path))" } | Set-Content "$env:RUNNER_TEMP\before.txt"
+          Get-Partition -DiskNumber $d.Number | Format-Table PartitionNumber, Offset, Size, Type, GptType -AutoSize | Out-String | Write-Output
+          "DISK=$($d.Number)" | Out-File -Append $env:GITHUB_ENV
+          "PART=$($p.PartitionNumber)" | Out-File -Append $env:GITHUB_ENV
+          "LETTER=$L" | Out-File -Append $env:GITHUB_ENV
+          "GUID=$((Get-Disk -Number $d.Number).Guid)" | Out-File -Append $env:GITHUB_ENV
+          "ORIG=$($p.Size)" | Out-File -Append $env:GITHUB_ENV
+      - name: it refuses the runner's own disk and a disk it was not named
+        shell: pwsh
+        run: |
+          $sys = (Get-Disk | Where-Object IsSystem | Select-Object -First 1)
+          .\exe\aurbridge.exe gapselftest $sys.Number 1 $sys.Guid write 64 16 | Tee-Object -FilePath sys.log
+          if ($LASTEXITCODE -eq 0) { throw "IT RAN ON THE SYSTEM DISK" }
+          if (-not (Select-String -Path sys.log -Pattern 'running from' -Quiet)) { throw "refused, but not for being the system disk" }
+          .\exe\aurbridge.exe gapselftest $env:DISK $env:PART '{00000000-0000-0000-0000-000000000000}' write 64 16 | Tee-Object -FilePath guid.log
+          if ($LASTEXITCODE -eq 0) { throw "it ran on a disk it was not named" }
+          if (-not (Select-String -Path guid.log -Pattern 'not the disk that was named' -Quiet)) { throw "refused, but not for the GUID" }
+          "both refused"
+      - name: the engine shrinks with Windows' own shrink and writes only into the gap
+        shell: pwsh
+        run: |
+          .\exe\aurbridge.exe gapselftest $env:DISK $env:PART $env:GUID write 768 256 | Tee-Object -FilePath write.log
+          if ($LASTEXITCODE -ne 0) { throw "gapselftest write exited $LASTEXITCODE" }
+          if (-not (Select-String -Path write.log -Pattern 'verdict=ok phase=write' -Quiet)) { throw "no verdict=ok" }
+          $refused = (Select-String -Path write.log -Pattern 'fence1 refused=').Count
+          if ($refused -ne 5) { throw "fence one refused $refused writes, not 5" }
+          if (-not (Select-String -Path write.log -Pattern 'fence2 ntfs=1' -Quiet)) { throw "Windows did not refuse the raw write into NTFS" }
+          Get-Partition -DiskNumber $env:DISK | Format-Table PartitionNumber, Offset, Size, GptType -AutoSize | Out-String | Write-Output
+      - name: checked independently while it is shrunk -- the files, chkdsk, and the raw bytes in the gap
+        shell: pwsh
+        run: |
+          $now = (Get-Partition -DiskNumber $env:DISK -PartitionNumber $env:PART).Size
+          if ($now -ge [int64]$env:ORIG) { throw "not smaller: $now" }
+          Get-ChildItem "$env:LETTER\photos" | Get-FileHash -Algorithm SHA256 | ForEach-Object { "$($_.Hash) $([IO.Path]::GetFileName($_.Path))" } | Set-Content "$env:RUNNER_TEMP\during.txt"
+          if (Compare-Object (Get-Content "$env:RUNNER_TEMP\before.txt") (Get-Content "$env:RUNNER_TEMP\during.txt")) { throw "A FILE CHANGED" }
+          "300 files identical"
+          $r = Repair-Volume -DriveLetter $env:LETTER[0] -Scan
+          "Repair-Volume -Scan: $r"
+          if ("$r" -ne 'NoErrorsFound') { throw "chkdsk found errors: $r" }
+          # The gap, read raw from the disk by .NET, not by the engine.
+          $line = Select-String -Path write.log -Pattern 'gapselftest write seconds' | Select-Object -First 1
+          if ($line.Line -notmatch 'root_off=(\d+) root_len=(\d+) root_sha=([0-9a-f]+)') { throw "no root extent in the log" }
+          $off = [int64]$Matches[1]; $len = [int64]$Matches[2]; $want = $Matches[3]
+          $fs = [System.IO.FileStream]::new("\\.\PhysicalDrive$($env:DISK)", 'Open', 'Read', 'ReadWrite', 1MB, [System.IO.FileOptions]::None)
+          $fs.Seek($off, 'Begin') | Out-Null
+          $sha = [System.Security.Cryptography.SHA256]::Create()
+          $buf = [byte[]]::new(1MB); $left = $len
+          while ($left -gt 0) { $k = $fs.Read($buf, 0, [Math]::Min(1MB, $left)); if ($k -le 0) { throw "short read" }; $sha.TransformBlock($buf, 0, $k, $null, 0) | Out-Null; $left -= $k }
+          $sha.TransformFinalBlock([byte[]]::new(0), 0, 0) | Out-Null
+          $fs.Dispose()
+          $got = -join ($sha.Hash | ForEach-Object { $_.ToString('x2') })
+          "gap bytes read raw: $got"
+          if ($got -ne $want) { throw "the gap does not hold what the engine says it wrote: $got vs $want" }
+      - name: the undo grows it back, and the files are still the files
+        shell: pwsh
+        run: |
+          .\exe\aurbridge.exe gapselftest $env:DISK $env:PART $env:GUID undo $env:ORIG | Tee-Object -FilePath undo.log
+          if ($LASTEXITCODE -ne 0) { throw "gapselftest undo exited $LASTEXITCODE" }
+          $now = (Get-Partition -DiskNumber $env:DISK -PartitionNumber $env:PART).Size
+          if ($now -ne [int64]$env:ORIG) { throw "after the undo it is $now, not $env:ORIG" }
+          Get-ChildItem "$env:LETTER\photos" | Get-FileHash -Algorithm SHA256 | ForEach-Object { "$($_.Hash) $([IO.Path]::GetFileName($_.Path))" } | Set-Content "$env:RUNNER_TEMP\after.txt"
+          if (Compare-Object (Get-Content "$env:RUNNER_TEMP\before.txt") (Get-Content "$env:RUNNER_TEMP\after.txt")) { throw "A FILE CHANGED" }
+          $r = Repair-Volume -DriveLetter $env:LETTER[0] -Scan
+          if ("$r" -ne 'NoErrorsFound') { throw "chkdsk found errors after the undo: $r" }
+          "grown back to $now bytes; 300 files identical; chkdsk clean"
+      - name: with BitLocker on the throwaway disk, if this runner has BitLocker
+        shell: pwsh
+        run: |
+          if (-not (Get-Command Enable-BitLocker -ErrorAction SilentlyContinue)) {
+            "SKIPPED: this runner has no BitLocker (the feature is not installed, and installing it needs a restart)"
+            exit 0
+          }
+          $pw = ConvertTo-SecureString 'AurOS-test-only-1234' -AsPlainText -Force
+          Enable-BitLocker -MountPoint $env:LETTER -PasswordProtector -Password $pw -UsedSpaceOnly -SkipHardwareTest | Out-Null
+          for ($i = 0; $i -lt 120 -and (Get-BitLockerVolume $env:LETTER).VolumeStatus -ne 'FullyEncrypted'; $i++) { Start-Sleep 5 }
+          Get-BitLockerVolume $env:LETTER | Format-List MountPoint, VolumeStatus, ProtectionStatus, EncryptionPercentage | Out-String | Write-Output
+          .\exe\aurbridge.exe gapselftest $env:DISK $env:PART $env:GUID write 768 256 | Tee-Object -FilePath bl.log
+          if ($LASTEXITCODE -ne 0) { throw "with BitLocker on, gapselftest write exited $LASTEXITCODE" }
+          Get-ChildItem "$env:LETTER\photos" | Get-FileHash -Algorithm SHA256 | ForEach-Object { "$($_.Hash) $([IO.Path]::GetFileName($_.Path))" } | Set-Content "$env:RUNNER_TEMP\bl.txt"
+          if (Compare-Object (Get-Content "$env:RUNNER_TEMP\before.txt") (Get-Content "$env:RUNNER_TEMP\bl.txt")) { throw "A FILE CHANGED under BitLocker" }
+          .\exe\aurbridge.exe gapselftest $env:DISK $env:PART $env:GUID undo $env:ORIG
+          if ($LASTEXITCODE -ne 0) { throw "with BitLocker on, the undo exited $LASTEXITCODE" }
+          "shrink, gap write and undo all worked with BitLocker on; nothing was decrypted"

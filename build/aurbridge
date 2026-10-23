@@ -56,7 +56,16 @@ for f in "$SRC"/*.c; do
     esac
     LIB="$LIB $f"
 done
-note "shared:$(echo "$LIB" | sed "s|$SRC/||g")"
+# AND TWO FILES FROM THE STAGING ENVIRONMENT, compiled into both halves:
+# the partition-table reader and the planner. The fast path lays out the
+# gap on Windows (src/aurbridge/phases.c), and the staging environment
+# checks the same layout after the restart; one source for both is the
+# only way they cannot drift. Both are pure C over buffers (gpt.c keeps
+# its POSIX-only reader behind _WIN32).
+STAGE_SHARED="$ROOT/src/aurstage/gpt.c $ROOT/src/aurstage/plan.c"
+STAGE_INC="-I $ROOT/src/aurstage"
+LIB="$LIB $STAGE_SHARED"
+note "shared:$(echo "$LIB" | sed "s|$SRC/||g; s|$ROOT/src/||g")"
 note "windows:$(echo "$WINONLY" | sed "s|$SRC/||g")"
 note "simulated:$(echo "$SIMONLY" | sed "s|$SRC/||g")"
 LIB="$LIB $WINONLY"
@@ -275,14 +284,14 @@ fi
 
 step "aurbridge.exe (console)"
 # shellcheck disable=SC2086
-$CC -O2 $WARN $IMGDEF -I "$OUT" -o "$OUT/aurbridge.exe" "$SRC/main.c" $LIB $PAYLOAD_OBJ \
+$CC -O2 $WARN $IMGDEF -I "$OUT" $STAGE_INC -o "$OUT/aurbridge.exe" "$SRC/main.c" $LIB $PAYLOAD_OBJ \
     -lwinhttp -lsetupapi -lcfgmgr32 \
     || die "the console tool did not build"
 note "$(du -h "$OUT/aurbridge.exe" | cut -f1)"
 
 step "aurbridge-wizard.exe"
 # shellcheck disable=SC2086
-$CC -O2 $WARN $IMGDEF -I "$OUT" -mwindows -o "$OUT/aurbridge-wizard.exe" \
+$CC -O2 $WARN $IMGDEF -I "$OUT" $STAGE_INC -mwindows -o "$OUT/aurbridge-wizard.exe" \
     "$SRC/wizard.c" $LIB $PAYLOAD_OBJ $MANIFEST_OBJ \
     -lgdi32 -lcomctl32 -lwinhttp -lsetupapi -lcfgmgr32 \
     -loleacc -loleaut32 -lole32 -luuid \
@@ -307,8 +316,9 @@ HOSTCC="${HOSTCC:-cc}"
 if command -v "$HOSTCC" >/dev/null 2>&1; then
     SIMLIB=""
     for f in "$SRC"/format.c "$SRC"/phases.c "$SRC"/inflate.c "$SRC"/sbdb.c; do SIMLIB="$SIMLIB $f"; done
+    SIMLIB="$SIMLIB $STAGE_SHARED"
     # shellcheck disable=SC2086
-    $HOSTCC -O2 $WARN -I "$OUT" -o "$OUT/aurbridge-sim" $SIMLIB $SIMONLY \
+    $HOSTCC -O2 $WARN -I "$OUT" $STAGE_INC -o "$OUT/aurbridge-sim" $SIMLIB $SIMONLY \
         || die "the simulation did not build"
     note "$(du -h "$OUT/aurbridge-sim" | cut -f1)"
 else
