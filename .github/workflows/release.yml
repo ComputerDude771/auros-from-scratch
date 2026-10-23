@@ -32,6 +32,9 @@
 #             INSTALLER_SHA256 is this AurOS-Setup.exe (the website, the
 #             download, the wizard, the restart and AurOS, on a real
 #             Windows 11 VM), then makes the release the full, latest one.
+#   pages     after promote: deploys website/ to GitHub Pages (a release
+#             made with GITHUB_TOKEN starts no other workflow). Needs the
+#             owner's one click: Settings -> Pages -> Source: GitHub Actions.
 #
 # A flaky test: re-run the failed jobs of the build run (the run page's
 # "Re-run failed jobs", or the GitHub tools' rerun_failed_jobs); the jobs
@@ -331,3 +334,42 @@ jobs:
           [ "$(sha256sum latest.exe | cut -d' ' -f1)" = "$SETUP_SHA256" ] \
             || { echo "::error::releases/latest/download/AurOS-Setup.exe is not this build's"; exit 1; }
           echo "releases/latest/download/AurOS-Setup.exe is now $SETUP_SHA256"
+
+  # The website, deployed the moment its download link has something
+  # new behind it. A release made with GITHUB_TOKEN starts no other
+  # workflow, and pages.yml cannot be dispatched from here (dispatch
+  # only works for workflows on the default branch), so the deploy is
+  # done here, with the same actions pages.yml uses. Its own job, so a
+  # repository without Pages switched on fails here and not in promote.
+  pages:
+    needs: promote
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: the website's download link answers, and Pages is on
+        run: |
+          code=$(curl -sS -L -o /dev/null -r 0-0 -w '%{http_code}' \
+                 "https://github.com/$GITHUB_REPOSITORY/releases/latest/download/AurOS-Setup.exe")
+          case "$code" in 200|206) echo "releases/latest/download/AurOS-Setup.exe answers $code" ;;
+            *) echo "::error::releases/latest/download/AurOS-Setup.exe answers $code"; exit 1 ;; esac
+          if ! gh api "repos/$GITHUB_REPOSITORY/pages" --jq .build_type > /tmp/pages.txt 2>/dev/null; then
+            echo "::error::Enable Pages: Settings → Pages → Source: GitHub Actions (the release itself is published)"
+            exit 1
+          fi
+          echo "Pages is on ($(cat /tmp/pages.txt))"
+      - uses: actions/checkout@v4
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: website
+      - id: deploy
+        uses: actions/deploy-pages@v4

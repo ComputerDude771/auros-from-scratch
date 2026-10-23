@@ -368,9 +368,13 @@ jobs:
     needs: [gate, build, tests]
     if: needs.gate.outputs.release == 'true'
     uses: ./.github/workflows/release.yml
+    # What release.yml's jobs ask for; a called workflow cannot be
+    # given more than its caller has.
     permissions:
       contents: write
       actions: read
+      pages: write
+      id-token: write
     with:
       run-id: ${{ github.run_id }}
       latest: ${{ needs.gate.outputs.latest == 'true' }}
