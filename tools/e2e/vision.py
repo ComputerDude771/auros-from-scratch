@@ -167,12 +167,17 @@ def ocr(img, region=None, scale=2, psm=3):
     sub, ox, oy = crop(img, region)
     if sub.size == 0:
         return []
-    # The brightest channel, not luminance: teal or violet text on a dark
-    # ground is then as bright as white text, and inverts to black.
-    m = sub.max(axis=2)
-    if m.mean() < 110:
-        m = 255 - m
-    g = Image.fromarray(np.ascontiguousarray(m))
+    # Text as dark ink on white, whatever the screen: on a dark ground the
+    # brightest channel (teal or violet text is then as bright as white),
+    # on a light one the darkest. Then everything a little away from the
+    # ground is pushed to full ink, which is what makes the muted grey
+    # hints (#55606E on #0B0E14) readable at all.
+    dark = sub.mean() < 110
+    m = (sub.max(axis=2) if dark else sub.min(axis=2)).astype(np.float32)
+    bg = float(np.median(m))
+    ink = (m - bg) if dark else (bg - m)
+    m = 255 - np.clip((ink - 8) * 3, 0, 255)
+    g = Image.fromarray(m.astype(np.uint8))
     if scale != 1:
         g = g.resize((g.width * scale, g.height * scale), Image.LANCZOS)
     with tempfile.TemporaryDirectory() as td:
@@ -204,29 +209,29 @@ def ocr(img, region=None, scale=2, psm=3):
     return words
 
 
-def _norm(s):
-    return re.sub(r"[^a-z0-9]", "", s.lower())
+def _norm(s, case=False):
+    return re.sub(r"[^A-Za-z0-9]", "", s if case else s.lower())
 
 
 def text_of(words):
     return " ".join(w["text"] for w in words)
 
 
-def find_text(words, phrase, last=False):
+def find_text(words, phrase, last=False, case=False):
     """The box (x, y, w, h) of `phrase` among OCR words, or None.
 
     Words are compared without case or punctuation, so "Yes," finds
     "Yes"; a phrase must be consecutive words on one text line. With
     last=True the lowest match on screen wins (a placeholder below the
-    sentence that names it)."""
-    want = [_norm(p) for p in phrase.split() if _norm(p)]
+    sentence that names it). case=True compares letters' case too."""
+    want = [_norm(p, case) for p in phrase.split() if _norm(p, case)]
     if not want:
         return None
     hits = []
     for i in range(len(words)):
         j, k = i, 0
         while k < len(want) and j < len(words):
-            got = _norm(words[j]["text"])
+            got = _norm(words[j]["text"], case)
             if not got:
                 j += 1
                 continue
@@ -246,6 +251,21 @@ def find_text(words, phrase, last=False):
         return None
     hits.sort(key=lambda b: (b[1], b[0]))
     return hits[-1] if last else hits[0]
+
+
+def find_lone_word(words, word):
+    """A word that is a line on its own, or with one mark beside it (what
+    an input box shows: its placeholder, or what was typed and a tick),
+    the lowest on screen; None if none."""
+    lines = {}
+    for w in words:
+        lines.setdefault(w["line"], []).append(w)
+    hits = [x for ws in lines.values() if len(ws) <= 2 for x in ws
+            if _norm(x["text"], True) == _norm(word, True)]
+    if not hits:
+        return None
+    w = max(hits, key=lambda w: w["y"])
+    return (w["x"], w["y"], w["w"], w["h"])
 
 
 def centre(box):

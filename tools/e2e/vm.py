@@ -19,8 +19,6 @@ import http.server
 import json
 import os
 import re
-import shutil
-import signal
 import socket
 import subprocess
 import tempfile
@@ -31,7 +29,6 @@ import urllib.parse
 import numpy as np
 from PIL import Image
 
-import vision
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 OVMF_CODE = "/usr/share/OVMF/OVMF_CODE_4M.ms.fd"

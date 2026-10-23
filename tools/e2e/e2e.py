@@ -30,7 +30,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import vision                                                    # noqa: E402
 from vm import (Failure, Hub, Machine, Recorder, OVMF_VARS,      # noqa: E402
-                run, sha256)
+                run)
 
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 E = os.environ.get
@@ -71,6 +71,28 @@ def left():
 #  M1: Windows
 # ════════════════════════════════════════════════════════════════════
 
+def pass_cd_prompt(m, timeout=180):
+    """Windows' DVD says "Press any key to boot from CD or DVD" for about
+    five seconds, then gives up and the firmware moves on. Press a key
+    exactly then and never after: Setup starts seconds later with its
+    Cancel button focused, and a stray Enter there asks whether to quit."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        img = m.screendump()
+        lit = (img.max(axis=2) > 60).mean()
+        if lit > 0.3:           # a full screen of colour: past the prompt
+            return False
+        if lit > 0.0005 and vision.find_text(vision.ocr(img), "Press any key"):
+            m.save(img, "cd-prompt")
+            m.key("ret", label="boot from the DVD")
+            time.sleep(1.5)
+            if not vision.find_text(vision.ocr(m.screendump()), "Press any key"):
+                return True
+            continue
+        time.sleep(0.3)
+    return False
+
+
 def cmd_windows(a):
     rec = Recorder(a.out)
     hub = Hub(rec)
@@ -84,12 +106,8 @@ def cmd_windows(a):
         with rec.phase("windows: firmware to Setup"):
             m.start()
             m.auto_shots(2)
-            # The DVD's "Press any key to boot from CD or DVD" waits a
-            # few seconds and then gives up on it; keep pressing until
-            # Setup is loading.
-            for _ in range(45):
-                m.key("ret")
-                time.sleep(1)
+            if not pass_cd_prompt(m):
+                raise Failure("the DVD's 'Press any key' prompt never showed")
             m.shot("setup-loading")
         m.auto_shots(30)
         with rec.phase("windows: Setup, to the first logon"):
@@ -340,6 +358,15 @@ class Flow:
                         pressed.append("more")
                         time.sleep(3)
                         continue
+                    if warn and not more:
+                        # Edge shows an item's buttons when the pointer is on it
+                        item = next((e for e in els if e.get("type") == "ListItem" and
+                                     re.search(warn.group(1), e.get("name") or "", re.I)), None)
+                        if item:
+                            x, y, w, h = item["rect"]
+                            self.m.move(x + w // 2, y + h // 2)
+                            time.sleep(2)
+                            continue
                     time.sleep(5)
             raise Failure("the download never finished (ui-elements.log has Edge's buttons)")
 
@@ -411,24 +438,39 @@ class Flow:
     def drive_wizard(self):
         """Press the teal primary button whenever it is enabled; when it
         is not, do what the page asks (tick its boxes, type the word it
-        names) or wait. Stops after pressing "Restart now"."""
+        names) or wait. Each press starts a new timed phase named after
+        it. Returns right after pressing "Restart now"."""
         clicks = {}
-        typed = False
+        type_tries = 0
         idle_since = time.time()
         last_label = None
         rect = self.wizard_rect()
-        phase_cm = self.rec.phase("wizard: welcome to the check")
-        phase_cm.__enter__()
+        stage = [self.rec.phase("wizard: first page")]
+        stage[0].__enter__()
+
+        def next_stage(name):
+            stage[0].__exit__(None, None, None)
+            stage[0] = self.rec.phase(name)
+            stage[0].__enter__()
+
         try:
             while left() > 0:
                 if not self.m.alive():
                     raise Failure("the machine switched off during the wizard")
-                if rect is None or time.time() - idle_since > 120:
-                    rect = self.wizard_rect() or rect
                 if rect is None:
-                    w = self.windows()
-                    raise Failure("the installer's window is gone; windows: " +
-                                  json.dumps([(x.get('name'), x.get('proc')) for x in w]))
+                    # Gone: closed, crashed, or Windows is restarting for
+                    # a fix and the installer will reopen after sign-in.
+                    self.m.shot("wizard-window-gone")
+                    gone = time.time()
+                    while rect is None and time.time() - gone < 15 * 60:
+                        time.sleep(10)
+                        rect = self.wizard_rect()
+                    if rect is None:
+                        w = self.windows()
+                        raise Failure("the installer's window went away and did not come back; "
+                                      "windows: " + json.dumps([(x.get('name'), x.get('proc')) for x in w]))
+                    self.log("the installer's window is back")
+                    continue
                 img = self.m.screendump()
                 btns = vision.find_buttons(img, rect)
                 if btns:
@@ -436,65 +478,64 @@ class Flow:
                     label = vision.text_of(vision.ocr(img, b, psm=7)).strip() or "?"
                     if re.search(r"close", label, re.I) and not re.search(r"restart", label, re.I):
                         self.m.save(img, "wizard-ended-with-close")
-                        words = vision.ocr(img, rect)
                         raise Failure("the installer stopped without offering a restart: " +
-                                      vision.text_of(words)[:800])
+                                      vision.text_of(vision.ocr(img, rect))[:900])
                     n = clicks.get(label, 0)
                     if label == last_label and n >= 6:
                         self.m.save(img, "wizard-stuck")
-                        raise Failure(f"pressed '{label}' six times and the page did not move on")
-                    if re.search(r"restart", label, re.I):
-                        phase_cm.__exit__(None, None, None)
-                        self.m.click(*vision.centre(b), label="wizard " + label)
-                        self.restart_clicked = time.time()
-                        return
+                        raise Failure(f"pressed '{label}' six times and the page did not move on: " +
+                                      vision.text_of(vision.ocr(img, rect))[:900])
                     self.m.click(*vision.centre(b), label="wizard " + label)
+                    if re.search(r"restart", label, re.I):
+                        self.restart_clicked = time.time()
+                        stage[0].__exit__(None, None, None)
+                        return
                     clicks[label] = n + 1
                     last_label = label
                     idle_since = time.time()
-                    # name the phase after the page the press leads to
-                    if re.search(r"start(ing)? install|erase", label, re.I):
-                        phase_cm.__exit__(None, None, None)
-                        phase_cm = self.rec.phase("wizard: download and prepare (to Restart now)")
-                        phase_cm.__enter__()
-                    elif re.search(r"get started", label, re.I):
-                        pass
+                    next_stage(f"wizard: after '{label}'")
                     time.sleep(3)
                     continue
                 boxes = vision.find_unchecked_boxes(img, rect)
                 if boxes:
                     self.m.click(*vision.centre(boxes[0]), label="wizard tick box")
                     time.sleep(1.5)
-                    after = vision.find_unchecked_boxes(self.m.screendump(), rect)
-                    if len(after) >= len(boxes):
+                    if len(vision.find_unchecked_boxes(self.m.screendump(), rect)) >= len(boxes):
                         self.log("the box did not tick")
                     idle_since = time.time()
                     continue
                 words = vision.ocr(img, rect)
                 text = vision.text_of(words)
                 mt = re.search(r"\bType ([A-Z]{3,})\b", text)
-                if mt and not typed:
+                if mt and type_tries < 3 and time.time() - idle_since > (0 if type_tries == 0 else 8):
                     word = mt.group(1)
+                    type_tries += 1
                     self.m.key("end", label=f"scroll to where {word} is typed")
                     time.sleep(1.5)
                     img = self.m.screendump()
-                    ph = vision.find_text(vision.ocr(img, rect), word, last=True)
+                    # the input shows the word as its placeholder, in capitals,
+                    # below the sentence asking for it (the button says "agree")
+                    ph = vision.find_lone_word(vision.ocr(img, rect), word)
                     if ph:
                         self.m.click(*vision.centre(ph), label=f"wizard: the box for {word}")
+                    for _ in range(len(word) + 4):
+                        self.m.key("backspace")
                     self.m.type(word, label="typed confirmation")
-                    typed = True
                     time.sleep(1.5)
                     self.m.shot("wizard-typed")
                     idle_since = time.time()
                     continue
-                if time.time() - idle_since > 90 and not re.search(r"Setting up|Ready to restart", text):
-                    # nothing to press, nothing to tick: perhaps below the fold
+                busy = re.search(r"Setting up AurOS|Checking this PC|We only read", text)
+                if not busy and time.time() - idle_since > 90:
+                    # nothing to press, tick or type on screen: perhaps below the fold
                     self.m.key("end", label="scroll down: nothing to do on screen")
                     idle_since = time.time()
-                time.sleep(5)
+                if time.time() - idle_since > 300 and int(time.time() - idle_since) % 300 < 15:
+                    self.log("wizard waiting: " + text[-300:])
+                time.sleep(15 if busy else 5)
             raise Failure("ran out of time in the wizard")
         except BaseException:
-            phase_cm.__exit__(*sys.exc_info())
+            stage[0].__exit__(*sys.exc_info())
             raise
 
     # -- 5. the restart, the staging screen, AurOS --
@@ -542,14 +583,26 @@ class Flow:
                 if b:
                     self.m.click(*vision.centre(b), label="dismiss " + dismiss)
                     time.sleep(3)
-            b, _ = self.ocr_find(STORE_NAME)
-            if not b:
-                # the Home card / app list: Super brings it, as on any desktop
-                self.m.key("meta_l", label="open the app list")
+            # Where a person would look: the screen as it is, the Home
+            # card (Home key in the rail layout), the AurOS button at the
+            # top left, the Super key.
+            b, words = self.ocr_find(STORE_NAME)
+            tries = [("key", "home"), ("text", "AurOS"), ("key", "meta_l"), ("key", "esc")]
+            while not b and tries:
+                kind, what = tries.pop(0)
+                if kind == "key":
+                    self.m.key(what, label=f"look for {STORE_NAME}: {what}")
+                else:
+                    t = vision.find_text(words, what)
+                    if not t:
+                        continue
+                    self.m.click(*vision.centre(t), label=f"look for {STORE_NAME}: {what}")
                 time.sleep(3)
-                b, _ = self.ocr_find(STORE_NAME)
+                b, words = self.ocr_find(STORE_NAME)
             if not b:
-                raise Failure(f"no '{STORE_NAME}' on screen")
+                self.m.shot("no-store")
+                raise Failure(f"no '{STORE_NAME}' anywhere a person would look: " +
+                              vision.text_of(words)[:600])
             self.m.click(*vision.centre(b), label="open " + STORE_NAME)
             p, _, _ = self.wait_text(["Search", "Explore", "Installed", "Updates"], 300, every=10)
             if not p:
@@ -637,51 +690,67 @@ def cmd_flow(a):
 # ════════════════════════════════════════════════════════════════════
 
 def cmd_inspect(a):
-    """Read AurOS's root file system with the machine off, through
-    qemu-nbd, read-only. Proves the program is on the disk, not just on
-    the screen."""
+    """Read AurOS's root file system with the machine off, read-only.
+    Proves the program is on the disk, not just on the screen."""
     rec = Recorder(a.out)
     disk = os.path.join(a.work, "win.qcow2")
-    out = []
-    dev = "/dev/nbd0"
-    run("sudo modprobe nbd max_part=16", rec, check=False)
-    run(["sudo", "qemu-nbd", "--read-only", "--connect", dev, disk], rec)
-    try:
-        time.sleep(2)
-        out.append(run(["sudo", "sgdisk", "-p", dev], rec, check=False).stdout)
-        out.append(run(["lsblk", "-o", "NAME,SIZE,FSTYPE,LABEL,PARTLABEL", dev], rec, check=False).stdout)
-        found = {}
-        mnt = os.path.join(a.work, "mnt")
-        os.makedirs(mnt, exist_ok=True)
-        parts = sorted(p for p in os.listdir("/dev") if p.startswith("nbd0p"))
-        for p in parts:
-            fs = run(["sudo", "blkid", "-o", "value", "-s", "TYPE", "/dev/" + p], rec, check=False).stdout.strip()
-            if fs not in ("ext4", "btrfs", "xfs"):
-                continue
-            if run(["sudo", "mount", "-o", "ro,noload" if fs == "ext4" else "ro", "/dev/" + p, mnt],
-                   rec, check=False).returncode != 0:
-                continue
-            try:
-                ls = run(["sudo", "ls", mnt], rec, check=False).stdout.split()
-                out.append(f"{p} ({fs}): {' '.join(ls)}")
-                for rel in APP_FILES.split():
-                    for base in ("", "@/", "@rootfs/"):
-                        path = os.path.join(mnt, base, rel)
-                        r = run(["sudo", "ls", "-ld", path], rec, check=False)
+    out, found = [], {}
+    attached = []
+    with rec.phase("inspect: the disk, machine off"):
+        dev = "/dev/nbd0"
+        run("sudo modprobe nbd max_part=16", rec, check=False)
+        if run(["sudo", "qemu-nbd", "--read-only", "--connect", dev, disk], rec,
+               check=False).returncode == 0:
+            attached.append(("nbd", dev))
+            time.sleep(3)
+            run(["sudo", "partprobe", dev], rec, check=False)
+        else:
+            # no nbd in this kernel: a sparse raw copy on a loop device
+            raw = os.path.join(a.work, "disk.raw")
+            run(["qemu-img", "convert", "-O", "raw", disk, raw], rec)
+            dev = run(["sudo", "losetup", "--find", "--show", "--read-only", "-P", raw], rec).stdout.strip()
+            attached.append(("loop", dev))
+        try:
+            out.append(run(["sudo", "sgdisk", "-p", dev], rec, check=False).stdout)
+            out.append(run(["lsblk", "-o", "NAME,SIZE,FSTYPE,LABEL,PARTLABEL", dev], rec, check=False).stdout)
+            mnt = os.path.join(a.work, "mnt")
+            os.makedirs(mnt, exist_ok=True)
+            base = os.path.basename(dev)
+            parts = sorted(p for p in os.listdir("/dev") if p.startswith(base + "p"))
+            for p in parts:
+                fs = run(["sudo", "blkid", "-o", "value", "-s", "TYPE", "/dev/" + p], rec,
+                         check=False).stdout.strip()
+                if fs not in ("ext4", "btrfs", "xfs"):
+                    continue
+                if run(["sudo", "mount", "-o", "ro,noload" if fs == "ext4" else "ro", "/dev/" + p, mnt],
+                       rec, check=False).returncode != 0:
+                    continue
+                try:
+                    out.append(f"{p} ({fs}): " + run(["sudo", "ls", mnt], rec, check=False).stdout.replace("\n", " "))
+                    for rel in APP_FILES.split():
+                        r = run(["sudo", "ls", "-ld", os.path.join(mnt, rel)], rec, check=False)
                         if r.returncode == 0:
                             found[rel] = f"{p}: {r.stdout.strip()}"
-                r = run(["sudo", "sh", "-c", f"tail -n 40 {mnt}/var/log/apt/history.log 2>/dev/null; "
-                         f"ls {mnt}/var/lib/flatpak/app 2>/dev/null"], rec, check=False)
-                out.append(r.stdout)
-            finally:
-                run(["sudo", "umount", mnt], rec, check=False)
-        out.append("found: " + json.dumps(found, indent=1))
-        with open(os.path.join(a.out, "disk-inspection.txt"), "w") as fh:
-            fh.write("\n".join(out))
-        rec.log("\n".join(out)[-3000:])
-        return 0 if found else 1
-    finally:
-        run(["sudo", "qemu-nbd", "--disconnect", dev], rec, check=False)
+                    out.append(run(["sudo", "sh", "-c",
+                                    f"tail -n 30 {mnt}/var/log/apt/history.log 2>/dev/null; "
+                                    f"ls -l {mnt}/var/lib/flatpak/app 2>/dev/null; "
+                                    f"cat {mnt}/etc/os-release 2>/dev/null | head -3"],
+                                   rec, check=False).stdout)
+                finally:
+                    run(["sudo", "umount", mnt], rec, check=False)
+            out.append("found: " + json.dumps(found, indent=1))
+            with open(os.path.join(a.out, "disk-inspection.txt"), "w") as fh:
+                fh.write("\n".join(out))
+            if not found:
+                raise Failure(f"none of {APP_FILES} is on any Linux partition")
+        finally:
+            for kind, d in attached:
+                if kind == "nbd":
+                    run(["sudo", "qemu-nbd", "--disconnect", d], rec, check=False)
+                else:
+                    run(["sudo", "losetup", "-d", d], rec, check=False)
+            rec.write_timings()
+    return 0
 
 
 def main():
