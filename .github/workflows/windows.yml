@@ -53,7 +53,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: toolchain
-        run: sudo apt-get update -q && sudo apt-get install -y -q mingw-w64 libxml2-utils
+        # Twice on 2026-10-23 this step sat in apt-get update until the
+        # run was cancelled by hand. Each try is bounded and retried, so
+        # a stuck mirror costs minutes, not the run.
+        timeout-minutes: 12
+        run: |
+          for i in 1 2 3; do
+            sudo timeout 150 apt-get update -q -o Acquire::Retries=3 -o Acquire::http::Timeout=30 \
+              && sudo timeout 300 apt-get install -y -q mingw-w64 libxml2-utils && exit 0
+            echo "::warning::apt try $i did not finish; trying again"
+            sleep 10
+          done
+          exit 1
       - name: build/aurbridge
         run: sh build/aurbridge
       - name: manifest gate (tools/manifesttest.sh)
