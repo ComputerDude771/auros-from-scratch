@@ -35,6 +35,13 @@ permissions:
   contents: read
   actions: read
 
+# `bash` named explicitly is `bash -eo pipefail`; left to the default it
+# is `bash -e`, and `sh tools/x.sh | tee log` then passes whatever x
+# says.
+defaults:
+  run:
+    shell: bash
+
 jobs:
   gate:
     runs-on: ubuntu-24.04
@@ -52,7 +59,7 @@ jobs:
           build=false; release=false; latest=false
           # The words count in the SUBJECT line only: a body that explains
           # what [release] does must not publish one.
-          SUBJ=$(printf '%s\n' "$MSG" | head -1)
+          SUBJ=${MSG%%$'\n'*}
           case "$SUBJ" in *'[build]'*) build=true ;; esac
           case "$SUBJ" in *'[release]'*) build=true; release=true ;; esac
           case "$SUBJ" in *'[latest]'*) latest=true ;; esac
@@ -63,8 +70,9 @@ jobs:
             *)
               files=$(gh api "repos/$GITHUB_REPOSITORY/compare/$BEFORE...$GITHUB_SHA" --jq '.files[].filename' || true) ;;
           esac
-          printf '%s\n' "$files" | sed -n '1,60p'
-          if printf '%s\n' "$files" | grep -qE '^(build/|src/|rootfs/|profiles/|themes/|shells/|\.github/workflows/(build|tests)\.yml$)'; then
+          printf '%s\n' "$files" > /tmp/files.txt
+          sed -n '1,60p' /tmp/files.txt
+          if grep -qE '^(build/|src/|rootfs/|profiles/|themes/|shells/|\.github/workflows/(build|tests)\.yml$)' /tmp/files.txt; then
             build=true
           fi
           { echo "build=$build"; echo "release=$release"; echo "latest=$latest"; } | tee -a "$GITHUB_OUTPUT"
@@ -128,12 +136,54 @@ jobs:
           df -h /
           echo "tools $(( $(date +%s) - T )) s" >> dist/installer/timings.txt
 
+      # THE ONE CACHE, AND WHY IT IS SAFE. debootstrap reads only the
+      # release pocket of the suite (noble, not noble-updates), which
+      # does not change after release, so the base it makes is the same
+      # bytes every time; forge's stage 1 skips a tree that has its
+      # .forge-bootstrapped mark. The key is everything stage 1 reads:
+      # the profile's base_* lines, stage_bootstrap itself, and the
+      # debootstrap version. Nothing after stage 1 is cached: stage 2
+      # takes -updates and -security, which do change.
+      - name: cache key for the debootstrapped base
+        id: basekey
+        run: |
+          k=$( { grep -E '^base_(suite|mirror|components)=' profiles/desktop.profile
+                 sed -n '/^stage_bootstrap()/,/^}/p' build/forge
+                 dpkg-query -W debootstrap; } | sha256sum | cut -c1-16)
+          echo "key=debootstrap-desktop-$k" | tee -a "$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@v4
+        id: base
+        with:
+          path: dist/cache/base.tar.zst
+          key: ${{ steps.basekey.outputs.key }}
+      - name: the debootstrapped base, from the cache or made now
+        run: |
+          T=$(date +%s)
+          sudo mkdir -p work/forge/desktop
+          if [ -f dist/cache/base.tar.zst ]; then
+            zstd -dc dist/cache/base.tar.zst | sudo tar -C work/forge/desktop --numeric-owner -xf -
+            sudo test -f work/forge/desktop/rootfs/.forge-bootstrapped
+            echo "debootstrap-from-cache $(( $(date +%s) - T )) s" >> dist/installer/timings.txt
+          else
+            sudo ./build/forge stage desktop 1
+            mkdir -p dist/cache
+            sudo tar -C work/forge/desktop --numeric-owner -cf - rootfs | zstd -T0 -3 -q > dist/cache/base.tar.zst
+            echo "debootstrap $(( $(date +%s) - T )) s" >> dist/installer/timings.txt
+          fi
+          ls -la dist/cache
+      - uses: actions/cache/save@v4
+        if: steps.base.outputs.cache-hit != 'true'
+        continue-on-error: true
+        with:
+          path: dist/cache/base.tar.zst
+          key: ${{ steps.basekey.outputs.key }}
+
       - name: build/all desktop (forge + mkimage), no browser fallback
         run: |
           T=$(date +%s)
           # NOT ALLOW_BROWSER_FALLBACK: this network reaches Mozilla, so
           # the profile's Firefox must arrive, or the build stops.
-          sudo env -u ALLOW_BROWSER_FALLBACK ./build/all desktop --keep=raw
+          sudo env -u ALLOW_BROWSER_FALLBACK ./build/all desktop --keep=raw 2>&1 | tee /tmp/forge.log
           echo "forge+mkimage $(( $(date +%s) - T )) s" >> dist/installer/timings.txt
           ls -la out out/manifests
           df -h /
@@ -168,9 +218,11 @@ jobs:
           # image between the two.
           grep -q "\"image_sha256\": \"$sha\"" dist/installer/manifest-desktop.json \
             || { echo "the image does not hash to what build/all recorded"; exit 1; }
-          # gzip -9, as every published image so far: the installer's
-          # own inflater (src/aurbridge/inflate.c) is what reads it.
-          gzip -9 -c "$IMG" > dist/auros-desktop.img.gz
+          # pigz -9: one gzip member, the format every published image
+          # has used, four times faster than gzip -9. The installer's own
+          # inflater (src/aurbridge/inflate.c) reads it, and the getimage
+          # step below proves that on every build.
+          pigz -9 -p "$(nproc)" -c "$IMG" > dist/auros-desktop.img.gz
           gzsha=$(sha256sum dist/auros-desktop.img.gz | cut -d' ' -f1)
           ( cd dist/pieces && split -b "$PIECE_BYTES" -d -a 3 ../auros-desktop.img.gz auros-desktop.img.gz. )
           rm -f dist/auros-desktop.img.gz
@@ -220,9 +272,12 @@ jobs:
           for id in 1 2 3 4 5; do
             grep -q "^$id " /tmp/res.txt || { echo "resource $id is missing"; exit 1; }
           done
-          n=$(strings dist/installer/AurOS-Setup.exe | grep -c "releases/download/$TAG/" || true)
-          [ "$n" -ge 1 ] || { echo "the release's address is not baked into the installer"; exit 1; }
-          strings dist/installer/AurOS-Setup.exe | grep -q 'Microsoft Corporation UEFI CA' \
+          # Into a file first: under pipefail, `strings | grep -q` fails
+          # when grep stops reading early and strings takes a SIGPIPE.
+          strings dist/installer/AurOS-Setup.exe > /tmp/strings.txt
+          grep -q "releases/download/$TAG/" /tmp/strings.txt \
+            || { echo "the release's address is not baked into the installer"; exit 1; }
+          grep -q 'Microsoft Corporation UEFI CA' /tmp/strings.txt \
             || { echo "the installer does not know which Microsoft key the shim is signed with"; exit 1; }
           sh tools/manifesttest.sh dist/installer/AurOS-Setup.exe
           out/aurbridge-sim gzselftest
@@ -274,6 +329,20 @@ jobs:
           retention-days: 14
           compression-level: 0
           if-no-files-found: error
+      # Last, so it is the end of the log: what the GitHub tools'
+      # tail of a job log shows (the uploads above print hundreds of
+      # progress lines, and artifacts cannot be fetched from the
+      # development container).
+      - name: summary
+        if: ${{ !cancelled() }}
+        run: |
+          echo "=== build-info"; cat dist/installer/build-info.txt 2>/dev/null || true
+          echo "=== timings"; cat dist/installer/timings.txt 2>/dev/null || true
+          echo "=== /etc/auros/build-warnings"; cat dist/installer/build-warnings 2>/dev/null || true
+          echo "=== the browser, as forge said it"
+          grep -aiE 'browser|firefox|mozilla|epiphany|flathub|flatpak' /tmp/forge.log 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' | tail -25 || true
+          echo "=== pieces.txt"; cat dist/pieces/pieces.txt 2>/dev/null || true
+          df -h / | tail -1
 
   tests:
     needs: build

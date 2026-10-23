@@ -34,6 +34,13 @@ permissions:
   contents: read
   actions: read
 
+# `bash` named explicitly is `bash -eo pipefail`; left to the default it
+# is `bash -e`, and `sh tools/x.sh | tee log` then passes whatever x
+# says.
+defaults:
+  run:
+    shell: bash
+
 jobs:
   which:
     runs-on: ubuntu-24.04
@@ -53,10 +60,10 @@ jobs:
             go=true; rid=$IN_RUN
           else
             # In the subject line only, as in build.yml.
-            case "$(printf '%s\n' "$MSG" | head -1)" in *'[test]'*)
+            case "${MSG%%$'\n'*}" in *'[test]'*)
               # The newest build of this branch with its artifacts still there.
               rid=$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=auros-installer&per_page=100" \
-                     --jq ".artifacts[] | select(.expired == false and .workflow_run.head_branch == \"$BRANCH\") | .workflow_run.id" | head -1)
+                     --jq "[.artifacts[] | select(.expired == false and .workflow_run.head_branch == \"$BRANCH\") | .workflow_run.id] | first // empty")
               [ -n "$rid" ] || { echo "::error::no build of $BRANCH has artifacts left; push with [build]"; exit 1; }
               go=true ;;
             esac

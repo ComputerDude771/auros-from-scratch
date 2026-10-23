@@ -43,6 +43,13 @@ permissions:
   contents: read
   actions: read
 
+# `bash` named explicitly is `bash -eo pipefail`; left to the default it
+# is `bash -e`, and `sh tools/x.sh | tee log` then passes whatever x
+# says.
+defaults:
+  run:
+    shell: bash
+
 jobs:
   which:
     runs-on: ubuntu-24.04
@@ -64,7 +71,7 @@ jobs:
             go=true; rid=$IN_RUN; latest=$IN_LATEST
           else
             # In the subject line only, as in build.yml.
-            SUBJ=$(printf '%s\n' "$MSG" | head -1)
+            SUBJ=${MSG%%$'\n'*}
             case "$SUBJ" in *'[publish'*) ;; *) echo "go=false" >> "$GITHUB_OUTPUT"; exit 0 ;; esac
             case "$SUBJ" in *'[latest]'*) latest=true ;; esac
             rid=$(printf '%s' "$SUBJ" | sed -n 's/.*\[publish \([0-9][0-9]*\)\].*/\1/p' | head -1)
@@ -77,7 +84,10 @@ jobs:
               grep -q '^build|success$' /tmp/jobs.txt || return 1
               grep -q '^tests / unit|success$' /tmp/jobs.txt || return 1
               [ "$(grep -c '^tests / e2e (.*)|success$' /tmp/jobs.txt)" -ge 5 ] || return 1
-              ! grep -E '^tests / ' /tmp/jobs.txt | grep -qv '|success$'
+              # Files, not a pipe: under pipefail a SIGPIPE in the
+              # middle would turn "a test failed" into "passed".
+              grep -E '^tests / ' /tmp/jobs.txt > /tmp/tests.txt
+              ! grep -qv '|success$' /tmp/tests.txt
             }
             if [ -n "$rid" ]; then
               passed "$rid" || { echo "::error::run $rid did not pass its build and every test"; exit 1; }
@@ -200,7 +210,7 @@ jobs:
           grep -iE '^HTTP/[0-9.]+ 302' hdr.txt
           grep -iE '^HTTP/[0-9.]+ 206' hdr.txt
           grep -i '^content-range: bytes 1000000-1000099/' hdr.txt
-          tail -c +1000001 "../rel/$first" | head -c 100 > want.bin
+          dd if="../rel/$first" of=want.bin bs=100 skip=10000 count=1 status=none
           cmp part.bin want.bin
           grep -i '^location:' hdr.txt | sed 's/?.*//'
           echo "redirect followed, Range honoured"
