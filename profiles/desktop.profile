@@ -257,7 +257,15 @@ browser_fallback="epiphany-browser"
 #              screen first saying what it is. This is the closest thing
 #              Linux has to the .exe habit she has had for twenty years,
 #              and it is how Google Chrome is actually installed.
-#   ristretto  pictures      atril     PDFs
+#   ristretto  pictures      evince    PDFs
+#
+#              evince and not atril, which was here: atril draws EPUB
+#              through its own copy of WebKit, and that copy (WebKit 4.1
+#              and its JavaScriptCore) was 144 MB of the image -- a
+#              second browser engine, for a book format she is unlikely
+#              ever to open, on a machine whose browser has its own.
+#              evince reads PDF, PostScript, DjVu, XPS and comics with
+#              the same poppler; it adds 4.5 MB.
 #   mousepad   text          xarchiver zip files
 #   mpv        music and video. One binary, every format anyone sends
 #              her, and it plays a CD-quality file on a 2013 laptop
@@ -273,7 +281,7 @@ browser_fallback="epiphany-browser"
 # from 2013.
 packages_files="thunar thunar-volman gvfs gvfs-backends udisks2
                 gdebi
-                ristretto atril mousepad xarchiver mpv mate-calc
+                ristretto evince mousepad xarchiver mpv mate-calc
                 shared-mime-info desktop-file-utils xdg-user-dirs"
 
 # The browse-and-install store. Heavier than everything above put

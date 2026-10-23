@@ -44,7 +44,7 @@ have=$(ls "$APPS"/*.desktop 2>/dev/null | wc -l)
 if [ "$have" -lt 5 ]; then
     echo "only $have .desktop files on this machine -- the packages in"
     echo "packages_files are not installed, so this check cannot run."
-    echo "  sudo apt-get install thunar gdebi ristretto atril mousepad xarchiver"
+    echo "  sudo apt-get install thunar gdebi ristretto evince mousepad xarchiver"
     exit 2
 fi
 

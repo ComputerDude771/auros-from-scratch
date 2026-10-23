@@ -484,7 +484,7 @@ image/tiff=org.xfce.ristretto.desktop
 image/webp=org.xfce.ristretto.desktop
 
 # Documents she is most likely to have brought with her
-application/pdf=atril.desktop
+application/pdf=org.gnome.Evince.desktop
 text/plain=org.xfce.mousepad.desktop
 text/markdown=org.xfce.mousepad.desktop
 text/csv=org.xfce.mousepad.desktop
@@ -589,7 +589,7 @@ mpv|Music and video|Play a song or a film
 mate-calc|Calculator|Add up, and work things out
 system-config-printer|Printers|Set up a printer, or check one you have
 gdebi|Install a program you downloaded|Opens a program you have downloaded and puts it on this computer
-atril|Documents|Read PDFs and other documents
+org.gnome.Evince|Documents|Read PDFs and other documents
 org.xfce.ristretto|Photos|Look at your pictures
 org.xfce.mousepad|Notes|Write and read plain notes
 xarchiver|Zip files|Open a zip file, or make one
