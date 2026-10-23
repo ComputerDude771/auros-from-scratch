@@ -118,6 +118,7 @@ html.k-linux .elsewhere [data-kind~="linux"],
 html.k-arm .elsewhere [data-kind~="arm"],
 html.k-win32 .elsewhere [data-kind~="win32"] { display: block; }
 html.is-elsewhere .hint { display: none; }
+html.is-elsewhere .door-grid { align-items: start; }
 
 .btn2 {
   display: inline-flex; align-items: center; gap: 10px;

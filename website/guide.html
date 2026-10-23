@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>A one-page guide — AurOS</title>
-<meta name="description" content="A printable one-page guide to trying AurOS on a spare PC, written for the person you are helping.">
+<meta name="description" content="A printable one-page guide to putting AurOS on a Windows computer, written for the person you are helping.">
 <meta name="color-scheme" content="dark light">
 <link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2032%2032'%3E%3Crect%20width='32'%20height='32'%20rx='6'%20fill='%230E1013'/%3E%3Cpath%20d='M16%206L25%2016L16%2026L7%2016Z'%20fill='%23C89B4A'/%3E%3C/svg%3E">
 <script>document.documentElement.classList.add("js");try{var t=localStorage.getItem("auros-site-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);}catch(e){}</script>
@@ -38,9 +38,8 @@
         <h1>One sheet, for the person you&rsquo;re helping.</h1>
         <p class="lede">
           Large type, no jargon, and the one moment not to switch off. Fill in
-          the two blanks, print it, and leave it next to the PC. It is the
-          test build&rsquo;s instructions (<span class="mono">docs/TRY-IT.md</span>),
-          shortened.
+          the two blanks, print it, and leave it next to the computer. It is
+          the front page&rsquo;s steps, on one sheet.
         </p>
         <p class="btn-row"><button class="btn btn-primary" type="button" onclick="window.print()">Print this page</button></p>
       </div>
@@ -51,27 +50,25 @@
     <article class="guide" aria-label="The printable guide">
       <header class="g-head">
         <p class="g-brand"><span aria-hidden="true">&#9670;</span> AurOS</p>
-        <h2>Trying AurOS on this computer</h2>
+        <h2>Putting AurOS on this computer</h2>
         <p class="g-blanks"><span>Helping you: <i></i></span><span>Their phone: <i></i></span></p>
       </header>
 
-      <p class="g-warn"><b>This is a test version.</b> Use it only on a computer whose files you do not need, or whose files are copied somewhere else first.</p>
+      <p class="g-warn"><b>Windows and your files stay.</b> You can go back to Windows. Keep the charger plugged in the whole time.</p>
 
       <ol class="g-steps">
-        <li><h3>Before you start</h3>
-          <p>Charger plugged in. Memory sticks and USB drives <b>unplugged</b>. Internet working: it downloads about 1.8&nbsp;GB.</p></li>
+        <li><h3>Get it</h3>
+          <p>On this computer, open <b>computerdude771.github.io/auros-from-scratch</b> and press <b>Get AurOS</b>.</p>
+          <p>If the browser says the file <b>&ldquo;isn&rsquo;t commonly downloaded&rdquo;</b>, that is normal. Edge: <b>&hellip;</b> &rarr; <b>Keep</b> &rarr; <b>Show more</b> &rarr; <b>Keep anyway</b>. Chrome: <b>Download suspicious file</b>.</p></li>
         <li><h3>Open the file</h3>
-          <p>Windows says <b>&ldquo;Windows protected your PC&rdquo;</b>. Press <b>More info</b>, then <b>Run anyway</b>. Then <b>Yes</b> when it asks to make changes.</p>
-          <p class="g-small">No &ldquo;Run anyway&rdquo;? Stop here: this computer will not run it.</p></li>
-        <li><h3>Follow the pages</h3>
-          <p>If a page lists problems, press <b>Fix these for me</b>. On <b>Ready</b>, tick the box and press <b>Start installing</b>. The download is the long part.</p></li>
-        <li><h3>Press &ldquo;Restart now&rdquo;</h3>
-          <p>Do not close the window instead. Closing it cancels everything, on purpose.</p></li>
-        <li class="g-stop"><h3>After the restart: words on a black screen</h3>
-          <p>That is normal. <b>Do not switch the computer off while it says &ldquo;Making room on the Windows drive&rdquo;.</b> It can take a while.</p>
-          <p class="g-small">If it stops with a sentence and <span class="mono">verdict=</span>, take a photo of the screen and send it.</p></li>
-        <li><h3>&ldquo;AurOS is on this computer&rdquo;</h3>
-          <p><b>Yes, it all works</b> keeps AurOS. <b>No, go back to Windows</b> makes Windows start again. Windows is still there either way.</p></li>
+          <p>Windows says <b>&ldquo;Windows protected your PC&rdquo;</b>. That is normal too. Press <b>More info</b>, then <b>Run anyway</b>. Then <b>Yes</b> when it asks to make changes.</p>
+          <p class="g-small">&ldquo;Smart App Control blocked an app&rdquo; instead? The website, step 2, shows how to switch that off.</p></li>
+        <li><h3>Pick a look, press Install</h3>
+          <p>AurOS checks the computer first and says so before changing anything if it can&rsquo;t go on it.</p></li>
+        <li class="g-stop"><h3>It restarts once, by itself</h3>
+          <p><b>Leave it switched on</b> until AurOS has started.</p></li>
+        <li><h3>&ldquo;Does everything work?&rdquo;</h3>
+          <p><b>Yes, it all works</b> keeps AurOS. <b>No, go back to Windows</b> makes Windows start again. Until you press Yes, switching on still starts Windows.</p></li>
       </ol>
 
       <div class="g-cols">
@@ -80,7 +77,7 @@
         <div><h3>To remove AurOS</h3>
           <p>In AurOS: <b>Settings &rarr; Put Windows back</b>, then press <b>Remove AurOS and put Windows back</b> twice. Anything saved in AurOS goes with it.</p></div>
       </div>
-      <p class="g-foot">auros &middot; pre-release test build &middot; the full instructions are in docs/TRY-IT.md in the AurOS source</p>
+      <p class="g-foot">AurOS &middot; computerdude771.github.io/auros-from-scratch &middot; every step, with pictures, is on that page</p>
     </article>
   </section>
 

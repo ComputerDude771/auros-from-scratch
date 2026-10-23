@@ -311,8 +311,10 @@ for (const v of [
 // 5. Every page of the site: links, pictures, scripts, anchors; and no
 //    request to any other server
 {
-  const pages = new Set(["index.html"]);
-  const queue = ["index.html"];
+  // every page in the folder (old addresses included), and whatever they link to
+  const seed = ["index.html", ...fs.readdirSync(SITE).filter((f) => f.endsWith(".html") && f !== "index.html").sort()];
+  const pages = new Set(seed);
+  const queue = [...seed];
   const targets = new Map(); // "page.html#frag" or "file" -> where it is linked from
   const ids = new Map();
   const isStub = (html) => /http-equiv="refresh"/i.test(html);
