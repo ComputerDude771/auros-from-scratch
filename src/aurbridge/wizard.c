@@ -2646,7 +2646,7 @@ static const wchar_t *footer_hint(void)
         return welcome_passed() ? L"Next, you pick how it looks."
                                 : L"This only looks at your computer.";
     case PAGE_BLOCKED:
-        return any_cannot()       ? L"Nothing on this computer was changed. You can close this."
+        return any_cannot()       ? L"Nothing was changed. You can close this."
              : fixable_now() == 2 ? L"It restarts once; this opens again by itself."
              : fixable_now()      ? L"When it’s fixed, we carry on by ourselves."
                                   : L"We check again every few seconds, by ourselves.";

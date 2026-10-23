@@ -14,8 +14,10 @@ and is not", before starting.
   installs (plus 1.8 GB of download for a while).
 - A wired or reliable internet connection: about **1.8 GB** is
   downloaded. It resumes if it drops.
-- **The charger plugged in**, for the whole thing.
-- **No USB drives plugged in.** The installer refuses while one is.
+- **The charger plugged in**, for the whole thing. The battery level
+  does not matter (a worn battery at 0% on the charger is fine).
+- USB sticks and memory cards can stay plugged in: the installer says
+  so and never writes to them.
 
 ## Before you start, in Windows
 
@@ -29,15 +31,21 @@ me** does it:
 | Not enough space on C: | empties the Recycle Bin, Windows' temp folders and Disk Cleanup's leftovers (not Downloads, not the previous Windows) |
 | Drive encrypted (BitLocker / Device encryption) | switches it off, then waits for Windows to finish |
 | Updates waiting for a restart, or a drive check pending | restarts Windows once, and opens again by itself after you sign in |
-| Charger unplugged, battery low, USB drive plugged in | nothing to press: fix it and the page carries on by itself |
+| Charger unplugged | nothing to press: plug it in and the page carries on by itself |
 
-Some things nothing on the PC can fix (a PC that starts the old way,
-BIOS; a failing drive; some multi-drive setups). Then the page says so
-in one line and changes nothing.
+A USB stick, a memory card, an empty built-in card reader, little
+memory: not stops. The first page lists them under *Good to know*, one
+line each, and carries on.
+
+Some things nothing on the PC can fix: a PC that starts the old way
+(BIOS), a Windows-on-ARM laptop, an NVMe drive that Intel's storage
+driver remaps (some 2016-2020 Dell and HP laptops; Linux cannot see
+it), a failing drive, some multi-drive setups. Then the page says so in
+one line, before anything is downloaded, and changes nothing.
 
 Leave **Secure Boot on**; AurOS starts with it on. On the rare PC that
-trusts only Windows (some Secured-core laptops), the installer stops at
-*Check this PC* and shows the one firmware setting to switch on.
+trusts only Windows (some Secured-core laptops), the installer stops on
+its first page and shows the one firmware setting to switch on.
 
 ## If antivirus stops it
 
@@ -86,15 +94,28 @@ Windows machine before it is published (`.github/workflows/windows.yml`).
    an unsigned installer cannot run on it. Use a different PC.)
 3. Windows asks **"Do you want to allow this app to make changes?"** →
    **Yes**.
-4. Follow the pages. **Check this PC** reads only. If it stops, press
+4. **The first page checks the PC by itself** while you read it (it only
+   reads). When it says *This computer can take AurOS*, press **Next**.
+   If something stops it, the page says what in one line each; press
    **Fix these for me** (see above).
-5. There is nothing to pick: it installs the AurOS you ordered, with
-   the language, keyboard and time zone Windows already uses.
-6. On **Ready**, tick the box and press **Start installing**. It
-   downloads AurOS (the long part), checks it, and gets the restart
-   ready. Nothing on the drive is changed yet.
-7. Press **Restart now**. Do not close the window instead: closing it
-   takes everything back, on purpose.
+5. **Pick the look you want**: *Like Windows* (chosen to begin with),
+   *Like a Mac*, *Big and simple* or *One thing at a time*. Each is a
+   picture of the screen you get; all four use the light Sandstone
+   look. Press **Next**. Language, keyboard and time zone come from
+   Windows without a question. You can change the look later in
+   AurOS's Settings.
+6. **Ready** says what stays (Windows and your files), where AurOS goes,
+   that the PC restarts once, and how long it takes on this PC (longer
+   on a hard disk than an SSD). Press **Install AurOS**. Nothing to tick
+   and nothing to type. It checks the PC once more, then shows one bar
+   and the time left. You can leave it: it keeps the PC awake.
+7. When it is ready it says **Ready to restart** and restarts by itself
+   after 60 seconds, counting down on the screen. **Restart now** does it
+   at once; **Not yet** stops the count. Do not close the window
+   instead: closing it before the restart takes everything back, on
+   purpose.
+
+Pictures of every page: `docs/shots/wizard/`.
 
 ## After the restart
 
