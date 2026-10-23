@@ -54,6 +54,7 @@ defaults:
 jobs:
   gate:
     runs-on: ubuntu-24.04
+    timeout-minutes: 5
     outputs:
       build: ${{ steps.g.outputs.build }}
       release: ${{ steps.g.outputs.release }}
@@ -90,7 +91,7 @@ jobs:
     needs: gate
     if: needs.gate.outputs.build == 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 300
+    timeout-minutes: 90
     # One build at a time per branch, and only the newest waiting push
     # gets built: several agents push here, and a queue of hour-long
     # builds of commits nobody will publish helps nobody. A [release]

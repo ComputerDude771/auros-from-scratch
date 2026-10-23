@@ -71,6 +71,7 @@ jobs:
     # branch starts this workflow, and runners are shared by them all.
     if: inputs.run-id != '' || contains(github.event.head_commit.message, '[publish')
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     outputs:
       go: ${{ steps.w.outputs.go }}
       run-id: ${{ steps.w.outputs.run_id }}

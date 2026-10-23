@@ -49,6 +49,7 @@ jobs:
     # branch starts this workflow, and runners are shared by them all.
     if: inputs.run-id != '' || contains(github.event.head_commit.message, '[test]')
     runs-on: ubuntu-24.04
+    timeout-minutes: 5
     outputs:
       go: ${{ steps.w.outputs.go }}
       run-id: ${{ steps.w.outputs.run_id }}
@@ -81,7 +82,7 @@ jobs:
     needs: which
     if: needs.which.outputs.go == 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - name: tools
@@ -224,7 +225,7 @@ jobs:
     needs: which
     if: needs.which.outputs.go == 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 150
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
