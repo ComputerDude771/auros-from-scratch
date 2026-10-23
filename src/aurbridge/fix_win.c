@@ -156,6 +156,36 @@ static const struct { const char *id; const wchar_t *line; } NOTES[] = {
       L"This computer\u2019s drive uses Intel\u2019s storage setting. AurOS checks it can see it." },
 };
 
+/* ── when it cannot go on: what she can do instead ────────────────── */
+
+static const struct { const char *id; const wchar_t *line; } INSTEAD[] = {
+    { "arm-pc",
+      L"Keep using Windows on this computer. AurOS goes on most other Windows "
+      L"computers, so a different one will probably be fine." },
+    { "firmware-bios",
+      L"Keep using Windows for now. Someone who knows computers may be able to "
+      L"switch it to the newer way; the AurOS website has more about this." },
+    { "intel-rst",
+      L"Keep using Windows for now. Someone who knows computers can change one "
+      L"setting so AurOS can see the drive; the AurOS website has more about this." },
+    { "smart-bad-sectors",
+      L"Copy your photos and documents somewhere else today, while the drive "
+      L"still works. Then have the drive replaced." },
+    { "smart-predict-failure",
+      L"Copy your photos and documents somewhere else today, while the drive "
+      L"still works. Then have the drive replaced." },
+    { "not-elevated",
+      L"Close this, open AurOS Setup again from your Downloads, and press Yes "
+      L"when Windows asks whether it may make changes." },
+};
+
+const wchar_t *fix_instead(const char *id)
+{
+    for (size_t i = 0; i < sizeof INSTEAD / sizeof INSTEAD[0]; i++)
+        if (!strcmp(INSTEAD[i].id, id)) return INSTEAD[i].line;
+    return NULL;
+}
+
 const wchar_t *fix_note(const char *id)
 {
     for (size_t i = 0; i < sizeof NOTES / sizeof NOTES[0]; i++)

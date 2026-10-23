@@ -1982,6 +1982,41 @@ static int block_card(const pf_result *r, int x, int y, int w)
     return h;
 }
 
+static const pf_volume *sys_volume(void);
+static int disk_is_slow(void);
+
+/* HOW LONG SWITCHING ENCRYPTION OFF TAKES HERE. Windows decrypts the
+ * whole drive in the background: on an SSD about a quarter of an hour to
+ * an hour per 256 GB, on a hard disk two to six hours per terabyte
+ * (docs/research/journey-audit-2026-10-23.md, section 2). Said in her
+ * units, before she presses the button, so "it takes a while" is a
+ * number. (The fast path replaces this with a suspend; until then.) */
+static void decrypt_time(wchar_t *out, int cch)
+{
+    const pf_volume *v = sys_volume();
+    double gb = v && v->size_bytes ? (double)v->size_bytes / 1e9 : 256.0;
+    int slow = disk_is_slow();
+    double lo = gb * (slow == 1 ? 0.12 : 0.06), hi = gb * (slow == 0 ? 0.25 : 0.36);
+    if (hi < 60.0) {
+        int l = (int)(lo / 5.0) * 5, h = ((int)hi + 9) / 10 * 10;
+        if (l < 10) l = 10;
+        if (h <= l) h = l + 10;
+        _snwprintf(out, (size_t)cch, L"%d to %d minutes", l, h);
+    } else {
+        int l = (int)(lo / 60.0 + 0.5), h = (int)(hi / 60.0 + 0.99);
+        if (l < 1) l = 1;
+        if (h <= l) h = l + 1;
+        if (l == 1 && h == 2) wcscpy(out, L"one to two hours");
+        else _snwprintf(out, (size_t)cch, L"%d to %d hours", l, h);
+    }
+    out[cch - 1] = 0;
+}
+
+static int is_bitlocker(const char *id)
+{
+    return !strcmp(id, "bitlocker-system") || !strcmp(id, "bitlocker-other");
+}
+
 static int page_blocked(int x, int y, int w)
 {
     int y0 = y;
@@ -1999,9 +2034,10 @@ static int page_blocked(int x, int y, int w)
     y += text_draw(L"Nothing on this computer has been changed.",
                    g_f_body, C_SUBTLE, x, y, narrow, DT_WORDBREAK) + S(22);
 
-    /* What cannot be fixed first: it is the answer, and the rest waits
-     * on it. */
-    for (int pass = 0; pass < 2; pass++)
+    /* What cannot be fixed, and only that, when there is any: it is the
+     * answer, and a charger or a full drive beside it is beside the point
+     * (and made the page too long to read). */
+    for (int pass = 0; pass < (cannot ? 1 : 2); pass++)
     for (int i = 0; i < g_report.n; i++) {
         const pf_result *r = &g_report.results[i];
         if (r->sev != PF_BLOCK) continue;
@@ -2032,6 +2068,13 @@ static int page_blocked(int x, int y, int w)
                          : L"We\u2019ll fix this one once the red ones are sorted.", 599);
             fix[599] = 0;
         }
+        if (is_bitlocker(r->id) && k == FIX_AUTO && !cannot) {
+            wchar_t t[64];
+            decrypt_time(t, 64);
+            _snwprintf(fix, 599, L"We switch encryption off. On this computer that takes "
+                                 L"about %ls; leave it on and plugged in.", t);
+            fix[599] = 0;
+        }
         if (k == FIX_AUTO || k == FIX_RESTART) dot = C_WARM;
         if (k == FIX_WAIT) dot = C_ACCENT_ALT;
         if (f && f->kind == FIX_RESTART && k == FIX_CANNOT)
@@ -2043,6 +2086,13 @@ static int page_blocked(int x, int y, int w)
             dot = C_ACCENT;
         } else if (j >= 0 && g_fx[j].state == FS_DONE && g_fx[j].after && f && f->after) {
             wcsncpy(fix, f->after, 599); fix[599] = 0;
+            if (is_bitlocker(r->id)) {
+                wchar_t t[64];
+                decrypt_time(t, 64);
+                _snwprintf(fix, 599, L"Encryption is being switched off. That takes about "
+                                     L"%ls here. Leave it on; we carry on by ourselves.", t);
+                fix[599] = 0;
+            }
             dot = C_ACCENT;
         } else if (j >= 0 && g_fx[j].state == FS_DONE) {
             wcscpy(fix, L"Done. Checking again\u2026");
@@ -2063,6 +2113,32 @@ static int page_blocked(int x, int y, int w)
         text_draw(fix, g_f_body, C_SUBTLE, x + S(40), y + S(14) + ph + S(4),
                   narrow - S(58), DT_WORDBREAK);
         y += h + S(10);
+    }
+
+    /* AND WHAT SHE CAN DO INSTEAD. "AurOS can't go on this computer"
+     * and a Close button is the end of the road unless the page says
+     * where the road goes: one plain sentence for each reason, and the
+     * same one only once. */
+    if (cannot) {
+        const wchar_t *said[8];
+        int n_said = 0;
+        y += S(8);
+        y += text_draw(L"What you can do", g_f_bodyb, C_FG_HI, x, y, narrow,
+                       DT_SINGLELINE) + S(8);
+        for (int i = 0; i < g_report.n && n_said < 8; i++) {
+            const pf_result *r = &g_report.results[i];
+            if (r->sev != PF_BLOCK || kind_of(r) != FIX_CANNOT) continue;
+            if (!strcmp(r->id, SBDB_BLOCK_ID)) continue;       /* its card says it */
+            const wchar_t *s = fix_instead(r->id);
+            if (!s) s = L"Keep using Windows as it is. Nothing on this computer was changed.";
+            int dup = 0;
+            for (int k = 0; k < n_said; k++) if (said[k] == s || !wcscmp(said[k], s)) dup = 1;
+            if (dup) continue;
+            said[n_said++] = s;
+            fill_circle((float)(x + S(6)), (float)(y + S(12)), (float)S(4), C_ACCENT, 1.f);
+            y += text_draw(s, g_f_body, C_FG, x + S(22), y, narrow - S(22),
+                           DT_WORDBREAK) + S(10);
+        }
     }
     return y - y0;
 }
@@ -2412,6 +2488,36 @@ static void eta_range(int *lo, int *hi)
     *lo = l; *hi = h;
 }
 
+static const pf_volume *sys_volume(void)
+{
+    if (g_report.system_volume >= 0 && g_report.system_volume < g_report.n_volumes)
+        return &g_report.volumes[g_report.system_volume];
+    return NULL;
+}
+
+/* HOW MUCH AurOS TAKES, AND WHAT WINDOWS KEEPS, the way the install
+ * will decide it (shrink_pick_target in src/aurstage/shrink.c): Windows
+ * keeps 15% of its drive free, and never less than 20 GiB; AurOS takes
+ * what is left of the free space, up to 40 GiB, and never less than it
+ * needs. Said in GiB with "GB" on them, which is what Windows' own
+ * Explorer shows her. 0 for both when the space was not measured. */
+#define GIB (1024ULL * 1024 * 1024)
+static void space_split(uint64_t *auros, uint64_t *windows_free)
+{
+    *auros = 0; *windows_free = 0;
+    const pf_volume *v = sys_volume();
+    if (!v || !v->shrink_measured) return;
+    uint64_t reclaimable = v->offline_shrinkable;
+    uint64_t reserve = v->size_bytes / 100 * 15;
+    if (reserve < 20 * GIB) reserve = 20 * GIB;
+    uint64_t headroom = reclaimable > reserve ? reclaimable - reserve : 0;
+    uint64_t share = headroom < 40 * GIB ? headroom : 40 * GIB;
+    if (share < PF_AUROS_NEED_BYTES) share = PF_AUROS_NEED_BYTES;
+    if (share > reclaimable) share = reclaimable;
+    *auros = share;
+    *windows_free = reclaimable - share;
+}
+
 static int page_ready(int x, int y, int w)
 {
     int y0 = y;
@@ -2425,13 +2531,22 @@ static int page_ready(int x, int y, int w)
                    C_ACCENT, x, y, narrow);
 
     const pf_disk *d = sys_disk();
+    wchar_t drive[64] = L"";
     if (d && d->size_bytes) {
         size_words(d->size_bytes, sz, 32);
-        _snwprintf(buf, 299, L"AurOS goes beside Windows, on this computer’s own "
-                             L"drive (%ls).", sz);
-    } else {
-        wcscpy(buf, L"AurOS goes beside Windows, on this computer’s own drive.");
+        _snwprintf(drive, 63, L" (%ls)", sz);
+        drive[63] = 0;
     }
+    uint64_t take, keep;
+    space_split(&take, &keep);
+    if (take)
+        _snwprintf(buf, 299, L"AurOS takes %d GB beside Windows on this computer\u2019s "
+                             L"own drive%ls. Windows keeps %d GB free.",
+                   (int)((take + GIB / 2) / GIB), drive, (int)(keep / GIB));
+    else
+        _snwprintf(buf, 299, L"AurOS takes up to 40 GB beside Windows on this "
+                             L"computer\u2019s own drive%ls. Windows keeps at least "
+                             L"20 GB free.", drive);
     buf[299] = 0;
     y += glyph_row(G_DRIVE, buf, C_ACCENT, x, y, narrow);
 
@@ -2659,7 +2774,7 @@ static int primary_enabled(void)
 {
     switch (g_page) {
     case PAGE_WELCOME:  return welcome_passed();
-    case PAGE_BLOCKED:  return !g_fix_busy && !g_checking;
+    case PAGE_BLOCKED:  return any_cannot() || (!g_fix_busy && !g_checking);
     case PAGE_STYLE:    return nav_allowed(PAGE_READY);
     case PAGE_READY:    return !g_checking && nav_allowed(PAGE_PROGRESS);
     case PAGE_PROGRESS: return g_install_finished && !g_checking;
@@ -2671,7 +2786,11 @@ static const wchar_t *primary_label(void)
 {
     switch (g_page) {
     case PAGE_WELCOME:  return L"Next";
-    case PAGE_BLOCKED:  return g_checking ? L"Checking…"
+    /* WHEN IT CANNOT GO ON, THE ONE BUTTON IS CLOSE. "Check again" on an
+     * ARM laptop or a BIOS PC is a loop with a teal button on it. The
+     * page still checks by itself, in case it was wrong. */
+    case PAGE_BLOCKED:  return any_cannot() ? L"Close"
+                             : g_checking ? L"Checking…"
                              : g_fix_busy ? L"Fixing…"
                              : fixable_now() ? L"Fix these for me" : L"Check again";
     case PAGE_STYLE:    return L"Next";
@@ -2740,7 +2859,7 @@ static void draw_footer(void)
 
     const wchar_t *second = NULL;
     int sid = 0;
-    if (g_page == PAGE_BLOCKED)                       { second = L"Close";   sid = ID_QUIT; }
+    if (g_page == PAGE_BLOCKED && !any_cannot())      { second = L"Close";   sid = ID_QUIT; }
     else if (back_visible())                          { second = L"Back";    sid = ID_BACK; }
     else if (g_page == PAGE_PROGRESS && install_ok() && g_cd_on)
                                                       { second = L"Not yet"; sid = ID_NOT_YET; }
@@ -2953,7 +3072,8 @@ static void do_primary(void)
     if (!primary_visible() || !primary_enabled()) { MessageBeep(MB_ICONASTERISK); return; }
     switch (g_page) {
     case PAGE_WELCOME:  goto_page(PAGE_STYLE); g_want_focus_id = ID_PRIMARY; break;
-    case PAGE_BLOCKED:  if (fixable_now()) fix_start();
+    case PAGE_BLOCKED:  if (any_cannot()) PostMessageW(g_hwnd, WM_CLOSE, 0, 0);
+                        else if (fixable_now()) fix_start();
                         else start_check(PAGE_STYLE);
                         break;
     case PAGE_STYLE:    goto_page(PAGE_READY); g_want_focus_id = ID_PRIMARY; break;
@@ -3576,6 +3696,15 @@ static void fx_machine(int hdd)
     g_report.disks[0].seek_penalty = hdd;
     snprintf(g_report.disks[0].model, sizeof g_report.disks[0].model,
              "SAMSUNG MZ7LN256HAJQ-000H1");
+    /* C:, 237 GiB, 90 GiB of it in use */
+    g_report.n_volumes = 1;
+    g_report.system_volume = 0;
+    snprintf(g_report.volumes[0].mount, sizeof g_report.volumes[0].mount, "C:");
+    snprintf(g_report.volumes[0].fs, sizeof g_report.volumes[0].fs, "NTFS");
+    g_report.volumes[0].size_bytes = 237ULL * GIB;
+    g_report.volumes[0].used_bytes = 90ULL * GIB;
+    g_report.volumes[0].offline_shrinkable = 147ULL * GIB;
+    g_report.volumes[0].shrink_measured = 1;
     fx_add("firmware-uefi", PF_PASS, "UEFI firmware");
     fx_add("space-measured", PF_INFO, "Free space measured");
     g_pf_valid = 1;
@@ -3639,7 +3768,19 @@ static int shot_run(const char *dir)
     fx_machine(0);
     fx_add("firmware-bios", PF_BLOCK, "This PC uses legacy BIOS boot");
     fx_add("not-on-ac", PF_BLOCK, "This PC is running on battery");
-    g_page = PAGE_BLOCKED; shot_save(dir, "2b-blocked-cannot");
+    g_page = PAGE_BLOCKED; shot_save(dir, "2b-blocked-bios");
+
+    fx_machine(0);
+    fx_add("arm-pc", PF_BLOCK, "This PC has an ARM processor");
+    g_page = PAGE_BLOCKED; shot_save(dir, "2e-blocked-arm");
+
+    fx_machine(0);
+    fx_add("intel-rst", PF_BLOCK, "AurOS can't see this PC's drive");
+    g_page = PAGE_BLOCKED; shot_save(dir, "2f-blocked-intel-nvme");
+
+    fx_machine(1);
+    fx_add("bitlocker-system", PF_BLOCK, "This drive is encrypted with BitLocker");
+    g_page = PAGE_BLOCKED; shot_save(dir, "2g-blocked-encrypted-hard-disk");
 
     /* A Secured-core PC, which trusts nothing but Windows: the one
      * refusal that carries a picture, judged by the same sbdb_judge()
@@ -3934,13 +4075,18 @@ static int nav_test(const char *dir)
                  "something a program can fix: the button fixes it");
         snprintf(g_report.results[3].id, sizeof g_report.results[3].id, "pending-reboot");
         nt_check(fixable_now() == 2, "a waiting restart is something the button does");
-        g_report.n = 2 + 5; g_report.n_block = 5;
-        nt_check(fixable_now() == 0 && !wcscmp(primary_label(), L"Check again"),
-                 "next to something unfixable, nothing is fixed and nothing restarts");
         g_scroll[PAGE_BLOCKED] = 0;
         render();
         nt_check(g_content_h > 0 && g_content_h <= g_view_h,
-                 "five problems fit on the page without scrolling");
+                 "four problems a program or she can fix fit on the page without scrolling");
+        g_report.n = 2 + 5; g_report.n_block = 5;
+        nt_check(fixable_now() == 0 && !wcscmp(primary_label(), L"Close"),
+                 "next to something unfixable, nothing is fixed, nothing restarts, "
+                 "and the one button is Close");
+        g_scroll[PAGE_BLOCKED] = 0;
+        render();
+        nt_check(g_content_h > 0 && g_content_h <= g_view_h,
+                 "when it cannot go on, the reason and what to do instead fit without scrolling");
         g_view_h = 300; g_content_h = 900; g_scroll[PAGE_BLOCKED] = 0;
         scroll_by(10000);
         nt_check(g_scroll[PAGE_BLOCKED] == 600, "a long page scrolls to its end, and no further");
