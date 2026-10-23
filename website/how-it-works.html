@@ -140,9 +140,9 @@
             <p class="big">AurOS lives in space Windows isn&rsquo;t using. Here&rsquo;s what I need for that to work:</p>
             <ul class="need">
               <li><b>Windows</b><span>10 or 11, started the modern way (UEFI). Almost every PC from the last ten years is.</span></li>
-              <li><b>Free space</b><span>About 50 GB on C:. AurOS keeps 28 GB; the rest is room to work while it copies.</span></li>
+              <li><b>Free space</b><span>AurOS takes up to 40 GB of the space Windows isn&rsquo;t using (less on a small drive), and always leaves Windows at least 20 GB free, or 15% of a big drive.</span></li>
               <li><b>Internet</b><span>A 1.8 GB download, wired or reliable wireless.</span></li>
-              <li><b>Time</b><span>About 10 minutes on a typical computer with fast internet; longer on an old hard disk or slow internet.</span></li>
+              <li><b>Time</b><span>About 10 minutes on a newer computer with a solid-state drive and fast internet; longer on a spinning hard disk or slow internet.</span></li>
               <li><b>Secure Boot</b><span>Leave it on.</span></li>
             </ul>
           </div>
@@ -172,7 +172,7 @@
         <div>
           <h2>The way back.</h2>
           <p class="big">Before the installer changes a single byte of Windows, it saves exactly how I started, and keeps that copy in two places.</p>
-          <p>Until you tell AurOS it works, switching me on still starts Windows. &ldquo;Put Windows back&rdquo; is in AurOS&rsquo;s Settings and in my start-up menu, behind a question whose answer starts at No. It gives Windows all of its drive back and switches me off; switched on again, Windows starts.</p>
+          <p>Until you tell AurOS it works, Windows is kept exactly as it was, and if AurOS ever fails to start, I start Windows by myself. &ldquo;Put Windows back&rdquo; is in AurOS&rsquo;s Settings and in my start-up menu, behind a question whose answer starts at No. It gives Windows all of its drive back and switches me off; switched on again, Windows starts.</p>
           <p>The tests do it twice on every build, then check every file in Windows against its fingerprint from before the install. They all match.</p>
           <p class="only-installed"><button class="btn btn-ghost" type="button" id="putback">Put Windows back</button> <span class="mono" id="putback-say" style="color:var(--muted)"></span></p>
         </div>
@@ -310,8 +310,8 @@
     <h3 id="ask-title">AurOS is on this computer</h3>
     <p class="sub">Have a look around. Nothing has been decided yet.</p>
     <ul>
-      <li>Right now, switching this computer on still starts Windows.</li>
-      <li>That stays true until you press Yes.</li>
+      <li>Until you press Yes, Windows is kept just as it was.</li>
+      <li>If AurOS ever fails to start, this computer starts Windows by itself.</li>
       <li>This will ask again next time, so there is no hurry.</li>
     </ul>
     <div class="row">

@@ -88,11 +88,21 @@
     showElsewhere(kind);
   } else if (kind === "windows") {
     if (/Windows NT (5|6)\./.test(ua)) $("old-win").hidden = false;
+    var uad = navigator.userAgentData;
+    var hints = uad && typeof uad.getHighEntropyValues === "function";
+    /* Without Chrome's hints (Firefox), the old UA string still tells
+     * 64-bit Windows apart: a 64-bit browser says Win64/x64, a 32-bit
+     * one on 64-bit Windows says WOW64, and on 32-bit Windows it says
+     * neither. Chrome and Edge always say "Win64; x64", so for them the
+     * hints below decide. */
+    if (!hints) {
+      if (/ARM64|aarch64/i.test(ua)) showElsewhere("arm");
+      else if (!/Win64|WOW64|x64|x86_64|amd64/i.test(ua)) showElsewhere("win32");
+    }
     /* Chrome and Edge say what the processor is. "arm" means the
      * computer is ARM even when this browser runs as x64 under
-     * emulation. Firefox can't tell us; then we don't guess. */
-    var uad = navigator.userAgentData;
-    if (uad && typeof uad.getHighEntropyValues === "function") {
+     * emulation. */
+    if (hints) {
       uad.getHighEntropyValues(["architecture", "bitness"]).then(function (v) {
         if (v && v.architecture === "arm") showElsewhere("arm");
         else if (v && v.bitness === "32") showElsewhere("win32");

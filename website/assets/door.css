@@ -264,6 +264,7 @@ html.signed .unsigned-only { display: none; }
 /* ── good to know ─────────────────────────────────────────────── */
 .facts { margin: 24px 0 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); gap: 20px; }
 .facts > div { background: var(--card); border: 2px solid var(--line); border-radius: 14px; padding: 20px 22px; }
+.facts > div:last-child:nth-child(odd) { grid-column: 1 / -1; }
 .facts dt { font-weight: 700; font-size: 23px; margin-bottom: 6px; }
 .facts dd { margin: 0; }
 

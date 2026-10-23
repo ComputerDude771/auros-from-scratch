@@ -14,9 +14,10 @@
 //   - any visible text is under 18px, or any text (buttons included) is
 //     under 4.5:1 against its background, from the computed styles;
 //   - any internal link, image, script, stylesheet or #anchor is missing;
-//   - a Mac, iPhone, Android, Chromebook, Linux or Windows-on-ARM visit
-//     does not show "Open this page on the Windows computer..." (ARM: "can't
-//     go on this computer") with an email link and a copy button;
+//   - a Mac, iPhone, Android, Chromebook or Linux visit does not show
+//     "Open this page on the Windows computer...", or a Windows-on-ARM or
+//     32-bit Windows visit does not show "AurOS can't go on this
+//     computer", each with an email link and a copy button;
 //   - a page asks any server but this one for anything;
 //   - the page scrolls sideways at 320px or at 200% zoom.
 //
@@ -88,6 +89,8 @@ const UA = {
   winEdge: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36 Edg/130.0.0.0",
   winChrome: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
   winFirefox: "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:131.0) Gecko/20100101 Firefox/131.0",
+  winFirefoxWow64: "Mozilla/5.0 (Windows NT 10.0; WOW64; rv:115.0) Gecko/20100101 Firefox/115.0",
+  win32Firefox: "Mozilla/5.0 (Windows NT 10.0; rv:115.0) Gecko/20100101 Firefox/115.0",
   macSafari: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15",
   macChrome: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
   chromeOS: "Mozilla/5.0 (X11; CrOS x86_64 14541.0.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
@@ -233,6 +236,7 @@ for (const v of [
   { name: "Windows Edge 1366x768", ua: UA.winEdge, uad: UAD.winX64, viewport: { width: 1366, height: 768 }, shots: ["index-desktop-fold.png", "index-desktop-full.png"] },
   { name: "Windows Chrome 390x844", ua: UA.winChrome, uad: UAD.winX64, viewport: { width: 390, height: 844 }, shots: ["index-narrow-windows-fold.png"] },
   { name: "Windows Firefox 1366x768 (can't tell the chip)", ua: UA.winFirefox, uad: null, viewport: { width: 1366, height: 768 } },
+  { name: "32-bit Firefox on 64-bit Windows", ua: UA.winFirefoxWow64, uad: null, viewport: { width: 1366, height: 768 } },
   { name: "no script 1366x768", ua: UA.linux, js: false, viewport: { width: 1366, height: 768 } },
   { name: "no script 390x844", ua: UA.linux, js: false, viewport: { width: 390, height: 844 } },
 ]) {
@@ -256,6 +260,8 @@ for (const v of [
 // 2. Not a Windows PC AurOS can go on: the kind message instead
 for (const v of [
   { name: "Windows on ARM (Edge)", ua: UA.winEdge, uad: UAD.winArm, want: /can.t go on this computer/i, shots: ["index-arm.png"] },
+  { name: "32-bit Windows (Firefox, no chip hints)", ua: UA.win32Firefox, uad: null, want: /can.t go on this computer/i },
+  { name: "32-bit Windows (Edge's hints)", ua: UA.winEdge, uad: { platform: "Windows", architecture: "x86", bitness: "32", mobile: false }, want: /can.t go on this computer/i },
   { name: "Mac (Safari)", ua: UA.macSafari, uad: null, want: /open this page on the Windows computer/i, shots: ["index-mac.png"] },
   { name: "Mac (Chrome)", ua: UA.macChrome, uad: UAD.mac, want: /open this page on the Windows computer/i },
   { name: "iPhone", device: "iPhone 13", uad: null, want: /open this page on the Windows computer/i, shots: ["index-phone-fold.png"] },

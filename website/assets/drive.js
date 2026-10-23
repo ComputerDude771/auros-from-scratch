@@ -346,7 +346,7 @@
     if (!installed) return saysDefault;
     if (answer === "yes") return "<b>AurOS starts from now on.</b> Windows is still in its own partition, smaller, every file untouched. &ldquo;Put Windows back&rdquo; is further down.";
     if (answer === "no") return "<b>Windows starts next time.</b> AurOS is still on my drive and nothing has been deleted. &ldquo;Put Windows back&rdquo; gives Windows its space back.";
-    return "<b>AurOS is on me now.</b> Two new partitions, in space Windows wasn’t using. Switching me on still starts Windows until someone answers Yes.";
+    return "<b>AurOS is on me now.</b> Two new partitions, in space Windows wasn’t using. Until someone answers Yes, Windows is kept just as it was, and if AurOS ever fails to start, I start Windows by myself.";
   }
 
   /* ── the one restart ────────────────────────────────────────────── */
