@@ -7,9 +7,11 @@
 # again. (workflow_dispatch would be the obvious way, and it only works
 # for workflows on the default branch.)
 #
-#   unit   the fast suites: aurfirsttest, choicestest, nvramtest,
-#          bridgetest, manifesttest, signtest, Ferry's, and the console
-#          installer's selftest under Wine
+#   unit   the fast suites: aurfirsttest, choicestest (with the image's
+#          aurshell), nmtest, sessionenvtest, looktest, storetest,
+#          shrinktargettest, probetest, nvramtest, bridgetest,
+#          manifesttest, signtest, Ferry's, and the console installer's
+#          selftest under Wine
 #   e2e    one job per end-to-end test, in QEMU with KVM: installtest,
 #          nosticktest, firstboottest, choicesboottest, putbacktest
 #
@@ -127,7 +129,34 @@ jobs:
         run: sh tools/aurfirsttest.sh 2>&1 | tee transcripts/aurfirsttest.txt
       - name: choicestest
         if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
-        run: sh tools/choicestest.sh 2>&1 | tee transcripts/choicestest.txt
+        run: |
+          # AURSHELL: the image's own aurshell, through the image's own
+          # loader and libraries, for the "the desktop starts as" checks.
+          R="$PWD/work/forge/desktop/rootfs"
+          printf '#!/bin/sh\nexec "%s/lib64/ld-linux-x86-64.so.2" --library-path "%s/usr/lib/x86_64-linux-gnu:%s/lib/x86_64-linux-gnu" "%s/usr/bin/aurshell" "$@"\n' \
+              "$R" "$R" "$R" "$R" > "$RUNNER_TEMP/aurshell"
+          chmod +x "$RUNNER_TEMP/aurshell"
+          AURSHELL="$RUNNER_TEMP/aurshell" sh tools/choicestest.sh 2>&1 | tee transcripts/choicestest.txt
+          grep -q 'the desktop starts as' transcripts/choicestest.txt \
+            || { echo "choicestest did not start the image's aurshell"; exit 1; }
+      - name: nmtest (the image's NetworkManager - the cable is managed, names resolve)
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        run: RFS=work/forge/desktop/rootfs sh tools/nmtest.sh 2>&1 | tee transcripts/nmtest.txt
+      - name: sessionenvtest
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        run: |
+          cc -O2 -std=gnu11 -o "$RUNNER_TEMP/sessionenvtest" tools/sessionenvtest.c src/aurshell/run.c -I src/aurshell
+          "$RUNNER_TEMP/sessionenvtest" 2>&1 | tee transcripts/sessionenvtest.txt
+      - name: looktest
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        run: |
+          cc -O2 -std=gnu11 -o "$RUNNER_TEMP/looktest" tools/looktest.c \
+             src/aurshell/settings.c src/aurshell/power.c src/aurshell/run.c \
+             src/aurshell/foot.c src/aurshell/welcome.c src/aurshell/draw.c \
+             src/aurshell/shellcommon.c src/aurshell/anim.c \
+             src/aurshell/layouts/[a-z]*.c src/common/theme.c src/common/font.c \
+             -I src/aurshell -I src/common -lm
+          "$RUNNER_TEMP/looktest" 2>&1 | tee transcripts/looktest.txt
       - name: nvramtest
         if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
         run: sudo sh tools/nvramtest.sh 2>&1 | tee transcripts/nvramtest.txt
