@@ -36,6 +36,16 @@ env:
   IMAGE_SHA256: b36100653b1b3dd339c6209cdd60ab169706717f512f2bb5dee0273dd404da41
   IMAGE_BYTES: 5333057536
 
+# One run at a time per branch. A push while one runs queues the newest
+# and drops older queued ones (GitHub keeps one pending run per group), so
+# a fast stream of pushes cannot fill the runner pool -- the free plan caps
+# a repository at 20 concurrent jobs, and every push used to start up to
+# five of these -- and a run that has started always finishes, so there is
+# always a result for a recent commit.
+concurrency:
+  group: windows-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build:
     runs-on: ubuntu-24.04
