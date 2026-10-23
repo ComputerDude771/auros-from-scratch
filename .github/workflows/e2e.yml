@@ -50,11 +50,20 @@ jobs:
       - id: g
         env:
           MSG: ${{ github.event.head_commit.message }}
-          COMMITS: ${{ toJSON(github.event.commits) }}
+          BEFORE: ${{ github.event.before }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           run=false
           case "$MSG" in *'[e2e]'*) run=true ;; esac
-          if printf '%s' "$COMMITS" | grep -qE '"(tools/e2e/[^"]*|\.github/workflows/e2e\.yml)"'; then
+          # the files this push changed (the payload does not list them)
+          case "$BEFORE" in
+            ''|0000000000000000000000000000000000000000)
+              files=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA" --jq '.files[].filename' || true) ;;
+            *)
+              files=$(gh api "repos/$GITHUB_REPOSITORY/compare/$BEFORE...$GITHUB_SHA" --jq '.files[].filename' || true) ;;
+          esac
+          printf '%s\n' "$files"
+          if printf '%s\n' "$files" | grep -qE '^(tools/e2e/|\.github/workflows/e2e\.yml$)'; then
             run=true
           fi
           echo "run=$run" | tee -a "$GITHUB_OUTPUT"
