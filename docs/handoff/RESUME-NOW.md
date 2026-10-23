@@ -1,5 +1,8 @@
 # RESUME NOW — if you are a new agent taking over, start here
 
+> **04:35: every parallel stream, its files and its standing brief are in
+> `docs/handoff/STREAMS.md`. Respawn any stream not marked DONE from there.**
+
 Kept current by the lead agent of session 2026-10-23 (it may run out of
 credits mid-flight). Read this file top to bottom (10 minutes), then
 `docs/handoff/SESSION-2026-10-23.md` (decisions D1-D7 and the progress
