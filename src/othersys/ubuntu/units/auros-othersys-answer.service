@@ -1,0 +1,7 @@
+[Unit]
+Description=AurOS: act on the answer to "does everything work?"
+After=sys-firmware-efi-efivars.mount
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/auros-othersys/othersys.py answer

@@ -1,0 +1,6 @@
+[Unit]
+Description=TEST ONLY: report the session, then switch off
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/auros-othersys-test/report session

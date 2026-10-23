@@ -1,0 +1,10 @@
+# AurOS: the question writes one word here; root acts on it.
+[Unit]
+Description=AurOS: an answer to "does everything work?"
+
+[Path]
+PathExists=/var/lib/auros-othersys/inbox/answer
+Unit=auros-othersys-answer.service
+
+[Install]
+WantedBy=paths.target
