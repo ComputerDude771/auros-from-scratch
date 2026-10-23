@@ -61,6 +61,8 @@ that people will pay for it.
 
 1. `docs/handoff/RESUME-NOW.md` — state, CI, release flow, unverified review findings.
 2. `docs/handoff/STREAMS.md` — every workstream, its files, common rules, briefs.
+   `docs/handoff/METHODOLOGY.md` — HOW the work was run (lead + 14 stream agents,
+   worktrees, contracts, adversarial workflows, CI/container/owner lessons). Copy it.
 3. `docs/handoff/streams/*.md` — each stream's own latest state and next steps
    (written by the stream agents at the end; trust these over older notes).
 4. The tail of `docs/handoff/SESSION-2026-10-23.md` (Progress log; newest last).
