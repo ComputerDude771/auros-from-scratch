@@ -43,6 +43,8 @@ jobs:
           if printf '%s\n' "$files" | grep -qE '^(src/othersys/|tools/othersys/|\.github/workflows/othersys\.yml$)'; then
             run=true
           fi
+          # a change that does not alter what the running proof tests
+          case "$(printf '%s' "$MSG" | head -1)" in *'[othersys-skip]'*) run=false ;; esac
           echo "run=$run" | tee -a "$GITHUB_OUTPUT"
 
   selftest:
@@ -73,10 +75,15 @@ jobs:
   vm:
     needs: [gate, prep]
     if: needs.gate.outputs.run == 'true'
+    # one run per branch at a time, never cancelled (docs/handoff/STREAMS.md rule 6)
+    concurrency:
+      group: othersys-vm-${{ github.ref }}-${{ matrix.variant }}
+      cancel-in-progress: false
     runs-on: ubuntu-24.04
     timeout-minutes: 240
     strategy:
       fail-fast: false
+      max-parallel: 2
       matrix:
         variant: [ntfs, bitlocker, nofixup]
     steps:

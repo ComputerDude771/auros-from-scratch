@@ -122,6 +122,7 @@ def main():
     ap.add_argument('--test-hooks')
     ap.add_argument('--skip-fixup', action='store_true')
     ap.add_argument('--disk-gib', type=int, default=48)
+    ap.add_argument('--system', default=SYSTEM, help='a src/othersys/systems/*.json')
     ap.add_argument('--iso-head-mib', type=int, default=0,
                     help='DEVELOPMENT ONLY: write just the ISO\'s first MiB (kernel, initrd, '
                          'directories) to smoke-test the boot chain on a machine without room')
@@ -130,7 +131,7 @@ def main():
     os.makedirs(out, exist_ok=True)
     work = os.path.join(out, 'parts')
     os.makedirs(work, exist_ok=True)
-    system = json.load(open(SYSTEM))
+    system = json.load(open(a.system))
     iso_bytes = os.path.getsize(a.iso)
     if iso_bytes != system['iso_bytes']:
         sys.exit('the ISO is %d bytes; the manifest says %d' % (iso_bytes, system['iso_bytes']))
@@ -283,7 +284,7 @@ def main():
     json.dump(choices, open(os.path.join(out, 'choices.json'), 'w'), indent=1)
 
     seed = os.path.join(out, 'seed')
-    cmd = [sys.executable, '-I', PLAN, '--system', SYSTEM, '--layout', os.path.join(out, 'layout.json'),
+    cmd = [sys.executable, '-I', PLAN, '--system', a.system, '--layout', os.path.join(out, 'layout.json'),
            '--boot', os.path.join(out, 'boot.json'), '--choices', os.path.join(out, 'choices.json'),
            '--efi-dir', efi, '--out', seed, '--password-out', os.path.join(out, 'password.txt')]
     if a.test_hooks:

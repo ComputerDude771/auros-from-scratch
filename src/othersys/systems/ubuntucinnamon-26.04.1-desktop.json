@@ -1,0 +1,26 @@
+{
+  "id": "ubuntucinnamon-26.04.1-desktop",
+  "name": "Ubuntu Cinnamon 26.04 LTS",
+  "legal": "Ubuntu is a trademark of Canonical Ltd. AurOS is not affiliated with or endorsed by Canonical or the Ubuntu Cinnamon team.",
+  "installer": "subiquity",
+  "iso_url": "https://cdimage.ubuntu.com/ubuntucinnamon/releases/26.04/release/ubuntucinnamon-26.04.1-desktop-amd64.iso",
+  "iso_name": "ubuntucinnamon-26.04.1-desktop-amd64.iso",
+  "iso_bytes": 5667256320,
+  "iso_sha256": "ceb8156f6aabf597da4a98a9794a319d765b39c888a5200ae88f3915d22c8371",
+  "iso_fsuuid": "2026-08-26-13-55-55-00",
+  "sums_url": "https://cdimage.ubuntu.com/ubuntucinnamon/releases/26.04/release/SHA256SUMS",
+  "sums_sig_url": "https://cdimage.ubuntu.com/ubuntucinnamon/releases/26.04/release/SHA256SUMS.gpg",
+  "signing_key": "keys/ubuntu-cdimage-2012.gpg",
+  "signing_fingerprint": "843938DF228D22F7B3742BC0D94AA3F0EFE21092",
+  "efi_files": {
+    "/EFI/boot/bootx64.efi": "shimx64.efi",
+    "/EFI/boot/grubx64.efi": "grubx64.efi",
+    "/EFI/boot/mmx64.efi": "mmx64.efi"
+  },
+  "shim_signed_by": "Microsoft Corporation UEFI CA 2011",
+  "source_id": "ubuntucinnamon-desktop",
+  "min_root_bytes": 25769803776,
+  "esp_bytes": 536870912,
+  "esp_dir": "\\EFI\\ubuntu",
+  "nvram_label": "ubuntu"
+}

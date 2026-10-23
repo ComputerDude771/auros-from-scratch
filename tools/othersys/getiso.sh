@@ -5,7 +5,7 @@
 set -euo pipefail
 dir=$1
 here=$(cd "$(dirname "$0")" && pwd)
-sys=$here/../../src/othersys/systems/ubuntu-26.04.1-desktop.json
+sys=$here/../../src/othersys/systems/${2:-ubuntu-26.04.1-desktop}.json
 get() { python3 -I -c "import json,sys; print(json.load(open(sys.argv[1]))[sys.argv[2]])" "$sys" "$1"; }
 mkdir -p "$dir"
 curl -fsSL --retry 5 -o "$dir/SHA256SUMS" "$(get sums_url)"
