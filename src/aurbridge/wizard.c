@@ -2366,14 +2366,44 @@ static int after_restart_min(void)
     return s == 1 ? ETA_HDD_AFTER_MIN : s == 0 ? ETA_SSD_AFTER_MIN : ETA_HDD_AFTER_MIN;
 }
 
+/* HER INTERNET, MEASURED. The download starts the moment the check
+ * passes (download_begin), so by the Ready page there is usually a rate
+ * to go on instead of an assumed one. Percent per second, 0 = not yet. */
+static ULONGLONG g_dlm_t0;
+static int       g_dlm_p0 = -1;
+static double    g_dlm_rate;
+
+static void dl_measure(ULONGLONG now)
+{
+    if (g_dl_state != 1 || !g_ab_lock_ready) return;
+    EnterCriticalSection(&g_ab_lock);
+    int pct = g_ab_pct;
+    LeaveCriticalSection(&g_ab_lock);
+    if (g_dlm_p0 < 0 || pct < g_dlm_p0) { g_dlm_t0 = now; g_dlm_p0 = pct; return; }
+    if (now - g_dlm_t0 >= 8000 && pct - g_dlm_p0 >= 1)
+        g_dlm_rate = (double)(pct - g_dlm_p0) / ((double)(now - g_dlm_t0) / 1000.0);
+}
+
 static void eta_range(int *lo, int *hi)
 {
+    /* The download: assumed (a wide range), measured (a narrow one), or
+     * already done. */
     double dl = (double)download_bytes() / ETA_LINK_BPS / 60.0;
+    double dl_lo = 0.5, dl_hi = 1.6;
+    if (g_dl_state == 2) {
+        dl = 0.0;
+    } else if (g_dl_state == 1 && g_dlm_rate > 0.0 && g_ab_lock_ready) {
+        EnterCriticalSection(&g_ab_lock);
+        int pct = g_ab_pct;
+        LeaveCriticalSection(&g_ab_lock);
+        dl = (100.0 - (double)pct) / g_dlm_rate / 60.0;
+        dl_lo = 0.9; dl_hi = 1.3;
+    }
     int s = disk_is_slow();
-    double lo_m = dl * 0.5 + (s == 1 ? ETA_HDD_WORK_MIN + ETA_HDD_AFTER_MIN
-                                     : ETA_SSD_WORK_MIN + ETA_SSD_AFTER_MIN);
-    double hi_m = dl * 1.6 + (s == 0 ? ETA_SSD_WORK_MIN * 1.5 + ETA_SSD_AFTER_MIN
-                                     : ETA_HDD_WORK_MIN * 1.5 + ETA_HDD_AFTER_MIN);
+    double lo_m = dl * dl_lo + (s == 1 ? ETA_HDD_WORK_MIN + ETA_HDD_AFTER_MIN
+                                       : ETA_SSD_WORK_MIN + ETA_SSD_AFTER_MIN);
+    double hi_m = dl * dl_hi + (s == 0 ? ETA_SSD_WORK_MIN * 1.5 + ETA_SSD_AFTER_MIN
+                                       : ETA_HDD_WORK_MIN * 1.5 + ETA_HDD_AFTER_MIN);
     int l = (int)(lo_m / 5.0) * 5;
     if (l < 5) l = 5;
     int h = (int)ceil(hi_m / 5.0) * 5;
@@ -3221,6 +3251,7 @@ static void tick(void)
 {
     g_ticks++;
     int need = 0;
+    dl_measure(GetTickCount64());
 
     if (pf_poll()) {
         g_settle = 0;
@@ -3964,6 +3995,13 @@ static int nav_test(const char *dir)
         fx_machine(1); fx_ready(); eta_range(&lo, &hi);
         snprintf(what, sizeof what, "a hard disk: %d to %d minutes, longer", lo, hi);
         nt_check(lo >= 20 && hi > 30 && lo < hi, what);
+        int slo, shi;
+        fx_machine(0); fx_ready(); eta_range(&slo, &shi);
+        InterlockedExchange(&g_dl_state, 2);
+        eta_range(&lo, &hi);
+        snprintf(what, sizeof what, "with the download already done: %d to %d minutes", lo, hi);
+        nt_check(hi < shi && lo >= 5, what);
+        InterlockedExchange(&g_dl_state, 0);
     }
 
     if (g_nt) {
