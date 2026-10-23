@@ -71,9 +71,15 @@ switch ($variant) {
   }
   'smalldisk' {
     # A small drive with years of leftovers in Windows' temp folder: too
-    # little room until something cleans up (the installer's space fix).
+    # little room until something cleans up (the installer's space fix,
+    # which empties that folder). Sized from what is free: 30 GB left
+    # free is 22 GB AurBridge can give (it keeps 8 for Windows) against
+    # the 28 it needs; with the leftovers gone it has 28 plus theirs.
     $facts.variant = Fact {
-      fsutil file createnew C:\Windows\Temp\e2e-old-leftovers.tmp 12884901888
+      $free = (Get-Volume -DriveLetter C).SizeRemaining
+      $junk = $free - 30GB
+      if ($junk -lt 10GB) { "TOO SMALL: only $([math]::Round($free / 1GB, 1)) GB free, the variant needs 40" }
+      else { fsutil file createnew C:\Windows\Temp\e2e-old-leftovers.tmp $junk }
       Get-Volume -DriveLetter C | Select-Object Size, SizeRemaining | Format-List
     }
   }

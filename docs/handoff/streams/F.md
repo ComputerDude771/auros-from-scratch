@@ -1,6 +1,6 @@
 # Stream F: install AurOS from a real Windows, end to end (handoff)
 
-Updated 2026-10-23 04:40 UTC. Branch `claude/brave-hypatia-x72g1m`.
+Updated 2026-10-23 04:50 UTC. Branch `claude/brave-hypatia-x72g1m`.
 Files: `.github/workflows/e2e.yml`, `tools/e2e/**` (nothing else).
 Full user guide: `tools/e2e/README.md`. This page is the state of the work.
 
@@ -69,7 +69,11 @@ is published. Details: README "Pointing it at a new build".
    leftover in `C:\Windows\Temp`); `pending` (at the test's logon, a SYSTEM
    task runs `dism /enable-feature ... /norestart` → real `RebootPending`);
    `win10` (`WINDOWS_VERSION=10` in `get-windows.sh`).
-4. **What each variant must see** (from `src/aurbridge/preflight.c` and
+4. **What each variant must see**: code DONE at 04:50 (`VARIANT_EXPECT` and
+   `Flow.check_variant` in `e2e.py`; smalldisk's leftover is now sized from
+   the free space). Not yet run: run `[e2e:smalldisk,pending]`, then
+   `[e2e:bitlocker,win10]`, once base is green. Background
+   (from `src/aurbridge/preflight.c` and
    `fix_win.c`): `pending-reboot` is PF_BLOCK with FIX_RESTART (the driver must
    take the restart, log on again, and run the installer again from Downloads).
    `insufficient-space` is FIX_AUTO (`free_space`), and the flow must then go

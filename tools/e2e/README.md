@@ -66,9 +66,15 @@ minutes, and `hdd` uses the base one.
 | `base` | Windows 11, 128 GB SSD, Fast Startup on (Windows' default) | as described above |
 | `hdd` | the same, on a hard disk | QEMU block throttling: 100 MB/s, 120 IO/s (`E2E_DISK_THROTTLE`); the timings are the wall clock on such a disk |
 | `bitlocker` | BitLocker / device encryption on | first logon: `Enable-BitLocker C: -TpmProtector -UsedSpaceOnly`, waited until fully encrypted; the installer must deal with it |
-| `smalldisk` | a 72 GB drive with 12 GB of old leftovers in `C:\Windows\Temp` | too little room until the installer's space fix cleans up |
+| `smalldisk` | a 72 GB drive whose leftovers in `C:\Windows\Temp` leave 30 GB free | first logon makes one leftover file of (free − 30 GB): 22 GB to give against the 28 needed, enough once the installer's space fix empties that folder |
 | `pending` | Windows waiting for a restart after servicing | at the test's logon a scheduled task enables a Windows feature with `/norestart` (real `RebootPending`, cleared by a real restart) |
 | `win10` | Windows 10 Enterprise 22H2 evaluation | `WINDOWS_VERSION=10` in `get-windows.sh` |
+
+Each variant must also get the stop it was made for: `VARIANT_EXPECT`
+in `e2e.py` names the words a wizard page must show, that "Fix these
+for me" was pressed, and (pending) that Windows restarted for the fix.
+A variant whose PC came out wrong fails instead of quietly testing the
+plain PC again.
 
 The variant's Windows is set up by `guest/firstlogon.ps1` from
 `e2e\variant.txt` on the answer CD (`mkanswer.sh`, `E2E_GOLDEN`,

@@ -74,6 +74,19 @@ VARIANT = E("E2E_VARIANT", "base")
 DISK_GB = int(E("E2E_DISK_GB", "128"))
 DISK_THROTTLE = E("E2E_DISK_THROTTLE", "")     # e.g. bps=104857600,iops=120
 
+# What the installer must say, and do, on each variant's PC (its stops
+# and fixes: src/aurbridge/preflight.c, fix_win.c). Without this a
+# variant whose PC came out wrong (too much room left, encryption not
+# on) would pass by testing the plain PC again.
+#   page:     a regular expression some wizard page must show
+#   fix:      "Fix these for me" was pressed
+#   restarts: Windows restarted for the fix, before the install
+VARIANT_EXPECT = {
+    "smalldisk": dict(page=r"enough free space|free space on drive", fix=True, restarts=0),
+    "bitlocker": dict(page=r"is encrypted|encryption off", fix=True, restarts=0),
+    "pending":   dict(page=r"waiting to restart|finish an update", fix=True, restarts=1),
+}
+
 HUB = "http://10.0.2.2:8000"
 DEADLINE = time.time() + 60 * float(E("E2E_MINUTES", "300"))
 
@@ -175,6 +188,27 @@ class Flow:
         self.m = Machine(self.rec, a.work, self.disk, self.vars, self.tpm,
                          throttle=DISK_THROTTLE)
         self.rec.log(f"variant {VARIANT}: disk {DISK_GB} GB, throttle '{DISK_THROTTLE or 'none'}'")
+        self.wizard_pages = []      # the text of each page a button was pressed on
+        self.fix_presses = 0
+        self.fix_restarts = 0
+
+    def check_variant(self):
+        """After the wizard: the variant's PC got the stop it was made
+        for, and the installer's own fix cleared it."""
+        want = VARIANT_EXPECT.get(VARIANT)
+        if not want:
+            return
+        seen = [t for t in self.wizard_pages if re.search(want["page"], t, re.I)]
+        self.log(f"variant {VARIANT}: pages matching /{want['page']}/: {len(seen)}, "
+                 f"'Fix these for me' pressed {self.fix_presses}, restarts for a fix {self.fix_restarts}")
+        if not seen:
+            raise Failure(f"variant {VARIANT}: no wizard page said /{want['page']}/, so this PC was "
+                          "not the one the variant claims (or the installer did not notice); pages: " +
+                          " || ".join(t[:200] for t in self.wizard_pages))
+        if want["fix"] and not self.fix_presses:
+            raise Failure(f"variant {VARIANT}: the installer went on without its fix being pressed")
+        if self.fix_restarts < want["restarts"]:
+            raise Failure(f"variant {VARIANT}: the fix should have restarted Windows, and it did not")
 
     # -- the website a person starts from --
     def prepare_website(self):
@@ -547,6 +581,7 @@ class Flow:
                     return
                 if resets:
                     self.log("Windows restarted during the wizard (a fix that needs one?)")
+                    self.fix_restarts += 1
                     rect = None
                 if rect is None:
                     # Gone: closed, crashed, or Windows is restarting for
@@ -572,6 +607,12 @@ class Flow:
                         raise Failure("the installer stopped without offering a restart: " +
                                       vision.text_of(vision.ocr(img, rect))[:900])
                     n = clicks.get(label, 0)
+                    if not self.wizard_pages or n == 0 or label != last_label:
+                        page = vision.text_of(vision.ocr(img, rect))
+                        self.wizard_pages.append(page)
+                        self.log(f"wizard page before '{label}': {page[:400]}")
+                    if re.search(r"fix these", label, re.I):
+                        self.fix_presses += 1
                     if label == last_label and n >= 6:
                         self.m.save(img, "wizard-stuck")
                         raise Failure(f"pressed '{label}' six times and the page did not move on: " +
@@ -785,6 +826,7 @@ def cmd_flow(a):
         f.keep_download()
         f.open_installer()
         f.drive_wizard()
+        f.check_variant()
         f.watch_install()
         f.answer_yes()
         if E("E2E_STORE", "1") == "1":
