@@ -109,7 +109,11 @@ which is `claude/linux-distro-from-scratch-tt5dx1`).
 At 03:20 the lead launched workflow `tonight-review` (run `wf_f84f4f83-bfc`): one reviewer per area (forge-shell, staging, ci, website, e2e, integration) over `c358a32..HEAD`, three skeptics per finding, confirmed findings SendMessage'd to the owning agent. Script: `/root/.claude/projects/-home-user-auros-from-scratch/0f9a7adc-af00-5b1e-9166-5e932ada07e6/workflows/scripts/tonight-review-wf_f84f4f83-bfc.js` (container-local). Re-run it after each big landing with a new `base`.
 
 
-## 6. STATE AT 03:40 UTC: owner at 92% of plan usage — read this first
+## 6. 04:00 UTC: FULL SPEED AGAIN (owner has more capacity; the 92% note only meant "save progress")
+
+All streams resumed at 04:00: A (finish + wire the fast path once every piece is green), C (.deb installs, portal env, Wi-Fi keyfile check, theme flip, evince), D (three review fixes: truthful "until Yes" wording, 32-bit Firefox, pages deploy waits for a real release), E (prerelease + promote-after-checks flow + storetest/choicestest in tests.yml + e2e as gate), F (M2, M3, then Windows variants: BitLocker on, small disk, HDD-speed throttle, Fast Startup + pending reboot, Windows 10), B (VERSIONINFO, fresh shots, honest sizes/times, screen-reader basics, plain can't-install page), H (phase 2 Ubuntu P1). Workflows: `tonight-review` resumed (wf_f84f4f83-bfc; finders cached, verifying + routing now) and **`launch-readiness`** (wf_c7f2f6d7-f78): seven dimensions (data safety, every machine, journey, daily use, commercial/legal, security, test evidence) → two skeptics per gap → `docs/LAUNCH-READINESS.md` go/no-go + real-PC test campaign. **Owner's bar: "be 100% sure before people spend money on this" — publishing is not the finish line; LAUNCH-READINESS.md's launch-blockers are.**
+
+### Earlier note (03:40): owner at 92% of plan usage
 
 Stopped to save usage: the phase-2 agent (Stream H; it had read the
 Ubuntu installer's behaviour, pushed NOTHING — restart it from its brief
