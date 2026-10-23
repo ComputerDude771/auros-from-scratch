@@ -214,7 +214,19 @@ jobs:
               || { echo "::error::release $TAG exists with a different AurOS-Setup.exe"; exit 1; }
             echo "release $TAG already exists with this build's AurOS-Setup.exe"
           else
-            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --target "$COMMIT" --prerelease \
+            # The tag goes on the built commit when this run is that
+            # commit's (a [release] build). From a later commit (a
+            # [publish]) GitHub answers 403 "Resource not accessible by
+            # integration" to a GITHUB_TOKEN tagging another commit, so
+            # the tag goes on this run's commit, a descendant, and the
+            # notes say which commit the files were built from.
+            target=$COMMIT
+            if [ "$COMMIT" != "$GITHUB_SHA" ]; then
+              target=$GITHUB_SHA
+              printf '\n(The tag is on `%s`, the commit that published this build; the files were built from `%s`.)\n' \
+                  "$GITHUB_SHA" "$COMMIT" >> notes.md
+            fi
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --target "$target" --prerelease \
                 --title "AurOS $TAG" --notes-file notes.md \
                 rel/AurOS-Setup.exe rel/pieces.txt rel/SHA256SUMS rel/auros-desktop.img.gz.*
           fi
