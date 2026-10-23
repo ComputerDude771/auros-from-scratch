@@ -1,138 +1,76 @@
-# Signing — the one thing in this product that has to be bought
+# Signing: AurOS-Setup.exe ships unsigned, by the owner's decision
 
-> Everything else in this repository can be built, tested and fixed by
-> reading code. This cannot. A code-signing certificate is a legal
-> identity check performed by somebody else, and the price of not
-> having one is that the people this product was built for cannot start
-> it.
-
----
-
-## What an unsigned installer looks like to the person it is for
-
-She downloads one file and double-clicks it. Windows SmartScreen puts a
-**full-screen blue panel** in front of it:
-
-> **Windows protected your PC**
-> Microsoft Defender SmartScreen prevented an unrecognised app from
-> starting. Running this app might put your PC at risk.
-> `[ Don't run ]`
-
-The only button she can see says *Don't run*. There is a **More info**
-link above it, in the same colour as the text around it, which reveals
-a *Run anyway* button. Most people never press it — and the ones who do
-have just been taught to click past a security warning immediately
-before handing a program their entire disk. That is a worse outcome
-than the first one.
-
-So an unsigned AurBridge is not a product with a rough edge. It is two
-different failures, and neither of them is fixable in code.
+> **2026-10-23, the owner: no code signing, no certificates, no Azure,
+> no Microsoft services, ever.** AurOS-Setup.exe is published unsigned
+> on purpose (`docs/handoff/SESSION-2026-10-23.md`, D7). Nothing in the
+> build or the release workflow asks for a key, and `AUROS_RELEASE=1`
+> builds an unsigned installer without complaint. What this costs the
+> person is a few extra clicks, written out below so that the website,
+> the release notes and anyone helping her say the same thing.
 
 ---
 
-## What has to be bought
+## What she sees, and what to click
 
-**An OV or EV code-signing certificate, on hardware.**
+Unsigned, a downloaded `.exe` meets up to four questions. None of them
+is an error.
 
-Since 1 June 2023 the CA/Browser Forum's baseline requirements have
-required code-signing private keys to be generated and held on
-hardware meeting **FIPS 140-2 Level 2** (or Common Criteria EAL4+).
-The practical consequence is that **no public CA will sell you a `.pfx`
-file any more.** Every issuance now arrives as one of:
-
-| | What it is | What signing looks like |
+| Where | What appears | What to click |
 |---|---|---|
-| **USB token** | a SafeNet eToken 5110 posted to you | plug it in; sign locally; the PIN never leaves it |
-| **Cloud HSM** | a signing service holding the key for you | authenticate over the network; the file is hashed locally and the *hash* is signed remotely |
+| **Edge, while downloading** | "AurOS-Setup.exe isn't commonly downloaded. Make sure you trust AurOS-Setup.exe before you open it." | **…** then **Keep**; in the box that follows, **Show more** then **Keep anyway** |
+| **Chrome, while downloading** | "Suspicious download blocked" / "This file isn't commonly downloaded" | **Download suspicious file** |
+| **Opening it** (any browser) | The blue "Windows protected your PC" panel. Only *Don't run* is visible | **More info**, then **Run anyway** |
+| **Permission** | "Do you want to allow this app from an unknown publisher to make changes to your device?" | **Yes** |
 
-Either works with this build. The cloud route is easier to automate and
-does not put a physical object on the critical path of a release; the
-token is cheaper and does not depend on somebody else's uptime.
+**Smart App Control.** Some Windows 11 PCs (clean installs since 22H2)
+have Smart App Control on. It blocks an unsigned program outright, with
+no *Run anyway*: "Smart App Control blocked an app that may be unsafe".
+On those PCs it has to be switched off first: **Start → Settings →
+Privacy & security → Windows Security → App & browser control → Smart
+App Control settings → Off**. Since the April 2026 Windows update it
+can be switched back on later from the same page (on some PCs the
+October 2026 update broke switching it back on;
+`docs/research/every-machine-2026-10.md` §5). Windows 10 has no Smart
+App Control.
 
-### OV or EV
-
-|  | OV | EV |
-|---|---|---|
-| Identity check | the organisation is verified | the organisation is verified more strictly |
-| SmartScreen | reputation is **earned** — the warning keeps appearing until enough people have downloaded and run it | **immediate** — no warning from the first download |
-| Typical price | roughly USD 200–400 a year | roughly USD 300–600 a year |
-
-Check current prices; they move, and resellers are usually well under a
-CA's list price.
-
-**For this product, EV is the one to buy, and the reason is specific.**
-OV reputation is accrued per-publisher across downloads over time. A
-new publisher signing a new installer still gets the warning — for
-weeks, or until a few thousand people have run it. Those weeks are
-exactly the launch, and the population is exactly the one that cannot
-get past a blue screen. Paying the difference buys the absence of the
-warning on the very first download, which is the only download that
-matters.
-
-### Who can buy one
-
-OV and EV are issued to a **verified legal entity**: a registered
-company, a charity, a partnership, or in some jurisdictions a sole
-trader with the right documents. Several CAs will issue to an
-individual, with a heavier identity check (government ID plus a
-verifiable public record of address). If AurOS is going to be
-downloaded by strangers, registering something is worth doing anyway —
-the certificate's subject name is what they will see in the UAC prompt,
-and "AurOS Ltd" reads very differently from a personal name.
-
-### Where to buy
-
-Any public CA that issues code-signing certificates: DigiCert, Sectigo,
-GlobalSign, SSL.com, Certum. Certum's *Open Source Code Signing* is
-substantially cheaper than the others and is issued to individuals
-working on open-source projects; it is OV, so the SmartScreen paragraph
-above applies. Resellers (SSLs.com, Cheapsslsecurity, and others) sell
-the same CAs' certificates for much less than list.
+The blue panel and Edge's warning fade as more people download the same
+file (SmartScreen reputation is per file hash for an unsigned program),
+so a new `AurOS-Setup.exe` starts again from nothing. Publishing fewer,
+longer-lived installers helps; see "What would help" below.
 
 ---
 
-## What the build already does
+## What the build does
 
-`build/sign` is written, tested, and waiting for a key.
+- `build/aurbridge` signs only if signing material is configured (the
+  optional paths `build/sign` has always had: a PKCS#11 token, a
+  PKCS#12 file, or a PEM key pair). Nothing configures any, so the
+  installer is unsigned, and the build says *"unsigned, by design"*.
+  `AUROS_RELEASE=1` no longer refuses that; it still refuses an
+  installer without its staging environment, its signed shim or its
+  image address.
+- `tools/signtest.sh` keeps the optional path honest: with a throwaway
+  CA it proves `build/sign` signs with SHA-256, verifies what it
+  signed, replaces rather than stacks a second signature, and is broken
+  by one changed byte; and that `build/aurbridge` signs what it builds
+  when a key is configured and, without one, finishes, says it is
+  unsigned, and is.
+- The release workflow (`.github/workflows/release.yml`) publishes the
+  unsigned file and says so in one neutral line of the release notes,
+  with the clicks above. Its Windows job prints what
+  `Get-AuthenticodeSignature` says (`NotSigned`) and checks the file
+  starts.
 
-```sh
-# a hardware token
-export AUROS_SIGN_PKCS11_MODULE=/usr/lib/pkcs11/libeTPkcs11.so
-export AUROS_SIGN_PKCS11_CERT='pkcs11:object=my-cert;type=cert'
-export AUROS_SIGN_PKCS11_KEY='pkcs11:object=my-key;type=private'
-export AUROS_SIGN_PASS_FILE=~/.auros-token-pin      # mode 0600
+## What would help without a certificate
 
-# or a cloud HSM that presents a PKCS#12 bridge
-export AUROS_SIGN_PKCS12=/path/to/signing.p12
-export AUROS_SIGN_PASS_FILE=~/.auros-p12-pass
-
-AUROS_RELEASE=1 ./build/aurbridge
-```
-
-It signs with SHA-256, timestamps against an RFC 3161 server, and then
-**verifies what it just wrote**. That last step is the one usually left
-out, and the first person to discover a signature did not take should
-not be a stranger looking at a blue screen.
-
-`AUROS_RELEASE=1` makes an unsigned build a **refusal** rather than a
-warning. A developer build without a token still works and says what is
-missing, because requiring a hardware token to compile is how nobody
-compiles.
-
-### Timestamping is not optional
-
-A signature without a timestamp stops validating the day the
-certificate expires — every copy ever downloaded, all at once. A
-timestamped one keeps validating for ever, because the timestamp proves
-the signing happened while the certificate was valid. `build/sign`
-timestamps by default and shouts on every run if told not to.
-
-### Nothing in this repository holds a key
-
-Configuration is environment variables only. A signing key committed to
-a repository is a signing key on every laptop that ever cloned it —
-and with the hardware requirement above there is usually no key file to
-commit, which is the point of the requirement.
+- **One installer for longer.** Every rebuild of `AurOS-Setup.exe` is a
+  new hash with no reputation. Today each build bakes the address and
+  hash of its own image in, so a new image means a new installer. An
+  installer that could take a newer image without being rebuilt would
+  keep its reputation; that is a design change for the installer's
+  owners, not a build setting.
+- **The website shows the clicks**, with pictures, before she meets
+  them.
 
 ---
 
@@ -149,12 +87,24 @@ anything to anybody. `tools/loadertest.sh` proves it against
 `OVMF_CODE_4M.ms.fd` with Microsoft's own keys enrolled and Secure Boot
 enforcing.
 
-The shim is **dual-signed**: by the Microsoft UEFI CA 2011 *and* the
-2023 CA. The 2011 CA is the one old firmware trusts, and it is the
-whole reason the chain is borrowed rather than built — the dual-signing
-window closed in June 2026, so a distribution applying to Microsoft on
-its own today can only obtain a 2023-only shim, which would not boot on
-exactly the old PCs this product exists for.
+**What "dualsigned" means, because this file used to get it wrong.**
+Ubuntu's `shimx64.efi.dualsigned` carries two signatures: Canonical's
+own and **Microsoft's, through the Microsoft Corporation UEFI CA 2011**
+(`sbverify --list` shows exactly those two). It is *not* signed with
+Microsoft's 2023 third-party key. The 2011 CA is the one old firmware
+trusts, which is the whole reason the chain is borrowed rather than
+built: a distribution applying to Microsoft on its own today gets a
+2023-signed shim, which would not boot on exactly the old PCs this
+product exists for.
+
+The other side of the same fact: **a PC that lists Microsoft's 2023
+third-party key and not the 2011 one refuses this shim**, and so does a
+Secured-core PC that ships with third-party keys switched off. Neither
+is left to find out at the restart. The installer reads the firmware's
+`db` (and `dbx`) from Windows before it changes anything and asks
+whether it trusts the key the carried shim is signed with -- a name
+`build/aurbridge` reads off the shim itself, so a newer shim is checked
+for its own key. See `docs/AURBRIDGE.md`, "Secure Boot stays on".
 
 If AurOS ever needs its own shim — to carry its own vendor certificate,
 so that kernel modules could be signed by us — that is a submission to
@@ -164,14 +114,3 @@ start it, and this paragraph exists so that nobody starts it by
 accident.
 
 ---
-
-## What is still missing after the certificate arrives
-
-1. **The certificate's subject name is what the UAC prompt says.** Look
-   at it once in a VM before publishing. "Unknown publisher" and a
-   company name are different products.
-2. **Renewal.** A year is short. The timestamp means old downloads keep
-   working; new builds stop being signable the day it lapses.
-3. **Revocation.** If the token is lost, the certificate is revoked and
-   every timestamped binary signed before the revocation date keeps
-   working. That is the other half of why timestamping matters.

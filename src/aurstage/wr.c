@@ -197,6 +197,43 @@ int wr_flush(wr_target *t)
     return 0;
 }
 
+/* A SCRATCH FILE IN MEMORY, for the no-stick mode's copy of the way
+ * back. Here and not in install.c because creating a file is a writable
+ * open, and this is the one file allowed to make one. It may only make
+ * one under /run/aurstage/, which in this environment is RAM: nothing
+ * here can name a disk, and a path that tries to leave the directory is
+ * refused rather than normalised. */
+int wr_scratch(const char *path, uint64_t bytes, char *why, size_t n)
+{
+    static const char dir[] = "/run/aurstage/";
+    if (!path || strncmp(path, dir, sizeof dir - 1) != 0 ||
+        strstr(path, "..") || strchr(path + sizeof dir - 1, '/')) {
+        snprintf(why, n, "refusing to make a scratch file outside %s", dir);
+        return -1;
+    }
+    if ((mkdir("/run", 0755) != 0 && errno != EEXIST) ||
+        (mkdir("/run/aurstage", 0700) != 0 && errno != EEXIST)) {
+        snprintf(why, n, "there is nowhere in memory to keep the way back");
+        return -1;
+    }
+    int fd = open(path, O_RDWR | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC,
+                  0600);
+    if (fd < 0) {
+        snprintf(why, n, "there is nowhere in memory to keep the way back (%s)",
+                 strerror(errno));
+        return -1;
+    }
+    struct stat st;
+    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) ||
+        ftruncate(fd, (off_t)bytes) != 0) {
+        close(fd);
+        snprintf(why, n, "there is not enough memory to keep the way back");
+        return -1;
+    }
+    close(fd);
+    return 0;
+}
+
 void wr_close(wr_target *t)
 {
     if (t->fd >= 0) { fsync(t->fd); close(t->fd); }

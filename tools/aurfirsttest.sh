@@ -489,13 +489,14 @@ ask() { # word-or-nothing  -> the result file's contents
     cat "$AO/result" 2>/dev/null
 }
 
-# A WORD THAT IS NOT ONE OF THE THREE MUST REACH THE DEFAULT ARM.
+# A WORD THAT IS NOT ONE OF THE FOUR MUST REACH THE DEFAULT ARM.
 # Accepting any refusal is not enough: `result=failed` means a named
 # branch RAN and errored, which is the opposite of what is being
 # claimed. The note is what tells them apart.
 before=$fail
 for w in 'reboot' 'CONFIRM' 'confirm; rm -rf /tmp/xx' '../../bin/sh' '' \
-         'importx' 'ferry run' 'confirmx'; do
+         'importx' 'ferry run' 'confirmx' 'PUTBACK' 'putbackx' 'put back' \
+         'con firm' 'decline!'; do
     R=$(ask "$w")
     case "$R" in
       *"note=unknown request"*) : ;;
@@ -504,7 +505,7 @@ for w in 'reboot' 'CONFIRM' 'confirm; rm -rf /tmp/xx' '../../bin/sh' '' \
     esac
 done
 [ "$fail" = "$before" ] \
-  && ok "anything that is not one of the three words reaches no branch" \
+  && ok "anything that is not one of the four words reaches no branch" \
   || true
 [ ! -f "$AR/answer" ] && ok "and the request is consumed either way" \
                       || bad "and the request is consumed either way"
@@ -605,6 +606,86 @@ case "$R" in
 esac
 [ ! -f "$AO/import.log" ] && ok "...and nothing was mounted or read" \
                           || bad "...and nothing was mounted or read"
+
+# ── putting Windows back ────────────────────────────────────────────
+echo
+echo "  and putting Windows back, which is asked for from Settings"
+# answer.sh does not restore anything: it chooses the restore entry in
+# AurOS's own menu for the next start (grubenv next_entry), makes sure
+# the next start REACHES that menu (BootNext at our entry, even on a
+# machine that was told to start Windows), and restarts. Each part that
+# fails takes back the parts before it: a next_entry left behind would
+# remove AurOS at some later start nobody asked for.
+GE="$TMP/grubenv"; ESP="$TMP/esp"
+pb() { # -> the result file's contents
+    rm -f "$AO/result" "$TMP/rebooted"
+    printf 'putback' > "$AR/answer"
+    AUROS_ANSWER_OUT="$AO" AUROS_STATE="$TMP/state2" \
+    AUROS_BIN="$TMP/bin" AUROS_LOG="$TMP/answer.log" \
+    AF_RUN_USER="$AR" AUROS_GRUBENV="$GE" AUROS_ESP_ROOTS="$ESP" \
+    AUROS_REBOOT="touch $TMP/rebooted" AUROS_REBOOT_DELAY=0 \
+        sh rootfs/usr/lib/auros/answer.sh >/dev/null 2>&1
+    cat "$AO/result" 2>/dev/null
+}
+next_entry() { sed -n 's/^next_entry=//p' "$GE" 2>/dev/null; }
+empty_env() { { printf '# GRUB Environment Block\n'; head -c 999 /dev/zero | tr '\0' '#'; } > "$GE"; }
+
+# A converted machine whose person said "it does not work": Windows is
+# the default and nothing is armed.
+fresh; plant 0000 "Windows Boot Manager"; plant 0003 "AurOS"; order 0000
+"$AF" decline >/dev/null 2>&1
+empty_env; rm -rf "$ESP"; mkdir -p "$ESP/EFI/AurOS"
+
+# 1. The restore's files are gone: nothing may be arranged.
+R=$(pb)
+case "$R" in
+  *"result=failed"*"not on this computer"*) ok "with the restore's files gone, it refuses and says why" ;;
+  *) bad "with the restore's files gone, it refuses and says why" "$(echo "$R" | tr '\n' ' ')" ;;
+esac
+[ -z "$(next_entry)" ] && [ "$(read_next)" = "(none)" ] && [ ! -f "$TMP/rebooted" ] \
+  && ok "...and arranges nothing, and does not restart" \
+  || bad "...and arranges nothing, and does not restart" \
+         "next_entry='$(next_entry)' BootNext=$(read_next) rebooted=$([ -f "$TMP/rebooted" ] && echo yes || echo no)"
+
+# 2. They are there: the next start is AurOS's menu, on the restore.
+: > "$ESP/EFI/AurOS/staging.efi"; : > "$ESP/EFI/AurOS/staging.img"
+R=$(pb)
+case "$R" in
+  *"request=putback"*"result=ok"*) ok "with the files there, it is arranged" ;;
+  *) bad "with the files there, it is arranged" "$(echo "$R" | tr '\n' ' ')" ;;
+esac
+[ "$(next_entry)" = "put-windows-back>put-windows-back-yes" ] \
+  && ok "...the menu will take the restore entry, by its id" \
+  || bad "...the menu will take the restore entry, by its id" "next_entry='$(next_entry)'"
+[ "$(wc -c < "$GE")" = 1024 ] && ok "...in a block of exactly 1024 bytes" \
+  || bad "...in a block of exactly 1024 bytes" "$(wc -c < "$GE") bytes"
+if command -v grub-editenv >/dev/null 2>&1; then
+    [ "$(grub-editenv "$GE" list 2>/dev/null)" = "next_entry=put-windows-back>put-windows-back-yes" ] \
+      && ok "...which grub's own tool reads back the same" \
+      || bad "...which grub's own tool reads back the same" "$(grub-editenv "$GE" list 2>&1)"
+else
+    echo "    (no grub-editenv here; the block was not read with grub's tool)"
+fi
+[ "$(read_next)" = "0003" ] \
+  && ok "...and the firmware starts AurOS's menu next, though she declined" \
+  || bad "...and the firmware starts AurOS's menu next, though she declined" "BootNext=$(read_next)"
+[ "$(read_order)" = "0000" ] && ok "...without touching BootOrder" \
+  || bad "...without touching BootOrder" "BootOrder=$(read_order)"
+[ -f "$TMP/rebooted" ] && ok "...and then it restarts" || bad "...and then it restarts"
+
+# 3. The firmware will not take BootNext (no entry of ours): what was
+#    already written to the menu is taken back.
+fresh; plant 0000 "Windows Boot Manager"; order 0000
+empty_env
+R=$(pb)
+case "$R" in
+  *"result=failed"*) ok "when the restart cannot be arranged, it says so" ;;
+  *) bad "when the restart cannot be arranged, it says so" "$(echo "$R" | tr '\n' ' ')" ;;
+esac
+[ -z "$(next_entry)" ] && [ ! -f "$TMP/rebooted" ] \
+  && ok "...and takes the menu's choice back, and does not restart" \
+  || bad "...and takes the menu's choice back, and does not restart" \
+         "next_entry='$(next_entry)' rebooted=$([ -f "$TMP/rebooted" ] && echo yes || echo no)"
 
 echo
 if [ "$fail" -gt 0 ]; then

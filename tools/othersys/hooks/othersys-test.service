@@ -1,0 +1,10 @@
+[Unit]
+Description=TEST ONLY: report this boot on the serial port
+After=auros-othersys-boot.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/auros-othersys-test/report boot
+
+[Install]
+WantedBy=multi-user.target

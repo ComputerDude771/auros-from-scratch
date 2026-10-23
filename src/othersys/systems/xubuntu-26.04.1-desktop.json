@@ -1,0 +1,26 @@
+{
+  "id": "xubuntu-26.04.1-desktop",
+  "name": "Xubuntu 26.04 LTS",
+  "legal": "Xubuntu is a trademark of Canonical Ltd. AurOS is not affiliated with or endorsed by Canonical or the Xubuntu team.",
+  "installer": "subiquity",
+  "iso_url": "https://cdimage.ubuntu.com/xubuntu/releases/26.04/release/xubuntu-26.04.1-desktop-amd64.iso",
+  "iso_name": "xubuntu-26.04.1-desktop-amd64.iso",
+  "iso_bytes": 5186390016,
+  "iso_sha256": "0cd5160f72ae6b7a26be7a29248b60cbd579b9e6aa8fbd274e95264da0ade43d",
+  "iso_fsuuid": "2026-08-26-06-45-28-00",
+  "sums_url": "https://cdimage.ubuntu.com/xubuntu/releases/26.04/release/SHA256SUMS",
+  "sums_sig_url": "https://cdimage.ubuntu.com/xubuntu/releases/26.04/release/SHA256SUMS.gpg",
+  "signing_key": "keys/ubuntu-cdimage-2012.gpg",
+  "signing_fingerprint": "843938DF228D22F7B3742BC0D94AA3F0EFE21092",
+  "efi_files": {
+    "/EFI/boot/bootx64.efi": "shimx64.efi",
+    "/EFI/boot/grubx64.efi": "grubx64.efi",
+    "/EFI/boot/mmx64.efi": "mmx64.efi"
+  },
+  "shim_signed_by": "Microsoft Corporation UEFI CA 2011",
+  "source_id": "xubuntu-desktop",
+  "min_root_bytes": 25769803776,
+  "esp_bytes": 536870912,
+  "esp_dir": "\\EFI\\ubuntu",
+  "nvram_label": "ubuntu"
+}

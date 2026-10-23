@@ -58,8 +58,12 @@ typedef struct {
     char     serial[64];
     uint64_t size_bytes;
     int      is_removable;          /* removable bus OR removable media*/
+                                    /* (soldered eMMC is not: D4)      */
+    int      no_media;              /* an empty card reader: ignored   */
     int      removable_media;       /* the RemovableMedia flag alone   */
     int      bus_type;              /* STORAGE_BUS_TYPE, -1 unknown    */
+    int      seek_penalty;          /* -1 unknown, 0 SSD, 1 spinning   */
+                                    /* disk: how long the install takes */
     int      is_recovery_stick;     /* the one stick pf_set_recovery_  */
                                     /* stick() nominated (R4)          */
     int      is_system;             /* holds the running Windows       */
@@ -137,11 +141,26 @@ typedef struct {
      * 1 found. Unknown blocks; see check_encryption(). */
     int       fde_third_party;
 
+    /* D10: Windows is connected to Wi-Fi right now, and the name of the
+     * network as Windows calls it (UTF-8). Read-only; 0 when it is not,
+     * or when this edition has no Wi-Fi service at all. */
+    int       wifi_connected;
+    char      wifi_name[128];
+
     /* R4/R11: the nominated recovery stick, echoed so that a saved
      * report explains its own removable-media verdict. */
     char      recovery_serial[64];
     int       recovery_disk;        /* index into disks[], -1 = none   */
 } pf_report;
+
+/* What AurOS asks for, and what Windows must be left with -- the R7
+ * numbers preflight.c's space check is built on, public so that the
+ * no-stick mode (phases.c) can ask the same question again with the
+ * image counted as well: in that mode five gigabytes of AurOS sit on
+ * the Windows drive through the shrink, and preflight measured before
+ * they arrived. */
+#define PF_AUROS_NEED_BYTES   (28ULL * 1024 * 1024 * 1024)
+#define PF_WINDOWS_KEEP_BYTES ( 8ULL * 1024 * 1024 * 1024)
 
 /* ── the recovery USB (R4 · R11) ──────────────────────────────────────
  *

@@ -26,9 +26,18 @@ theme="slate"
 shell_archetype="rail"
 
 # ── what an organisation actually needs on the machine ─────────────
+#
+# NO `thunderbird` HERE, and not because mail does not matter. In
+# Ubuntu 24.04 the package called thunderbird is a 120 KB stub whose
+# only job is to install a snap; this image has no snapd, and
+# build/forge pins those stubs to -1 so neither the build nor the store
+# can install a program that is not there. Naming it made the whole
+# install line fail ("no installation candidate") and the office image
+# stopped building. Mail is the organisation's webmail in Firefox until
+# forge can fetch Thunderbird from a real repository the way it fetches
+# Firefox; tools/profiletest.sh lint refuses a stub on any list.
 packages_apps="libreoffice-writer libreoffice-calc libreoffice-impress
                libreoffice-gtk4
-               thunderbird
                evince
                simple-scan
                remmina remmina-plugin-rdp

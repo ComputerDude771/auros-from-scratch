@@ -1,0 +1,17 @@
+// AurOS: automatic security updates for everything, the kernel, grub
+// and shim included.
+//
+// Until 2026-10 these three were blacklisted here, because Ubuntu's
+// update-grub would have replaced AurOS's start-up menu (and with it
+// "Put Windows back") and grub-install would have reordered BootOrder.
+// Both are diverted to /usr/lib/auros/bootchain now (build/forge,
+// stage 3): kernel updates rewrite AurOS's own menu with the previous
+// kernel as an automatic fallback, and a new shim or grub is installed
+// on AurOS's EFI partition only after checking this firmware trusts it
+// (the Microsoft 2011 -> 2023 key change) and its SBAT level allows it.
+// tools/bootchaintest.sh is the proof.
+//
+// Leaving them out was not the safe side: a grub that SBAT revokes
+// later, by a Windows update writing the firmware's revocation level,
+// is a computer that stops starting AurOS one morning.
+// (No Package-Blacklist: nothing is held back.)

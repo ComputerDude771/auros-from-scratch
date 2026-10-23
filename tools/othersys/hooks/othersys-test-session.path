@@ -1,0 +1,9 @@
+[Unit]
+Description=TEST ONLY: the desktop session started
+
+[Path]
+PathExists=/var/tmp/othersys-session-up
+Unit=othersys-test-session.service
+
+[Install]
+WantedBy=paths.target

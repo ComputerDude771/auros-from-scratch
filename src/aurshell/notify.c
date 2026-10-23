@@ -38,7 +38,14 @@ typedef struct {
     int      urgent;
     int      sticky;
     int32_t  due_ms;          /* monotonic ms; ignored when sticky    */
+    /* Pressing this card opens a program, by its id in the app table,
+     * rather than only putting the card away. Only the shell sets it:
+     * "VLC is ready -- press to open". Empty for every other card. */
+    char     open_id[32];
 } note;
+
+/* What the last press asked to open, until the host takes it. */
+static char take_open[32];
 
 #define BUS_NAME  "org.freedesktop.Notifications"
 #define BUS_PATH  "/org/freedesktop/Notifications"
@@ -290,6 +297,27 @@ void notify_local(const char *summary, const char *body)
      * this, and the shell only says things she has to act on -- a
      * battery that is about to run out. */
     put("This computer", 0, summary, body, 1, 1, LIFE_MAX_MS);
+}
+
+void notify_local_open(const char *summary, const char *body, const char *app_id)
+{
+    /* Not sticky: a program being ready is good news, not something she
+     * must act on, so it goes by itself like any other -- after the
+     * longest time a card is allowed, because she may be looking at the
+     * store when it arrives. The program is on her home screen either
+     * way; this is the shortcut, not the only door. */
+    uint32_t id = put("This computer", 0, summary, body, 0, 0, LIFE_MAX_MS);
+    int i = find_id(id);
+    if (i >= 0 && app_id)
+        snprintf(N.n[i].open_id, sizeof N.n[i].open_id, "%s", app_id);
+}
+
+int notify_take_open(char *out, size_t n)
+{
+    if (!take_open[0]) return 0;
+    if (out && n) snprintf(out, n, "%s", take_open);
+    take_open[0] = 0;
+    return 1;
 }
 
 void notify_fit(const shell_ctx *c)
@@ -972,6 +1000,8 @@ int notify_click(shell_ctx *c, int x, int y)
     for (int i = 0; i < g.n; i++) {
         rect r = g.card[i];
         if (x < r.x || x >= r.x + r.w || y < r.y || y >= r.y + r.h) continue;
+        if (N.n[i].open_id[0])
+            snprintf(take_open, sizeof take_open, "%s", N.n[i].open_id);
         /* 2 = she dismissed it. The program that sent it is told, so
          * one that is waiting to know can stop waiting. */
         closed_signal(N.n[i].id, 2);

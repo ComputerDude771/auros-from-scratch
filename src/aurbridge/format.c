@@ -462,7 +462,7 @@ size_t fmt_journal_json(const fmt_journal *j, char *out, size_t n)
      * as 140, because the day profile's width changes a constant here
      * silently truncates the journal's copy and the stick then
      * disagrees with itself. */
-    char e_stage[64], e_boot[64];
+    char e_stage[64], e_boot[64], e_on[64];
     char e_prof[2 * sizeof j->profile];
     esc(e_serial, sizeof e_serial, j->disk_serial);
     esc(e_model,  sizeof e_model,  j->disk_model);
@@ -471,23 +471,55 @@ size_t fmt_journal_json(const fmt_journal *j, char *out, size_t n)
     esc(e_stage,  sizeof e_stage,  j->stage);
     esc(e_boot,   sizeof e_boot,   j->boot_from);
     esc(e_prof,   sizeof e_prof,   j->profile);
+    esc(e_on,     sizeof e_on,     j->image_on);
     int k = snprintf(out, n,
         "{\"disk_serial\":\"%s\",\"disk_model\":\"%s\","
         "\"disk_bytes\":%llu,\"logical_sector\":%u,"
         "\"win_part\":\"%s\",\"win_start_lba\":%llu,\"win_sectors\":%llu,"
         "\"win_ntfs_serial\":%llu,\"gpt_sha256\":\"%s\",\"stage\":\"%s\","
-        "\"boot_from\":\"%s\",\"profile\":\"%s\",\"run_id\":%llu,"
-        "\"written_unix\":%llu}\n",
+        "\"boot_from\":\"%s\",\"profile\":\"%s\",\"image_on\":\"%s\","
+        "\"run_id\":%llu,\"written_unix\":%llu}\n",
         e_serial, e_model,
         (unsigned long long)j->disk_bytes, (unsigned)j->logical_sector,
         e_part, (unsigned long long)j->win_start_lba,
         (unsigned long long)j->win_sectors,
         (unsigned long long)j->win_ntfs_serial,
-        e_gpt, e_stage, e_boot, e_prof,
+        e_gpt, e_stage, e_boot, e_prof, e_on,
         (unsigned long long)j->run_id,
         (unsigned long long)j->written_unix);
     if (k < 0 || (size_t)k >= n) return 0;
-    return (size_t)k;
+    if (strcmp(j->image_on, "gap") != 0) return (size_t)k;
+
+    /* THE FAST PATH'S FIELDS, after the closing brace is taken back off.
+     * The two hashes are checked to be exactly 64 hex characters rather
+     * than escaped: anything else is a journal this writer must not
+     * produce. */
+    for (int h = 0; h < 2; h++) {
+        const char *x = h ? j->boot_sha256 : j->root_sha256;
+        if (strlen(x) != 64) return 0;
+        for (int i = 0; i < 64; i++)
+            if (!((x[i] >= '0' && x[i] <= '9') || (x[i] >= 'a' && x[i] <= 'f')))
+                return 0;
+    }
+    k -= 2;                                   /* "}\n" */
+    int m = snprintf(out + k, n - (size_t)k,
+        ",\"gap_root_first\":%llu,\"gap_root_last\":%llu,"
+        "\"gap_rsc_first\":%llu,\"gap_rsc_last\":%llu,"
+        "\"gap_rec_first\":%llu,\"gap_rec_last\":%llu,"
+        "\"root_len\":%llu,\"root_sha256\":\"%s\","
+        "\"boot_len\":%llu,\"boot_sha256\":\"%s\","
+        "\"rsc_bytes\":%llu,\"min_root_bytes\":%llu,"
+        "\"win_orig_sectors\":%llu,\"bitlocker\":%d,\"wifi\":%d}\n",
+        (unsigned long long)j->gap_root_first, (unsigned long long)j->gap_root_last,
+        (unsigned long long)j->gap_rsc_first,  (unsigned long long)j->gap_rsc_last,
+        (unsigned long long)j->gap_rec_first,  (unsigned long long)j->gap_rec_last,
+        (unsigned long long)j->root_len, j->root_sha256,
+        (unsigned long long)j->boot_len, j->boot_sha256,
+        (unsigned long long)j->rsc_bytes, (unsigned long long)j->min_root_bytes,
+        (unsigned long long)j->win_orig_sectors,
+        j->bitlocker ? 1 : 0, j->wifi ? 1 : 0);
+    if (m < 0 || (size_t)m >= n - (size_t)k) return 0;
+    return (size_t)k + (size_t)m;
 }
 
 /* ── a cpio with one file in it ──────────────────────────────────── */
@@ -610,6 +642,52 @@ int fmt_gpt_sha256(int (*read_at)(void *ud, uint64_t off, void *buf, size_t n),
     unsigned char d[32];
     fmt_sha_done(&s, d);
     fmt_sha_hex(d, hex, n);
+    return 0;
+}
+
+int fmt_gpt_parts(int (*read_at)(void *ud, uint64_t off, void *buf, size_t n),
+                  void *ud, uint32_t sector, fmt_extent *out, int max,
+                  int *n_out, char *why, size_t wn)
+{
+    *n_out = 0;
+    if (sector < 512 || sector > 4096 || (sector & (sector - 1))) {
+        snprintf(why, wn, "this drive uses a block size AurOS cannot read");
+        return -1;
+    }
+    uint8_t h[4096];
+    if (read_at(ud, (uint64_t)sector, h, sector) != 0 ||
+        memcmp(h, "EFI PART", 8) != 0) {
+        snprintf(why, wn, "the way this drive is divided up could not be read");
+        return -1;
+    }
+    uint64_t elba = g64(h + 72);
+    uint32_t ne = g32(h + 80), es = g32(h + 84);
+    if (!ne || ne > 4096 || es < 128 || es > 4096) {
+        snprintf(why, wn, "the way this drive is divided up could not be read");
+        return -1;
+    }
+    int n = 0;
+    for (uint32_t k = 0; k < ne; k++) {
+        uint8_t e[4096];
+        if (read_at(ud, elba * sector + (uint64_t)k * es, e, es) != 0) {
+            snprintf(why, wn, "a partition entry on this drive could not be read");
+            return -1;
+        }
+        int used = 0;
+        for (int q = 0; q < 16; q++) if (e[q]) { used = 1; break; }
+        if (!used) continue;
+        uint64_t first = g64(e + 32), last = g64(e + 40);
+        if (last < first) continue;             /* an empty/odd entry */
+        if (n >= max) {
+            snprintf(why, wn, "this drive has more partitions than AurOS can "
+                              "hold at once");
+            return -1;
+        }
+        out[n].first_byte = first * (uint64_t)sector;
+        out[n].last_byte  = (last + 1) * (uint64_t)sector - 1;
+        n++;
+    }
+    *n_out = n;
     return 0;
 }
 

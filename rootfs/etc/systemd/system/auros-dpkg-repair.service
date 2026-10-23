@@ -1,0 +1,17 @@
+[Unit]
+Description=Finish a software update that was interrupted
+# Before anything that uses apt or dpkg: the automatic updates, the
+# store's backend and AurOS's own first-online setup.
+After=local-fs.target
+Before=apt-daily.service apt-daily-upgrade.service unattended-upgrades.service packagekit.service auros-software.service
+ConditionPathExists=/var/lib/dpkg/status
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/auros/dpkg-repair
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=30min
+
+[Install]
+WantedBy=multi-user.target

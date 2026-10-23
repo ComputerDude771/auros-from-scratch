@@ -1,0 +1,5 @@
+# wall.c: finite but absurd values overflow to inf inside the styles
+wall_style=waves
+wall_intensity=1e38
+wall_grain=1e38
+wall_vignette=1e38

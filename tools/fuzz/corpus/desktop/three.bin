@@ -1,0 +1,26 @@
+[Desktop Entry]
+Type=Application
+Name=Files
+Name[pt_BR]=Arquivos
+Name[pt]=Ficheiros
+Comment=Your files
+Exec=sh -c "echo %U" %f
+Icon=folder
+Categories=System;FileManager;
+StartupWMClass=files
+[Desktop Action new]
+Exec=true
+[Desktop Entry]
+Type=Application
+Name=Software
+Exec=/usr/bin/true --file-forwarding org.x.Y @@u %U @@
+Categories=PackageManager;GTK;
+TryExec=true
+OnlyShowIn=AurOS;GNOME;
+[Desktop Entry]
+Type=Application
+Name=Hidden
+Exec="true" "a b" \"q\"
+NotShowIn=KDE;
+Terminal=false
+NoDisplay=false

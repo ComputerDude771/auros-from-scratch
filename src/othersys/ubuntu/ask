@@ -1,0 +1,22 @@
+#!/bin/sh
+# AurOS: asks, at every login until answered, whether Ubuntu works.
+# Writes one word for auros-othersys-answer.path; never writes the
+# firmware itself.
+state=/var/lib/auros-othersys/state.json
+inbox=/var/lib/auros-othersys/inbox
+grep -qE '"answer": "(yes|no)"' "$state" 2>/dev/null && exit 0
+[ -w "$inbox" ] || exit 0
+sleep 8
+back="No, go back to Windows"
+out=$(zenity --question --title="Ubuntu" --width=560 --icon=dialog-question \
+    --text="<big><b>Does everything work?</b></big>\n\nIf it does, your computer will start Ubuntu from now on. Windows stays on it.\n\nIf something does not work, choose \"$back\" and restart: Windows comes back by itself." \
+    --ok-label="Yes, everything works" --cancel-label="Ask me later" --extra-button="$back")
+rc=$?
+if [ "$rc" -eq 0 ]; then
+    word=yes
+elif [ "$out" = "$back" ]; then
+    word=no
+else
+    word=later
+fi
+printf '%s\n' "$word" > "$inbox/answer.new" && mv "$inbox/answer.new" "$inbox/answer"

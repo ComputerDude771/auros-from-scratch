@@ -1,0 +1,35 @@
+# AurOS Shell Archetype — Dock
+#
+# Distinct from Taskbar in the thing that actually differs for a user:
+# a taskbar lists what is OPEN, a dock lists what you USE. Switching by
+# "which of my favourites" rather than "which of my windows" is a
+# different question, and people have strong preferences about it.
+shell_id="dock"
+shell_name="Favourites along the edge"
+shell_tagline="Your regular programs always in the same place."
+
+shell_plain="A strip of your most-used programs sits at the bottom, always
+in the same order, whether they are running or not — so the thing you
+want is always in the same spot. Anything else, you find by typing its
+name. Windows can overlap and be moved."
+
+shell_best_for="Someone who uses the same handful of programs constantly and wants them in a fixed, muscle-memory place."
+shell_tradeoff="Programs that are open but not in your favourites are harder to find again, and typing to search is a habit some people never form."
+shell_familiar="A shelf of the tools you reach for most."
+
+layout="dock"
+window_mode="overlapping"
+switcher="dock"
+home="none"
+launcher="search"
+minimise="yes"
+overlap="yes"
+workspaces="0"
+
+target_size="normal"
+pointer_first="yes"
+keyboard_optional="yes"
+
+status_strip="minimal"
+show_clock="yes"
+show_positions="no"

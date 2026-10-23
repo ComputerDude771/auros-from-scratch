@@ -338,7 +338,7 @@ gate() { # description  sed-script  expected-message
         cp "$TMP/nvram.bak" src/aurstage/nvram.c
         return
     fi
-    if ! ./build/staging desktop >"$TMP/g.log" 2>&1 && grep -q "$3" "$TMP/g.log"
+    if ! AUROS_STAGING_OUT="$TMP/out" ./build/staging desktop >"$TMP/g.log" 2>&1 && grep -q "$3" "$TMP/g.log"
     then ok "$1"
     else bad "$1" "the build allowed it" "$(tail -3 "$TMP/g.log")"; fi
     cp "$TMP/nvram.bak" src/aurstage/nvram.c
@@ -360,7 +360,7 @@ if [ -d work/forge/desktop/rootfs ]; then
     gate "one that writes somewhere else" \
          's@/sys/firmware/efi/efivars@/run/auros/vars@' \
          'does not name the efivarfs mount point'
-    ./build/staging desktop >/dev/null 2>&1 \
+    AUROS_STAGING_OUT="$TMP/out" ./build/staging desktop >/dev/null 2>&1 \
       && ok "...and the real tree still builds" \
       || bad "...and the real tree still builds"
 else

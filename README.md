@@ -12,6 +12,16 @@ by downloading one file.**
 <sub>Not a mock-up — a screendump of AurOS running in a VM with Secure Boot
 **enabled**, `aurshell` painting directly to DRM/KMS.</sub>
 
+> **New agent or new person? Read [`START-HERE.md`](START-HERE.md) first.**
+>
+> **Get the whole project (or update it) with one command** — see
+> [`docs/MOVING.md`](docs/MOVING.md):
+> ```sh
+> D=~/Desktop/auros; R=https://github.com/ComputerDude771/auros-from-scratch.git; B=claude/brave-hypatia-x72g1m; if [ -d "$D/.git" ]; then git -C "$D" pull --ff-only; else git clone --single-branch --branch "$B" "$R" "$D"; fi; cd "$D"
+> ```
+> Owner-only settings and secrets: [`docs/OWNER-SETUP.md`](docs/OWNER-SETUP.md).
+> Picking up the work: [`docs/handoff/RESUME-NOW.md`](docs/handoff/RESUME-NOW.md).
+
 ---
 
 ## What this is
@@ -37,32 +47,53 @@ The goal, stated as a testable contract:
 
 - **Boots with Secure Boot on.** OVMF with Microsoft's keys → Microsoft-signed
   shim → Canonical-signed GRUB → kernel → `aurshell`. The shim we ship is
-  dual-signed (Microsoft UEFI CA **2011** *and* 2023, checked with `sbverify`),
-  so it also boots firmware that predates the 2023 CA — which is most of the
-  old hardware this exists for.
+  Ubuntu's, signed by Microsoft's UEFI CA **2011** (and Canonical), checked
+  with `sbverify` by `build/shimpick`, which refuses a shim without it. That
+  is the key the old hardware this exists for trusts. It is *not* signed
+  with the 2023 CA (no Ubuntu shim is yet), so a PC whose firmware has
+  removed the 2011 key is refused by preflight instead of half-installed.
+- **Updates keep it booting.** Kernel, GRUB and shim updates install like
+  any other security update: `auros-bootchain` rewrites AurOS's own menu
+  (keeping the previous kernel as an automatic fallback) and installs a new
+  shim + GRUB only after checking this PC's firmware trusts it and its SBAT
+  level allows it. It never touches the firmware's boot order.
 - **The desktop shell runs**, painting straight to DRM/KMS. No X11, no Wayland
   compositor, no Mesa in that path.
 - **Theme engine** — one file drives wallpaper, bar, palette, terminal, TTY,
-  GTK and bootloader. Four themes, including a light one.
+  GTK and bootloader. Six themes, including a light one.
 - **Procedural wallpapers** — generated from the theme, so a reskin never
   strands a stale photo and the image carries no JPEGs.
 - **From-scratch TrueType rasterizer** and a PNG encoder with its own DEFLATE.
-- **AurBridge preflight** — a real Windows `.exe` that refuses to run on a
-  machine it cannot make safe.
-- **Recovery capture/restore** — destroy-and-restore tested: wipe a disk's
-  partition table and its backup, restore byte-identical, Windows BCD intact.
+- **The whole install, end to end, on a synthetic machine.** AurBridge's
+  phase engine prepares the machine; one restart lands in the staging
+  environment, which shrinks Windows, writes AurOS, verifies it, probes
+  the hardware, commits the new partition table in one sector and hands
+  over in the same boot. Putting Windows back is tested the same way.
+  The numbers are in `docs/PLAN.md` §6 and the transcripts in
+  `docs/results/`.
+- **Power cuts on purpose** — the installer names its own dangerous
+  instants and a fault build stops dead at each one; Windows comes back
+  with every file byte-identical every time (`tools/powercuttest.sh`).
+- **A no-stick mode**, for test machines: the image is downloaded in
+  pieces onto the Windows drive and read after the restart through a
+  read-only mount; the way back is kept on the disk. What that gives up
+  is in `docs/AURBRIDGE.md`, "Installing without a memory stick", and
+  `tools/nosticktest.sh` proves it.
 - **Ferry** — read-only NTFS, OneDrive placeholder classification, Firefox
   profile transplant, NetworkManager import, CLDR timezone mapping.
 - **Website** — five pages including an honesty page about what can go wrong.
 
-**Not built yet:** AurBridge's destructive phases (shrink, write, boot
-handoff) are specified in `docs/AURBRIDGE.md` and deliberately unwritten until
-the recovery path is wired to them. **Nothing ships until failing an install
-at every phase has been tested on purpose.**
+**Not proven yet:** anything on a real PC. The Windows half
+(`src/aurbridge/plat_win.c`) has only ever run under Wine and against a
+simulated machine, and every install so far has been in QEMU on one
+firmware. **Nothing ships until the dry run has been through a fleet of
+real machines and failing an install at every phase has been tested on
+real hardware.** `docs/RELEASE.md` lists everything between here and a
+public download, with who does it and in what order.
 
-**Not a code problem:** a legal entity, an OV code-signing certificate, and
-insurance are prerequisites to the first public download. See
-`docs/research/signing-trust.md`.
+**Not a code problem:** a legal entity, a code-signing certificate, a
+host for the image and insurance are prerequisites to the first public
+download. See `docs/RELEASE.md` and `docs/SIGNING.md`.
 
 ## Try it
 
@@ -131,13 +162,16 @@ src/
   aurora/    the theme engine
   aurshell/  the desktop shell — DRM/KMS, rasterizer, compositing
   aurinit/   PID 1 and aurctl
-  aurbridge/ the Windows installer (preflight built; phases specified)
+  aurbridge/ the Windows installer: preflight, wizard, phases 0-3
+  aurstage/  the staging environment: the install and the way back
+  aurfirst/  the first boot: "does it work?", and the only BootOrder writer
   ferry/     first-boot migration off Windows
   recovery/  capture and restore a machine's boot state
   common/    theme parser · wallpaper renderer · font · PNG
-profiles/  desktop · school-kiosk · multilingual
-themes/    nocturne · synthwave · sandstone · moss + templates
-docs/      PLAN · AURBRIDGE · THEMING · FERRY · research/
+profiles/  desktop · school-kiosk · multilingual · office · revive
+themes/    nocturne · synthwave · sandstone · moss · ember · slate + templates
+docs/      PLAN · RELEASE · AURBRIDGE · STAGEC · SIGNING · THEMING · FERRY · results/ · research/
+tools/     the tests; each one exits non-zero when it fails
 website/   the download site
 ```
 

@@ -129,6 +129,31 @@ int run_adopt_user_bus(void)
     return 1;
 }
 
+int run_publish_env(const char *wayland_display)
+{
+    static int done = 0;
+    if (done || !wayland_display || !*wayland_display) return 0;
+    const char *rd  = getenv("XDG_RUNTIME_DIR");
+    const char *bus = getenv("DBUS_SESSION_BUS_ADDRESS");
+    if (!rd || !*rd || !bus) return 0;
+    char want[400];
+    snprintf(want, sizeof want, "unix:path=%s/bus", rd);
+    if (strcmp(bus, want) != 0) return 0;         /* not on logind's bus yet */
+
+    char wd[160], dd[2200];
+    snprintf(wd, sizeof wd, "WAYLAND_DISPLAY=%s", wayland_display);
+    const char *xdd = getenv("XDG_DATA_DIRS");
+    snprintf(dd, sizeof dd, "XDG_DATA_DIRS=%s",
+             xdd && *xdd ? xdd : "/usr/local/share:/usr/share");
+    const char *argv[] = {
+        "dbus-update-activation-environment", "--systemd",
+        wd, "XDG_CURRENT_DESKTOP=AurOS", "XDG_SESSION_TYPE=wayland", dd, NULL
+    };
+    done = 1;                 /* once: a helper that fails is not retried
+                                 sixty times a second */
+    return run_detached(argv) == 0;
+}
+
 int run_status(const char *const argv[], int timeout_ms)
 {
     if (!argv || !argv[0] || !argv[0][0]) return RUN_NOSTART;

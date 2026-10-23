@@ -51,6 +51,14 @@ _nt="$_WIN_NTUSER"
 
 want() { [ -z "$ONLY" ] || [ "$ONLY" = "$1" ]; }
 
+# WHAT THE PERSON CHOSE IN THE INSTALLER WINS. First boot applies those
+# choices and records them here (rootfs/usr/lib/auros/choices.sh); a
+# setting she picked on purpose is not overwritten with the Windows
+# value she was offered and turned down. It is still suggested, so the
+# report can show both.
+CHOICES="${FERRY_CHOICES:-/etc/auros/installer-choices.conf}"
+chosen() { [ -f "$CHOICES" ] && grep -q "^$1=" "$CHOICES"; }
+
 # The registry file the desktop reads suggested settings from. Written
 # as key=value so aurora / the shell / the welcome app can all read it
 # without re-parsing hives — Ferry is the only thing that touches NTFS.
@@ -74,7 +82,9 @@ if want timezone && [ -n "$_sys" ]; then
             "$FERRY_SHARE/windowsZones.tab" 2>/dev/null || true)
         if [ -n "$_iana" ]; then
             suggest timezone "$_iana" "from Windows '$_tzkey'"
-            if [ "$FERRY_DRYRUN" = 0 ] && command -v timedatectl >/dev/null 2>&1; then
+            if chosen timezone; then
+                say "timezone kept as chosen in the installer"
+            elif [ "$FERRY_DRYRUN" = 0 ] && command -v timedatectl >/dev/null 2>&1; then
                 timedatectl set-timezone "$_iana" >/dev/null 2>&1 && \
                     say "timezone set to $_iana" || \
                     warn "could not apply timezone (need root / running systemd)"
@@ -98,7 +108,20 @@ if want locale && [ -n "$_nt" ]; then
     if [ -n "$_loc" ]; then
         _glibc=$(printf '%s' "$_loc" | sed 's/-/_/')".UTF-8"
         suggest locale "$_glibc" "from Windows '$_loc'"
-        if [ "$FERRY_DRYRUN" = 0 ]; then
+        if chosen language; then
+            say "language kept as chosen in the installer"
+        elif [ "$FERRY_DRYRUN" = 0 ]; then
+            # /etc/default/locale is the one Ubuntu's PAM and systemd
+            # read; /etc/locale.conf alone set nothing. And the locale is
+            # generated, because a LANG naming one that does not exist
+            # is the C locale with a different name.
+            if [ -f /usr/share/i18n/SUPPORTED ] &&
+               grep -q "^$_glibc UTF-8\$" /usr/share/i18n/SUPPORTED; then
+                grep -q "^$_glibc UTF-8\$" /etc/locale.gen 2>/dev/null ||
+                    printf '%s UTF-8\n' "$_glibc" >> /etc/locale.gen 2>/dev/null
+                command -v locale-gen >/dev/null 2>&1 && locale-gen >/dev/null 2>&1
+            fi
+            printf 'LANG=%s\n' "$_glibc" > /etc/default/locale 2>/dev/null
             mkdir -p "$(dirname /etc/locale.conf)" 2>/dev/null || true
             printf 'LANG=%s\n' "$_glibc" > /etc/locale.conf 2>/dev/null && \
                 say "locale set to $_glibc" || \
@@ -132,14 +155,23 @@ if want keyboard && [ -n "$_nt" ]; then
             _variant=$(printf '%s' "$_xkb" | cut -f2)
             [ "$_variant" = "$_layout" ] && _variant=""
             suggest keyboard "$_layout${_variant:+:$_variant}" "from KLID $_klid"
-            if [ "$FERRY_DRYRUN" = 0 ]; then
+            if chosen keyboard; then
+                say "keyboard kept as chosen in the installer"
+            elif [ "$FERRY_DRYRUN" = 0 ]; then
+                # /etc/default/keyboard, WHICH IS THE FILE THE DESKTOP
+                # READS (kb_defaults in src/aurwl/aurwl.c). This wrote
+                # /etc/vconsole.conf, which nothing in AurOS reads, so
+                # the imported layout never reached a single keystroke.
                 {
                     echo '# Written by Ferry from the Windows keyboard layout.'
-                    printf 'KEYMAP=%s\n' "$_layout"
-                    printf 'XKBLAYOUT=%s\n' "$_layout"
-                    [ -n "$_variant" ] && printf 'XKBVARIANT=%s\n' "$_variant"
-                } > /etc/vconsole.conf 2>/dev/null && say "keyboard set to $_layout${_variant:+ ($_variant)}" || \
-                note settings manual keyboard "could not write /etc/vconsole.conf (need root)"
+                    grep -E '^(XKBMODEL|XKBOPTIONS|BACKSPACE)=' /etc/default/keyboard 2>/dev/null ||
+                        echo 'XKBMODEL="pc105"'
+                    printf 'XKBLAYOUT="%s"\n' "$_layout"
+                    printf 'XKBVARIANT="%s"\n' "$_variant"
+                } > /etc/default/keyboard.ferry 2>/dev/null &&
+                mv /etc/default/keyboard.ferry /etc/default/keyboard 2>/dev/null &&
+                say "keyboard set to $_layout${_variant:+ ($_variant)}" || \
+                note settings manual keyboard "could not write /etc/default/keyboard (need root)"
             fi
         else
             note settings manual keyboard \

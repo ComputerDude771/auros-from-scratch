@@ -210,6 +210,139 @@ int plat_reread(int index, char *why, size_t wn)
 
 void plat_release(void) { g_allowed = -1; }
 
+/* ── the fast path: the gap fence ────────────────────────────────── */
+
+static int      g_gap_disk = -1;
+static uint64_t g_gap_lo, g_gap_hi;
+static fmt_extent g_gap_parts[64];
+static int      g_gap_nparts;
+static int      g_gap_armed;
+
+/* The read-at callback fmt_gpt_parts wants, reading one disk. */
+static int gap_read_at(void *ud, uint64_t off, void *buf, size_t n)
+{
+    int idx = *(int *)ud;
+    char why[PLAT_WHY];
+    return plat_read(idx, off, buf, n, why, sizeof why);
+}
+
+int plat_disk_parts(int index, fmt_extent *out, int max, int *n_out,
+                    char *why, size_t wn)
+{
+    *n_out = 0;
+    int i = find_disk(index);
+    if (i < 0) { snprintf(why, wn, "there is no disk %d", index); return -1; }
+    uint32_t ss = g_disk[i].logical_sector ? g_disk[i].logical_sector : 512;
+    int idx = index;
+    return fmt_gpt_parts(gap_read_at, &idx, ss, out, max, n_out, why, wn);
+}
+
+int plat_gap_allow(int index, uint64_t lo, uint64_t hi, char *why, size_t wn)
+{
+    if (hi <= lo) { snprintf(why, wn, "the gap AurOS was given has no room"); return -1; }
+    fmt_extent parts[64];
+    int n = 0;
+    if (plat_disk_parts(index, parts, 64, &n, why, wn) != 0) return -1;
+    /* THE WINDOW MUST NOT OVERLAP A PARTITION, checked against the table
+     * as it is right now -- so a stale caller cannot arm a window over
+     * Windows. */
+    for (int k = 0; k < n; k++)
+        if (lo <= parts[k].last_byte && parts[k].first_byte < hi) {
+            snprintf(why, wn,
+                     "REFUSING: the gap AurOS was given overlaps a partition "
+                     "on this disk.");
+            return -1;
+        }
+    g_gap_disk = index; g_gap_lo = lo; g_gap_hi = hi;
+    memcpy(g_gap_parts, parts, (size_t)n * sizeof parts[0]);
+    g_gap_nparts = n; g_gap_armed = 1;
+    return 0;
+}
+
+void plat_gap_forbid(void) { g_gap_armed = 0; g_gap_disk = -1; g_gap_nparts = 0; }
+
+int plat_gap_write(int index, uint64_t off, const void *buf, size_t n,
+                   char *why, size_t wn)
+{
+    if (!g_gap_armed || index != g_gap_disk) {
+        snprintf(why, wn,
+                 "REFUSING to write to disk %d: AurOS only writes into the gap "
+                 "it was given, and no gap is armed on it.", index);
+        return -1;
+    }
+    if (n == 0) return 0;
+    if (off > UINT64_MAX - n) {
+        snprintf(why, wn, "a write was asked for at an impossible place");
+        return -1;
+    }
+    uint64_t last = off + n - 1;
+    if (off < g_gap_lo || last >= g_gap_hi) {
+        snprintf(why, wn,
+                 "REFUSING: a write would land outside the gap AurOS was "
+                 "given, and was refused.");
+        return -1;
+    }
+    for (int k = 0; k < g_gap_nparts; k++)
+        if (off <= g_gap_parts[k].last_byte && g_gap_parts[k].first_byte <= last) {
+            snprintf(why, wn,
+                     "REFUSING: a write would land on a partition on this "
+                     "disk, not in the gap, and was refused.");
+            return -1;
+        }
+    return io(index, off, (void *)buf, n, 1, why, wn);
+}
+
+int plat_gap_flush(int index, char *why, size_t wn)
+{ return plat_flush(index, why, wn); }
+
+/* THE SIMULATION DOES NOT RUN WINDOWS' SHRINK, for the same reason it
+ * does not run manage-bde, chkdsk or diskpart: there is no Windows
+ * here. A test that exercises the gap fence arranges the layout itself
+ * (sgdisk) and arms the gap over it; it does not call this. Written
+ * down and refused, rather than silently pretending. */
+int plat_shrink_system(int index, int part_number, uint64_t target_bytes,
+                       uint64_t *achieved_bytes, char *why, size_t wn)
+{
+    (void)index; (void)part_number; (void)target_bytes;
+    char cmd[128];
+    snprintf(cmd, sizeof cmd, "resize-partition disk=%d part=%d to=%llu",
+             index, part_number, (unsigned long long)target_bytes);
+    char tail[8]; plat_run(cmd, tail, sizeof tail);
+    if (achieved_bytes) *achieved_bytes = 0;
+    snprintf(why, wn,
+             "the simulation does not run Windows' online shrink; a test sets "
+             "the layout up itself");
+    return -1;
+}
+
+int plat_grow_system(int index, int part_number, uint64_t to_bytes,
+                     uint64_t *achieved_bytes, char *why, size_t wn)
+{
+    char cmd[96];
+    snprintf(cmd, sizeof cmd, "grow-partition disk=%d part=%d to=%llu",
+             index, part_number, (unsigned long long)to_bytes);
+    char tail[8]; plat_run(cmd, tail, sizeof tail);
+    if (achieved_bytes) *achieved_bytes = 0;
+    snprintf(why, wn, "the simulation does not run Windows' partition resize");
+    return -1;
+}
+
+int plat_shrink_limits(int index, int part_number, uint64_t *now,
+                       uint64_t *smallest, uint64_t *largest,
+                       char *why, size_t wn)
+{
+    (void)index; (void)part_number; (void)now; (void)smallest; (void)largest;
+    snprintf(why, wn, "the simulation does not run Windows' online shrink");
+    return -1;
+}
+
+int plat_gap_os_fence_probe(int index, uint64_t off, char *why, size_t wn)
+{
+    (void)index; (void)off;
+    snprintf(why, wn, "a simulated disk is a file; there is no Windows to refuse");
+    return -1;
+}
+
 /* ── ordinary files ──────────────────────────────────────────────── */
 
 int plat_file_size(const char *path, uint64_t *out)
@@ -436,6 +569,49 @@ int plat_boot_next_clear(char *why, size_t wn)
     return 0;
 }
 
+/* ── Secure Boot, as a file or two ───────────────────────────────── */
+/* $AURBRIDGE_SIM/secureboot holds "1" or "0"; no file is "not known",
+ * which is what every simulated machine was before this existed.
+ * $AURBRIDGE_SIM/db.bin and dbx.bin are those variables' data, taken
+ * out of an OVMF variable store by tools/efivarstore.py. */
+int plat_secure_boot(void)
+{
+    char p[600];
+    simpath(p, sizeof p, "secureboot");
+    FILE *f = fopen(p, "r");
+    if (!f) return -1;
+    int c = fgetc(f);
+    fclose(f);
+    return c == '1' ? 1 : c == '0' ? 0 : -1;
+}
+
+int plat_efi_sigdb(const char *name, unsigned char *buf, size_t cap,
+                   size_t *got, char *why, size_t wn)
+{
+    char p[600], leaf[16];
+    *got = 0;
+    if (strcmp(name, "db") != 0 && strcmp(name, "dbx") != 0) {
+        snprintf(why, wn, "no such list");
+        return -1;
+    }
+    snprintf(leaf, sizeof leaf, "%s.bin", name);
+    simpath(p, sizeof p, leaf);
+    FILE *f = fopen(p, "rb");
+    if (!f) {
+        snprintf(why, wn, "the firmware would not say (no %s)", leaf);
+        return -1;
+    }
+    size_t k = fread(buf, 1, cap, f);
+    int more = fgetc(f) != EOF;
+    fclose(f);
+    if (more) {
+        snprintf(why, wn, "the firmware's list is longer than expected");
+        return -1;
+    }
+    *got = k;
+    return 0;
+}
+
 /* ── running something else ──────────────────────────────────────── */
 
 int plat_run(const char *cmdline, char *tail, size_t n)
@@ -472,6 +648,56 @@ int plat_file_append(const char *to, const void *buf, size_t n,
     return 0;
 }
 
+/* A simulated computer does not restart; the test does that itself by
+ * booting the disk. Written down, like every command, in ran.log. */
+int plat_fast_startup_off(char *why, size_t wn)
+{
+    /* The simulated machine has no Fast Startup. It leaves a mark, so a
+     * test can see the install asked for it, and first. */
+    char p[600];
+    simpath(p, sizeof p, "fast-startup-off");
+    FILE *f = fopen(p, "w");
+    if (f) fclose(f);
+    (void)why; (void)wn;
+    return 0;
+}
+
+int plat_restart(char *why, size_t wn)
+{
+    (void)why; (void)wn;
+    char cmd[] = "restart";
+    char tail[8];
+    plat_run(cmd, tail, sizeof tail);
+    return 0;
+}
+
+/* The simulated machine does not sleep; it leaves a mark so a test can
+ * see the install asked to keep it awake. */
+void plat_keep_awake(void)
+{
+    char p[600];
+    simpath(p, sizeof p, "kept-awake");
+    FILE *f = fopen(p, "w");
+    if (f) fclose(f);
+}
+
+void plat_let_sleep(void) { }
+
+int plat_file_delete(const char *path, char *why, size_t wn)
+{
+    if (unlink(path) == 0 || errno == ENOENT) return 0;
+    snprintf(why, wn, "%s could not be removed", path);
+    return -1;
+}
+
+int plat_file_rename(const char *from, const char *to, char *why, size_t wn)
+{
+    mkparents(to);
+    if (rename(from, to) == 0) return 0;
+    snprintf(why, wn, "%s could not be moved to %s", from, to);
+    return -1;
+}
+
 uint64_t plat_free_space(const char *path)
 {
     char dir[1024];
@@ -503,9 +729,26 @@ int plat_payload_embedded(void)
     return access(p, R_OK) == 0;
 }
 
+uint64_t plat_payload_bytes(void)
+{
+    static const char *names[] = { PAYLOAD_KERNEL, PAYLOAD_INITRD, PAYLOAD_SHIM,
+                                   PAYLOAD_GRUB, PAYLOAD_MOKMGR };
+    uint64_t total = 0;
+    for (size_t i = 0; i < sizeof names / sizeof names[0]; i++) {
+        char rel[128], full[600];
+        struct stat st;
+        snprintf(rel, sizeof rel, "payload/%s", names[i]);
+        simpath(full, sizeof full, rel);
+        if (stat(full, &st) == 0) total += (uint64_t)st.st_size;
+    }
+    return total;
+}
+
 int plat_payload(const char *name, char *path, size_t pn, char *why, size_t wn)
 {
-    if (strcmp(name, PAYLOAD_KERNEL) && strcmp(name, PAYLOAD_INITRD)) {
+    if (strcmp(name, PAYLOAD_KERNEL) && strcmp(name, PAYLOAD_INITRD) &&
+        strcmp(name, PAYLOAD_SHIM) && strcmp(name, PAYLOAD_GRUB) &&
+        strcmp(name, PAYLOAD_MOKMGR)) {
         snprintf(why, wn, "the installer asked itself for something it does "
                           "not carry.");
         return -1;

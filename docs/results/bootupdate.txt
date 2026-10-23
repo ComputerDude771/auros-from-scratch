@@ -1,0 +1,38 @@
+
+After a kernel, grub and shim update, does AurOS still start with Secure Boot on?
+
+    the image's own shim-signed, grub-efi-amd64-signed and grub2-common ok
+    the EFI partition starts one shim behind                         ok
+
+  boot 1: AurOS, and a night of updates
+    AurOS started on the old shim, desktop up                        ok
+    dpkg -i shim-signed grub-efi-amd64-signed: exit 0                ok
+    grub-multi-install did not enumerate EFI partitions              ok
+    after reinstalling grub2-common, update-grub and grub-install are still ours ok
+    the packages' own scripts installed the new shim (dpkg, no apt hook) ok
+    ...after finding and judging the Put Windows back kernel on Windows' disk ok
+    apt-get install --reinstall shim-signed: exit 0                  ok
+    ...and with the scripts' trigger gone, the apt hook alone did it ok
+    auros-bootchain status: current                                  ok
+    the EFI partition has the dual-signed shim now, both places      ok
+    nothing was written to \EFI\ubuntu (Ubuntu's grub-install did not run) ok
+    BootOrder still starts 0002 0000: AurOS, then Windows            ok
+    no "ubuntu" firmware entry was made                              ok
+    the kernel's zz-update-grub hook: exit 0                         ok
+    the menu starts the new kernel                                   ok
+    ...and falls back, by entry number (4), to the one before it     ok
+    ...and still has Put Windows back                                ok
+
+  boot 2: the next start, through the shim the update installed
+    the firmware started AurOS's entry                               ok
+    ...with Secure Boot on (SecureBoot=1, read inside AurOS)         ok
+    grub started the new kernel                                      ok
+    no Secure Boot refusal on the way (grub's loadfont)              ok
+    the desktop came up                                              ok
+
+  boot 3: the new kernel damaged; grub must fall back by itself
+    grub fell back to the previous kernel                            ok
+    ...and the desktop came up                                       ok
+    Windows' disk: byte-for-byte what it was, after three starts and an update ok
+
+bootupdatetest: 27/27

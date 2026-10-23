@@ -1,0 +1,46 @@
+#!/bin/sh
+# ═══════════════════════════════════════════════════════════════════
+#  dpkg-repair — finish a software update the power cut interrupted
+#
+#  A laptop whose battery dies in the middle of an automatic update
+#  leaves dpkg half-way: packages unpacked and not configured, or
+#  configured and their triggers (initramfs, menus) not run. Every
+#  later update then refuses with "dpkg was interrupted, you must
+#  manually run 'dpkg --configure -a'" -- which she will never type --
+#  and the machine silently stops getting security fixes.
+#
+#  This runs at every start (auros-dpkg-repair.service, before anything
+#  else touches apt) and costs one directory listing and one grep when
+#  there is nothing to do. When there is, it does what the message asks,
+#  keeping her configuration files, and says so in the journal.
+#  tools/hardenboottest.sh breaks the dpkg state of a real image and
+#  checks that the next start mends it.
+# ═══════════════════════════════════════════════════════════════════
+set -u
+ADMIN="${DPKG_ADMINDIR:-/var/lib/dpkg}"
+
+interrupted() {
+    [ -n "$(ls -A "$ADMIN/updates" 2>/dev/null)" ] && return 0
+    grep -Eq '^Status: [a-z]+ [a-z]+ (half-installed|unpacked|half-configured|triggers-awaited|triggers-pending)$' \
+        "$ADMIN/status" 2>/dev/null
+}
+
+interrupted || exit 0
+echo "dpkg-repair: the last software update was interrupted; finishing it"
+export DEBIAN_FRONTEND=noninteractive
+dpkg --force-confdef --force-confold --configure -a
+rc=$?
+if interrupted; then
+    # half-installed packages need their files again, which only apt can
+    # fetch; do what can be done without a network now, and leave the
+    # rest to the next automatic update (unattended-upgrades runs the
+    # same repair before it starts).
+    apt-get -o DPkg::Lock::Timeout=120 -o Dpkg::Options::=--force-confold \
+        -y --no-download -f install || true
+fi
+if interrupted; then
+    echo "dpkg-repair: some packages are still unfinished (dpkg exit $rc); the next update will try again"
+else
+    echo "dpkg-repair: done"
+fi
+exit 0

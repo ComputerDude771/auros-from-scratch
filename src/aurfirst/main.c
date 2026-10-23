@@ -1,6 +1,6 @@
 /* main.c — aurfirst, the command. See aurfirst.h.
  *
- * FIVE SUBCOMMANDS AND NO INTERFACE. The desktop asks the question;
+ * SEVEN SUBCOMMANDS AND NO INTERFACE. The desktop asks the question;
  * this is what it calls when the person answers, and what the boot
  * calls to keep the machine coming back to AurOS while nobody has
  * answered yet. Splitting it that way means the thing that writes
@@ -23,6 +23,7 @@ static void usage(void)
       "  aurfirst hold      keep the next start coming back to AurOS\n"
       "  aurfirst confirm   \"this works\": make AurOS what it starts by default\n"
       "  aurfirst decline   \"it does not\": the next start reaches Windows\n"
+      "  aurfirst putback   the next start reaches AurOS's menu, to put Windows back\n"
       "  aurfirst ferry     whether importing from Windows may run yet\n"
       "  aurfirst request   take the desktop's one word, safely\n"
       "\n"
@@ -106,6 +107,18 @@ int main(int argc, char **argv)
             return 1;
         }
         fprintf(stderr, "aurfirst: the next start will reach Windows\n");
+        return 0;
+    }
+
+    if (!strcmp(cmd, "putback")) {
+        int rc = af_putback(&s, why, sizeof why);
+        PUBLISH();
+        if (rc != 0) {
+            fprintf(stderr, "aurfirst: %s\n", why);
+            return 1;
+        }
+        fprintf(stderr, "aurfirst: the next start will reach AurOS's start-up "
+                        "menu (entry %04X)\n", s.entry);
         return 0;
     }
 

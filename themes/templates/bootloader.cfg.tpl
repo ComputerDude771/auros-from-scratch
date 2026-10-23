@@ -20,9 +20,10 @@ set auros_accent="@accent|hex@"
 set auros_muted="@muted|hex@"
 set auros_font_size="@font_size|int@"
 
-set gfxmode=auto
-set gfxpayload=keep
-terminal_output gfxterm
+# No gfxmode and no `terminal_output gfxterm`: the menu stays on the
+# firmware's text console, which is what Secure Boot leaves working
+# (rootfs/usr/lib/auros/grub.cfg.in says why). The colours above apply
+# to it.
 
 set timeout_style=menu
 set timeout=5

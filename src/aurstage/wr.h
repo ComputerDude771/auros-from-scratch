@@ -122,4 +122,11 @@ uint64_t wr_verified(const wr_target *t);
  * the shrink asserts this, and so does every test. */
 int      wr_untouched(const wr_target *t);
 
+/* The no-stick mode keeps its copy of the way back in memory until the
+ * shrink has made room for it on the disk. This makes that file, of
+ * exactly `bytes`, and only under /run/aurstage/. wr_open() then opens
+ * it like any other target, so the capture goes through the same
+ * windows it always does. */
+int      wr_scratch(const char *path, uint64_t bytes, char *why, size_t n);
+
 #endif

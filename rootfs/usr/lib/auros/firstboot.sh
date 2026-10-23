@@ -37,6 +37,13 @@ case "$root_src" in
     *) echo "root is not a block device ($root_src); skipping grow" ;;
 esac
 
+# ── 1b. What the person chose in the installer: language, keyboard,
+# time zone, look and desktop. Before the theme step, because the look
+# they chose is what that step applies. See choices.sh.
+if [ -x /usr/lib/auros/choices.sh ]; then
+    /usr/lib/auros/choices.sh 2>&1 || echo "choices: did not finish; defaults kept"
+fi
+
 # ── 2. Re-apply the theme.
 # The image was themed at build time, but the display resolution is only
 # known now, so the wallpaper is regenerated at the real size.

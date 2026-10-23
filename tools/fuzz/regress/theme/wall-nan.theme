@@ -1,0 +1,5 @@
+# wall.c: NaN/inf intensity, grain and vignette reached the final cast
+wall_style=aurora
+wall_intensity=nan
+wall_grain=inf
+wall_vignette=-inf

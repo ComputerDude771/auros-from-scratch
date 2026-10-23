@@ -24,3 +24,6 @@
 # committed, and then turned up in every diff that touched the reader.
 __pycache__/
 *.pyc
+
+# Playwright screenshots from checking the website; scratch, not source.
+website-shots/

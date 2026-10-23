@@ -244,10 +244,31 @@ static void grid_cell(const grid_m *g, int slot, int *col, int *row, int *span)
     }
 }
 
+/* WHERE EACH PROGRAM SITS: the table's order, except that the first
+ * page is shell_home_pick() for a page's worth -- which ends with "Get
+ * more programs", always, in the last place on the page she lands on.
+ * It used to be wherever the store ranked, which on a 1024-wide panel
+ * was page two behind a 30-pixel page marker. Positions, not table
+ * indices, are what pages and slots are made of; a program is still
+ * known by its table index everywhere else in this file. */
+static int display_pos(shell_ctx *c, int per, int app)
+{
+    int ord[SHELL_MAX_APPS];
+    int n = shell_display_order(c, per, ord);
+    for (int k = 0; k < n; k++) if (ord[k] == app) return k;
+    return app;
+}
+static int display_app(shell_ctx *c, int per, int pos)
+{
+    int ord[SHELL_MAX_APPS];
+    int n = shell_display_order(c, per, ord);
+    return (pos >= 0 && pos < n) ? ord[pos] : -1;
+}
+
 static int page_of_app(shell_ctx *c, int app, int w, int h)
 {
     grid_m g = grid_metrics(c, w, h);
-    int p = app / g.per;
+    int p = display_pos(c, g.per, app) / g.per;
     return (p < 0) ? 0 : (p >= g.pages ? g.pages - 1 : p);
 }
 
@@ -258,8 +279,9 @@ static int page_of_app(shell_ctx *c, int app, int w, int h)
 static rect tile_rect(shell_ctx *c, int w, int h, int app)
 {
     grid_m g = grid_metrics(c, w, h);
-    int page = app / g.per;
-    int slot = app - page * g.per;
+    int pos  = display_pos(c, g.per, app);
+    int page = pos / g.per;
+    int slot = pos - page * g.per;
     int col, row, span;
     grid_cell(&g, slot, &col, &row, &span);
 
@@ -363,7 +385,9 @@ static void paint_tile(shell_ctx *c, surface *s, shell_fonts *f, int app,
     tiles_priv *p = P(c);
     int hot = (p->hot == app);
     int run = app_window(c, app) >= 0;
-    uint32_t ink = c->apps[app].tint;
+    /* The store's mark in the signal colour, as on every home: the one
+     * button that leads somewhere new. */
+    uint32_t ink = c->apps[app].role == APP_ROLE_STORE ? c->accent : c->apps[app].tint;
     uint32_t paper = hot ? c->surface_hi : c->surface_c;
     corners cr = corners_all((float)c->radius);
     int pad = c->padding;
@@ -684,12 +708,14 @@ static void l_paint(shell_ctx *c, surface *s, shell_fonts *f, const surface *wal
         int first = p->page * g.per;
         int last  = first + g.per;
         if (last > c->n_apps) last = c->n_apps;
-        for (int i = first; i < last; i++) {
+        for (int k = first; k < last; k++) {
+            int i = display_app(c, g.per, k);
+            if (i < 0) continue;
             if (t > 0.f && p->win >= 0 && c->wins[p->win].app == i)
                 continue;                       /* this one IS the growing card */
             rect r = tile_rect(c, w, h, i);
             if (t > 0.001f) r = rect_scale(r, 1.f - 0.07f * t);
-            paint_tile(c, s, f, i, r, 1.f - t, (i - first) == 0);
+            paint_tile(c, s, f, i, r, 1.f - t, (k - first) == 0);
         }
         paint_dots(c, s, f, w, h, g.pages, 1.f - t);
     }
@@ -740,8 +766,10 @@ static int l_click(shell_ctx *c, int x, int y)
 
     int first = p->page * g.per, last = first + g.per;
     if (last > c->n_apps) last = c->n_apps;
-    for (int i = first; i < last; i++)
-        if (inside(tile_rect(c, w, h, i), x, y)) { open_app(c, i, w, h); return 1; }
+    for (int k = first; k < last; k++) {
+        int i = display_app(c, g.per, k);
+        if (i >= 0 && inside(tile_rect(c, w, h, i), x, y)) { open_app(c, i, w, h); return 1; }
+    }
 
     return 0;
 }
@@ -759,8 +787,10 @@ static void l_motion(shell_ctx *c, int x, int y)
     grid_m g = grid_metrics(c, w, h);
     int first = p->page * g.per, last = first + g.per;
     if (last > c->n_apps) last = c->n_apps;
-    for (int i = first; i < last; i++)
-        if (inside(tile_rect(c, w, h, i), x, y)) { p->hot = i; return; }
+    for (int k = first; k < last; k++) {
+        int i = display_app(c, g.per, k);
+        if (i >= 0 && inside(tile_rect(c, w, h, i), x, y)) { p->hot = i; return; }
+    }
 }
 
 /* The keyboard is a bonus here, not the model (keyboard_optional=yes),
@@ -786,8 +816,9 @@ static void move_sel(shell_ctx *c, int dcol, int drow)
     if (c->n_apps <= 0) return;
 
     if (p->hot < 0) {
-        p->hot = p->page * g.per;
-        if (p->hot >= c->n_apps) p->hot = c->n_apps - 1;
+        int k0 = p->page * g.per;
+        if (k0 >= c->n_apps) k0 = c->n_apps - 1;
+        p->hot = display_app(c, g.per, k0);
         return;
     }
 
@@ -800,8 +831,9 @@ static void move_sel(shell_ctx *c, int dcol, int drow)
 
     int best = -1;
     float bestd = 0.f;
-    for (int i = first; i < last; i++) {
-        if (i == p->hot) continue;
+    for (int k = first; k < last; k++) {
+        int i = display_app(c, g.per, k);
+        if (i < 0 || i == p->hot) continue;
         rect r = tile_rect(c, c->screen_w, c->screen_h, i);
         float dx = (float)r.x + (float)r.w * 0.5f - cx;
         float dy = (float)r.y + (float)r.h * 0.5f - cy;
@@ -821,12 +853,12 @@ static void move_sel(shell_ctx *c, int dcol, int drow)
      * horizontal idea here and pretending otherwise teleports you. */
     if (dcol > 0 && p->page + 1 < g.pages) {
         p->page++;
-        p->hot = p->page * g.per;
+        p->hot = display_app(c, g.per, p->page * g.per);
     } else if (dcol < 0 && p->page > 0) {
         p->page--;
         int l = p->page * g.per + g.per;
         if (l > c->n_apps) l = c->n_apps;
-        p->hot = l - 1;
+        p->hot = display_app(c, g.per, l - 1);
     }
     if (p->hot >= c->n_apps) p->hot = c->n_apps - 1;
     if (p->hot < 0) p->hot = 0;

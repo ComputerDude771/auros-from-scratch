@@ -1,0 +1,13 @@
+# AurOS's own repository may supply AurOS's own packages, and nothing
+# else. Even a signature by AurOS's key cannot make this computer take
+# a libc, a kernel or a browser from it: those come from Ubuntu (or
+# Mozilla) only. The first record that matches a package wins, so the
+# narrow one comes first. docs/security/UPDATES.md; tools/updatetest.sh
+# proves both records.
+Package: auros auros-*
+Pin: release o=AurOS, l=AurOS
+Pin-Priority: 500
+
+Package: *
+Pin: release o=AurOS
+Pin-Priority: -1

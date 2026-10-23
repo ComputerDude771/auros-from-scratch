@@ -50,6 +50,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include "format.h"       /* fmt_extent, for the gap fence below */
 
 /* One sentence, in her words, whenever something returns non-zero. */
 #define PLAT_WHY 400
@@ -85,6 +86,76 @@ int  plat_flush(int disk_index, char *why, size_t wn);
 /* Tell the operating system the disk's layout changed. */
 int  plat_reread(int disk_index, char *why, size_t wn);
 
+/* ── the fast path: raw writes into the freed gap ─────────────────────
+ *
+ * The stick fence above refuses every disk but the nominated stick. The
+ * fast path (docs/AURBRIDGE.md D1) has no stick: it shrinks C: with
+ * Windows' own online shrink and writes AurOS's partitions into the
+ * unallocated gap that frees, ON THE SYSTEM DISK ITSELF. So the fence
+ * changes shape rather than being dropped, and it is STRICTER:
+ *
+ *   - A gap write may land only inside the window plat_gap_allow()
+ *     nominated, and only where no partition is. The live partition
+ *     table is re-read (not a cached copy) when the window is armed,
+ *     immediately before the write loop, and every write is checked
+ *     against both the window and those live extents -- a byte on or
+ *     past any partition is REFUSED, never clamped.
+ *   - Windows itself refuses a raw write inside a mounted volume's
+ *     extents, and the fast path does NOT lock or dismount anything, so
+ *     that refusal stands as a live second fence against a table that
+ *     changes mid-write.
+ *
+ * The stick path (plat_allow_write/plat_write) is untouched and still
+ * serves the legacy staging-shrink install. The two never share state:
+ * a disk armed for gap writes is not armed for stick writes and vice
+ * versa. plat_disk_parts() exposes the live extents for the planner and
+ * the self-test. */
+int  plat_disk_parts(int disk_index, fmt_extent *out, int max,
+                     int *n_out, char *why, size_t wn);
+int  plat_gap_allow(int disk_index, uint64_t lo, uint64_t hi,
+                    char *why, size_t wn);
+void plat_gap_forbid(void);
+int  plat_gap_write(int disk_index, uint64_t off, const void *buf, size_t n,
+                    char *why, size_t wn);
+int  plat_gap_flush(int disk_index, char *why, size_t wn);
+
+/* TEST ONLY (`aurbridge gapselftest`): does WINDOWS refuse a raw write
+ * at `off`, which the caller places inside a mounted volume? The first
+ * fence is bypassed on purpose, and the bytes written are the bytes
+ * that are already there, so the probe changes nothing even when the
+ * answer is "no". 1 = Windows refused (the second fence stands), 0 =
+ * Windows accepted it, -1 = the probe could not run. The simulation has
+ * no second fence and says so (-1). */
+int  plat_gap_os_fence_probe(int disk_index, uint64_t off, char *why, size_t wn);
+
+/* What Windows says partition `part_number` (1-based) on this disk is
+ * now, and the smallest and largest it could be resized to in place
+ * (Get-PartitionSupportedSize). Read-only, but slow: Windows analyses
+ * the volume to answer. Any of the three pointers may be NULL. */
+int  plat_shrink_limits(int disk_index, int part_number, uint64_t *now,
+                        uint64_t *smallest, uint64_t *largest,
+                        char *why, size_t wn);
+
+/* Shrink the system volume with WINDOWS' OWN online shrink (works with
+ * BitLocker on; no decryption). `part_number` is the 1-based GPT entry
+ * of C:. Never below what Windows allows, rounded up to a megabyte. On
+ * return *achieved_bytes is the partition's new size read back from the
+ * LIVE table -- never assumed to be what was asked for, because
+ * unmovable files can stop the shrink short (and it is filled in even
+ * when the shrink stopped part-way and this returns -1). 0, or -1 with a
+ * sentence. The simulation emulates it with ntfsresize + a GPT entry
+ * rewrite, exactly what Windows leaves behind. */
+int  plat_shrink_system(int disk_index, int part_number,
+                        uint64_t target_bytes, uint64_t *achieved_bytes,
+                        char *why, size_t wn);
+/* Grow it back (the undo of a shrink): to `to_bytes`, or to the largest
+ * Windows allows if that is less, or to the largest if `to_bytes` is 0.
+ * Never past the size it was, so space that was unallocated before the
+ * install stays unallocated. *achieved_bytes (may be NULL) is read back.
+ * 0, or -1 with a sentence. */
+int  plat_grow_system(int disk_index, int part_number, uint64_t to_bytes,
+                      uint64_t *achieved_bytes, char *why, size_t wn);
+
 /* ── ordinary files ──────────────────────────────────────────────── */
 
 int plat_file_size(const char *path, uint64_t *out);
@@ -102,6 +173,14 @@ int plat_file_put(const char *to, const void *buf, size_t n,
  * what this replaced. */
 int plat_file_append(const char *to, const void *buf, size_t n,
                      char *why, size_t wn);
+/* Remove a file this program made. 0 if it is gone afterwards,
+ * including when it was never there. */
+int plat_file_delete(const char *path, char *why, size_t wn);
+/* Rename `from` to `to`, replacing `to`. On Windows a rename across
+ * volumes becomes a copy and a delete, which is what moving an image
+ * from beside the installer onto the Windows drive needs. */
+int plat_file_rename(const char *from, const char *to, char *why, size_t wn);
+
 /* How much room is left on the volume holding `path` -- which need not
  * exist yet; the DIRECTORY it would go in is what is asked about. 0 if
  * this computer will not say, which is not a refusal: a machine that
@@ -129,6 +208,17 @@ uint64_t plat_free_space(const char *path);
  */
 #define PAYLOAD_KERNEL  "staging-kernel"
 #define PAYLOAD_INITRD  "staging-initrd"
+/* THE WAY IN UNDER SECURE BOOT. The staging kernel is signed by
+ * Canonical, and firmware trusts Microsoft: started directly, as the
+ * boot entry used to, a machine with Secure Boot on -- which is nearly
+ * every Windows 10 and 11 PC -- refuses it, consumes BootNext, and
+ * comes back to Windows with nothing done. So the entry starts the same
+ * Microsoft-signed shim and Canonical-signed grub the installed system
+ * boots through, and grub starts the kernel. Carried as three more
+ * resources; see phase_handoff. */
+#define PAYLOAD_SHIM    "staging-shim"
+#define PAYLOAD_GRUB    "staging-grub"
+#define PAYLOAD_MOKMGR  "staging-mokmgr"
 
 int  plat_payload(const char *name, char *path, size_t pn,
                   char *why, size_t wn);
@@ -136,6 +226,12 @@ void plat_payload_free(void);
 /* 1 if this binary is carrying the payload rather than expecting it in
  * a folder. The release build refuses to publish one that is not. */
 int  plat_payload_embedded(void);
+/* How many bytes of start-up files this binary carries (all five
+ * payloads), or 0 if it carries none. Preflight measures the EFI
+ * partition against this rather than against a guess: the guess (96 MB)
+ * told a real Windows machine with 61 MB free that it did not have room
+ * for the 33 MB that actually go there. */
+uint64_t plat_payload_bytes(void);
 
 /* ── fetching the image ──────────────────────────────────────────── */
 /*
@@ -218,11 +314,60 @@ int plat_boot_next(uint16_t num, char *why, size_t wn);
 /* And take it away again, for an abort before the restart. */
 int plat_boot_next_clear(char *why, size_t wn);
 
+/* Secure Boot: -1 not known, 0 off, 1 on. On Windows, what Windows
+ * itself records; in the simulation, the file secureboot ("1"). */
+int plat_secure_boot(void);
+
+/* One of the firmware's signature databases, "db" (the signers Secure
+ * Boot trusts) or "dbx" (what it has revoked), as the variable's data
+ * (src/aurbridge/sbdb.h reads them). Reading only; it needs
+ * SeSystemEnvironmentPrivilege like everything else here. In the
+ * simulation, the files db.bin and dbx.bin. */
+int plat_efi_sigdb(const char *name, unsigned char *buf, size_t cap,
+                   size_t *got, char *why, size_t wn);
+
 /* ── running something else ──────────────────────────────────────── */
 
 /* `tail` gets the last of its output, which is what an error message
  * needs. Returns the exit status, or -1 if it would not start. */
 int plat_run(const char *cmdline, char *tail, size_t n);
+
+/* ── Fast Startup, off ──────────────────────────────────────────────
+ *
+ * The first thing an install does. With Fast Startup on, Windows'
+ * "shut down" hibernates the kernel and leaves every NTFS volume
+ * half-mounted; resuming that after the partitions have moved writes a
+ * stale view of the disk back over it (R2). It used to be a refusal
+ * whose remedy said "AurBridge can switch Fast Startup off for you" --
+ * and nothing did. Now this does: HiberbootEnabled=0 and
+ * `powercfg /hibernate off` (which also removes hiberfil.sys), then
+ * both are read back. 0 when both are off, -1 with a sentence. */
+int plat_fast_startup_off(char *why, size_t wn);
+
+/* ── keeping the computer awake ──────────────────────────────────────
+ *
+ * The whole Windows-side run -- the five-gigabyte download most of all
+ * -- outlasts a laptop's display and sleep timers when it is left
+ * alone, which is exactly what a person does while a progress bar
+ * fills. A machine that sleeps mid-download wakes to a dropped
+ * transfer; one that sleeps between "ready to restart" and the restart
+ * is worse. SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)
+ * holds off system sleep (the screen may still blank) until it is
+ * cleared or the thread that set it exits, so plat_keep_awake() is
+ * called from the thread that lives the whole time -- the wizard's UI
+ * thread -- and plat_let_sleep() gives the timers back at the end.
+ * Both are safe to call more than once. */
+void plat_keep_awake(void);
+void plat_let_sleep(void);
+
+/* ── the one restart ─────────────────────────────────────────────── */
+
+/* Restart the computer, now. The wizard's last button, after phase 3:
+ * the staging environment is armed with BootNext and this is the
+ * restart it is waiting for. A restart, never a shut down -- with Fast
+ * Startup on, Windows' "shut down" leaves the drive half-asleep, which
+ * the staging environment refuses to touch. */
+int plat_restart(char *why, size_t wn);
 
 /* ── which implementation is this ────────────────────────────────── */
 

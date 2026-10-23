@@ -13,7 +13,7 @@ BUILD   := build
 HELPERS := $(BUILD)/ferry-hivepeek $(BUILD)/ferry-winattr
 
 SCRIPTS := ferry ferry-detect ferry-wifi ferry-files ferry-firefox \
-           ferry-settings ferry-report ferry-hive ferry-dpapi ferry-common.sh
+           ferry-settings ferry-report ferry-hive ferry-common.sh install.sh
 
 PREFIX  ?= /usr
 LIBDIR  := $(DESTDIR)$(PREFIX)/lib/ferry
@@ -44,11 +44,8 @@ test: all
 	@sh tests/run.sh
 
 install: all
-	install -d $(LIBDIR) $(SHAREDIR) $(BINDIR)
+	sh install.sh scripts $(DESTDIR)/
 	install -m755 $(HELPERS) $(LIBDIR)/
-	@for s in $(SCRIPTS); do install -m755 $$s $(LIBDIR)/$$s; done
-	install -m644 data/*.tab $(SHAREDIR)/
-	ln -sf $(PREFIX)/lib/ferry/ferry $(BINDIR)/ferry
 
 clean:
 	rm -rf $(BUILD)

@@ -4,6 +4,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <fcntl.h>
+#include <errno.h>
 #include <unistd.h>
 #include <sys/stat.h>
 
@@ -12,6 +14,7 @@
 #include "foot.h"
 #include "draw.h"
 #include "run.h"
+#include "welcome.h"
 
 /* ── what is on the main page ───────────────────────────────────────
  *
@@ -27,6 +30,8 @@ enum {
     R_TIME,        /* opens a page             */
     R_SHELL,       /* opens a page             */
     R_LOOK,        /* opens a page             */
+    R_WINDOWS,     /* opens a page: put Windows back, on a machine
+                      that came from Windows and only there */
     R_N
 };
 
@@ -39,6 +44,7 @@ static int row_applies(int row, const set_view *v)
     if (row == R_SCREEN)  return v->backlight;
     if (row == R_SOUND)   return v->sound;
     if (row == R_BATTERY) return v->battery;
+    if (row == R_WINDOWS) return v->windows;
     return 1;
 }
 
@@ -156,8 +162,17 @@ static struct {
     choice ch[CHOICE_MAX];
     int    n_ch;
     int    cur_ch;             /* which one is in force, -1 unknown */
-    char   said[CHOICE_LEN];   /* one line of "this is now done"    */
+    char   said[CHOICE_LEN * 2]; /* one line of "this is now done"  */
     uint32_t reload_at;        /* when to reread, 0 for "not waiting" */
+
+    /* Put Windows back. `converted` is read when the panel opens;
+     * `armed` is the first of the two presses; `asked` means the word
+     * has gone to the root side and this panel is waiting to hear. */
+    int converted;
+    int armed;
+    uint32_t armed_at;         /* when the first press was, in ms        */
+    int asked;
+    time_t asked_at;           /* an answer older than this is not ours */
 } S = { .sel = -1, .drag_row = -1, .hover_act = -1, .cur_ch = -1 };
 
 int settings_dragging(void) { return S.drag_row >= 0; }
@@ -172,6 +187,7 @@ static set_view view_now(const shell_ctx *c)
     v.backlight = S.backlight >= 0;
     v.sound     = S.volume >= 0;
     v.n_rows    = S.n_ch;
+    v.windows   = S.converted;
     (void)c;
     return v;
 }
@@ -333,6 +349,15 @@ static void fill_page(shell_ctx *c)
         return;
     }
 
+    if (S.page == SET_PAGE_WINDOWS) {
+        S.armed = 0;
+        add_choice("keep", "Keep AurOS", "Nothing changes");
+        add_choice("putback", "Remove AurOS and put Windows back",
+                   "The computer restarts. Windows gets all of its drive back.");
+        S.cur_ch = 0;
+        return;
+    }
+
     if (S.page == SET_PAGE_LOOK) {
         static const char *IDS[] = { "nocturne", "sandstone", "moss",
                                      "synthwave", NULL };
@@ -353,6 +378,37 @@ static void fill_page(shell_ctx *c)
     }
 }
 
+/* Whether this computer was converted from Windows, as aurfirst last
+ * published it (WELCOME_STATE, key=value). Read, not asked: the desktop
+ * does not become root-adjacent to find out which rows to show. */
+static int came_from_windows(void)
+{
+    FILE *f = fopen(WELCOME_STATE, "r");
+    if (!f) return 0;
+    char line[128];
+    int yes = 0;
+    while (fgets(line, sizeof line, f))
+        if (!strncmp(line, "converted=yes", 13)) yes = 1;
+    fclose(f);
+    return yes;
+}
+
+/* The word, into the desktop's own runtime directory, the way the
+ * welcome panel sends its three. O_EXCL: a request already sitting
+ * there is one the root side has not picked up, and two presses must
+ * not make two. 1 means one is already waiting -- which is NOT ours
+ * sent, and the page must not say it is restarting when it is not. */
+static int ask_root(const char *word)
+{
+    char path[512];
+    snprintf(path, sizeof path, "%s/answer", WELCOME_RUN);
+    int fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+    if (fd < 0) return errno == EEXIST ? 1 : -1;
+    ssize_t k = write(fd, word, strlen(word));
+    close(fd);
+    return k == (ssize_t)strlen(word) ? 0 : -1;
+}
+
 void settings_opened(shell_ctx *c)
 {
     (void)c;
@@ -369,6 +425,7 @@ void settings_opened(shell_ctx *c)
     S.backlight = power_brightness();
     S.volume    = power_volume();
     S.muted     = power_muted();
+    S.converted = came_from_windows();
 }
 
 void settings_closed(shell_ctx *c) { (void)c; S.drag_row = -1; }
@@ -520,6 +577,7 @@ static const char *row_name(int which)
     case R_TIME:    return "The time and date";
     case R_SHELL:   return "How this computer works";
     case R_LOOK:    return "How it looks";
+    case R_WINDOWS: return "Put Windows back";
     }
     return "";
 }
@@ -547,6 +605,9 @@ static void row_value(const shell_ctx *c, int which, char *out, size_t n)
         break;
     case R_BT:
         snprintf(out, n, "%s", "Connect one without a cable");
+        break;
+    case R_WINDOWS:
+        snprintf(out, n, "%s", "Remove AurOS from this computer");
         break;
     case R_TIME: {
         time_t t = time(NULL);
@@ -635,6 +696,7 @@ void settings_paint(shell_ctx *c, surface *s, shell_fonts *f)
     const char *title = S.page == SET_PAGE_TIME  ? "Where you are"
                       : S.page == SET_PAGE_SHELL ? "How this works"
                       : S.page == SET_PAGE_LOOK  ? "How it looks"
+                      : S.page == SET_PAGE_WINDOWS ? "Put Windows back"
                                                  : "Settings";
     if (head)
         shell_text(s, head, (float)g.gx, (float)g.head_y, title, c->fg, 1.f);
@@ -644,6 +706,8 @@ void settings_paint(shell_ctx *c, surface *s, shell_fonts *f)
         : S.page == SET_PAGE_TIME  ? "Press the place closest to you."
         : S.page == SET_PAGE_SHELL ? "Press one. The desktop changes straight away."
         : S.page == SET_PAGE_LOOK  ? "Press one to try it."
+        : S.page == SET_PAGE_WINDOWS
+            ? "This removes AurOS and everything saved in it."
                                    : "Anything you change here you can change back.";
     if (bodyf)
         shell_text_elided(s, bodyf, (float)g.gx, (float)g.sub_y, (float)g.cw,
@@ -815,10 +879,159 @@ static int user_path(char *out, size_t n, const char *leaf)
     return 0;
 }
 
+/* Write `text` to `path` through a temporary file beside it, so a
+ * program starting at that moment reads the old file or the new one and
+ * never half of one. */
+static int put_file(const char *path, const char *text)
+{
+    char tmp[600];
+    snprintf(tmp, sizeof tmp, "%s.new", path);
+    FILE *f = fopen(tmp, "w");
+    if (!f) return -1;
+    int bad = fputs(text, f) < 0;
+    if (fclose(f) != 0) bad = 1;
+    if (bad || rename(tmp, path) != 0) { unlink(tmp); return -1; }
+    return 0;
+}
+
+/* THE PROGRAMS' HALF OF A LOOK.
+ *
+ * Choosing a look here changed the desktop and nothing else. Her
+ * programs take their colours from a gtk.css that imports
+ * /etc/auros/gtk/gtk.css -- the machine's, rendered from the machine's
+ * theme, which she cannot write -- and whether they are light or dark
+ * from gtk-application-prefer-dark-theme in her settings.ini, which the
+ * build wrote once. So after "Now using Sandstone." the next program she
+ * opened was still in the old colours, and dark on a light desktop.
+ *
+ * Now: aurora renders gtk.css into her own directory beside her
+ * shell.conf (see the AURORA_ONLY below), her two GTK imports point at
+ * that copy, and light or dark follows the theme's theme_variant.
+ * Programs she opens from now on follow it; ones already open keep the
+ * look they started with, which is GTK's rule and not ours.
+ *
+ * Her own gtk.css is only replaced if it is the one the build wrote --
+ * a single import of an AurOS file -- so a person who has written their
+ * own is not overwritten. */
+static void gtk_follow(const char *id, const char *css_dir)
+{
+    const char *home = getenv("HOME");
+    if (!home || !*home) return;
+    char tf[512], variant[32];
+    snprintf(tf, sizeof tf, "%s/%s.theme",
+             dir_of("AUROS_THEME_DIR", "/usr/share/auros/themes"), id);
+    int have_variant = field_of(tf, "theme_variant", variant, sizeof variant) == 0;
+    int dark = have_variant && strcmp(variant, "light") != 0;
+
+    static const char *vers[] = { "3.0", "4.0" };
+    for (int i = 0; i < 2; i++) {
+        char dir[512], css[600], ini[600], text[2048];
+        snprintf(dir, sizeof dir, "%s/.config/gtk-%s", home, vers[i]);
+        mkdir(dir, 0755);
+
+        snprintf(css, sizeof css, "%s/gtk.css", dir);
+        int ours = 1;
+        FILE *f = fopen(css, "r");
+        if (f) {
+            char line[512];
+            while (fgets(line, sizeof line, f)) {
+                if (line[0] == '/' || line[0] == ' ' || line[0] == '*' ||
+                    line[0] == '\n') continue;            /* the comment */
+                if (strncmp(line, "@import url(\"file://", 20) || !strstr(line, "auros/"))
+                    ours = 0;
+            }
+            fclose(f);
+        }
+        if (ours) {
+            snprintf(text, sizeof text,
+                     "/* Written by AurOS Settings when the look was chosen. It\n"
+                     "   makes the desktop's colours reach the programs on it. */\n"
+                     "@import url(\"file://%s/gtk/gtk.css\");\n", css_dir);
+            put_file(css, text);
+        }
+
+        if (!have_variant) continue;
+        /* settings.ini: the one line replaced, everything else kept. */
+        snprintf(ini, sizeof ini, "%s/settings.ini", dir);
+        size_t w = 0;
+        int seen = 0, group = 0;
+        text[0] = 0;
+        f = fopen(ini, "r");
+        if (f) {
+            char line[512];
+            while (fgets(line, sizeof line, f) && w + 600 < sizeof text) {
+                if (!strncmp(line, "[Settings]", 10)) group = 1;
+                if (!strncmp(line, "gtk-application-prefer-dark-theme=", 34)) {
+                    w += (size_t)snprintf(text + w, sizeof text - w,
+                                          "gtk-application-prefer-dark-theme=%d\n", dark);
+                    seen = 1;
+                    continue;
+                }
+                w += (size_t)snprintf(text + w, sizeof text - w, "%s", line);
+            }
+            fclose(f);
+        }
+        if (!group) w += (size_t)snprintf(text + w, sizeof text - w, "[Settings]\n");
+        if (!seen)
+            w += (size_t)snprintf(text + w, sizeof text - w,
+                                  "gtk-application-prefer-dark-theme=%d\n", dark);
+        put_file(ini, text);
+    }
+}
+
 static void choose(shell_ctx *c, int idx)
 {
     if (idx < 0 || idx >= S.n_ch) return;
     const char *id = S.ch[idx].id;
+
+    /* PUT WINDOWS BACK, ASKED TWICE. The one row in this panel that
+     * cannot be undone by pressing a different one, so the first press
+     * only says what will happen and changes the row to say "press
+     * again"; the second sends the word. Anything else pressed in
+     * between -- "Keep AurOS", Go back, Escape -- disarms it. */
+    if (S.page == SET_PAGE_WINDOWS) {
+        if (S.asked) return;
+        if (strcmp(id, "putback") != 0) {
+            S.armed = 0;
+            S.cur_ch = idx;
+            snprintf(S.ch[1].label, CHOICE_LEN, "%s",
+                     "Remove AurOS and put Windows back");
+            snprintf(S.said, sizeof S.said, "%s",
+                     "Nothing has changed. AurOS stays.");
+            return;
+        }
+        if (!S.armed) {
+            S.armed = 1;
+            S.armed_at = now_ms();
+            snprintf(S.ch[idx].label, CHOICE_LEN, "%s",
+                     "Press again to restart and remove AurOS");
+            snprintf(S.said, sizeof S.said, "%s",
+                     "First copy anything you want to keep onto a memory stick.");
+            return;
+        }
+        /* NOT A DOUBLE-CLICK. Two presses inside a second and a half
+         * are one press made twice by a hand, not two decisions; the
+         * second has to come after she has had time to read what the
+         * first one changed. */
+        if ((uint32_t)(now_ms() - S.armed_at) < 1500) return;
+        int rc = ask_root("putback");
+        if (rc == 1) {
+            snprintf(S.said, sizeof S.said, "%s",
+                     "Something else is still being done. Try again in a moment.");
+            return;
+        }
+        if (rc != 0) {
+            snprintf(S.said, sizeof S.said, "%s",
+                     "That could not be asked for just now. Nothing has changed.");
+            return;
+        }
+        S.asked = 1;
+        S.asked_at = time(NULL);
+        S.cur_ch = idx;
+        snprintf(S.said, sizeof S.said, "%s",
+                 "Restarting to put Windows back. Leave the computer on.");
+        return;
+    }
 
     /* WAITING FOR THE ANSWER, NOT FOR THE FORK.
      *
@@ -903,7 +1116,8 @@ static void choose(shell_ctx *c, int idx)
         if (dl && dir[dl-1] == '/') dir[dl-1] = 0;
         setenv("AURORA_STATE",  dir, 1);
         setenv("AURORA_OUTDIR", dir, 1);
-        setenv("AURORA_ONLY",   "shell.conf", 1);
+        /* And gtk.css, for the programs -- see gtk_follow(). */
+        setenv("AURORA_ONLY",   "shell.conf gtk.css", 1);
         setenv("AURORA_CACHE", cache, 1);
         const char *argv[] = { "aurora", "set", id, NULL };
         int rc = run_status(argv, 2500);
@@ -913,6 +1127,7 @@ static void choose(shell_ctx *c, int idx)
             return;
         }
         S.cur_ch = idx;
+        gtk_follow(id, dir);
         if (rc == 0) {
             /* It has finished and the file is on disk, so the reload
              * can happen on this pass rather than on a timer. */
@@ -1036,6 +1251,8 @@ int settings_click(shell_ctx *c, int x, int y)
                                     S.sel = -1; fill_page(c); }
             if (which == R_LOOK)  { S.page = SET_PAGE_LOOK;  S.first_row = 0;
                                     S.sel = -1; fill_page(c); }
+            if (which == R_WINDOWS) { S.page = SET_PAGE_WINDOWS; S.first_row = 0;
+                                      S.sel = -1; fill_page(c); }
             return 1;
         }
     }
@@ -1082,6 +1299,8 @@ int settings_key(shell_ctx *c, int k)
                                 S.sel = -1; fill_page(c); }
         if (which == R_LOOK)  { S.page = SET_PAGE_LOOK;  S.first_row = 0;
                                 S.sel = -1; fill_page(c); }
+        if (which == R_WINDOWS) { S.page = SET_PAGE_WINDOWS; S.first_row = 0;
+                                  S.sel = -1; fill_page(c); }
         return 1;
     }
     if ((k == 105 || k == 106) && S.sel >= 0) {     /* left / right */
@@ -1099,8 +1318,38 @@ int settings_key(shell_ctx *c, int k)
  * something new to show. This is where a change that could not take
  * effect immediately -- a theme still being written to disk -- becomes
  * a reload, rather than in painting, which must not have consequences. */
+/* The root side's answer to "putback", if it has one: a refusal is
+ * something she has to be told, because otherwise the screen says
+ * "Restarting" for ever on a computer that is not going to. */
+static int putback_answered(void)
+{
+    char path[512], line[160], note[CHOICE_LEN * 2] = "";
+    snprintf(path, sizeof path, "%s/result", WELCOME_ANSWER);
+    struct stat st;
+    if (stat(path, &st) != 0 || st.st_mtime < S.asked_at) return 0;
+    FILE *f = fopen(path, "r");
+    if (!f) return 0;
+    int ours = 0, failed = 0;
+    while (fgets(line, sizeof line, f)) {
+        line[strcspn(line, "\n")] = 0;
+        if (!strcmp(line, "request=putback")) ours = 1;
+        else if (!strncmp(line, "result=", 7) && strcmp(line + 7, "ok")) failed = 1;
+        else if (!strncmp(line, "note=", 5)) snprintf(note, sizeof note, "%.140s", line + 5);
+    }
+    fclose(f);
+    if (!ours || !failed) return 0;
+    S.asked = 0;
+    S.armed = 0;
+    S.cur_ch = 0;
+    snprintf(S.ch[1].label, CHOICE_LEN, "%s", "Remove AurOS and put Windows back");
+    snprintf(S.said, sizeof S.said, "Nothing has changed: %s.",
+             note[0] ? note : "this computer said no");
+    return 1;
+}
+
 int settings_step(shell_ctx *c)
 {
+    if (S.asked && S.page == SET_PAGE_WINDOWS && putback_answered()) return 1;
     if (!S.reload_at) return 0;
     if ((int32_t)(now_ms() - S.reload_at) < 0) return 0;
     S.reload_at = 0;

@@ -1,0 +1,5 @@
+# draw.c: r.x + r.w signed overflow in every clip
+radius=2147483647
+margin=2147483000
+bar_height=2147483647
+padding=40

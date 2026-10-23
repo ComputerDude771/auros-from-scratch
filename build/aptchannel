@@ -1,0 +1,538 @@
+#!/bin/bash
+# ═══════════════════════════════════════════════════════════════════
+#  aptchannel — AurOS's own update channel (docs/security/UPDATES.md)
+#
+#  Ubuntu's packages update themselves every day. AurOS's own files --
+#  aurshell, aurfirst and the first-boot scripts, the boot chain, Ferry,
+#  the themes, our /etc settings -- were compiled into the image as
+#  loose files that dpkg knew nothing about, so a security fix to any
+#  of them could never reach a computer that was already installed.
+#  This makes them packages, and publishes those packages as a signed
+#  apt repository that every AurOS computer already trusts.
+#
+#    aptchannel image RFS [PROFILE_ID OS_VERSION]
+#        forge's hook, run just before the rootfs is sealed: pack every
+#        AurOS file in RFS into auros-* packages, register them with
+#        dpkg inside RFS, keep the .debs at /var/lib/auros/debs, and
+#        write the apt source -- only if the archive key is in RFS.
+#    aptchannel pack RFS OUTDIR VERSION
+#        the packing alone (also what the tests use).
+#    aptchannel repo DEBDIR REPODIR
+#        a flat apt repository from a directory of .debs (newest
+#        version of each package): Packages, Packages.gz, Release.
+#    aptchannel sign REPODIR KEYID...
+#        InRelease and Release.gpg, with the key(s) in $GNUPGHOME.
+#    aptchannel verify REPODIR KEYRING
+#        what apt will check, checked first: the signature against
+#        KEYRING (the pinned public key, not whatever signed it) and
+#        every hash down to each .deb.
+#    aptchannel url        the channel's address, derived, never typed
+#    aptchannel source URL the deb822 entry the image carries
+#
+#  Exit status is non-zero, with a sentence, on anything wrong.
+# ═══════════════════════════════════════════════════════════════════
+set -euo pipefail
+export LC_ALL=C
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# ── the constants, in one place ────────────────────────────────────
+#
+# The release tag whose assets ARE the repository. A prerelease, never
+# "latest": releases/latest/download/AurOS-Setup.exe is the website's
+# download button, and this must never be what it resolves to.
+APT_TAG=${AUROS_APT_TAG:-apt}
+# Where the image looks for the key that signs it. The auros-archive-
+# keyring package owns this file, so a new key (rotation) arrives
+# through the channel itself, signed by the key it replaces.
+KEYRING_PATH=/usr/share/keyrings/auros-archive-keyring.asc
+SOURCE_PATH=/etc/apt/sources.list.d/auros.sources
+FACTORY_DIR=/var/lib/auros/debs
+# What our Release file says about itself; rootfs/etc/apt/preferences.d/
+# auros and apt.conf.d/53auros-updates match on these. Change all three
+# together or the computers stop taking updates.
+ORIGIN=AurOS
+LABEL=AurOS
+SUITE=stable
+ARCH=amd64
+MAINTAINER="AurOS <noreply@auros.invalid>"
+
+PACKAGES="auros-desktop auros-first auros-bootchain auros-ferry auros-config auros-archive-keyring"
+
+die()  { printf 'aptchannel: %s\n' "$*" >&2; exit 1; }
+note() { printf '   %s\n' "$*"; }
+warn() { printf 'aptchannel: WARNING: %s\n' "$*" >&2; }
+
+# ── where it lives ─────────────────────────────────────────────────
+#
+# Derived, so that a fork or a move to another repository publishes and
+# points at itself without anybody editing a file: GITHUB_REPOSITORY on
+# Actions, else the checkout's own origin. AUROS_APT_URL overrides both
+# (a mirror, or a test's local server).
+channel_url() {
+    if [ -n "${AUROS_APT_URL:-}" ]; then
+        printf '%s\n' "$AUROS_APT_URL"; return 0
+    fi
+    local slug=${GITHUB_REPOSITORY:-} server=${GITHUB_SERVER_URL:-https://github.com}
+    if [ -z "$slug" ]; then
+        slug=$(git -C "$ROOT" remote get-url origin 2>/dev/null |
+               sed -n -e 's#\.git$##' -e 's#^.*github\.com[:/]\([^/]*/[^/]*\)/*$#\1#p') || true
+    fi
+    [ -n "$slug" ] || return 1
+    printf '%s/%s/releases/download/%s/\n' "$server" "$slug" "$APT_TAG"
+}
+
+source_entry() { # URL
+    cat <<EOF
+# AurOS's own programs and settings: aurshell, the first-start helpers,
+# the boot chain, Ferry, themes. Only updates sealed with AurOS's key
+# (the file named below, and nothing else) are accepted; unattended-
+# upgrades installs them like Ubuntu's security fixes. They may replace
+# only AurOS's own packages (preferences.d/auros).
+# docs/security/UPDATES.md
+Types: deb
+URIs: $1
+Suites: ./
+Signed-By: $KEYRING_PATH
+EOF
+}
+
+# A version that only ever rises: the profile's os_version, then the
+# commit's time to the second (UTC). Rebased commits get a new, later
+# committer time, so the branch's newest build is always the highest.
+channel_version() { # OS_VERSION
+    local ct
+    ct=$(git -C "$ROOT" log -1 --format=%ct 2>/dev/null) || ct=""
+    [ -n "$ct" ] || ct=${SOURCE_DATE_EPOCH:-$(date +%s)}
+    printf '%s.%s\n' "$1" "$(date -u -d "@$ct" +%Y%m%d%H%M%S)"
+}
+
+# ── which package a path belongs to ────────────────────────────────
+#
+# One table. Empty means "AurOS's, but not packaged", for a reason that
+# is written next to it; every other path under an AurOS prefix that is
+# not here would be reported as unclaimed by tools/updatetest.sh.
+pkg_of() { # path relative to the root, no leading slash
+    case "$1" in
+        # Written per image by `image` below, from the derived address.
+        etc/apt/sources.list.d/auros.sources) ;;
+        # forge's dpkg-divert puts Ubuntu's at *.ubuntu and copies ours
+        # here; a package shipping this path would itself be diverted
+        # over Ubuntu's real one. auros-bootchain's postinst refreshes it.
+        usr/sbin/update-grub|usr/sbin/grub-install) ;;
+        # Made per theme by forge (links to the fonts it resolved, the
+        # rendered wallpaper): they differ between profiles.
+        usr/share/auros/fonts|usr/share/auros/fonts/*|usr/share/auros/wallpaper.png) ;;
+        # Our own records, not files we ship.
+        var/*|etc/auros/build-warnings|etc/auros/choices.conf) ;;
+        usr/share/keyrings/auros-archive-keyring.*)            echo auros-archive-keyring ;;
+        usr/lib/auros/bootchain|usr/lib/auros/bootchain-*|usr/lib/auros/update-grub|\
+        usr/lib/auros/grub-install|usr/lib/auros/grub.cfg.in|usr/sbin/auros-bootchain)
+                                                               echo auros-bootchain ;;
+        usr/sbin/aurfirst|usr/lib/auros/*)                     echo auros-first ;;
+        usr/lib/ferry/*|usr/share/ferry/*|usr/bin/ferry)       echo auros-ferry ;;
+        etc/*)                                                 echo auros-config ;;
+        usr/*)                                                 echo auros-desktop ;;
+    esac
+}
+
+# What the build compiles or installs that has no verbatim copy in the
+# repository. Paths, plus whole directories that are ours alone.
+BUILT_PATHS="usr/bin/aurshell usr/bin/aursorry usr/bin/aurwall usr/bin/aurctl
+             usr/bin/aurora usr/sbin/aurinit usr/sbin/aurfirst
+             usr/sbin/auros-bootchain usr/bin/ferry"
+OUR_DIRS="usr/lib/ferry usr/share/ferry usr/share/auros/themes
+          usr/share/auros/templates usr/share/auros/shells"
+
+# Files the repository has a copy of, as "repo-path<TAB>image-path".
+repo_files() {
+    (cd "$ROOT/rootfs" && find . \( -type f -o -type l \) | sed 's#^\./##' | sort) |
+        while IFS= read -r p; do printf 'rootfs/%s\t%s\n' "$p" "$p"; done
+    local f
+    for f in "$ROOT"/themes/*.theme; do [ -e "$f" ] && printf 'themes/%s\tusr/share/auros/themes/%s\n' "${f##*/}" "${f##*/}"; done
+    for f in "$ROOT"/themes/templates/*.tpl; do [ -e "$f" ] && printf 'themes/templates/%s\tusr/share/auros/templates/%s\n' "${f##*/}" "${f##*/}"; done
+    for f in "$ROOT"/shells/*.shell; do [ -e "$f" ] && printf 'shells/%s\tusr/share/auros/shells/%s\n' "${f##*/}" "${f##*/}"; done
+    [ -e "$ROOT/src/aurora/aurora" ] && printf 'src/aurora/aurora\tusr/bin/aurora\n'
+    return 0
+}
+
+# Every path any OTHER package in RFS owns. Packaging one of those would
+# make dpkg refuse the whole install ("trying to overwrite ..."), and
+# would be wrong besides.
+others_owned() { # RFS -> sorted list on stdout
+    local f
+    {
+    for f in "$1"/var/lib/dpkg/info/*.list; do
+        [ -e "$f" ] || continue
+        case "${f##*/}" in auros.list|auros-*.list|auros:*.list|auros-*:*.list) continue ;; esac
+        cat "$f"
+    done
+    # And what another package's maintainer scripts manage through ucf
+    # (20auto-upgrades is unattended-upgrades'): a conffile of ours there
+    # would be "changed by somebody" the first time that package wrote
+    # it, and our updates would stop at a question nobody can answer.
+    if [ -r "$1/var/lib/ucf/registry" ]; then awk '{print $2}' "$1/var/lib/ucf/registry"; fi
+    } | sed 's#^/##' | sort -u
+}
+
+same_file() { # A B: same bytes, or the same link target
+    if [ -L "$1" ] || [ -L "$2" ]; then
+        [ -L "$1" ] && [ -L "$2" ] && [ "$(readlink "$1")" = "$(readlink "$2")" ]
+    else
+        cmp -s "$1" "$2"
+    fi
+}
+
+# "pkg<TAB>path" for every AurOS file in RFS that gets packaged. Notes
+# about what was left out, and why, go to stderr.
+collect() { # RFS
+    local rfs=$1 owned rp ip pkg d f
+    owned=$(mktemp)
+    others_owned "$rfs" > "$owned"
+    {
+        repo_files | while IFS=$'\t' read -r rp ip; do
+            pkg=$(pkg_of "$ip")
+            [ -n "$pkg" ] || continue
+            if [ ! -e "$rfs/$ip" ] && [ ! -L "$rfs/$ip" ]; then
+                printf 'not in this image: /%s\n' "$ip" >&2; continue
+            fi
+            # A profile or a later stage that changed the file keeps it:
+            # the repository's channel is shared by every profile, and
+            # one profile's version must never overwrite another's.
+            if ! same_file "$ROOT/$rp" "$rfs/$ip"; then
+                printf 'changed by this build, stays with the image: /%s\n' "$ip" >&2; continue
+            fi
+            printf '%s\t%s\n' "$pkg" "$ip"
+        done
+        for ip in $BUILT_PATHS; do
+            [ -e "$rfs/$ip" ] || [ -L "$rfs/$ip" ] || continue
+            printf '%s\t%s\n' "$(pkg_of "$ip")" "$ip"
+        done
+        for d in $OUR_DIRS; do
+            [ -d "$rfs/$d" ] || continue
+            (cd "$rfs" && find "$d" \( -type f -o -type l \)) | while IFS= read -r f; do
+                pkg=$(pkg_of "$f"); [ -n "$pkg" ] && printf '%s\t%s\n' "$pkg" "$f"
+            done
+        done
+    } | sort -u -t $'\t' -k2,2 | while IFS=$'\t' read -r pkg ip; do
+        if grep -qxF "$ip" "$owned"; then
+            printf 'owned by another package, left alone: /%s\n' "$ip" >&2; continue
+        fi
+        case "$ip" in
+            *[!A-Za-z0-9._+/@=-]*) printf 'name a package cannot carry safely, left out: /%s\n' "$ip" >&2; continue ;;
+        esac
+        printf '%s\t%s\n' "$pkg" "$ip"
+    done | sort
+    rm -f "$owned"
+}
+
+# The shared libraries an ELF file needs, as the packages that own them
+# in RFS -- what dpkg-shlibdeps would say, without dpkg-dev. Asked of the
+# image itself, so it is right for the image. Empty off-root.
+shlib_deps() { # RFS FILE...
+    local rfs=$1; shift
+    [ "$(id -u)" = 0 ] || return 0
+    [ -x "$rfs/usr/bin/ldd" ] || return 0
+    local f lib
+    for f in "$@"; do
+        [ "$(head -c 4 "$rfs/$f" 2>/dev/null | od -An -c | tr -d ' ')" = '177ELF' ] || continue
+        # Direct needs only (readelf's NEEDED), as dpkg-shlibdeps would;
+        # ldd alone also lists what those libraries need in turn.
+        local need
+        need=$(readelf -d "$rfs/$f" 2>/dev/null | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p' | tr '\n' ' ') || need=""
+        chroot "$rfs" /usr/bin/ldd "/$f" 2>/dev/null | while read -r so arrow path _; do
+            [ "$arrow" = "=>" ] || continue
+            case "$path" in /*) ;; *) continue ;; esac
+            if [ -z "$need" ] || case " $need " in *" $so "*) true ;; *) false ;; esac; then
+                printf '%s\n' "$path"
+            fi
+        done
+    done | sort -u | while IFS= read -r lib; do
+        # Merged /usr: ld.so says /lib/..., dpkg recorded /usr/lib/...
+        { chroot "$rfs" /usr/bin/dpkg -S "$lib" 2>/dev/null ||
+          chroot "$rfs" /usr/bin/dpkg -S "/usr$lib" 2>/dev/null || true; } |
+            sed -n 's/^\([^:,]*\)\(:[a-z0-9]*\)\{0,1\}: .*/\1/p' | head -1
+    done | { grep -v '^auros' || true; } | sort -u | paste -sd, - | sed 's/,/, /g'
+}
+
+describe() {
+    case "$1" in
+        auros) echo "AurOS, all of its own parts|Installs every AurOS component at one version, so they are always updated together." ;;
+        auros-desktop) echo "AurOS desktop: aurshell and its programs|The shell, its compositor and helpers, the theme engine, themes, looks and help pages." ;;
+        auros-first) echo "AurOS first start and its helpers|aurfirst, the first-start scripts, the question AurOS asks and the software setup." ;;
+        auros-bootchain) echo "AurOS boot chain|AurOS's start-up menu and the checks that install a new shim or grub only when this computer's firmware will start it." ;;
+        auros-ferry) echo "Ferry: her files, brought across from Windows|Copies documents, pictures and bookmarks from the Windows side, read-only." ;;
+        auros-config) echo "AurOS settings|AurOS's own configuration under /etc: services, update policy, network and session settings." ;;
+        auros-archive-keyring) echo "the key AurOS's updates are sealed with|The OpenPGP public key apt checks every AurOS update against." ;;
+    esac
+}
+
+POSTINST_BOOTCHAIN='#!/bin/sh
+# The update-grub and grub-install that Ubuntu'"'"'s kernel, grub and shim
+# packages call are copies of /usr/lib/auros/{update-grub,grub-install},
+# behind a dpkg-divert the image was built with. Refresh the copies, so
+# a fixed boot chain is the one those packages reach. A system without
+# the divert (not an AurOS image) is left alone.
+set -e
+if [ "$1" = configure ]; then
+    for t in update-grub grub-install; do
+        if dpkg-divert --list "/usr/sbin/$t" 2>/dev/null | grep -q "/usr/sbin/$t.ubuntu"; then
+            install -m 0755 "/usr/lib/auros/$t" "/usr/sbin/$t.auros-new"
+            mv -f "/usr/sbin/$t.auros-new" "/usr/sbin/$t"
+        fi
+    done
+fi
+exit 0
+'
+POSTINST_CONFIG='#!/bin/sh
+# New unit files take effect at the next start of each unit. Nothing is
+# restarted under her: not the desktop, not a service she is using.
+set -e
+if [ "$1" = configure ] && [ -d /run/systemd/system ]; then
+    systemctl daemon-reload >/dev/null 2>&1 || true
+fi
+exit 0
+'
+
+# ── pack ───────────────────────────────────────────────────────────
+cmd_pack() { # RFS OUTDIR VERSION
+    local rfs=${1:?RFS} out=${2:?OUTDIR} ver=${3:?VERSION}
+    [ -d "$rfs" ] || die "no rootfs at $rfs"
+    case "$ver" in [0-9]*) ;; *) die "version '$ver' must start with a digit" ;; esac
+    case "$ver" in *[!A-Za-z0-9.+~]*) die "version '$ver' has a character dpkg refuses" ;; esac
+    command -v dpkg-deb >/dev/null || die "dpkg-deb is needed"
+    mkdir -p "$out"
+    local work list pkg p d sdeb
+    work=$(mktemp -d)
+    list="$work/list"
+    collect "$rfs" > "$list" 2> "$work/notes" || die "could not list AurOS's files in $rfs"
+    [ -s "$list" ] || die "found none of AurOS's files in $rfs"
+    sed 's/^/   /' "$work/notes"
+    # One timestamp for every file and archive member: the commit's, so
+    # packing the same tree twice gives the same .deb.
+    sdeb=${SOURCE_DATE_EPOCH:-$(git -C "$ROOT" log -1 --format=%ct 2>/dev/null || date +%s)}
+    export SOURCE_DATE_EPOCH=$sdeb
+    local built=""
+    for pkg in $PACKAGES; do
+        d="$work/$pkg"
+        grep -q "^$pkg"$'\t' "$list" || continue
+        mkdir -p "$d/DEBIAN"
+        local files=()
+        while IFS=$'\t' read -r p f; do
+            [ "$p" = "$pkg" ] || continue
+            files+=("$f")
+            mkdir -p "$d/$(dirname "$f")"
+            cp -a --no-preserve=ownership "$rfs/$f" "$d/$f"
+        done < "$list"
+        # conffiles: every regular file under etc/. dpkg keeps a file
+        # somebody edited instead of overwriting it.
+        : > "$d/DEBIAN/conffiles"
+        if [ -d "$d/etc" ]; then
+            (cd "$d" && find etc -type f | sort | sed 's#^#/#') > "$d/DEBIAN/conffiles"
+        fi
+        [ -s "$d/DEBIAN/conffiles" ] || rm -f "$d/DEBIAN/conffiles"
+        local deps="" recs="" summary long size
+        deps=$(shlib_deps "$rfs" "${files[@]}") || deps=
+        case "$pkg" in
+            auros-bootchain) recs="python3-cryptography, efibootmgr"
+                             printf '%s' "$POSTINST_BOOTCHAIN" > "$d/DEBIAN/postinst" ;;
+            auros-config)    printf '%s' "$POSTINST_CONFIG" > "$d/DEBIAN/postinst" ;;
+        esac
+        [ -e "$d/DEBIAN/postinst" ] && chmod 0755 "$d/DEBIAN/postinst"
+        summary=$(describe "$pkg" | cut -d'|' -f1)
+        long=$(describe "$pkg" | cut -d'|' -f2)
+        size=$(du -sk --apparent-size --exclude=DEBIAN "$d" | cut -f1)
+        # A file that moves from one auros package to another between
+        # versions is taken over, not refused.
+        local repl
+        repl=$(for o in $PACKAGES; do [ "$o" = "$pkg" ] || printf '%s (<< %s), ' "$o" "$ver"; done | sed 's/, $//')
+        {
+            printf 'Package: %s\nVersion: %s\nArchitecture: %s\n' "$pkg" "$ver" "$ARCH"
+            printf 'Maintainer: %s\nSection: misc\nPriority: optional\n' "$MAINTAINER"
+            printf 'Installed-Size: %s\n' "$size"
+            [ -n "$deps" ] && printf 'Depends: %s\n' "$deps"
+            [ -n "$recs" ] && printf 'Recommends: %s\n' "$recs"
+            printf 'Replaces: %s\n' "$repl"
+            printf 'Description: %s\n %s\n' "$summary" "$long"
+        } > "$d/DEBIAN/control"
+        find "$d" -exec touch -h -d "@$sdeb" {} +
+        dpkg-deb --root-owner-group -Zxz --build "$d" "$out/${pkg}_${ver}_${ARCH}.deb" >/dev/null \
+            || die "dpkg-deb could not build $pkg"
+        built="$built $pkg"
+        note "$pkg $ver: ${#files[@]} files"
+    done
+    # The metapackage: every part at exactly this version, so apt and
+    # unattended-upgrades always move them together.
+    d="$work/auros"; mkdir -p "$d/DEBIAN"
+    {
+        printf 'Package: auros\nVersion: %s\nArchitecture: %s\n' "$ver" "$ARCH"
+        printf 'Maintainer: %s\nSection: metapackages\nPriority: optional\n' "$MAINTAINER"
+        printf 'Depends: %s\n' "$(for p in $built; do printf '%s (= %s), ' "$p" "$ver"; done | sed 's/, $//')"
+        printf 'Description: %s\n %s\n' "$(describe auros | cut -d'|' -f1)" "$(describe auros | cut -d'|' -f2)"
+    } > "$d/DEBIAN/control"
+    find "$d" -exec touch -h -d "@$sdeb" {} +
+    dpkg-deb --root-owner-group -Zxz --build "$d" "$out/auros_${ver}_${ARCH}.deb" >/dev/null \
+        || die "dpkg-deb could not build the auros metapackage"
+    rm -rf "$work"
+}
+
+# ── image: forge's hook ────────────────────────────────────────────
+cmd_image() { # RFS [PROFILE_ID OS_VERSION]
+    local rfs=${1:?RFS} prof=${2:-} osv=${3:-}
+    [ "$(id -u)" = 0 ] || die "image needs root (it runs dpkg inside the rootfs)"
+    [ -x "$rfs/usr/bin/dpkg" ] || die "$rfs has no dpkg"
+    if [ -z "$osv" ]; then
+        osv=$(sed -n 's/^VERSION_ID="\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' "$rfs/etc/os-release" 2>/dev/null | head -1)
+    fi
+    [ -n "$osv" ] || die "no os_version given and none in $rfs/etc/os-release"
+    local ver; ver=$(channel_version "$osv")
+    local fd="$rfs$FACTORY_DIR"
+    rm -rf "$fd"; mkdir -p "$fd"
+    printf '\n:: AurOS update channel: packing AurOS %s for %s\n' "$ver" "${prof:-this image}"
+    cmd_pack "$rfs" "$fd" "$ver"
+    (cd "$fd" && sha256sum ./*.deb > SHA256SUMS)
+    # Ownership, not new files: dpkg unpacks bytes identical to what is
+    # already there and from now on knows they are AurOS's, at $ver.
+    chroot "$rfs" /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C \
+        dpkg --force-confold --force-confdef -i $(cd "$fd" && ls ./*.deb | sed "s#^\./#$FACTORY_DIR/#") \
+        >/dev/null || die "dpkg could not register AurOS's packages in the image"
+    local bad
+    bad=$(chroot "$rfs" /usr/bin/dpkg --verify auros $PACKAGES 2>/dev/null | grep -v ' c /etc/' || true)
+    [ -z "$bad" ] || die "AurOS's packages do not match the files in the image:
+$bad"
+    note "registered with dpkg: $(chroot "$rfs" /usr/bin/dpkg-query -W -f='${db:Status-Abbrev} ${Package}\n' 'auros*' 2>/dev/null | awk '$1=="ii"{printf "%s ", $2}')"
+    # The source -- only if this image carries the key that checks it.
+    # An image never points at a repository it cannot verify.
+    local url
+    mkdir -p "$rfs/etc/auros"
+    if [ ! -s "$rfs$KEYRING_PATH" ]; then
+        rm -f "$rfs$SOURCE_PATH"
+        warn "update channel OFF in this image: no archive key at $KEYRING_PATH"
+        warn "(docs/OWNER-SETUP.md 4a; until then AurOS's own fixes reach nobody)"
+        printf 'update_channel=off (no archive key)\n' >> "$rfs/etc/auros/build-warnings"
+    elif ! url=$(channel_url); then
+        rm -f "$rfs$SOURCE_PATH"
+        warn "update channel OFF in this image: cannot tell which repository publishes it"
+        warn "(set AUROS_APT_URL, or build from a clone of the GitHub repository)"
+        printf 'update_channel=off (no address)\n' >> "$rfs/etc/auros/build-warnings"
+    else
+        case "$url" in https://*/) ;; *) die "channel address '$url' is not an https:// directory" ;; esac
+        mkdir -p "$rfs/etc/apt/sources.list.d"
+        source_entry "$url" > "$rfs$SOURCE_PATH"
+        chmod 0644 "$rfs$SOURCE_PATH"
+        note "apt source: $url (signed by $KEYRING_PATH)"
+    fi
+    # For the build job (an artifact, or a release asset later).
+    if [ -n "${AUROS_DEBS_OUT:-}" ]; then
+        mkdir -p "$AUROS_DEBS_OUT"; cp "$fd"/*.deb "$fd/SHA256SUMS" "$AUROS_DEBS_OUT/"
+    fi
+}
+
+# ── repo ───────────────────────────────────────────────────────────
+deb_field() { dpkg-deb -f "$1" "$2"; }
+
+cmd_repo() { # DEBDIR REPODIR
+    local in=${1:?DEBDIR} out=${2:?REPODIR} f p v best
+    [ -d "$in" ] || die "no directory $in"
+    mkdir -p "$out"
+    rm -f "$out"/*.deb "$out"/Packages "$out"/Packages.gz "$out"/Release "$out"/InRelease "$out"/Release.gpg
+    # Newest version of each package. apt needs no other: it never
+    # installs an older one over a newer.
+    declare -A pick=()
+    for f in "$in"/*.deb; do
+        [ -e "$f" ] || die "no .deb files in $in"
+        p=$(deb_field "$f" Package); v=$(deb_field "$f" Version)
+        case "$p" in auros|auros-*) ;; *) die "$f is '$p', not one of AurOS's packages" ;; esac
+        [ "$(deb_field "$f" Architecture)" = "$ARCH" ] || die "$f is not $ARCH"
+        best=${pick[$p]:-}
+        if [ -z "$best" ] || dpkg --compare-versions "$v" gt "$(deb_field "$best" Version)"; then
+            pick[$p]=$f
+        fi
+    done
+    for p in $(printf '%s\n' "${!pick[@]}" | sort); do
+        f=${pick[$p]}; v=$(deb_field "$f" Version)
+        local name="${p}_${v}_${ARCH}.deb"
+        cp "$f" "$out/$name"
+        dpkg-deb -f "$out/$name"
+        printf 'Filename: ./%s\nSize: %s\nSHA256: %s\nSHA512: %s\n\n' "$name" \
+            "$(stat -c %s "$out/$name")" \
+            "$(sha256sum "$out/$name" | cut -d' ' -f1)" \
+            "$(sha512sum "$out/$name" | cut -d' ' -f1)"
+    done > "$out/Packages"
+    gzip -9n -c "$out/Packages" > "$out/Packages.gz"
+    {
+        printf 'Origin: %s\nLabel: %s\nSuite: %s\nCodename: %s\n' "$ORIGIN" "$LABEL" "$SUITE" "$SUITE"
+        printf 'Date: %s\n' "$(date -u -R)"
+        printf 'Architectures: %s\nAcquire-By-Hash: no\n' "$ARCH"
+        printf 'Description: AurOS updates for its own components (docs/security/UPDATES.md)\n'
+        for h in SHA256 SHA512; do
+            printf '%s:\n' "$h"
+            for f in Packages Packages.gz; do
+                printf ' %s %s %s\n' "$("$(echo "$h" | tr A-Z a-z)sum" "$out/$f" | cut -d' ' -f1)" \
+                    "$(stat -c %s "$out/$f")" "$f"
+            done
+        done
+    } > "$out/Release"
+    note "repository in $out: $(grep -c '^Package:' "$out/Packages") packages"
+}
+
+# ── sign ───────────────────────────────────────────────────────────
+cmd_sign() { # REPODIR KEYID...
+    local out=${1:?REPODIR}; shift
+    [ $# -ge 1 ] || die "sign needs at least one key id"
+    [ -s "$out/Release" ] || die "no Release in $out (run repo first)"
+    local u=() k
+    for k in "$@"; do u+=(-u "$k"); done
+    rm -f "$out/InRelease" "$out/Release.gpg"
+    gpg --batch --yes --quiet --digest-algo SHA512 "${u[@]}" --clearsign -o "$out/InRelease" "$out/Release" \
+        || die "gpg could not sign InRelease"
+    gpg --batch --yes --quiet --digest-algo SHA512 "${u[@]}" --armor --detach-sign -o "$out/Release.gpg" "$out/Release" \
+        || die "gpg could not sign Release.gpg"
+    note "signed by: $*"
+}
+
+# ── verify: what apt will check, before anybody publishes it ───────
+cmd_verify() { # REPODIR KEYRING
+    local out=${1:?REPODIR} kr=${2:?KEYRING} tmp ok=0
+    [ -s "$kr" ] || die "no keyring at $kr"
+    tmp=$(mktemp -d)
+    # gpgv wants a binary keyring; the pinned file is armored, as apt
+    # reads it.
+    if grep -q 'BEGIN PGP PUBLIC KEY BLOCK' "$kr"; then
+        gpg --batch --quiet --dearmor < "$kr" > "$tmp/k.gpg" || die "cannot read $kr"
+    else
+        cp "$kr" "$tmp/k.gpg"
+    fi
+    gpgv --keyring "$tmp/k.gpg" "$out/InRelease" >/dev/null 2>"$tmp/v1" \
+        || { cat "$tmp/v1" >&2; rm -rf "$tmp"; die "InRelease is not signed by a key in $kr"; }
+    gpgv --keyring "$tmp/k.gpg" "$out/Release.gpg" "$out/Release" >/dev/null 2>"$tmp/v2" \
+        || { cat "$tmp/v2" >&2; rm -rf "$tmp"; die "Release.gpg is not a signature by a key in $kr"; }
+    # The signed text must be the Release we are about to serve.
+    gpg --batch --quiet --decrypt "$out/InRelease" 2>/dev/null > "$tmp/r" || true
+    cmp -s "$tmp/r" "$out/Release" || { rm -rf "$tmp"; die "InRelease does not carry this Release"; }
+    local h sz f
+    while read -r h sz f; do
+        [ "$(sha256sum "$out/$f" | cut -d' ' -f1)" = "$h" ] || { rm -rf "$tmp"; die "$f does not match Release"; }
+        [ "$(stat -c %s "$out/$f")" = "$sz" ] || { rm -rf "$tmp"; die "$f is not the size Release says"; }
+    done < <(sed -n '/^SHA256:/,/^[A-Z]/p' "$out/Release" | sed -n 's/^ //p')
+    while read -r f h; do
+        [ "$(sha256sum "$out/$f" | cut -d' ' -f1)" = "$h" ] || { rm -rf "$tmp"; die "$f does not match Packages"; }
+        ok=$((ok+1))
+    done < <(awk '/^Filename:/{f=$2} /^SHA256:/{print f, $2}' "$out/Packages" | sed 's#^\./##')
+    rm -rf "$tmp"
+    [ "$ok" -ge 1 ] || die "Packages lists no .deb"
+    note "verified: signature by the pinned key, Release, Packages, $ok packages"
+}
+
+case "${1:-}" in
+    image)  shift; cmd_image "$@" ;;
+    pack)   shift; cmd_pack "$@" ;;
+    repo)   shift; cmd_repo "$@" ;;
+    sign)   shift; cmd_sign "$@" ;;
+    verify) shift; cmd_verify "$@" ;;
+    url)    channel_url || die "cannot tell which repository publishes the channel; set AUROS_APT_URL" ;;
+    source) shift; source_entry "${1:?URL}" ;;
+    version) shift; channel_version "${1:?OS_VERSION}" ;;
+    list)   shift; collect "${1:?RFS}" ;;
+    *) sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+esac

@@ -3,7 +3,41 @@
 #include <string.h>
 #include <math.h>
 
-static inline float clampf(float v, float a, float b) { return v < a ? a : (v > b ? b : v); }
+/* NaN-safe: a NaN lands on the LOWER bound. The old form
+ * (v < a ? a : v > b ? b : v) let a NaN straight through, and every
+ * caller then cast it to an integer -- undefined behaviour, reached
+ * from a theme file that says opacity_panel=nan. */
+static inline float clampf(float v, float a, float b) { return v > a ? (v < b ? v : b) : a; }
+
+/* THE GEOMETRY HERE IS NOT ALL OURS.
+ *
+ * Rectangles, radii and widths come from theme numbers -- and the
+ * shell reads HER copy of shell.conf, which any program she runs can
+ * rewrite -- and from window sizes a Wayland client chose. Every pixel
+ * write is bounds-checked in draw_blend_px, so none of this could write
+ * outside a surface; but `r.x + r.w` with r.w near INT_MAX is signed
+ * overflow, and (int)ceilf(1e30f) is undefined, in the process that
+ * owns the display. tools/fuzz/fuzz_theme found both on its first
+ * seed. So spans are clipped in 64 bits and floats are clamped before
+ * any cast. */
+static inline void clip_span(long long a, long long len, int lim, int *lo, int *hi)
+{
+    long long b = a + len;
+    if (a < 0) a = 0;
+    if (b > lim) b = lim;
+    if (b < a) b = a;
+    *lo = (int)a; *hi = (int)b;
+}
+static inline int f2i(float v)
+{
+    if (!(v > -1e9f)) return v != v ? 0 : -1000000000;
+    if (v > 1e9f) return 1000000000;
+    return (int)v;
+}
+static inline int sat_i(long long v)
+{
+    return v < -2147483647LL ? -2147483647 : v > 2147483647LL ? 2147483647 : (int)v;
+}
 
 surface *surface_new(int w, int h)
 {
@@ -47,7 +81,7 @@ void surface_fill(surface *s, uint32_t argb)
 void draw_blend_px(surface *s, int x, int y, uint32_t rgb, float a)
 {
     if (x < 0 || y < 0 || x >= s->w || y >= s->h) return;
-    a = clampf(a, 0.f, 1.f);
+    a = clampf(a, 0.f, 1.f);          /* NaN becomes 0 here */
     if (a <= 0.f) return;
     uint32_t *p = &s->px[(size_t)y * s->stride + x];
     uint32_t d = *p;
@@ -90,10 +124,9 @@ void draw_blend_px(surface *s, int x, int y, uint32_t rgb, float a)
 
 void draw_rect(surface *s, rect r, uint32_t rgb, float a)
 {
-    int x0 = r.x < 0 ? 0 : r.x, y0 = r.y < 0 ? 0 : r.y;
-    int x1 = r.x + r.w, y1 = r.y + r.h;
-    if (x1 > s->w) x1 = s->w;
-    if (y1 > s->h) y1 = s->h;
+    int x0, x1, y0, y1;
+    clip_span(r.x, r.w, s->w, &x0, &x1);
+    clip_span(r.y, r.h, s->h, &y0, &y1);
     for (int y = y0; y < y1; y++)
         for (int x = x0; x < x1; x++)
             draw_blend_px(s, x, y, rgb, a);
@@ -144,14 +177,11 @@ static void round_rect_cov_ex(surface *s, rect r, corners c, float expand, int e
 {
     float hw = r.w * 0.5f + expand, hh = r.h * 0.5f + expand;
     float cx = r.x + r.w * 0.5f, cy = r.y + r.h * 0.5f;
-    int pad = (int)ceilf(expand) + 2;
+    long long pad = (long long)f2i(ceilf(expand)) + 2;
 
-    int x0 = r.x - pad, y0 = r.y - pad;
-    int x1 = r.x + r.w + pad, y1 = r.y + r.h + pad;
-    if (x0 < 0) x0 = 0;
-    if (y0 < 0) y0 = 0;
-    if (x1 > s->w) x1 = s->w;
-    if (y1 > s->h) y1 = s->h;
+    int x0, x1, y0, y1;
+    clip_span((long long)r.x - pad, (long long)r.w + 2 * pad, s->w, &x0, &x1);
+    clip_span((long long)r.y - pad, (long long)r.h + 2 * pad, s->h, &y0, &y1);
 
     /* Conservative radius: the largest corner, so the interior bound
      * holds whichever quadrant a row happens to cross. */
@@ -180,8 +210,8 @@ static void round_rect_cov_ex(surface *s, rect r, corners c, float expand, int e
              * section between them inside one. */
             float inner_hw = (fabsf(py) <= hh - rmax) ? hw - 1.f : hw - rmax - 1.f;
             if (inner_hw > 0.f) {
-                ilo = (int)ceilf(cx - inner_hw);
-                ihi = (int)floorf(cx + inner_hw);
+                ilo = f2i(ceilf(cx - inner_hw));
+                ihi = f2i(floorf(cx + inner_hw));
                 if (ilo < x0) ilo = x0;
                 if (ihi >= x1) ihi = x1 - 1;
                 if (ihi >= ilo) { lo = x0; hi = x1; }
@@ -290,11 +320,9 @@ void draw_round_rect_border(surface *s, rect r, corners c, float width,
      * stroke has even weight all the way round the corners. */
     float hw = r.w * 0.5f, hh = r.h * 0.5f;
     float cx = r.x + r.w * 0.5f, cy = r.y + r.h * 0.5f;
-    int pad = 2;
-    int x0 = r.x - pad < 0 ? 0 : r.x - pad, y0 = r.y - pad < 0 ? 0 : r.y - pad;
-    int x1 = r.x + r.w + pad, y1 = r.y + r.h + pad;
-    if (x1 > s->w) x1 = s->w;
-    if (y1 > s->h) y1 = s->h;
+    int x0, x1, y0, y1;
+    clip_span((long long)r.x - 2, (long long)r.w + 4, s->w, &x0, &x1);
+    clip_span((long long)r.y - 2, (long long)r.h + 4, s->h, &y0, &y1);
 
     /* Skip the interior, exactly as draw_round_rect does.
      *
@@ -326,8 +354,8 @@ void draw_round_rect_border(surface *s, rect r, corners c, float width,
         if (ihw > 0.f && ihh > 0.f && fabsf(py) <= ihh) {
             float span = (fabsf(py) <= ihh - irm) ? ihw : ihw - irm;
             if (span > 0.f) {
-                hlo = (int)ceilf(cx - span);
-                hhi = (int)floorf(cx + span);
+                hlo = f2i(ceilf(cx - span));
+                hhi = f2i(floorf(cx + span));
                 if (hlo < x0) hlo = x0;
                 if (hhi >= x1) hhi = x1 - 1;
                 if (hhi < hlo) hhi = -1;
@@ -383,7 +411,7 @@ static void emit_shadow(surface *s, int x, int y, float cov, void *ud)
 void draw_round_rect_shadow(surface *s, rect r, corners c,
                             float spread, uint32_t rgb, float a, int dy)
 {
-    rect sr = r; sr.y += dy;
+    rect sr = r; sr.y = sat_i((long long)r.y + dy);
     float rmax = c.tl;
     if (c.tr > rmax) rmax = c.tr;
     if (c.br > rmax) rmax = c.br;
@@ -398,11 +426,10 @@ void draw_round_rect_shadow(surface *s, rect r, corners c,
 void draw_hrule(surface *s, int x, int y, int w, int weight, uint32_t rgb, float a)
 {
     if (weight < 1) weight = 1;
-    if (a <= 0.f) return;
-    int x0 = x < 0 ? 0 : x, x1 = x + w;
-    int y0 = y < 0 ? 0 : y, y1 = y + weight;
-    if (x1 > s->w) x1 = s->w;
-    if (y1 > s->h) y1 = s->h;
+    if (!(a > 0.f)) return;
+    int x0, x1, y0, y1;
+    clip_span(x, w, s->w, &x0, &x1);
+    clip_span(y, weight, s->h, &y0, &y1);
     for (int yy = y0; yy < y1; yy++)
         for (int xx = x0; xx < x1; xx++)
             draw_blend_px(s, xx, yy, rgb, a);
@@ -411,11 +438,10 @@ void draw_hrule(surface *s, int x, int y, int w, int weight, uint32_t rgb, float
 void draw_vrule(surface *s, int x, int y, int h, int weight, uint32_t rgb, float a)
 {
     if (weight < 1) weight = 1;
-    if (a <= 0.f) return;
-    int x0 = x < 0 ? 0 : x, x1 = x + weight;
-    int y0 = y < 0 ? 0 : y, y1 = y + h;
-    if (x1 > s->w) x1 = s->w;
-    if (y1 > s->h) y1 = s->h;
+    if (!(a > 0.f)) return;
+    int x0, x1, y0, y1;
+    clip_span(x, weight, s->w, &x0, &x1);
+    clip_span(y, h, s->h, &y0, &y1);
     for (int yy = y0; yy < y1; yy++)
         for (int xx = x0; xx < x1; xx++)
             draw_blend_px(s, xx, yy, rgb, a);
@@ -425,17 +451,21 @@ void draw_frame(surface *s, rect r, int weight, uint32_t rgb, float a)
 {
     if (weight < 1) weight = 1;
     if (r.w <= 0 || r.h <= 0) return;
-    if (weight * 2 >= r.h || weight * 2 >= r.w) { draw_rect(s, r, rgb, a); return; }
+    long long wt = weight;
+    if (wt * 2 >= r.h || wt * 2 >= r.w) { draw_rect(s, r, rgb, a); return; }
+    /* Positions saturate rather than wrap: one that does not fit an int
+     * is off every surface, and saturating keeps it off. */
     draw_hrule(s, r.x, r.y, r.w, weight, rgb, a);
-    draw_hrule(s, r.x, r.y + r.h - weight, r.w, weight, rgb, a);
-    draw_vrule(s, r.x, r.y + weight, r.h - weight * 2, weight, rgb, a);
-    draw_vrule(s, r.x + r.w - weight, r.y + weight, r.h - weight * 2, weight, rgb, a);
+    draw_hrule(s, r.x, sat_i((long long)r.y + r.h - wt), r.w, weight, rgb, a);
+    draw_vrule(s, r.x, sat_i((long long)r.y + wt), r.h - weight * 2, weight, rgb, a);
+    draw_vrule(s, sat_i((long long)r.x + r.w - wt), sat_i((long long)r.y + wt),
+               r.h - weight * 2, weight, rgb, a);
 }
 
 void draw_circle(surface *s, float cx, float cy, float radius, uint32_t rgb, float a)
 {
-    int x0 = (int)floorf(cx - radius) - 1, y0 = (int)floorf(cy - radius) - 1;
-    int x1 = (int)ceilf(cx + radius) + 1,  y1 = (int)ceilf(cy + radius) + 1;
+    int x0 = f2i(floorf(cx - radius)) - 1, y0 = f2i(floorf(cy - radius)) - 1;
+    int x1 = f2i(ceilf(cx + radius)) + 1,  y1 = f2i(ceilf(cy + radius)) + 1;
     if (x0 < 0) x0 = 0;
     if (y0 < 0) y0 = 0;
     if (x1 > s->w) x1 = s->w;
@@ -455,8 +485,8 @@ void draw_line(surface *s, float x0, float y0, float x1, float y1,
     float len = sqrtf(dx*dx + dy*dy);
     if (len < 1e-6f) return;
     float hw = width * 0.5f;
-    int bx0 = (int)floorf(fminf(x0,x1) - hw) - 1, by0 = (int)floorf(fminf(y0,y1) - hw) - 1;
-    int bx1 = (int)ceilf (fmaxf(x0,x1) + hw) + 1, by1 = (int)ceilf (fmaxf(y0,y1) + hw) + 1;
+    int bx0 = f2i(floorf(fminf(x0,x1) - hw)) - 1, by0 = f2i(floorf(fminf(y0,y1) - hw)) - 1;
+    int bx1 = f2i(ceilf (fmaxf(x0,x1) + hw)) + 1, by1 = f2i(ceilf (fmaxf(y0,y1) + hw)) + 1;
     if (bx0 < 0) bx0 = 0;
     if (by0 < 0) by0 = 0;
     if (bx1 > s->w) bx1 = s->w;
@@ -566,9 +596,9 @@ void draw_blur_region(surface *s, rect r, int radius)
 {
     if (radius < 1) return;
     if (radius > BLUR_MAX_RADIUS) radius = BLUR_MAX_RADIUS;
-    int x0 = r.x < 0 ? 0 : r.x, y0 = r.y < 0 ? 0 : r.y;
-    int x1 = r.x + r.w > s->w ? s->w : r.x + r.w;
-    int y1 = r.y + r.h > s->h ? s->h : r.y + r.h;
+    int x0, x1, y0, y1;
+    clip_span(r.x, r.w, s->w, &x0, &x1);
+    clip_span(r.y, r.h, s->h, &y0, &y1);
     int w = x1 - x0, h = y1 - y0;
     if (w <= 0 || h <= 0) return;
 
@@ -601,13 +631,13 @@ void draw_blur_region(surface *s, rect r, int radius)
 void draw_copy(surface *dst, const surface *src, int dx, int dy)
 {
     for (int y = 0; y < src->h; y++) {
-        int ty = dy + y;
+        long long ty = (long long)dy + y;
         if (ty < 0 || ty >= dst->h) continue;
         for (int x = 0; x < src->w; x++) {
-            int tx = dx + x;
+            long long tx = (long long)dx + x;
             if (tx < 0 || tx >= dst->w) continue;
             uint32_t p = src->px[(size_t)y * src->stride + x];
-            draw_blend_px(dst, tx, ty, p & 0xFFFFFFu, (float)((p >> 24) & 0xFF) / 255.f);
+            draw_blend_px(dst, (int)tx, (int)ty, p & 0xFFFFFFu, (float)((p >> 24) & 0xFF) / 255.f);
         }
     }
 }

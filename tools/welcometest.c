@@ -41,6 +41,17 @@ static void wipe(void)
     unlink(WELCOME_FOUND);
 }
 
+/* The answer directory, when the fixture puts it inside WELCOME_RUN --
+ * which tools/README.md's build line does. It is the root side's, not
+ * something the panel made, and it used to be counted as the panel's
+ * second file. */
+static int is_answer_dir(const char *name)
+{
+    const char *ans = strrchr(WELCOME_ANSWER, '/');
+    return ans && !strncmp(WELCOME_ANSWER, WELCOME_RUN "/", strlen(WELCOME_RUN) + 1)
+               && !strcmp(name, ans + 1);
+}
+
 static void put(const char *path, const char *text)
 {
     FILE *f = fopen(path, "w");
@@ -100,6 +111,11 @@ static int press(shell_ctx *c, int page, int can_import, const char *want)
 int main(void)
 {
     mkdir(WELCOME_RUN, 0700);
+    /* The root side's directory, which the answers are put into. The
+     * build line in tools/README.md places it inside WELCOME_RUN; a
+     * test that needs it and does not make it died on its first
+     * put() with "No such file or directory". */
+    mkdir(WELCOME_ANSWER, 0755);
     wipe();
 
     printf("\nThe question, and what each answer asks for\n\n");
@@ -263,14 +279,15 @@ int main(void)
         DIR *d = opendir(WELCOME_RUN);
         int before = 0;
         struct dirent *e;
-        while (d && (e = readdir(d))) if (e->d_name[0] != '.') before++;
+        while (d && (e = readdir(d)))
+            if (e->d_name[0] != '.' && !is_answer_dir(e->d_name)) before++;
         if (d) closedir(d);
         press(&c, W_ASK, 0, "confirm");
         welcome_step(&c);
         d = opendir(WELCOME_RUN);
         int after = 0, only_answer = 1;
         while (d && (e = readdir(d))) {
-            if (e->d_name[0] == '.') continue;
+            if (e->d_name[0] == '.' || is_answer_dir(e->d_name)) continue;
             after++;
             if (strcmp(e->d_name, "answer") && strcmp(e->d_name, "first.state") &&
                 strcmp(e->d_name, "found.json"))

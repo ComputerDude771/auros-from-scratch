@@ -83,6 +83,13 @@ int  gpt_used(const gpt_entry *e);
  * `from_backup`. Returns 0 on success. */
 int  gpt_read(int fd, uint32_t sector, uint64_t disk_bytes, gpt_table *t);
 
+/* The same, through a read-at callback (0 on success), which is how the
+ * Windows half reads the live table through plat_read() and how the
+ * simulation reads a disk image. gpt_read() is this with pread. */
+int  gpt_read_with(int (*rd)(void *ud, uint64_t off, void *buf, size_t n),
+                   void *ud, uint32_t sector, uint64_t disk_bytes,
+                   gpt_table *t);
+
 /* The index of the entry whose `first` is exactly this block, or -1.
  * By start, never by position: "the third one" is how a machine with a
  * partition the kernel did not instantiate gets the wrong answer. */

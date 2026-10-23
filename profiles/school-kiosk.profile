@@ -7,7 +7,11 @@ profile_id="school-kiosk"
 profile_name="AurOS for Schools (Kiosk)"
 profile_description="Locked to a single browser. No installs, no settings, no console."
 
-brand_name="Lincoln High Chromebook Replacement"
+# The name the machine calls itself (/etc/os-release, the console).
+# It said "Lincoln High Chromebook Replacement": an invented school, and
+# another company's product name, in an image anyone can download. A
+# school that rebuilds this profile puts its own name here.
+brand_name="AurOS for Schools"
 theme="sandstone"
 shell_archetype="locked"
 
@@ -31,5 +35,8 @@ allow_tty="no"
 auto_login="yes"
 default_user="student"
 
-enrollment_url="https://mdm.lincoln.example/enroll"
+# Blank as shipped, like office's: filled in by the school that
+# rebuilds it. An address committed here is one every machine built from
+# this file would be told to check in to.
+enrollment_url=""
 update_channel="managed"

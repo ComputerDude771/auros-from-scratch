@@ -1,0 +1,18 @@
+#!/bin/sh
+# /usr/sbin/grub-install on AurOS. Ubuntu's is diverted to
+# grub-install.ubuntu (build/forge, stage 3): it would write the new
+# shim and grub to /boot/efi/EFI/ubuntu, where AurOS's firmware entry
+# does not point, and put an entry of its own first in BootOrder, which
+# only `aurfirst confirm` may write.
+#
+# The shim and grub packages call this from their postinst. What they
+# want -- the new signed binaries in use -- is what `bootchain sync`
+# does, behind the checks that this firmware will start them. A refusal
+# keeps the pair the machine starts with today and is NOT a failure to
+# dpkg: failing here would leave apt with a half-configured package on
+# a machine nobody is watching. `bootchain status` says what happened.
+# Postinsts probe with `grub-install --help` to see what it supports;
+# that is not a request to install anything.
+case " $* " in *" --help "*|*" --version "*|*" -V "*) exit 0 ;; esac
+/usr/lib/auros/bootchain sync || true
+exit 0

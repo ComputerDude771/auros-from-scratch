@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>For someone who knows computers: AurOS</title>
+<meta name="description" content="AurOS Setup stopped because this PC starts Windows the older way (BIOS), or because Intel's storage setting hides its drive. How someone comfortable with Windows can change either one safely.">
+<meta name="color-scheme" content="light">
+<meta name="theme-color" content="#FFFDF8">
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2032%2032'%3E%3Crect%20width='32'%20height='32'%20rx='7'%20fill='%230B5D4F'/%3E%3Cpath%20d='M16%206L26%2016L16%2026L6%2016Z'%20fill='%23F2C46B'/%3E%3C/svg%3E">
+<link rel="preload" href="assets/fonts/atkinson-700.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="assets/fonts/atkinson-400.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="assets/door.css">
+<style>
+  /* This page only. The front door's tokens (assets/door.css), plus the
+     few things a page of instructions for a helper needs: a box for a
+     command to type, a "stop here" box, and a contents list. Every pair
+     here is 7:1 or better; tools/site/check.mjs measures this page too. */
+  .adv-head { padding-block: clamp(24px, 4vw, 48px) 8px; }
+  .adv-head h1 { font-size: clamp(34px, 4.2vw, 52px); line-height: 1.1; margin-bottom: 0.4em; }
+  .adv-lede { font-size: clamp(21px, 1.9vw, 24px); max-width: 40em; }
+  .adv-who { max-width: 44em; background: var(--soft); border: 2px solid var(--line); border-radius: 14px; padding: 16px 20px; }
+  .toc { list-style: none; margin: 18px 0 0; padding: 0; display: grid; gap: 10px; max-width: 44em; }
+  .toc a { display: inline-block; padding: 8px 0; font-weight: 700; }
+  .adv { padding-block: clamp(28px, 4vw, 48px); border-top: 1px solid var(--line); }
+  .adv:nth-of-type(even) { background: var(--soft); }
+  .adv > .wrap > * { max-width: 46em; }
+  .adv h2 { margin-bottom: 0.4em; }
+  .adv p, .adv li { overflow-wrap: break-word; }
+  .adv h3 { margin-top: 1.2em; }
+  .said { background: var(--card); border: 2px solid var(--line); border-left: 8px solid var(--go); border-radius: 10px; padding: 12px 18px; }
+  .said b { display: block; }
+  .doing { margin: 0 0 16px; padding-left: 1.4em; }
+  .doing > li { margin-bottom: 14px; padding-left: 6px; }
+  .doing > li > p { margin: 6px 0; }
+  .cmd { display: block; margin: 8px 0; padding: 12px 16px; background: #17181A; color: #F4F1EA; border-radius: 8px;
+         font: 700 20px/1.4 ui-monospace, "Cascadia Mono", Consolas, "DejaVu Sans Mono", monospace; overflow-wrap: anywhere; white-space: pre-wrap; user-select: all; }
+  .out { display: block; margin: 8px 0; padding: 10px 16px; background: var(--card); border: 2px dashed var(--line); border-radius: 8px;
+         font: 400 19px/1.4 ui-monospace, "Cascadia Mono", Consolas, "DejaVu Sans Mono", monospace; color: var(--ink); overflow-wrap: anywhere; }
+  .stop { background: #FFF4D6; border-left: 6px solid #B07A00; padding: 14px 18px; border-radius: 8px; margin: 16px 0; }
+  .stop h3, .stop h4 { margin-top: 0; }
+  .stop ul { margin: 6px 0 0; padding-left: 1.2em; }
+  .back { background: var(--card); border: 2px solid var(--go); border-radius: 12px; padding: 14px 18px; margin: 16px 0; }
+  .back h3 { margin-top: 0; }
+  kbd { font: 700 19px/1 ui-monospace, Consolas, monospace; padding: 2px 6px; border: 2px solid var(--ink-2); border-radius: 6px; background: var(--card); color: var(--ink); white-space: nowrap; }
+  .words { font-weight: 700; }
+  .totop { margin-top: 18px; }
+</style>
+</head>
+<body>
+<a class="skip" href="#main">Skip to the instructions</a>
+
+<header class="top">
+  <div class="wrap top-in">
+    <a class="brand" href="index.html"><span class="mark" aria-hidden="true"></span>AurOS</a>
+    <a class="top-link" href="index.html">Back to the simple page</a>
+  </div>
+</header>
+
+<main id="main">
+
+  <section class="adv-head" aria-labelledby="adv-title">
+    <div class="wrap">
+      <h1 id="adv-title">For someone who knows computers</h1>
+      <p class="adv-lede">AurOS Setup stopped on this computer for a reason that someone comfortable with Windows&rsquo; settings can usually fix in under an hour. <b>Setup has not changed anything.</b> This page is for that person.</p>
+      <p class="adv-who">If that isn&rsquo;t you, it is fine to stop here. Keep using Windows as it is. You can show this page to someone you trust who knows computers, or just leave it.</p>
+      <ul class="toc" aria-label="On this page">
+        <li><a href="#before">First, for either fix: copy the files, pause BitLocker</a></li>
+        <li><a href="#bios">&ldquo;This PC starts Windows the older way (BIOS)&rdquo;</a></li>
+        <li><a href="#rst">&ldquo;AurOS can&rsquo;t see this PC&rsquo;s drive&rdquo; (Intel RST or VMD)</a></li>
+        <li><a href="#else">Anything else</a></li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- ── shared preparation ─────────────────────────────────────── -->
+  <section class="adv" id="before" aria-labelledby="before-title">
+    <div class="wrap">
+      <h2 id="before-title">First, for either fix</h2>
+      <p>Both fixes are ordinary Windows and firmware changes, made with Windows&rsquo; and the computer maker&rsquo;s own tools, not with AurOS. They are routine, but no change to how a computer starts is free of risk. So:</p>
+      <ol class="doing">
+        <li><p><b>Copy the files that matter</b> (photos, documents, anything irreplaceable) to a memory stick or another drive. Check that the copies open.</p></li>
+        <li><p><b>If BitLocker or &ldquo;Device encryption&rdquo; is on, find the recovery key, then pause it.</b> Changing a firmware setting makes Windows ask for the 48-digit recovery key at the next start unless protection is paused. Control Panel &rarr; <span class="words">BitLocker Drive Encryption</span> shows whether it is on, has <span class="words">Back up your recovery key</span>, and has <span class="words">Suspend protection</span>. Or, in a Command Prompt run as administrator:</p>
+          <code class="cmd">manage-bde -protectors -disable C: -RebootCount 3</code>
+          <p>That pauses it for the next three starts, then it turns itself back on.</p></li>
+        <li><p><b>Know how to open the firmware settings</b> (the &ldquo;BIOS setup&rdquo;). Usually a key pressed straight after switching on: <kbd>F2</kbd>, <kbd>Del</kbd>, <kbd>F10</kbd>, <kbd>F1</kbd> or <kbd>Esc</kbd>, depending on the maker; the logo screen often says which. On a PC that already starts the newer way there is also Windows&rsquo; own route: Settings &rarr; <span class="words">System</span> &rarr; <span class="words">Recovery</span> (on Windows&nbsp;10: <span class="words">Update &amp; Security</span> &rarr; <span class="words">Recovery</span>) &rarr; <span class="words">Advanced startup</span> &rarr; <span class="words">Restart now</span>, then <span class="words">Troubleshoot</span> &rarr; <span class="words">Advanced options</span> &rarr; <span class="words">UEFI Firmware Settings</span>.</p></li>
+        <li><p><b>Have the Windows account&rsquo;s password to hand</b>, not only its PIN. Safe Mode (used in the second fix) sometimes asks for the password.</p></li>
+      </ol>
+      <p class="totop"><a href="#main">Back to the top</a></p>
+    </div>
+  </section>
+
+  <!-- ── BIOS → UEFI ────────────────────────────────────────────── -->
+  <section class="adv" id="bios" aria-labelledby="bios-title">
+    <div class="wrap">
+      <h2 id="bios-title">The PC starts Windows the older way (BIOS)</h2>
+      <p class="said"><b>Setup said: &ldquo;This PC starts Windows the older way (BIOS)&rdquo;</b>The firmware is starting Windows in legacy BIOS mode (also called &ldquo;Legacy&rdquo; or &ldquo;CSM&rdquo;), from a disk with an MBR partition table.</p>
+      <p><b>Why AurOS needs the newer way (UEFI):</b> the first time AurOS starts, it starts through a one-time start entry, so that if anything goes wrong the computer goes straight back to Windows by itself. BIOS mode has no such entry, so AurOS refuses rather than risk a computer that starts nothing.</p>
+      <p>Windows can be switched over without reinstalling it, using Microsoft&rsquo;s own <b>MBR2GPT</b> tool (in Windows&nbsp;10 version&nbsp;1703 and later, and in Windows&nbsp;11). Nearly every PC made since about 2012 can start the newer way.</p>
+
+      <h3>Check first</h3>
+      <ol class="doing">
+        <li><p>Press Start, type <b>msinfo32</b>, open <span class="words">System Information</span>. <span class="words">BIOS Mode</span> says <span class="words">Legacy</span>. (If it already says <span class="words">UEFI</span>, this section is not the reason; run Setup again.)</p></li>
+        <li><p>Do the steps in <a href="#before">First, for either fix</a>.</p></li>
+      </ol>
+
+      <h3>The switch</h3>
+      <ol class="doing">
+        <li><p>Press Start, type <b>cmd</b>, then choose <span class="words">Run as administrator</span>.</p></li>
+        <li><p>Check that the disk can be converted:</p>
+          <code class="cmd">mbr2gpt /validate /allowFullOS</code>
+          <p>It must end with:</p>
+          <samp class="out">MBR2GPT: Validation completed successfully</samp>
+          <div class="stop">
+            <h4>If it says &ldquo;Validation failed&rdquo;, stop here</h4>
+            <p>Nothing has been changed. The usual cause is that the disk already has four partitions, and the tool needs room for one more (the new start-up partition). Don&rsquo;t delete partitions to make it pass unless you know exactly what each one holds; a recovery partition put there by the maker is often one of them. Leave the computer on Windows.</p>
+          </div></li>
+        <li><p>Convert it:</p>
+          <code class="cmd">mbr2gpt /convert /allowFullOS</code>
+          <p>It ends with <samp class="out">MBR2GPT: Conversion completed successfully</samp> and a reminder that the firmware now has to be switched to UEFI. Windows&rsquo; files are not touched; the tool rewrites the partition table and adds a small start-up partition.</p></li>
+        <li><p>Restart and open the firmware settings. Change the start-up mode from <b>Legacy</b> (or CSM) to <b>UEFI</b>. Makers word it differently: <span class="words">Boot Mode: UEFI</span>, <span class="words">Boot List Option: UEFI</span>, <span class="words">CSM Support: Disabled</span>, <span class="words">Launch CSM: Never</span>. Secure Boot can be on or off; AurOS works either way. Save and exit (often <kbd>F10</kbd>).</p></li>
+        <li><p>Windows starts as before. In <b>msinfo32</b>, <span class="words">BIOS Mode</span> now says <span class="words">UEFI</span>.</p></li>
+        <li><p>Run <b>AurOS Setup</b> again from the Downloads folder.</p></li>
+      </ol>
+      <div class="back">
+        <h3>If Windows does not start after the switch</h3>
+        <p>Open the firmware settings again. Check that <b>UEFI</b> is chosen and that <span class="words">Windows Boot Manager</span> is first in the start order. <b>Don&rsquo;t switch back to Legacy</b>: the disk is now the newer kind, and Legacy mode cannot start it. If Windows still won&rsquo;t start, Windows&rsquo; own recovery (from a Windows installation USB stick: <span class="words">Repair your computer</span> &rarr; <span class="words">Startup Repair</span>) is the next step.</p>
+      </div>
+      <p>Microsoft&rsquo;s own description of the tool, with every condition it checks: <a href="https://learn.microsoft.com/en-us/windows/deployment/mbr-to-gpt">MBR2GPT.EXE on learn.microsoft.com</a>.</p>
+      <p class="totop"><a href="#main">Back to the top</a></p>
+    </div>
+  </section>
+
+  <!-- ── Intel RST RAID On / VMD → AHCI ─────────────────────────── -->
+  <section class="adv" id="rst" aria-labelledby="rst-title">
+    <div class="wrap">
+      <h2 id="rst-title">AurOS can&rsquo;t see this PC&rsquo;s drive (Intel RST or VMD)</h2>
+      <p class="said"><b>Setup said: &ldquo;AurOS can&rsquo;t see this PC&rsquo;s drive&rdquo;</b>The drive Windows is on is an NVMe drive behind Intel&rsquo;s storage driver, in a mode that hides it from other systems: <span class="words">RAID On</span> (Intel Rapid Storage Technology, &ldquo;RST&rdquo;), or Intel&rsquo;s <span class="words">VMD</span> controller on newer laptops.</p>
+      <p><b>Why AurOS needs it changed:</b> in that mode, Linux, and so AurOS, cannot see the drive at all. One firmware setting presents the drive the standard way (&ldquo;AHCI&rdquo;, or plain NVMe). Windows works the same afterwards, with Microsoft&rsquo;s standard driver instead of Intel&rsquo;s. The setting does not change anything stored on the drive.</p>
+
+      <h3>Check first</h3>
+      <ol class="doing">
+        <li><p>Right-click Start, open <span class="words">Device Manager</span>, open <span class="words">Storage controllers</span>. It lists an Intel controller with <span class="words">RST</span>, <span class="words">RAID</span>, <span class="words">Premium</span> or <span class="words">VMD</span> in its name.</p></li>
+        <li><div class="stop">
+            <h4>Before changing anything, look for these two</h4>
+            <ul>
+              <li><b>Intel Optane memory acceleration.</b> If the <span class="words">Intel Optane Memory and Storage Management</span> program shows it switched on, switch it off there first and let it finish. Then carry on.</li>
+              <li><b>Two or more drives combined into one</b> (a RAID 0, 1, 5 or 10 &ldquo;volume&rdquo;, shown in Intel&rsquo;s program). <b>If there is one, stop here.</b> Switching the mode would make that combined drive unreadable. Leave this computer on Windows.</li>
+            </ul>
+          </div></li>
+        <li><p>Do the steps in <a href="#before">First, for either fix</a>, including the password.</p></li>
+      </ol>
+
+      <h3>The switch</h3>
+      <p>Changing the setting alone would stop Windows starting (&ldquo;INACCESSIBLE_<wbr>BOOT_<wbr>DEVICE&rdquo;), because Windows would look for Intel&rsquo;s driver. The safe way is to have Windows start once in Safe Mode, which picks up the standard driver by itself:</p>
+      <ol class="doing">
+        <li><p>Press Start, type <b>cmd</b>, then choose <span class="words">Run as administrator</span>. Tell Windows to start in Safe Mode next time:</p>
+          <code class="cmd">bcdedit /set {current} safeboot minimal</code>
+          <p>It answers <samp class="out">The operation completed successfully.</samp></p></li>
+        <li><p>Restart and open the firmware settings. Find the storage setting and change it:</p>
+          <ul>
+            <li><span class="words">SATA Operation</span>, <span class="words">SATA Mode</span> or <span class="words">Storage Controller Mode</span>: from <span class="words">RAID On</span> (or <span class="words">Intel RST Premium</span>) to <b>AHCI</b>; or</li>
+            <li>on newer laptops, <span class="words">VMD Controller</span> or <span class="words">Enable VMD</span>: switch it <b>off</b>.</li>
+          </ul>
+          <p>Some makers keep it under <span class="words">Advanced</span>, <span class="words">Storage</span> or <span class="words">System Configuration</span>. Save and exit.</p></li>
+        <li><p>Windows starts in <b>Safe Mode</b> (a black background with &ldquo;Safe Mode&rdquo; in the corners). Sign in, with the password if the PIN is refused. Open Command Prompt as administrator again and switch Safe Mode off:</p>
+          <code class="cmd">bcdedit /deletevalue {current} safeboot</code>
+          <p>Then restart.</p></li>
+        <li><p>Windows starts normally. In Device Manager, <span class="words">Storage controllers</span> now shows <span class="words">Standard NVM Express Controller</span> or <span class="words">Standard SATA AHCI Controller</span>.</p></li>
+        <li><p>Run <b>AurOS Setup</b> again from the Downloads folder.</p></li>
+      </ol>
+      <div class="back">
+        <h3>If Windows does not start, or keeps restarting, after the change</h3>
+        <p>Open the firmware settings and put the storage setting back as it was (<span class="words">RAID On</span>, or VMD on). Windows starts again with Intel&rsquo;s driver; nothing on the drive was changed. If it starts in Safe Mode, run <code class="cmd">bcdedit /deletevalue {current} safeboot</code> and restart. Then leave the computer on Windows.</p>
+      </div>
+      <p class="totop"><a href="#main">Back to the top</a></p>
+    </div>
+  </section>
+
+  <!-- ── anything else ──────────────────────────────────────────── -->
+  <section class="adv" id="else" aria-labelledby="else-title">
+    <div class="wrap">
+      <h2 id="else-title">Anything else</h2>
+      <p>If Setup stopped for a different reason, its own page says what can be done. Most of the other reasons (a drive that is failing, a Windows on an ARM chip, full-disk encryption from another company) are ones AurOS deliberately won&rsquo;t work around, because getting them wrong could cost the files on the computer.</p>
+      <p>To ask a question, or to tell us Setup stopped when it shouldn&rsquo;t have, open an issue on <a href="https://github.com/@AUROS_REPO@/issues">the AurOS project page</a>. Please don&rsquo;t include passwords, recovery keys or anything else private.</p>
+      <p class="note"><b>AurOS will never phone you</b>, and nobody from AurOS will ever ask to connect to your computer, or ask for money, a card number or gift cards. Anyone who does is not from AurOS.</p>
+      <p class="totop"><a href="#main">Back to the top</a></p>
+    </div>
+  </section>
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <ul class="foot-links">
+      <li><a href="index.html">The simple page</a></li>
+      <li><a href="how-it-works.html">How it works (for the curious)</a></li>
+      <li><a href="guide.html">A page to print for whoever helps you</a></li>
+      <li><a href="https://github.com/@AUROS_REPO@">The source code</a></li>
+    </ul>
+    <p>No cookies, no tracking, no adverts. This page doesn&rsquo;t send anything anywhere.</p>
+    <p>AurOS is free software (MIT licence). Set in Atkinson Hyperlegible (<a href="assets/fonts/LICENSE.md">licence</a>).</p>
+  </div>
+</footer>
+</body>
+</html>

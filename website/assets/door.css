@@ -1,0 +1,305 @@
+/* AurOS front door (index.html).
+ *
+ * Written for someone with older eyes and a fear of breaking things:
+ * light page, body text 21px (20px on a phone), every colour pair here
+ * is 7:1 or better against its background, buttons at least 56px tall,
+ * a thick focus ring, no motion. tools/site/check.mjs measures the
+ * sizes and contrast from the computed styles and fails below 18px or
+ * 4.5:1.
+ */
+
+@font-face { font-family: "Atkinson"; src: url("fonts/atkinson-400.woff2") format("woff2"); font-weight: 400; font-style: normal; font-display: swap; }
+@font-face { font-family: "Atkinson"; src: url("fonts/atkinson-400i.woff2") format("woff2"); font-weight: 400; font-style: italic; font-display: swap; }
+@font-face { font-family: "Atkinson"; src: url("fonts/atkinson-700.woff2") format("woff2"); font-weight: 700; font-style: normal; font-display: swap; }
+
+:root {
+  --bg: #FFFDF8;        /* warm paper */
+  --soft: #F4EFE5;      /* alternate sections */
+  --card: #FFFFFF;
+  --ink: #17181A;       /* 17:1 on --bg */
+  --ink-2: #3A3D42;     /* 10:1 on --bg, 9:1 on --soft */
+  --line: #CFC6B6;
+  --go: #0B5D4F;        /* the button; white on it is 7.6:1 */
+  --go-dark: #07463B;
+  --link: #1846A8;      /* 8:1 on --bg */
+  --hl: #FFC21A;        /* the "press here" ring */
+  --badge: #17181A;
+  --badge-ink: #FFD34D;
+  --focus: #1846A8;
+  --maxw: 1180px;
+  --gutter: clamp(16px, 4vw, 40px);
+}
+
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: "Atkinson", "Atkinson Hyperlegible", "Segoe UI", system-ui, -apple-system, sans-serif;
+  font-size: 21px;
+  line-height: 1.55;
+}
+@media (max-width: 600px) { body { font-size: 20px; } }
+
+img { max-width: 100%; height: auto; display: block; }
+p { margin: 0 0 0.8em; }
+b, strong { font-weight: 700; }
+a { color: var(--link); text-decoration-thickness: 2px; text-underline-offset: 0.18em; }
+a:hover { text-decoration-thickness: 3px; }
+h1, h2, h3, h4 { line-height: 1.2; margin: 0 0 0.5em; font-weight: 700; color: var(--ink); }
+h2 { font-size: clamp(30px, 3.4vw, 42px); }
+h3 { font-size: clamp(25px, 2.4vw, 30px); }
+h4 { font-size: 23px; }
+
+:focus-visible { outline: 4px solid var(--focus); outline-offset: 3px; border-radius: 6px; }
+.vh { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; }
+[hidden] { display: none !important; }
+
+.wrap { max-width: var(--maxw); margin-inline: auto; padding-inline: var(--gutter); }
+
+.skip {
+  position: absolute; left: 16px; top: -100px; z-index: 10;
+  background: var(--ink); color: #FFFFFF; padding: 12px 18px; border-radius: 8px; font-size: 20px;
+}
+.skip:focus { top: 12px; }
+
+/* ── the top line ──────────────────────────────────────────────── */
+.top { border-bottom: 1px solid var(--line); }
+.top-in { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 64px; }
+.brand { display: inline-flex; align-items: center; gap: 12px; color: var(--ink); text-decoration: none; font-weight: 700; font-size: 26px; padding: 6px 0; }
+.mark { width: 18px; height: 18px; background: #C89B4A; transform: rotate(45deg); border-radius: 3px; display: inline-block; }
+.top-link { font-size: 20px; padding: 10px 4px; }
+
+/* ── the front door ───────────────────────────────────────────── */
+.door { padding-block: clamp(20px, 4.2vh, 48px) clamp(28px, 5vh, 56px); }
+.door-grid { display: grid; grid-template-columns: minmax(0, 1.08fr) minmax(0, 1fr); gap: clamp(24px, 4vw, 56px); align-items: center; }
+.door h1 { font-size: clamp(38px, 4.6vw, 60px); line-height: 1.08; letter-spacing: -0.01em; margin-bottom: 0.4em; text-wrap: balance; }
+.promise { font-size: clamp(21px, 1.9vw, 24px); max-width: 32em; color: var(--ink); margin-bottom: 1.1em; }
+
+.get {
+  display: inline-flex; align-items: center; justify-content: center; gap: 14px;
+  min-height: 72px; padding: 14px 40px 14px 32px;
+  background: var(--go); color: #FFFFFF; text-decoration: none;
+  font-size: 30px; font-weight: 700; line-height: 1.1;
+  border-radius: 14px; border: 3px solid var(--go-dark);
+  box-shadow: 0 3px 0 var(--go-dark);
+}
+.get:hover { background: var(--go-dark); text-decoration: none; }
+.get:active { transform: translateY(2px); box-shadow: 0 1px 0 var(--go-dark); }
+.get:focus-visible { outline: 5px solid var(--focus); outline-offset: 4px; border-radius: 14px; }
+.get-icon { width: 34px; height: 34px; flex: none; }
+.get-note { margin: 12px 0 0; font-size: 20px; color: var(--ink-2); }
+.old-win { margin-top: 12px; font-size: 20px; padding: 12px 16px; background: #FFF4D6; border-left: 6px solid #B07A00; border-radius: 6px; }
+.hint { margin-top: 18px; font-size: 20px; color: var(--ink-2); }
+
+.door-pic { margin: 0; }
+.screen { background: #24272C; padding: clamp(6px, 0.8vw, 12px); border-radius: 16px; box-shadow: 0 18px 40px -18px rgba(23, 24, 26, 0.45); }
+.screen img { border-radius: 8px; width: 100%; }
+.door-pic figcaption { margin-top: 12px; font-size: 19px; color: var(--ink-2); }
+
+/* not on a Windows PC: the kind message instead of the button */
+.elsewhere {
+  border: 3px solid var(--go); border-radius: 16px; background: var(--card);
+  padding: clamp(18px, 2.4vw, 28px);
+}
+.else-title { font-size: clamp(25px, 2.4vw, 30px); margin-bottom: 0.4em; }
+.elsewhere [data-kind] { display: none; }
+.else-actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 4px; }
+.else-actions .btn2 { padding-inline: 16px; font-size: 20px; }
+.copied { min-height: 0; margin: 10px 0 0; font-weight: 700; color: var(--go); }
+.copied:empty { display: none; }
+.else-address { margin: 14px 0 0; font-size: 20px; }
+.addr { font-weight: 700; overflow-wrap: anywhere; }
+.anyway { margin: 12px 0 0; font-size: 19px; }
+html.k-phone .elsewhere [data-kind~="phone"],
+html.k-mac .elsewhere [data-kind~="mac"],
+html.k-chromeos .elsewhere [data-kind~="chromeos"],
+html.k-linux .elsewhere [data-kind~="linux"],
+html.k-arm .elsewhere [data-kind~="arm"],
+html.k-win32 .elsewhere [data-kind~="win32"] { display: block; }
+html.is-elsewhere .hint { display: none; }
+html.is-elsewhere .door-grid { align-items: start; }
+
+.btn2 {
+  display: inline-flex; align-items: center; gap: 10px;
+  min-height: 56px; padding: 10px 22px;
+  font: inherit; font-size: 21px; font-weight: 700;
+  color: var(--go-dark); background: #FFFFFF; text-decoration: none;
+  border: 3px solid var(--go); border-radius: 12px; cursor: pointer;
+}
+.btn2:hover { background: #E7F2EF; }
+.btn2 svg { width: 26px; height: 26px; flex: none; }
+
+/* ── sections ─────────────────────────────────────────────────── */
+.steps, .know { background: var(--soft); border-block: 1px solid var(--line); }
+.steps, .looks, .know, .faq { padding-block: clamp(40px, 6vw, 72px); }
+.section-lede { font-size: 22px; max-width: 40em; color: var(--ink); }
+
+/* ── the three steps ──────────────────────────────────────────── */
+.steplist { list-style: none; margin: 28px 0 0; padding: 0; display: grid; gap: 28px; }
+.step { background: var(--card); border: 2px solid var(--line); border-radius: 18px; padding: clamp(18px, 3vw, 36px); }
+.step-head { display: flex; align-items: center; gap: 16px; margin-bottom: 14px; }
+.step-head h3 { margin: 0; }
+.num {
+  flex: none; width: 56px; height: 56px; border-radius: 50%;
+  display: grid; place-items: center;
+  background: var(--go); color: #FFFFFF; font-size: 30px; font-weight: 700;
+}
+.step > p, .step .calm, .step .browser > p, .sac > p { max-width: 44em; }
+.file { overflow-wrap: anywhere; }
+.browser { margin: 22px 0; padding-top: 18px; border-top: 2px dashed var(--line); }
+.browser h4 { margin-bottom: 8px; }
+.clicks { margin: 0 0 16px; padding-left: 1.3em; }
+.clicks li { margin-bottom: 6px; padding-left: 4px; }
+html.browser-known .browser { display: none; }
+html.browser-known.b-edge .browser[data-browser="edge"],
+html.browser-known.b-chrome .browser[data-browser="chrome"],
+html.browser-known.b-firefox .browser[data-browser="firefox"] { display: block; }
+.all-browsers { margin: 8px 0 20px; }
+
+.note { background: #FFF4D6; border-left: 6px solid #B07A00; padding: 14px 18px; border-radius: 8px; max-width: 44em; }
+.sac { margin-top: 28px; padding: clamp(16px, 2.4vw, 26px); border: 3px solid #B07A00; border-radius: 16px; background: #FFFCF2; }
+.sac h4 { font-size: 24px; }
+.sac-steps li { margin-bottom: 8px; }
+
+/* "press here": a number, then a thick yellow ring around the thing */
+.tap, .tap-inline {
+  display: inline-flex; align-items: center; justify-content: center; gap: 4px; flex: none;
+  min-width: 38px; height: 38px; padding: 0 10px; margin-right: 8px; white-space: nowrap;
+  border-radius: 19px; background: var(--badge); color: var(--badge-ink);
+  box-shadow: 0 0 0 2px var(--badge-ink);
+  font-family: "Atkinson", system-ui, sans-serif; font-size: 21px; font-weight: 700; line-height: 1; vertical-align: middle;
+}
+.tap::after { content: "\2192"; font-size: 20px; }
+.tap-inline { min-width: 32px; height: 32px; font-size: 19px; padding: 0 8px; margin: 0 4px 0 0; }
+.hit {
+  outline: 4px solid var(--hl); outline-offset: 3px;
+  box-shadow: 0 0 0 9px rgba(255, 194, 26, 0.35);
+  border-radius: 6px;
+}
+
+/* ── the drawn pictures (replicas) ────────────────────────────── */
+.pics { display: flex; flex-wrap: wrap; gap: 20px; margin: 10px 0 20px; align-items: flex-start; }
+.replica {
+  margin: 0; flex: 1 1 340px; max-width: 520px;
+  font-family: "Segoe UI", "Atkinson", system-ui, sans-serif; font-size: 19px; line-height: 1.4;
+  color: #1B1B1B;
+}
+.replica p { margin: 0 0 10px; }
+.r-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 14px; }
+.r-right { justify-content: flex-end; }
+.r-wrap { justify-content: flex-start; }
+
+/* Edge / Chrome download list */
+.r-edge { background: #FFFFFF; border: 1px solid #8A8A8A; border-radius: 10px; box-shadow: 0 8px 22px -12px rgba(0,0,0,0.5); padding: 14px 16px; color: #1B1B1B; }
+.r-edge-head { font-weight: 700; padding-bottom: 8px; border-bottom: 1px solid #C8C8C8; margin-bottom: 10px; }
+.r-edge-item { display: flex; gap: 12px; align-items: flex-start; }
+.r-chrome-item { align-items: center; }
+.r-chrome-item .r-edge-text { flex: 1; }
+.r-warn { flex: none; width: 26px; height: 24px; margin-top: 2px; background: #9D5D00; clip-path: polygon(50% 0, 100% 100%, 0 100%); }
+.r-edge-tools { display: flex; justify-content: flex-end; align-items: center; gap: 12px; margin-top: 12px; }
+.r-iconbtn { display: inline-grid; place-items: center; min-width: 46px; height: 42px; padding: 0 10px; border: 1px solid #8A8A8A; border-radius: 6px; background: #F7F7F7; font-weight: 700; color: #1B1B1B; }
+.r-menu, .r-more { margin-top: 12px; border: 1px solid #8A8A8A; border-radius: 8px; background: #FFFFFF; padding: 6px 0; display: grid; }
+.r-menu-row { display: flex; align-items: center; padding: 8px 14px; color: #1B1B1B; }
+.r-menu-row .hit { padding: 0 6px; }
+
+/* Edge / Windows question boxes */
+.r-dialog { background: #FFFFFF; border: 1px solid #8A8A8A; border-radius: 10px; box-shadow: 0 8px 22px -12px rgba(0,0,0,0.5); padding: 18px; color: #1B1B1B; }
+.r-edge + .r-dialog { margin-top: 14px; }
+.r-dialog-title { font-weight: 700; font-size: 21px; }
+.r-dialog-body { color: #2B2B2B; }
+.r-btn { display: inline-flex; align-items: center; min-height: 44px; padding: 6px 16px; border: 1px solid #6E6E6E; border-radius: 6px; background: #FFFFFF; color: #1B1B1B; font-weight: 600; }
+.r-primary { background: #0F5AA8; border-color: #0F5AA8; color: #FFFFFF; }
+
+/* "Windows protected your PC" */
+.r-ss { background: #1A5BAA; color: #FFFFFF; padding: 22px; border-radius: 4px; box-shadow: 0 8px 22px -12px rgba(0,0,0,0.6); }
+.r-ss p { color: #FFFFFF; }
+.r-ss-title { font-size: 27px; font-weight: 600; line-height: 1.2; }
+.r-ss-link { text-decoration: underline; padding: 0 4px; }
+.r-ss-btn { display: inline-flex; align-items: center; min-height: 44px; padding: 6px 18px; border: 2px solid #FFFFFF; color: #FFFFFF; background: #1A5BAA; font-weight: 600; }
+
+/* Windows' "make changes" question */
+.r-uac { background: #FFFFFF; border: 1px solid #8A8A8A; border-radius: 8px; overflow: hidden; box-shadow: 0 8px 22px -12px rgba(0,0,0,0.5); }
+.r-uac-head { margin: 0 !important; padding: 10px 18px; background: #F2F2F2; border-bottom: 1px solid #C8C8C8; color: #1B1B1B; }
+.r-uac-body { padding: 16px 18px 18px; }
+.r-uac-q { font-weight: 700; font-size: 21px; }
+.signed-only { display: none; }
+html.signed .signed-only { display: block; }
+html.signed .unsigned-only { display: none; }
+
+/* Windows Security */
+.r-sec { background: #F3F3F3; border: 1px solid #8A8A8A; border-radius: 8px; padding: 18px; color: #1B1B1B; box-shadow: 0 8px 22px -12px rgba(0,0,0,0.5); }
+.r-sec-title { font-size: 23px; font-weight: 700; }
+.r-sec-grid { display: grid; gap: 8px; margin-bottom: 14px; }
+.r-sec-item { display: flex; align-items: center; padding: 10px 12px; background: #FFFFFF; border: 1px solid #C8C8C8; border-radius: 6px; }
+.r-sec-item .hit { padding: 0 6px; }
+.r-sec-sub { font-weight: 700; }
+.r-link { color: #0F4C8F; text-decoration: underline; padding: 0 6px; }
+.r-radio { display: flex; align-items: center; gap: 10px; }
+.r-radio .hit { display: inline-flex; align-items: center; gap: 10px; padding: 2px 10px 2px 4px; }
+.r-dot { width: 22px; height: 22px; border-radius: 50%; border: 2px solid #4A4A4A; background: #FFFFFF; display: inline-block; flex: none; }
+.r-dot-on { border: 7px solid #0F5AA8; }
+
+/* AurOS's own screens */
+.r-aur { background: #161C28; color: #EEF2F6; padding: 20px; border-radius: 12px; box-shadow: 0 8px 22px -12px rgba(0,0,0,0.6); }
+.r-aur p { color: #EEF2F6; }
+.r-aur-title { font-size: 24px; font-weight: 700; }
+.r-looks { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.r-look { display: grid; gap: 6px; padding: 8px; border: 2px solid #3A4458; border-radius: 10px; color: #EEF2F6; font-size: 19px; }
+.r-look img { border-radius: 4px; }
+.r-look-on { border-color: #7CCBB5; }
+.r-aur-btn { display: inline-flex; align-items: center; min-height: 48px; padding: 8px 22px; border-radius: 10px; background: #7CCBB5; color: #0B1F1A; font-weight: 700; }
+.r-aur-quiet { background: #232B3B; color: #EEF2F6; border: 2px solid #3A4458; }
+#shot-installer, #shot-ask { max-width: 640px; }
+
+/* ── the looks ────────────────────────────────────────────────── */
+.cards { list-style: none; margin: 28px 0 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 250px), 1fr)); gap: 24px; }
+.card { background: var(--card); border: 2px solid var(--line); border-radius: 16px; overflow: hidden; display: flex; flex-direction: column; }
+.card img { aspect-ratio: 16 / 9; object-fit: cover; width: 100%; border-bottom: 2px solid var(--line); }
+.card h3 { margin: 18px 20px 6px; }
+.card p { margin: 0 20px 20px; }
+.more { margin-top: 24px; font-size: 21px; color: var(--ink-2); }
+
+/* ── good to know ─────────────────────────────────────────────── */
+.facts { margin: 24px 0 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); gap: 20px; }
+.facts > div { background: var(--card); border: 2px solid var(--line); border-radius: 14px; padding: 20px 22px; }
+.facts > div:last-child:nth-child(odd) { grid-column: 1 / -1; }
+.facts dt { font-weight: 700; font-size: 23px; margin-bottom: 6px; }
+.facts dd { margin: 0; }
+
+/* ── questions ────────────────────────────────────────────────── */
+.qa { max-width: 46em; padding-block: 18px; border-bottom: 2px solid var(--line); }
+.qa h3 { margin-bottom: 8px; }
+.qa p { margin: 0; }
+.again { margin-top: 40px; }
+.else-short { display: none; font-size: 21px; }
+html.is-elsewhere .get-again { display: none; }
+html.is-elsewhere .else-short { display: block; }
+
+/* ── footer ───────────────────────────────────────────────────── */
+.foot { border-top: 1px solid var(--line); padding-block: 36px 48px; background: var(--soft); }
+.foot-links { list-style: none; margin: 0 0 20px; padding: 0; display: flex; flex-wrap: wrap; gap: 8px 28px; }
+.foot-links a { display: inline-block; padding: 8px 0; font-size: 20px; }
+.foot p { font-size: 19px; color: var(--ink-2); margin-bottom: 6px; }
+
+/* ── narrow screens and big zoom ──────────────────────────────── */
+@media (max-width: 860px) {
+  .door-grid { grid-template-columns: minmax(0, 1fr); }
+  .door-pic { max-width: 560px; }
+}
+@media (max-width: 600px) {
+  .top-in { min-height: 56px; }
+  .brand { font-size: 23px; }
+  .door { padding-top: 18px; }
+  .door h1 { font-size: clamp(32px, 9vw, 40px); }
+  .promise { font-size: 20px; }
+  .get { width: 100%; font-size: 28px; min-height: 68px; padding-inline: 20px; }
+  .btn2 { width: 100%; justify-content: center; }
+  .replica { flex-basis: 100%; }
+  .r-looks { gap: 8px; }
+}
+@media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; transition: none !important; } }
+@media print {
+  .get, .elsewhere, .skip { display: none !important; }
+}

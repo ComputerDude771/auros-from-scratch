@@ -365,6 +365,10 @@ void resize_do(const char *dev, uint64_t target_bytes, int allow_force,
                  (double)out->achieved_bytes / (1024.0*1024.0*1024.0));
 }
 
+/* ── how small to make Windows ───────────────────────────────────── */
+
+/* shrink_pick_target() is in plan.c: the Windows half computes it too. */
+
 /* ── the surface test ────────────────────────────────────────────── */
 
 int surface_test(const char *dev, uint64_t from, uint64_t to,

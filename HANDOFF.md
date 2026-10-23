@@ -1,83 +1,147 @@
 # HANDOFF — start here
 
-Written 2026-09-25 by the agent working on branch
-`claude/linux-distro-from-scratch-tt5dx1`, for whoever picks the project
-up next. Nothing else in the repository was changed to write it.
+> **2026-10-23: read `START-HERE.md` (repo root) first, then
+> `docs/handoff/RESUME-NOW.md`, then
+> `docs/handoff/SESSION-2026-10-23.md`.** It is
+> the current decision log and progress report (goal: great-grandma
+> installs AurOS in under 10 minutes on any PC). Everything below is the
+> state before that session.
+
+Rewritten 2026-09-26. This replaces the two handoffs the project had
+(one per branch, each saying its own branch was the one to read). There
+is one line of work now.
 
 ## What this is
 
 **AurOS** turns a Windows PC into a Linux one without the person ever
-seeing a firmware screen. They download one `.exe`, a wizard explains and
-asks, the machine restarts **exactly once**, and it comes up in AurOS
-with their files. Until they say "it works", every power-on can still
-reach Windows, and "Put Windows back" restores it.
+seeing a firmware screen. They download one `.exe`, a wizard explains
+and asks, the machine restarts **exactly once**, and it comes up in
+AurOS. Until they say "it works", every power-on can still reach
+Windows, and "Put Windows back" restores it.
 
-Two halves:
+| Part | Where | What it does |
+|---|---|---|
+| **AurBridge** | `src/aurbridge/` | The Windows installer. Checks the PC (read-only), asks, downloads the image, arms one restart. |
+| **aurstage** | `src/aurstage/`, `build/staging` | What the restart boots: shrinks Windows, writes AurOS, verifies, commits the partition table in one sector, hands over. Also the restore (`aurstage.restore`). |
+| **aurfirst** | `src/aurfirst/` | AurOS's first boot: "does it work?" Yes makes AurOS the default; no goes back to Windows; `putback` restarts into the restore. |
+| **aurshell** | `src/aurshell/` | The desktop, painting to DRM/KMS. Its welcome panel and Settings ask aurfirst for things through one word each. |
+| **Ferry** | `src/ferry/` | Moves files and settings across from Windows. |
+| **Forge / mkimage** | `build/forge`, `build/mkimage`, `build/all` | Build the images from Ubuntu 24.04 packages. |
 
-- **AurBridge** (`src/aurbridge/`): the Windows wizard. It checks the
-  machine, asks for consent, prepares, and arms one restart.
-- **aurstage** (`src/aurstage/`): the staging environment that runs
-  after the restart. It shrinks Windows, writes AurOS, verifies it,
-  commits the new partition table in one sector, installs the boot
-  chain, and hands over.
+## Branches
 
-After that, **aurfirst** (`src/aurfirst/`) and the desktop's welcome
-panel ask "does this work?" and only then make AurOS the default.
+| Branch | What it is |
+|---|---|
+| `claude/confident-johnson-hxevk4` | **The development branch.** Everything is here. |
+| `image-desktop` | No source. The published test installer and the desktop image in gzip pieces (`v1` top level, `v2/`, `v3/`), with a README of hashes and of what was tested where. |
+| `claude/laughing-cray-ayao6i` | History: merged into the development branch at `eed8beb`. Do not work here. |
+| `claude/linux-distro-from-scratch-tt5dx1` | History: the original line, and the repository's default branch. Everything on it is in the development branch. |
+
+`docs/handoff/BRANCHES.md` has how the branches came to be.
 
 ## Read in this order
 
-1. **`docs/handoff/BRANCHES.md`**: there are three branches and two
-   chats' worth of history. Read this before touching git.
-2. **`docs/handoff/STATE.md`**: what is proven, by which test, with what
-   numbers, and what is not proven.
-3. **`docs/handoff/OPEN.md`**: what is left, in priority order.
-4. **`docs/handoff/TRAPS.md`**: mistakes that already happened on this
-   project. Most of them look reasonable until they bite.
-5. The project's own docs:
-   - `docs/PLAN.md`: plan and risk register
-   - `docs/AURBRIDGE.md`: installer design, phase by phase
-   - `tools/README.md`: what every test proves
-   - `docs/results/`: raw test transcripts
-   - on the active branch only: `docs/TRY-IT.md` and `docs/RELEASE.md`
+1. **`docs/issues/v3/STATUS.md`**: what is done, what is partly done,
+   what is not, item by item. `docs/issues/v3/` has the full write-up of
+   each problem.
+2. `docs/HANDOFF-RUNBOOK.md`: the exact commands to build, test and
+   publish.
+3. `docs/handoff/TRAPS.md`: mistakes that already happened here. Most
+   look reasonable until they bite.
+4. `docs/handoff/STATE.md`, `docs/PLAN.md`, `docs/AURBRIDGE.md`,
+   `docs/RELEASE.md`, `tools/README.md`, `docs/results/`.
+5. `docs/TRY-IT.md`: what a person testing on a spare PC is told.
 
-## The one-paragraph status
+## Where it stands
 
-The whole install path works end to end on **simulated** machines under
-real UEFI firmware (OVMF), including Secure Boot with Microsoft's keys,
-power cuts at 17 named instants, and putting Windows back. The real
-desktop image has been booted through first-boot "it works" / "it does
-not" with real systemd and real firmware variables.
+**Proven on real Windows** (`.github/workflows/windows.yml`, a GitHub
+Actions VM, on every push): the installer starts, its preflight runs
+read-only against a real machine, its navigation and selftest pass,
+WinHTTP downloads and checks the whole image, the published file is
+started from its public link, and the build that failed on the first
+real PC fails there too.
 
-**Nothing has run on a real PC yet.** That is the main remaining risk.
-The other chat has built a test installer you can download (see
-BRANCHES.md) so a real PC can be tried.
+**Proven in simulation, under real UEFI firmware** (OVMF, Microsoft's
+keys, Secure Boot on): install and put back, with and without a memory
+stick (`installtest` 37, `nosticktest` 45), power cuts at 17 named
+moments (`powercuttest`), the real image's first boot and its choices
+(`firstboottest`, `choicesboottest`), and "Put Windows back" from the
+button in AurOS through AurOS's own menu to the restore
+(`putbacktest`).
+
+**Proven on real Windows** (`windows.yml`, every push): the wizard
+starts and navigates; preflight reads the machine; Fast Startup is
+switched off by the installer; the stop page's *Fix these for me*
+frees space (temp folders emptied, a junction in `%TEMP%` removed as a
+link, the file behind it untouched); the task that reopens the
+installer after a restart is made and removed; the whole image
+downloads through the installer's own code.
+
+**Added 2026-10-04 (branch `claude/admiring-shannon-xm1g0e`):**
+the installed system takes kernel, grub and shim updates
+(`rootfs/usr/lib/auros/bootchain`, which `update-grub` and `grub-install`
+are diverted to; `tools/bootchaintest.sh`, `tools/bootupdatetest.sh`),
+the staging environment has a progress screen (`src/aurscreen`,
+`tools/screentest.sh`), the start-up menu no longer prints Secure Boot
+errors, and grub's fallback works. Two independent reviews of the boot
+chain; every finding fixed. `docs/issues/v3/STATUS.md` 5.5, 5.7, 7.4 and
+"Found on 2026-10-04". The website was rebuilt (`website/`, `IDEAS.md`).
+
+**Not proven: a real PC's disk being resized and written.** The first
+real-PC attempt (2026-09-26) could not start the installer at all; that
+is fixed, and the tester has the fixed build. Their result is the next
+piece of evidence. A photo of the staging screen's `verdict=` line is
+what to ask for if anything stops.
+
+## Published right now
+
+See the `image-desktop` branch's README for the hashes. The link people
+are given:
+
+https://github.com/ComputerDude771/auros-from-scratch/raw/image-desktop/AurOS-Installer-test.exe
+
+Right now: installer `ef903efd` (built from `8593f7f`), which downloads
+the v4 image `b3610065` (5,333,057,536 bytes) from `image-desktop/v4/`.
+`windows.yml`'s `PUBLISHED_SHA256` and `IMAGE_*` are pinned to them;
+change them in the same commit as the files.
 
 ## What the user has asked for, standing
 
-- **Push to GitHub often.**
-- **Lots of adversarial review, using several independent reviewers.**
-- **At every step, ask "why?", because humans make errors.** Prove a
-  check fails when the thing it checks is broken before believing it.
-- **Keep it original.** Look at how others solved something when stuck,
-  but don't copy it.
+- **Push to GitHub often.** No pull requests unless asked.
+- **Lots of adversarial review; ask "why?" at every step.** Prove a check
+  fails when the thing it checks is broken before believing it passes.
+- **Keep it original.**
+- **"Genuinely just a wizard."** No firmware screens; Secure Boot stays on.
+- **Do not hand them an installer that has not been built and tested end
+  to end** — and "tested" now includes starting it on real Windows.
+- They write informally and want plain answers: what works, what does
+  not, and a link.
+- **Every time a fix is published, end the reply with the download link
+  and the new SHA-256**, even when they did not ask:
+  https://github.com/ComputerDude771/auros-from-scratch/raw/image-desktop/AurOS-Installer-test.exe
+  If nothing new was published, say so and give the link to what is there.
 - **Spending credits is fine; raising the credit limit is not.**
-- **"Genuinely just a wizard."** As easy as possible for the end user.
-  They explicitly do not want users sent into firmware settings.
-  Secure Boot stays on; the program cannot turn it off, and shouldn't
-  need to.
-- **One chat at a time**, because it is easier to track. This handoff
-  exists because the user is switching agents.
-- **No pull requests unless asked.**
+- **The installer fixes problems, it does not describe them** (2026-09-29).
+  The stop page is one short line per problem plus what happens about
+  it (`src/aurbridge/fix.h`); anything a program can fix, the button
+  fixes; the page re-checks by itself. The build refuses a new
+  preflight stop without its line in `fix_win.c`.
+- **The SmartScreen "Windows protected your PC" panel** is what they
+  mean by "the exe might be sus". It is signing, not code:
+  `docs/SIGNING.md` says what to buy (Azure Artifact Signing, or an OV
+  certificate) and the build's signing step is waiting for it. Nothing
+  in the .exe removes it, and nothing should try to.
 
 ## Product rules the code is built around
 
 - Refuse first: anything uncertain is a refusal, made before anything
   is changed.
 - The machine can always go back to Windows.
-- Nothing irreversible until AurOS has booted and the person has said
-  it works.
+- Nothing irreversible until AurOS has booted and the person has said it
+  works.
 - One atomic commit point per destructive phase: LBA 1.
-- The machine's own EFI partition is never mounted or reformatted (R12).
-  AurOS writes only under `\EFI\AurOS\`.
-- `BootOrder` is written only by `aurfirst confirm`. Before that, only
-  the one-shot `BootNext`.
+- The machine's own EFI partition is written only under `\EFI\AurOS`,
+  and only from Windows. AurOS never writes it; it reads it to find the
+  restore.
+- `BootOrder` is written only by `aurfirst confirm` (and demoted by
+  `decline`). Everything else uses the one-shot `BootNext`.

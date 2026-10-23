@@ -1,0 +1,271 @@
+# Every version of AurOS builds, and starts up to its own desktop.
+#
+# build.yml builds and tests one profile, desktop. The other four --
+# office, revive, school-kiosk, multilingual -- had not been built by
+# anything automatic, and two of them had stopped building without
+# anybody noticing (docs/handoff/streams/P.md). This builds each one the
+# way build.yml builds desktop (build/all, no browser fallback, on a
+# network that reaches Mozilla), then boots it under KVM with
+# tools/profiletest.sh and photographs its desktop.
+#
+#   gate     runs it when the commit SUBJECT says [profiles] (all four)
+#            or e.g. [profiles office revive] (just those), or when the
+#            push changed profiles/, tools/profiletest* or this file. A
+#            change to one of the four profile files builds only that
+#            one; desktop.profile, which they all inherit, builds all.
+#   lint     seconds: tools/profiletest.sh selftest (every check fails
+#            on broken input) and lint (every package exists, no snap
+#            stubs, no unknown excludes) -- before an hour of builds.
+#   profile  one job per profile, ONE AT A TIME (max-parallel: 1; the
+#            free plan has 20 job slots shared by every workflow here).
+#            Evidence goes to prerelease profiles-<run id>:
+#              https://github.com/<repo>/releases/download/profiles-<run>/<profile>.png
+#            and <profile>-report.txt, -image.txt, -serial.txt,
+#            -build.log.gz. (Actions artifacts cannot be fetched from
+#            the development container; release assets can.)
+#   summary  the table of sizes and results in the release notes, and
+#            only the newest four profiles-* prereleases kept.
+#
+# workflow_dispatch is not an option: it only works on the default branch.
+name: profiles
+
+on:
+  push:
+    branches: ['claude/**']
+
+permissions:
+  contents: write
+  actions: read
+
+defaults:
+  run:
+    shell: bash
+
+# NO workflow-level concurrency, for build.yml's reason: every push runs
+# the gate, and GitHub keeps one pending run per group, so a docs-only
+# push would replace a queued real build. The group is on the profile
+# job, per profile: a newer run's office replaces an older run's
+# waiting office, and nothing else.
+
+jobs:
+  gate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      go: ${{ steps.g.outputs.go }}
+      list: ${{ steps.g.outputs.list }}
+    steps:
+      - id: g
+        env:
+          MSG: ${{ github.event.head_commit.message }}
+          BEFORE: ${{ github.event.before }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          all="office revive school-kiosk multilingual"
+          go=false; want=""
+          SUBJ=${MSG%%$'\n'*}
+          case "$SUBJ" in
+            *'[profiles'*)
+              go=true
+              inner=${SUBJ#*\[profiles}; inner=${inner%%\]*}
+              for p in $inner; do
+                case " $all " in *" $p "*) want="$want $p" ;; esac
+              done
+              [ -n "$want" ] || want=$all ;;
+          esac
+          case "$BEFORE" in
+            ''|0000000000000000000000000000000000000000)
+              files=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA" --jq '.files[].filename' || true) ;;
+            *)
+              files=$(gh api "repos/$GITHUB_REPOSITORY/compare/$BEFORE...$GITHUB_SHA" --jq '.files[].filename' || true) ;;
+          esac
+          printf '%s\n' "$files" > /tmp/files.txt
+          if [ "$go" = false ]; then
+            if grep -qE '^(profiles/desktop\.profile|tools/profiletest[^/]*|\.github/workflows/profiles\.yml)$' /tmp/files.txt; then
+              go=true; want=$all
+            else
+              for p in $all; do
+                grep -qx "profiles/$p.profile" /tmp/files.txt && { go=true; want="$want $p"; }
+              done
+            fi
+          fi
+          list=$(printf '%s\n' $want | python3 -c 'import json,sys; print(json.dumps([l.strip() for l in sys.stdin if l.strip()]))')
+          { echo "go=$go"; echo "list=$list"; } | tee -a "$GITHUB_OUTPUT"
+
+  lint:
+    needs: gate
+    if: needs.gate.outputs.go == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: every check refuses what it exists to refuse
+        run: sh tools/profiletest.sh selftest
+      - name: every profile asks only for what its suite has
+        run: sh tools/profiletest.sh lint office revive school-kiosk multilingual desktop
+
+  profile:
+    needs: [gate, lint]
+    if: needs.gate.outputs.go == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    strategy:
+      max-parallel: 1
+      fail-fast: false
+      matrix:
+        profile: ${{ fromJSON(needs.gate.outputs.list) }}
+    concurrency:
+      group: profiles-${{ github.ref }}-${{ matrix.profile }}
+      cancel-in-progress: false
+    name: ${{ matrix.profile }}
+    env:
+      P: ${{ matrix.profile }}
+      TAG: profiles-${{ github.run_id }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: room, tools, KVM
+        run: |
+          mkdir -p ev
+          ( sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
+              /opt/hostedtoolcache/CodeQL /usr/local/share/boost /usr/share/swift \
+              /usr/local/share/chromium /usr/local/julia* 2>/dev/null; echo removed > /tmp/freed ) &
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' |
+              sudo tee /etc/udev/rules.d/99-kvm4all.rules >/dev/null
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          sudo apt-get update -q
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends \
+              debootstrap squashfs-tools zstd gdisk dosfstools mtools e2fsprogs \
+              sbsigntool gcc libc6-dev make python3 cpio file binutils pigz \
+              qemu-system-x86 qemu-utils ovmf
+          while [ ! -f /tmp/freed ]; do sleep 2; done
+          ls -l /dev/kvm; df -h /
+
+      - name: release for this run's evidence
+        run: |
+          gh release view "$TAG" >/dev/null 2>&1 ||
+            gh release create "$TAG" --prerelease --target "$GITHUB_SHA" \
+              --title "profiles: every version builds and boots, run $GITHUB_RUN_ID" \
+              --notes "Running: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" || true
+
+      # build.yml's cache, by build.yml's exact key: debootstrap reads
+      # only the release pocket, so the base is the same bytes for every
+      # profile that keeps desktop's base_* lines (all four do; lint
+      # would not care, so it is asked here).
+      - name: cache key for the debootstrapped base
+        id: basekey
+        run: |
+          if grep -qE '^base_(suite|mirror|components)=' "profiles/$P.profile"; then
+            echo "key=none-$P-has-its-own-base" | tee -a "$GITHUB_OUTPUT"; exit 0
+          fi
+          k=$( { grep -E '^base_(suite|mirror|components)=' profiles/desktop.profile
+                 sed -n '/^stage_bootstrap()/,/^}/p' build/forge
+                 dpkg-query -W debootstrap; } | sha256sum | cut -c1-16)
+          echo "key=debootstrap-desktop-$k" | tee -a "$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@v4
+        with:
+          path: dist/cache/base.tar.zst
+          key: ${{ steps.basekey.outputs.key }}
+      - name: the base, in this profile's work tree
+        run: |
+          id=$(sed -n 's/^profile_id="\{0,1\}\([A-Za-z0-9_-]*\)"\{0,1\}.*/\1/p' "profiles/$P.profile" | head -1)
+          [ "$id" = "$P" ] || { echo "profile_id '$id' is not '$P'"; exit 1; }
+          if [ -f dist/cache/base.tar.zst ]; then
+            sudo mkdir -p "work/forge/$P"
+            zstd -dc dist/cache/base.tar.zst | sudo tar -C "work/forge/$P" --numeric-owner -xf -
+            sudo test -f "work/forge/$P/rootfs/.forge-bootstrapped"
+            rm -rf dist/cache
+            echo "base from build.yml's cache"
+          else
+            echo "no cached base: forge debootstraps it (about 10 minutes)"
+          fi
+
+      - name: build/all ${{ matrix.profile }}, no browser fallback
+        run: |
+          T=$(date +%s)
+          set +e
+          sudo env -u ALLOW_BROWSER_FALLBACK ./build/all "$P" --keep=raw > /tmp/build.log 2>&1
+          rc=$?
+          set -e
+          sed 's/\x1b\[[0-9;]*m//g' /tmp/build.log | gzip -9 > "ev/$P-build.log.gz"
+          sed 's/\x1b\[[0-9;]*m//g' /tmp/build.log | tail -60
+          echo "build_s=$(( $(date +%s) - T )) rc=$rc" | tee ev/build-time.txt
+          exit $rc
+
+      - name: how big it is
+        run: |
+          img="out/auros-$P.img"
+          raw=$(stat -c %s "$img")
+          gz=$(pigz -9 -p "$(nproc)" -c "$img" | wc -c)
+          {
+            echo "image_bytes=$raw"
+            echo "download_gzip9_bytes=$gz"
+            awk -v r="$raw" -v g="$gz" 'BEGIN{printf "summary=image %.2f GiB, download %.2f GiB (gzip -9)\n", r/1073741824, g/1073741824}'
+            cat ev/build-time.txt
+          } | tee "ev/$P-size.txt"
+
+      - name: boot it to its desktop under KVM
+        run: |
+          sudo env PATH="$PATH" sh tools/profiletest.sh boot "$P" "$PWD/ev" 2>&1 | tee "ev/$P-boot.txt"
+
+      - name: publish the evidence
+        if: ${{ !cancelled() }}
+        run: |
+          sudo chown -R "$(id -u):$(id -g)" ev
+          cat "ev/$P-size.txt" "ev/$P-image.txt" >> "ev/$P-image.txt.new" 2>/dev/null || true
+          [ -f "ev/$P-image.txt.new" ] && mv -f "ev/$P-image.txt.new" "ev/$P-image.txt"
+          ls -la ev
+          files=()
+          for f in "ev/$P.png" "ev/$P-report.txt" "ev/$P-image.txt" "ev/$P-serial.txt" \
+                   "ev/$P-boot.txt" "ev/$P-build.log.gz" "ev/$P-size.txt"; do
+            [ -f "$f" ] && files+=("$f")
+          done
+          [ "${#files[@]}" -gt 0 ] && gh release upload "$TAG" "${files[@]}" --clobber
+          {
+            echo "### $P"
+            echo '```'
+            cat "ev/$P-size.txt" 2>/dev/null
+            tail -25 "ev/$P-boot.txt" 2>/dev/null
+            echo '```'
+            echo "screenshot: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/download/$TAG/$P.png"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  summary:
+    needs: [gate, profile]
+    if: ${{ always() && needs.gate.outputs.go == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      TAG: profiles-${{ github.run_id }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: the table, in the release notes
+        run: |
+          gh release view "$TAG" >/dev/null 2>&1 || { echo "no release: nothing was built"; exit 0; }
+          base="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/download/$TAG"
+          {
+            echo "Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID (commit ${GITHUB_SHA:0:12})"
+            echo
+            echo "| profile | result | size | desktop up after | screenshot |"
+            echo "|---|---|---|---|---|"
+            for p in $(echo '${{ needs.gate.outputs.list }}' | python3 -c 'import json,sys; print(" ".join(json.load(sys.stdin)))'); do
+              sz=$(curl -fsSL "$base/$p-size.txt" 2>/dev/null | sed -n 's/^summary=//p')
+              bt=$(curl -fsSL "$base/$p-boot.txt" 2>/dev/null | tail -1)
+              up=$(curl -fsSL "$base/$p-image.txt" 2>/dev/null | sed -n 's/^desktop_up_after_s=//p' | tail -1)
+              echo "| $p | ${bt:-not built} | ${sz:--} | ${up:--} s | [$p.png]($base/$p.png) |"
+            done
+          } > notes.md
+          cat notes.md | tee -a "$GITHUB_STEP_SUMMARY"
+          gh release edit "$TAG" --notes-file notes.md
+      - name: keep the newest four profiles-* prereleases
+        run: |
+          gh release list --limit 100 --json tagName,createdAt \
+              --jq '[.[] | select(.tagName | startswith("profiles-"))] | sort_by(.createdAt) | reverse | .[4:] | .[].tagName' |
+          while read -r t; do
+            [ "$t" = "$TAG" ] && continue
+            gh release delete "$t" --cleanup-tag --yes || true
+          done

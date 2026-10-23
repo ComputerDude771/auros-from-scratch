@@ -1,0 +1,7 @@
+# theme_num handed out NaN; draw_blend_px cast it to an integer
+opacity_panel=nan
+shadow_opacity=nan
+margin=1
+bar_height=2
+padding=20
+radius=10

@@ -1,0 +1,35 @@
+#!/bin/sh
+# TEST ONLY. Copied onto the seed partition by `plan.py --test-hooks`, never
+# by the product. Reports to the VM's serial port and switches the machine
+# off once the desktop session has started, so a harness outside can tell
+# what happened without a network or a person.
+here=/run/othersys/lib/test
+case $1 in
+late)
+    t=$2
+    install -D -m755 $here/report "$t/usr/lib/auros-othersys-test/report"
+    for u in othersys-test.service othersys-test-session.path othersys-test-session.service; do
+        install -D -m644 $here/$u "$t/etc/systemd/system/$u"
+    done
+    mkdir -p "$t/etc/systemd/system/multi-user.target.wants" "$t/etc/systemd/system/paths.target.wants"
+    ln -sf /etc/systemd/system/othersys-test.service "$t/etc/systemd/system/multi-user.target.wants/"
+    ln -sf /etc/systemd/system/othersys-test-session.path "$t/etc/systemd/system/paths.target.wants/"
+    install -D -m644 $here/zz-othersys-test.desktop "$t/etc/xdg/autostart/zz-othersys-test.desktop"
+    {
+        echo "OTHERSYS-TEST LATE-LOG-BEGIN"
+        cat /run/othersys/log
+        echo "OTHERSYS-TEST LATE-LOG-END"
+        echo "OTHERSYS-TEST LATE-DONE $(date -u +%s)"
+    } > /dev/ttyS0 2>&1
+    ;;
+error)
+    {
+        echo "OTHERSYS-TEST INSTALL-ERROR $(date -u +%s)"
+        cat /run/othersys/log 2>/dev/null
+        for f in $(find /var/log/installer -maxdepth 2 -type f -name '*.log' 2>/dev/null); do
+            echo "==== $f"; tail -n 150 "$f"
+        done
+    } > /dev/ttyS0 2>&1
+    ;;
+esac
+exit 0

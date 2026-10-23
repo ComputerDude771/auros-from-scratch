@@ -1,0 +1,13 @@
+#!/bin/sh
+# After every dpkg run (52auros-bootchain). The package scripts call
+# update-grub and grub-install themselves; this is the net under them,
+# for an upgrade path that skips one -- a grub that changed without its
+# postinst calling grub-install, a kernel removed with --no-triggers.
+# Both commands do nothing when nothing changed.
+[ -x /usr/lib/auros/bootchain ] || exit 0
+if [ -f /boot/grub/grub.cfg ]; then
+    /usr/lib/auros/bootchain menu >/dev/null 2>&1 ||
+        logger -t auros-bootchain "menu not rewritten after dpkg" 2>/dev/null
+fi
+/usr/lib/auros/bootchain sync >/dev/null 2>&1
+exit 0

@@ -165,4 +165,13 @@ int  notify_click(shell_ctx *c, int x, int y);
  * indicator flashes: they are things she may want to read twice. */
 void notify_local(const char *summary, const char *body);
 
+/* The same, for good news about a program: pressing the card opens it.
+ * "VLC is ready" / "Press here to open it." -- app_id is the program's
+ * id in the app table. The host collects the press with
+ * notify_take_open() and starts the program the way a home screen
+ * would, so the archetype brings it into view. */
+void notify_local_open(const char *summary, const char *body, const char *app_id);
+/* 1 and the id, once, if a press on a card asked for a program. */
+int  notify_take_open(char *out, size_t n);
+
 #endif
