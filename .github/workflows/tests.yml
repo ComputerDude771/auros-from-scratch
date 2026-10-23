@@ -164,6 +164,9 @@ jobs:
       - name: bridgetest
         if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
         run: sh tools/bridgetest.sh 2>&1 | tee transcripts/bridgetest.txt
+      - name: helptest (the help pages work offline, in her words)
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        run: python3 -I tools/helptest.py 2>&1 | tee transcripts/helptest.txt
       - name: storetest (Get more programs within two presses of every home)
         if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
         run: |
