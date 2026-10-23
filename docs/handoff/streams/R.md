@@ -89,8 +89,12 @@ sees honest.
 
 ## State
 
-- Done and pushed: this file only.
-- Half-done/unpushed: nothing.
+- Done and pushed: plan step 1 (`fb90bcd`): no saved password crosses
+  (Firefox password/card files skipped, Wi-Fi only listed, ferry-dpapi
+  deleted); `src/ferry/install.sh` is now the one install list (forge
+  calls it); suite 49/49, mutations of both protections caught.
+- In progress: step 2, `src/ferry/copy.c` (`ferry-copy`). Nothing of it
+  is pushed yet; if this line is still here, start step 2 from scratch.
 
 ## Traps
 
