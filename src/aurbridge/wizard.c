@@ -2678,7 +2678,8 @@ static const wchar_t *footer_hint(void)
 
 static int back_visible(void)
 {
-    return g_page == PAGE_STYLE || g_page == PAGE_READY;
+    /* Not while "Install AurOS" is checking: that button was pressed. */
+    return g_page == PAGE_STYLE || (g_page == PAGE_READY && !g_checking);
 }
 static page_id back_target(void)
 {
@@ -2845,6 +2846,12 @@ static void check_advance(void)
     if (!g_pf_valid || g_checking) return;
     if (g_report.n_block > 0) { goto_page(PAGE_BLOCKED); return; }
     if (g_check_next == PAGE_PROGRESS) {
+        /* Only from the page whose button asked for it. She may have gone
+         * Back while the check ran; a clean answer then starts nothing. */
+        if (g_page != PAGE_READY && g_page != PAGE_PROGRESS) {
+            g_check_next = PAGE_STYLE;
+            return;
+        }
         /* Re-ran preflight and it is still clean: this is the only place
          * the phase list is allowed to start. */
         if (!nav_allowed(PAGE_PROGRESS)) { goto_page(PAGE_READY); return; }
@@ -3757,6 +3764,12 @@ static int nav_test(const char *dir)
     nt_check(primary_enabled() && !wcscmp(primary_label(), L"Install AurOS"),
              "Ready's one button is Install AurOS, with nothing to tick or type first");
     nt_check(nav_allowed(PAGE_PROGRESS), "the install is reachable from Ready as it stands");
+    g_page = PAGE_STYLE;                   /* she went Back while it checked */
+    g_check_next = PAGE_PROGRESS;
+    check_advance();
+    nt_check(g_page == PAGE_STYLE && !g_install_running,
+             "a clean re-check after she went Back starts nothing");
+    g_page = PAGE_READY;
     g_check_next = PAGE_PROGRESS;
     check_advance();                       /* what the re-check does when clean */
     nt_check(g_page == PAGE_PROGRESS, "a clean re-check starts the install");
