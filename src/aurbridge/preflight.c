@@ -390,6 +390,7 @@ static int bus_is_removable(int bus)
 static void query_disk_props(HANDLE h, pf_disk *d)
 {
     d->bus_type = -1;
+    d->seek_penalty = -1;
 
     STORAGE_PROPERTY_QUERY q = { StorageDeviceProperty, PropertyStandardQuery, {0} };
     BYTE buf[2048]; DWORD ret = 0;
@@ -453,6 +454,18 @@ static void query_disk_props(HANDLE h, pf_disk *d)
     GET_LENGTH_INFORMATION li;
     if (DeviceIoControl(h, IOCTL_DISK_GET_LENGTH_INFO, NULL, 0, &li, sizeof li, &ret, NULL))
         d->size_bytes = (uint64_t)li.Length.QuadPart;
+
+    /* SSD OR SPINNING DISK, for the one number she is told before she
+     * says yes: how long it takes. A hard disk takes several times as
+     * long, and saying "about 20 minutes" to somebody whose PC will take
+     * an hour is the kind of thing that makes her switch it off. */
+    STORAGE_PROPERTY_QUERY kq = { StorageDeviceSeekPenaltyProperty, PropertyStandardQuery, {0} };
+    DEVICE_SEEK_PENALTY_DESCRIPTOR sp;
+    DWORD kret = 0;
+    memset(&sp, 0, sizeof sp);
+    if (DeviceIoControl(h, IOCTL_STORAGE_QUERY_PROPERTY, &kq, sizeof kq,
+                        &sp, sizeof sp, &kret, NULL) && kret >= sizeof sp)
+        d->seek_penalty = sp.IncursSeekPenalty ? 1 : 0;
 }
 
 /* A sector size we are willing to do arithmetic with. */

@@ -60,6 +60,8 @@ typedef struct {
     int      is_removable;          /* removable bus OR removable media*/
     int      removable_media;       /* the RemovableMedia flag alone   */
     int      bus_type;              /* STORAGE_BUS_TYPE, -1 unknown    */
+    int      seek_penalty;          /* -1 unknown, 0 SSD, 1 spinning   */
+                                    /* disk: how long the install takes */
     int      is_recovery_stick;     /* the one stick pf_set_recovery_  */
                                     /* stick() nominated (R4)          */
     int      is_system;             /* holds the running Windows       */

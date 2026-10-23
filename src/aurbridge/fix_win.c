@@ -133,6 +133,36 @@ static const fix_info FIXES[] = {
       L"AurOS can’t fit its start-up files on this PC yet.", NULL },
 };
 
+/* ── warnings: one line each ─────────────────────────────────────── */
+
+static const struct { const char *id; const wchar_t *line; } NOTES[] = {
+    { "removable-attached",
+      L"A USB stick or memory card is plugged in. That\u2019s fine: AurOS won\u2019t touch it." },
+    { "removable-no-serial",
+      L"A USB stick or memory card is plugged in. That\u2019s fine: AurOS won\u2019t touch it." },
+    { "recovery-stick-ambiguous",
+      L"A USB stick or memory card is plugged in. That\u2019s fine: AurOS won\u2019t touch it." },
+    { "low-ram",
+      L"This computer has little memory, so AurOS may be slow with many things open." },
+    { "smart-reallocated",
+      L"This computer\u2019s drive shows some wear. Keep copies of your photos somewhere else too." },
+    { "dynamic-disk-other",
+      L"Another drive in this computer has an unusual setup. AurOS won\u2019t touch it." },
+    { "storage-spaces-other",
+      L"Another drive in this computer has an unusual setup. AurOS won\u2019t touch it." },
+    { "fde-container-software",
+      L"Encryption software is installed. Close anything you have open in it first." },
+    { "intel-rst",
+      L"This computer\u2019s drive uses Intel\u2019s storage setting. AurOS checks it can see it." },
+};
+
+const wchar_t *fix_note(const char *id)
+{
+    for (size_t i = 0; i < sizeof NOTES / sizeof NOTES[0]; i++)
+        if (!strcmp(NOTES[i].id, id)) return NOTES[i].line;
+    return NULL;
+}
+
 const fix_info *fix_lookup(const char *id)
 {
     for (size_t i = 0; i < sizeof FIXES / sizeof FIXES[0]; i++)

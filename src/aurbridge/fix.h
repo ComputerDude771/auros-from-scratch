@@ -34,6 +34,12 @@ typedef struct {
 
 /* The entry for a finding id, or NULL if there is none. */
 const fix_info *fix_lookup(const char *id);
+
+/* WARNINGS ARE SAID TOO, ONE LINE EACH. Something that does not stop the
+ * install but is worth knowing (a USB stick plugged in, little memory)
+ * is said on the first page, before she agrees to anything (docs/EASY.md,
+ * rule 9), in one sentence of her words. NULL when there is no line. */
+const wchar_t *fix_note(const char *id);
 /* The i-th entry, or NULL past the end (for the wizard's own test). */
 const fix_info *fix_at(int i);
 
