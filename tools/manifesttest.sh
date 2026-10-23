@@ -72,9 +72,12 @@ if command -v x86_64-w64-mingw32-gcc >/dev/null 2>&1; then
     mkdir -p "$TMP/tree/src" "$TMP/tree/tools"
     cp -r build "$TMP/tree/"
     cp -r src/aurbridge "$TMP/tree/src/"
-    cp tools/pe_payload.py "$TMP/tree/tools/"
+    cp tools/pe_payload.py tools/repo.sh "$TMP/tree/tools/"
     cp "$TMP/dash.xml" "$TMP/tree/src/aurbridge/aurbridge.manifest"
-    if OUT="$TMP/tree/out" sh "$TMP/tree/build/aurbridge" > "$TMP/build.log" 2>&1; then
+    # The copy has no git remote: tell it which repository, as asked of
+    # this checkout (build/aurbridge needs it for the website it names).
+    repo=$(sh tools/repo.sh) || repo=""
+    if AUROS_REPO="$repo" OUT="$TMP/tree/out" sh "$TMP/tree/build/aurbridge" > "$TMP/build.log" 2>&1; then
         bad "build/aurbridge refuses a manifest Windows would refuse" \
             "the build finished"
     elif grep -q "manifest is one Windows would refuse" "$TMP/build.log"; then
