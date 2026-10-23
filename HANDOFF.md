@@ -1,6 +1,7 @@
 # HANDOFF — start here
 
-> **2026-10-23: read `docs/handoff/RESUME-NOW.md` first, then
+> **2026-10-23: read `START-HERE.md` (repo root) first, then
+> `docs/handoff/RESUME-NOW.md`, then
 > `docs/handoff/SESSION-2026-10-23.md`.** It is
 > the current decision log and progress report (goal: great-grandma
 > installs AurOS in under 10 minutes on any PC). Everything below is the

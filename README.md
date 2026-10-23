@@ -12,6 +12,8 @@ by downloading one file.**
 <sub>Not a mock-up — a screendump of AurOS running in a VM with Secure Boot
 **enabled**, `aurshell` painting directly to DRM/KMS.</sub>
 
+> **New agent or new person? Read [`START-HERE.md`](START-HERE.md) first.**
+>
 > **Get the whole project (or update it) with one command** — see
 > [`docs/MOVING.md`](docs/MOVING.md):
 > ```sh

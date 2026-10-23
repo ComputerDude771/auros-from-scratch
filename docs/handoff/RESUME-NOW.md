@@ -1,4 +1,6 @@
-# RESUME NOW — if you are a new agent taking over, start here
+# RESUME NOW
+
+> **If you have only the repository: read `START-HERE.md` (repo root) first.**
 
 > **04:35: every parallel stream, its files and its standing brief are in
 > `docs/handoff/STREAMS.md`. Respawn any stream not marked DONE from there.**
