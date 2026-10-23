@@ -5,14 +5,28 @@
  * reboot. docs/AURBRIDGE.md:
  *
  *   it can test WiFi, backlight, audio and suspend on the real
- *   machine before anything is committed. If WiFi will not come up,
- *   we abort and leave Windows alone -- instead of discovering it
- *   after the user has no way to reach help.
+ *   machine before anything is committed.
  *
- * A person whose laptop boots into a working-looking desktop with no
- * way to get online cannot search for the answer, cannot ask us, and
- * cannot get back. That is the failure this phase exists to prevent,
- * and it is worth an abort.
+ * NETWORK IS RECORDED, NOT REQUIRED (changed 2026-10-23).
+ *
+ * This phase once aborted when it found no wireless and no cable, on
+ * the reasoning that a person stranded offline cannot reach help. The
+ * 2026-10-23 journey audit found that reasoning backwards in practice:
+ * the abort came AFTER the shrink, and it fired on most Wi-Fi-only
+ * laptops -- because the initramfs carries no firmware, so the Wi-Fi
+ * driver loaded but never registered a radio. The machines it stranded
+ * are the machines this product is for.
+ *
+ * Two things fixed it. probe_run() now points the kernel's firmware
+ * loader at the new root's /lib/firmware (see the symlink in probe.c),
+ * so a card that has firmware actually comes up and can be tested; and
+ * the installer carries the person's Wi-Fi key across (docs/AURBRIDGE.md
+ * D2), so first boot is online with nothing typed. A machine with no
+ * network at all is still a machine she can use. So the network is
+ * MEASURED and written into the record, and it never decides whether
+ * the install may proceed. The one thing still worth an abort is
+ * PROBE_NO_DRIVERS -- the image and the running kernel disagreeing,
+ * which is our fault and tests nothing about her machine.
  *
  * WHY IT RUNS AFTER THE WRITE AND BEFORE THE COMMIT. The firmware is
  * not in the initramfs -- linux-firmware is 700 MB to 1.5 GB and even
@@ -43,7 +57,9 @@
 
 typedef enum {
     PROBE_OK = 0,
-    PROBE_NO_NETWORK,    /* the machine works but cannot get online   */
+    PROBE_NO_NETWORK,    /* kept for the name; probe_judge no longer
+                          * returns it -- no network is recorded in the
+                          * result's fields and `why`, not a verdict.  */
     PROBE_NO_DRIVERS,    /* OUR fault: the image and the kernel differ*/
     PROBE_UNMOUNTABLE,   /* what we just wrote will not mount         */
 } probe_verdict;

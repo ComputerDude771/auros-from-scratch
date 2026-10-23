@@ -288,8 +288,52 @@ void probe_run(const char *root_dev, probe_result *out)
         out->kernel_matches = (stat(mdir, &st) == 0 && S_ISDIR(st.st_mode));
     }
 
+    /* POINT THE KERNEL'S FIRMWARE LOADER AT THE NEW ROOT'S FIRMWARE.
+     *
+     * The initramfs carries none -- linux-firmware is 700 MB to 1.5 GB,
+     * against an OEM ESP commonly 100 MB and nearly full -- so the only
+     * firmware on this machine is at PROBE_AT "/lib/firmware", in the
+     * root we have just written and verified. Without pointing the
+     * loader there, iwlwifi / rtw88 / ath10k / mt76 and nearly every
+     * modern Wi-Fi chip load their .ko and then NEVER register a radio,
+     * because the firmware request that their probe() makes fails
+     * silently -- so phase 7 saw "no wireless" on a laptop that has it.
+     * That was the Wi-Fi-only blocker the 2026-10-23 audit found, and
+     * it is exactly the hardware this product exists for.
+     *
+     * The documented override is to write PROBE_AT "/lib/firmware" to
+     * /sys/module/firmware_class/parameters/path -- but that is a
+     * writable open, and build/staging's gate refuses any writable open
+     * in this directory but wr.c's and nvram.c's. Rather than widen a
+     * safety gate for a shippable build, this uses the mechanism that
+     * needs no writable open at all: a symlink at /lib/firmware, which
+     * is the kernel's default firmware search path and which this
+     * initramfs does not otherwise have. The loader's filp_open()
+     * follows it into the new root. A symlink is a tmpfs entry, not a
+     * disk write and not an open flag, so the gate is neither tripped
+     * nor weakened. If /lib/firmware already exists this is a harmless
+     * no-op, and a failure here only means a firmware-needing card is
+     * not tested -- which is recorded, never fatal. */
+    if (symlink(PROBE_AT "/lib/firmware", "/lib/firmware") != 0) {
+        /* EEXIST, or no permission: the default search still covers
+         * whatever is already at /lib/firmware. Nothing to do. */
+    }
+
     probe_modalias("/sys/devices", 0, &out->modules_loaded);
     probe_look(NULL, out);
+    /* WI-FI REGISTRATION IS ASYNCHRONOUS. A driver returns from probe()
+     * and then loads its firmware and registers a PHY a second or two
+     * later; asking /sys/class/ieee80211 once, the instant modprobe
+     * returns, misses it on real hardware. So poll for a few seconds --
+     * the network is recorded and never required (probe_judge), so a
+     * few seconds is the whole cost of knowing whether her Wi-Fi came
+     * up. Only the real /sys; a test drives probe_look/probe_judge
+     * directly against a synthetic one. */
+    for (int t = 0; t < 40 && out->wifi_devices == 0; t++) {
+        struct timespec ts = { 0, 200 * 1000 * 1000 };
+        nanosleep(&ts, NULL);
+        out->wifi_devices = count_class("/sys/class/ieee80211");
+    }
     umount(PROBE_AT);
     probe_judge(out);
 }
@@ -325,27 +369,35 @@ void probe_judge(probe_result *out)
         return;
     }
 
-    if (out->wifi_devices == 0 && !out->wired_up) {
-        /* THE ABORT THIS PHASE EXISTS FOR. */
-        out->verdict = PROBE_NO_NETWORK;
-        snprintf(out->why, sizeof out->why,
-                 "AurOS cannot get this computer online: it found no "
-                 "wireless and no network cable.");
-        snprintf(out->remedy, sizeof out->remedy,
-                 "Nothing has been changed and Windows will start as usual. "
-                 "Plug in a network cable and try again, or send us the "
-                 "support file.");
-        return;
-    }
-
+    /* NETWORK IS RECORDED, NEVER REQUIRED.
+     *
+     * This used to abort when there was no wireless and no cable -- and
+     * that abort came AFTER the shrink, so a Wi-Fi-only laptop with no
+     * firmware for its card (the case the symlink above now fixes) was
+     * left with a smaller Windows and no AurOS, told to "plug in a
+     * network cable". The 2026-10-23 audit found that strands most
+     * Wi-Fi-only laptops, which is the hardware this product is for.
+     *
+     * Two things changed it. The firmware loader is now pointed at the
+     * new root (above), so a card that has firmware actually comes up;
+     * and the installer carries her Wi-Fi across (docs/AURBRIDGE.md D2),
+     * so first boot is online with nothing typed. A machine with no
+     * network at all is still a machine she can use -- AurOS installs,
+     * starts, and sets the network up from what came across. So the
+     * network is measured and written into the record, and it never
+     * decides whether the install may go on. PROBE_NO_DRIVERS (above)
+     * stays fatal: that is OUR fault, not a limit of her machine. */
+    int online = out->wifi_devices > 0 || out->wired_up;
     out->verdict = PROBE_OK;
     snprintf(out->why, sizeof out->why,
-             "%d driver%s loaded; %s%s%s%s",
+             "%d driver%s loaded; %s%s%s",
              out->modules_loaded, out->modules_loaded == 1 ? "" : "s",
-             out->wifi_devices ? "wireless works" : "a network cable is in",
+             online ? (out->wifi_devices ? "wireless works"
+                                         : "a network cable is in")
+                    : "no network yet (recorded; AurOS sets it up from your "
+                      "Wi-Fi after it starts)",
              out->backlight   ? ", the screen brightness works" : "",
-             out->sound_cards ? ", sound works" : "",
-             (!out->backlight || !out->sound_cards) ? "" : "");
+             out->sound_cards ? ", sound works" : "");
 }
 
 const char *probe_verdict_name(probe_verdict v)

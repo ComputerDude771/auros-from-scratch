@@ -27,8 +27,8 @@ TMP=$(mktemp -d "${TMPDIR:-/tmp}/probetest.XXXXXX")
 trap 'mountpoint -q /probe 2>/dev/null && umount /probe; rm -rf "$TMP"' EXIT
 
 echo
-echo "Would it refuse a machine that cannot get online -- and blame the"
-echo "right thing when it cannot tell?"
+echo "Does it record the network without requiring it -- and still blame"
+echo "the right thing when the fault is ours, not the machine's?"
 echo
 
 cat > "$TMP/p.c" <<'EOC'
@@ -96,15 +96,28 @@ OUT=$("$TMP/p" look "$S" 40 1 2>/dev/null)
     || bad "no wireless but a cable: allowed"
 
 echo
-echo "  a machine that cannot get online"
+echo "  a machine with no network yet -- recorded, NOT refused"
+# The one deliberate reversal (2026-10-23): a laptop that comes up with
+# no wireless and no cable used to be refused AFTER the shrink, which
+# stranded most Wi-Fi-only laptops -- the firmware was not loaded, so a
+# card that works looked absent. probe.c now points the loader at the
+# new root's firmware, and the installer carries her Wi-Fi across, so a
+# missing network is written down and the install goes on.
 S=$(mksys dark 0 0 1 1)
 OUT=$("$TMP/p" look "$S" 40 1 2>/dev/null)
-[ "$(printf '%s\n' "$OUT" | G verdict)" = "no-network" ] && ok "no wireless, no cable: refused" \
-    || bad "no wireless, no cable: refused" "$(printf '%s\n' "$OUT" | G verdict)"
-case "$(printf '%s\n' "$OUT" | G remedy)" in
-  *"Windows will start as usual"*) ok "...and she is told Windows still works" ;;
-  *) bad "...and she is told Windows still works" \
-         "it said: $(printf '%s\n' "$OUT" | G remedy)" ;;
+[ "$(printf '%s\n' "$OUT" | G verdict)" = "ok" ] && ok "no wireless, no cable: allowed, not refused" \
+    || bad "no wireless, no cable: allowed, not refused" "$(printf '%s\n' "$OUT" | G verdict)"
+case "$(printf '%s\n' "$OUT" | G why)" in
+  *"no network yet"*) ok "...and the missing network is recorded" ;;
+  *) bad "...and the missing network is recorded" \
+         "it said: $(printf '%s\n' "$OUT" | G why)" ;;
+esac
+# And a machine WITH a network still says so, rather than the record line.
+S=$(mksys lit 1 0 1 1)
+OUT=$("$TMP/p" look "$S" 40 1 2>/dev/null)
+case "$(printf '%s\n' "$OUT" | G why)" in
+  *"wireless works"*) ok "a machine with wireless still says so" ;;
+  *) bad "a machine with wireless still says so" "$(printf '%s\n' "$OUT" | G why)" ;;
 esac
 
 # A wireless interface with a carrier is NOT a cable. A laptop with a
@@ -135,13 +148,13 @@ OUT=$("$TMP/p" look "$S" 40 0 2>/dev/null)
 [ "$(printf '%s\n' "$OUT" | G verdict)" = "no-drivers" ] && ok "an image without this kernel's modules is our fault too" \
     || bad "an image without this kernel's modules is our fault too"
 
-# And the order matters: a machine with no network AND no drivers must
-# be reported as no-drivers, because we never got far enough to know
-# anything about its network.
+# A machine with no network AND no drivers must be reported as
+# no-drivers: we never got far enough to know anything about its
+# network, and "no drivers at all" is our fault either way.
 S=$(mksys both 0 0 0 0)
 OUT=$("$TMP/p" look "$S" 0 0 2>/dev/null)
-[ "$(printf '%s\n' "$OUT" | G verdict)" = "no-drivers" ] && ok "our fault is reported before the machine's" \
-    || bad "our fault is reported before the machine's"
+[ "$(printf '%s\n' "$OUT" | G verdict)" = "no-drivers" ] && ok "no drivers at all is still our fault, not a network verdict" \
+    || bad "no drivers at all is still our fault, not a network verdict"
 
 echo
 echo "  and what we just wrote not mounting at all"
@@ -160,6 +173,6 @@ if [ "$fail" -gt 0 ]; then
     echo "This phase is the last chance to stop before anything is committed."
     exit 1
 fi
-echo "$checked checks: it refuses a machine that cannot get online, and it"
+echo "$checked checks: it records the network without requiring it, and it"
 echo "does not call our own fault a fault of hers."
 exit 0
