@@ -37,7 +37,7 @@ with a screenshot, an image size and a boot result for each.
 
 ## Half-done / not pushed
 
-- `.github/workflows/profiles.yml` — being written now (see next steps). If it is not on the
+- `.github/workflows/profiles.yml` pushed (first run in flight); step 1 below describes it. If it is not on the
   branch, write it as below.
 
 ## Next 5 steps
