@@ -266,6 +266,8 @@ static page_id      g_check_next = PAGE_STYLE;   /* where a clean check goes */
 
 /* her one answer */
 static int   g_sel_style = STYLE_DEFAULT;
+/* D10: her Wi-Fi comes across unless she unticks it. */
+static int   g_bring_wifi = 1;
 
 /* Language, keyboard and time zone: what Windows already uses, read at
  * start-up (detect_defaults) and handed over without a question. The
@@ -651,12 +653,14 @@ static void text_in(const wchar_t *s, HFONT f, uint32_t col, RECT box, UINT flag
  *  description of where things are and no chance of the clickable area
  *  drifting from the drawn one.
  *
- *  TWO KINDS, AND NO MORE. There used to be a text box (for typing
- *  AGREE), check boxes (a backup she probably did not have) and chips.
- *  A button and a card are all this installer asks her to use; --navtest
- *  fails if any page registers anything else.
+ *  THREE KINDS, AND NO MORE. There used to be a text box (for typing
+ *  AGREE), check boxes that had to be ticked to go on (a backup she
+ *  probably did not have) and chips. A button and a picture card are
+ *  what this installer asks her to use; a toggle is there only to say
+ *  no to something already said yes to for her (D10, her Wi-Fi), and it
+ *  never holds the way on. --navtest fails on anything else.
  * ═══════════════════════════════════════════════════════════════════ */
-typedef enum { W_BUTTON, W_CARD } wkind;
+typedef enum { W_BUTTON, W_CARD, W_TOGGLE } wkind;
 
 typedef struct {
     int id; wkind kind; RECT r; int enabled;
@@ -668,7 +672,7 @@ static int    g_nw;
 
 enum {
     ID_NONE = 0,
-    ID_PRIMARY, ID_BACK, ID_QUIT, ID_NOT_YET,
+    ID_PRIMARY, ID_BACK, ID_QUIT, ID_NOT_YET, ID_WIFI,
     ID_STYLE = 500
 };
 
@@ -1227,6 +1231,29 @@ static DWORD WINAPI ab_worker(LPVOID p)
  * already knows about her language, keyboard and time zone
  * (detect_defaults) -- asked of Windows, not of her. Its own function so
  * that --navtest can read back exactly what the engine is handed. */
+/* D10, D11: OFFERED ONLY WHEN THE ENGINE CAN DO IT. phases.h defines
+ * AB_CHOICE_BRING_WIFI and AB_CHOICE_BITLOCKER_PAUSE when ab_choice has
+ * bring_wifi and bitlocker_pause and the engine acts on them; until then
+ * the box is not drawn and the drive lock is not mentioned, because a
+ * promise nothing keeps is worse than no promise. */
+static int wifi_offered(void)
+{
+#ifdef AB_CHOICE_BRING_WIFI
+    return g_report.wifi_connected;
+#else
+    return 0;
+#endif
+}
+
+static int bitlocker_paused_here(void)
+{
+#ifdef AB_CHOICE_BITLOCKER_PAUSE
+    for (int i = 0; i < g_report.n_volumes; i++)
+        if (g_report.volumes[i].bitlocker == 1) return 1;
+#endif
+    return 0;
+}
+
 static void choices_from_page(ab_choice *c)
 {
     int s = style_ok() ? g_sel_style : STYLE_DEFAULT;
@@ -1235,6 +1262,12 @@ static void choices_from_page(ab_choice *c)
     _snprintf(c->language, sizeof c->language - 1, "%s", g_lang_v[g_sel_lang]);
     _snprintf(c->keyboard, sizeof c->keyboard - 1, "%s", g_kbd_v[g_sel_kbd]);
     _snprintf(c->timezone, sizeof c->timezone - 1, "%s", g_tz_v[g_sel_tz]);
+#ifdef AB_CHOICE_BRING_WIFI
+    c->bring_wifi = wifi_offered() && g_bring_wifi;
+#endif
+#ifdef AB_CHOICE_BITLOCKER_PAUSE
+    c->bitlocker_pause = bitlocker_paused_here();
+#endif
 }
 
 /* WHERE THE IMAGE IS, OR WILL BE -- the part of the choice that does
@@ -2528,6 +2561,38 @@ static void space_split(uint64_t *auros, uint64_t *windows_free)
     *windows_free = reclaimable - share;
 }
 
+/* A tick box she can untick, ticked for her. The whole row is the
+ * target, at least 44 px tall. */
+static int toggle_row(int id, int on, const wchar_t *title, const wchar_t *sub,
+                      int x, int y, int w)
+{
+    int pad = S(12), box = S(26);
+    int tx = x + pad + box + S(16), tw = w - (tx - x) - pad;
+    int th = text_h(title, g_f_bodyb, tw, DT_WORDBREAK);
+    int sh = sub ? text_h(sub, g_f_body, tw, DT_WORDBREAK) : 0;
+    int h = pad * 2 + th + (sub ? sh + S(2) : 0);
+    if (h < S(52)) h = S(52);
+    int idx = w_add(id, W_TOGGLE, x, y, w, h, 1);
+    if (idx >= 0) g_w[idx].name = title;
+    int hot = w_hot(idx);
+    fill_rr((float)x, (float)y, (float)w, (float)h, (float)S(12), C_SURFACE_HI,
+            hot ? 1.f : 0.75f);
+    stroke_rr((float)x, (float)y, (float)w, (float)h, (float)S(12), 1.2f,
+              hot ? C_SUBTLE : C_OVERLAY, 1.f);
+    float bx = (float)(x + pad), by = (float)(y + (h - box) / 2);
+    if (on) {
+        fill_rr(bx, by, (float)box, (float)box, (float)S(6), C_ACCENT, 1.f);
+        glyph_check(bx + box * 0.5f, by + box * 0.5f, (float)box * 0.62f, C_BG, 1.f);
+    } else {
+        stroke_rr(bx, by, (float)box, (float)box, (float)S(6), 2.f, C_SUBTLE, 1.f);
+    }
+    int ty = y + (h - th - (sub ? sh + S(2) : 0)) / 2;
+    text_draw(title, g_f_bodyb, C_FG_HI, tx, ty, tw, DT_WORDBREAK);
+    if (sub) text_draw(sub, g_f_body, C_SUBTLE, tx, ty + th + S(2), tw, DT_WORDBREAK);
+    if (w_focused(idx)) { RECT b = { x, y, x + w, y + h }; focus_ring(b, S(4), S(16)); }
+    return h;
+}
+
 static int page_ready(int x, int y, int w)
 {
     int y0 = y;
@@ -2562,6 +2627,12 @@ static int page_ready(int x, int y, int w)
 
     y += glyph_row(G_LOOK, STYLES[g_sel_style].ready, C_ACCENT, x, y, narrow);
 
+    /* D11, in her words, on a PC whose drive is locked. */
+    if (bitlocker_paused_here())
+        y += glyph_row(G_CHECK, L"Windows’ drive lock is paused for one restart and "
+                                L"turns itself back on. Nothing is unlocked or removed.",
+                       C_ACCENT, x, y, narrow);
+
     y += glyph_row(G_UNDO, L"The computer restarts once. Then AurOS asks if everything "
                            L"works. Say No, and you are back in Windows.",
                    C_ACCENT, x, y, narrow);
@@ -2573,6 +2644,20 @@ static int page_ready(int x, int y, int w)
                  ? L" This computer has an older, slower kind of drive." : L"");
     buf[299] = 0;
     y += glyph_row(G_CLOCK, buf, C_ACCENT, x, y, narrow);
+
+    /* D10: her Wi-Fi, ticked for her, said by its own name. */
+    if (wifi_offered()) {
+        static wchar_t title[200];
+        wchar_t net[128];
+        MultiByteToWideChar(CP_UTF8, 0, g_report.wifi_name, -1, net, 127);
+        net[127] = 0;
+        if (net[0]) _snwprintf(title, 199, L"Bring my Wi-Fi across (%ls)", net);
+        else        wcscpy(title, L"Bring my Wi-Fi across");
+        title[199] = 0;
+        y += S(4);
+        y += toggle_row(ID_WIFI, g_bring_wifi, title,
+                        L"So AurOS is online the moment it starts.", x, y, narrow);
+    }
     return y - y0;
 }
 
@@ -3113,6 +3198,7 @@ static void widget_activate(int id)
     case ID_BACK:    goto_page(back_target()); return;
     case ID_QUIT:    PostMessageW(g_hwnd, WM_CLOSE, 0, 0); return;
     case ID_NOT_YET: countdown_cancel(); return;
+    case ID_WIFI:    g_bring_wifi = !g_bring_wifi; return;
     default: break;
     }
     if (id >= ID_STYLE && id < ID_STYLE + N_STYLES) { select_style(id - ID_STYLE); return; }
@@ -3500,7 +3586,8 @@ static HRESULT STDMETHODCALLTYPE acc_get_accRole(IAccessible *t, VARIANT v, VARI
     if (c == -2) return E_INVALIDARG;
     r->vt = VT_I4;
     r->lVal = c == -1 ? ROLE_SYSTEM_CLIENT
-            : g_w[c].kind == W_CARD ? ROLE_SYSTEM_RADIOBUTTON : ROLE_SYSTEM_PUSHBUTTON;
+            : g_w[c].kind == W_CARD ? ROLE_SYSTEM_RADIOBUTTON
+            : g_w[c].kind == W_TOGGLE ? ROLE_SYSTEM_CHECKBUTTON : ROLE_SYSTEM_PUSHBUTTON;
     return S_OK;
 }
 static int acc_is_focused(int c)
@@ -3524,6 +3611,7 @@ static HRESULT STDMETHODCALLTYPE acc_get_accState(IAccessible *t, VARIANT v, VAR
     if (acc_is_focused(c)) st |= STATE_SYSTEM_FOCUSED;
     if (g_w[c].kind == W_CARD && g_w[c].id - ID_STYLE == g_sel_style)
         st |= STATE_SYSTEM_CHECKED | STATE_SYSTEM_SELECTED;
+    if (g_w[c].id == ID_WIFI && g_bring_wifi) st |= STATE_SYSTEM_CHECKED;
     r->lVal = st;
     return S_OK;
 }
@@ -3565,7 +3653,9 @@ static HRESULT STDMETHODCALLTYPE acc_get_accDefaultAction(IAccessible *t, VARIAN
     (void)t;
     int c = acc_child(v);
     if (c == -2) return E_INVALIDARG;
-    *s = c < 0 ? NULL : acc_str(g_w[c].kind == W_CARD ? L"Choose" : L"Press");
+    *s = c < 0 ? NULL : acc_str(g_w[c].kind == W_CARD ? L"Choose"
+                              : g_w[c].kind == W_TOGGLE ? (g_bring_wifi ? L"Untick" : L"Tick")
+                              : L"Press");
     return *s ? S_OK : S_FALSE;
 }
 static HRESULT STDMETHODCALLTYPE acc_accSelect(IAccessible *t, LONG flags, VARIANT v)
@@ -3827,7 +3917,11 @@ static void on_key(WPARAM k)
      * another one. On a picture card they choose it, and go on. */
     case VK_RETURN:
     case VK_SPACE:
-        if (fk == W_BUTTON) widget_activate(g_w[g_focus].id);
+        if (fk == W_TOGGLE) {
+            if (k == VK_SPACE) widget_activate(g_w[g_focus].id);
+            else do_primary();
+        }
+        else if (fk == W_BUTTON) widget_activate(g_w[g_focus].id);
         else if (fk == W_CARD) { widget_activate(g_w[g_focus].id); do_primary(); }
         else do_primary();
         break;
@@ -4255,7 +4349,8 @@ static int nt_page_is_plain(void)
 {
     render();
     for (int i = 0; i < g_nw; i++) {
-        if (g_w[i].kind != W_BUTTON && g_w[i].kind != W_CARD) return 0;
+        if (g_w[i].kind != W_BUTTON && g_w[i].kind != W_CARD &&
+            !(g_w[i].kind == W_TOGGLE && g_w[i].id == ID_WIFI)) return 0;
         int w = g_w[i].r.right - g_w[i].r.left, h = g_w[i].r.bottom - g_w[i].r.top;
         if ((w < h ? w : h) < S(44)) return 0;
     }
@@ -4536,6 +4631,42 @@ static int nav_test(const char *dir)
         snprintf(what, sizeof what, "with the download already done: %d to %d minutes", lo, hi);
         nt_check(hi < shi && lo >= 5, what);
         InterlockedExchange(&g_dl_state, 0);
+    }
+
+    if (g_nt) fprintf(g_nt, "\n12. her Wi-Fi: offered only when there is some, and when it travels\n");
+    {
+        nt_fake_report(0);
+        g_page = PAGE_READY; g_bring_wifi = 1;
+        render();
+        int box = 0;
+        for (int i = 0; i < g_nw; i++) if (g_w[i].id == ID_WIFI) box = 1;
+        nt_check(!box, "not on Wi-Fi: no Wi-Fi box");
+        g_report.wifi_connected = 1;
+        snprintf(g_report.wifi_name, sizeof g_report.wifi_name, "HomeNet");
+        render();
+        box = -1;
+        for (int i = 0; i < g_nw; i++) if (g_w[i].id == ID_WIFI) box = i;
+#ifdef AB_CHOICE_BRING_WIFI
+        nt_check(box >= 0 && g_bring_wifi, "on Wi-Fi: the box is there, ticked for her");
+        nt_check(box < 0 || (g_w[box].r.bottom - g_w[box].r.top) >= S(44),
+                 "the whole row is a target at least 44 px tall");
+        widget_activate(ID_WIFI);
+        ab_choice c;
+        memset(&c, 0, sizeof c);
+        choices_from_page(&c);
+        nt_check(!g_bring_wifi && c.bring_wifi == 0, "unticked, the engine is told not to");
+        nt_check(primary_enabled() && nav_allowed(PAGE_PROGRESS),
+                 "unticked, Install AurOS still works: the box never holds the way on");
+        widget_activate(ID_WIFI);
+        memset(&c, 0, sizeof c);
+        choices_from_page(&c);
+        nt_check(g_bring_wifi && c.bring_wifi == 1, "ticked again, the engine is told to");
+        nt_check(g_content_h <= g_view_h, "with the box, Ready still fits without scrolling");
+#else
+        nt_check(box < 0, "on Wi-Fi, but the engine cannot carry it yet: no box, no promise");
+#endif
+        g_report.wifi_connected = 0;
+        g_bring_wifi = 1;
     }
 
     if (g_nt) fprintf(g_nt, "\n11. a screen reader can read every page and find its button\n");

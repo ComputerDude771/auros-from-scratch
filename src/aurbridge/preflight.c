@@ -4,6 +4,7 @@
 #include "preflight.h"
 #include "plat.h"
 #include "sbdb.h"
+#include "phases.h"           /* AB_CHOICE_BITLOCKER_PAUSE: what the engine can do */
 #include "aurbridge-baked.h"
 #include <stdio.h>
 #include <string.h>
@@ -1125,6 +1126,7 @@ static int volume_is_bitlocker(const char *drive)
  * volume, and Suspend-BitLocker does not decrypt a single sector. Only
  * a full decryption clears it, and a refusal a user cannot clear by
  * following its own instructions is a user who re-runs forever. */
+#ifndef AB_CHOICE_BITLOCKER_PAUSE
 static const char *BITLOCKER_REMEDY =
     "BitLocker has to be turned off completely -- not suspended, and not just "
     "written down. In Windows, search for 'Manage BitLocker', open it, and choose "
@@ -1133,6 +1135,7 @@ static const char *BITLOCKER_REMEDY =
     "AurBridge again when it says the drive is decrypted. Save your 48-digit "
     "recovery key somewhere safe first, from aka.ms/myrecoverykey -- you will need "
     "it if anything interrupts the decryption.";
+#endif
 
 static void check_volumes(pf_report *r)
 {
@@ -1172,9 +1175,19 @@ static void check_volumes(pf_report *r)
                          "to resize an encrypted drive safely: the tools that could do "
                          "it cannot read it, and the ones that can read it will not "
                          "resize it." : "");
+#ifdef AB_CHOICE_BITLOCKER_PAUSE
+            /* D11: THE ENGINE PAUSES IT FOR ONE RESTART, it does not
+             * decrypt, and Windows shrinks its own volume with the lock
+             * on (D1). Not a stop: a fact the Ready page says in her
+             * words. */
+            add(r, is_sys ? "bitlocker-system" : "bitlocker-other", "R1", PF_INFO,
+                "This drive is encrypted with BitLocker",
+                det, "Nothing to do: it is paused for one restart and turns itself back on.");
+#else
             /* R1: the highest-consequence item in the product. */
             add(r, is_sys ? "bitlocker-system" : "bitlocker-other", "R1", PF_BLOCK,
                 "This drive is encrypted with BitLocker", det, BITLOCKER_REMEDY);
+#endif
         } else if (v->bitlocker < 0 && is_sys) {
             /* Unknown is never OK, and this one used to pass silently. */
             add(r, "bitlocker-unknown", "R1", PF_BLOCK,
@@ -1216,7 +1229,13 @@ static void check_volumes(pf_report *r)
             v->pagefile_bytes = file_size(sysdrive, "pagefile.sys");
             v->hiberfil_bytes = file_size(sysdrive, "hiberfil.sys");
             v->hibernated     = v->hiberfil_bytes > 0;
+#ifdef AB_CHOICE_BITLOCKER_PAUSE
+            /* Through the volume, the bitmap is the filesystem's, locked
+             * drive or not: measured the same way. */
+            if (v->bitlocker >= 0) measure_shrink(drive, v);
+#else
             if (v->bitlocker == 0) measure_shrink(drive, v);
+#endif
 
             char det[512], a[32], b[32], c[32];
 
@@ -1226,7 +1245,11 @@ static void check_volumes(pf_report *r)
                  * is the wrong one. An encrypted volume is already
                  * refused above, with the remedy that clears it, and
                  * does not collect a second card here. */
+#ifdef AB_CHOICE_BITLOCKER_PAUSE
+                if (v->bitlocker >= 0)
+#else
                 if (v->bitlocker == 0)
+#endif
                     add(r, "space-unmeasurable", "R7", PF_BLOCK,
                         "AurBridge could not measure the space on the Windows drive",
                         "Windows would not report which parts of the drive are in use, so "
@@ -1771,6 +1794,57 @@ static void check_storage_controller(pf_report *r)
         "This PC uses Intel Rapid Storage Technology", det, "");
 }
 
+/* ── D10: is Windows on Wi-Fi? ───────────────────────────────────── */
+/* Asked so the installer can offer to bring her Wi-Fi across, and only
+ * then. The WLAN API is loaded when it is there: Windows Server, and so
+ * the CI runner, has no wlanapi.dll, and a missing Wi-Fi service is "not
+ * on Wi-Fi", not a reason to stop. Nothing here reads a key; that is the
+ * engine's, after she has said yes. */
+#include <wlanapi.h>
+typedef DWORD (WINAPI *PFN_WlanOpenHandle)(DWORD, PVOID, PDWORD, PHANDLE);
+typedef DWORD (WINAPI *PFN_WlanCloseHandle)(HANDLE, PVOID);
+typedef DWORD (WINAPI *PFN_WlanEnumInterfaces)(HANDLE, PVOID, PWLAN_INTERFACE_INFO_LIST *);
+typedef DWORD (WINAPI *PFN_WlanQueryInterface)(HANDLE, const GUID *, WLAN_INTF_OPCODE,
+                                               PVOID, PDWORD, PVOID *, PWLAN_OPCODE_VALUE_TYPE);
+typedef VOID  (WINAPI *PFN_WlanFreeMemory)(PVOID);
+
+static void check_wifi(pf_report *r)
+{
+    r->wifi_connected = 0;
+    r->wifi_name[0] = 0;
+    HMODULE m = LoadLibraryA("wlanapi.dll");
+    if (!m) return;
+    PFN_WlanOpenHandle     op = (PFN_WlanOpenHandle)(void *)GetProcAddress(m, "WlanOpenHandle");
+    PFN_WlanCloseHandle    cl = (PFN_WlanCloseHandle)(void *)GetProcAddress(m, "WlanCloseHandle");
+    PFN_WlanEnumInterfaces en = (PFN_WlanEnumInterfaces)(void *)GetProcAddress(m, "WlanEnumInterfaces");
+    PFN_WlanQueryInterface qi = (PFN_WlanQueryInterface)(void *)GetProcAddress(m, "WlanQueryInterface");
+    PFN_WlanFreeMemory     fr = (PFN_WlanFreeMemory)(void *)GetProcAddress(m, "WlanFreeMemory");
+    HANDLE h = NULL;
+    DWORD ver = 0;
+    if (op && cl && en && qi && fr && op(2, NULL, &ver, &h) == ERROR_SUCCESS) {
+        PWLAN_INTERFACE_INFO_LIST list = NULL;
+        if (en(h, NULL, &list) == ERROR_SUCCESS && list) {
+            for (DWORD i = 0; i < list->dwNumberOfItems && !r->wifi_connected; i++) {
+                if (list->InterfaceInfo[i].isState != wlan_interface_state_connected) continue;
+                PWLAN_CONNECTION_ATTRIBUTES ca = NULL;
+                DWORD sz = 0;
+                if (qi(h, &list->InterfaceInfo[i].InterfaceGuid,
+                       wlan_intf_opcode_current_connection, NULL, &sz, (PVOID *)&ca, NULL)
+                        == ERROR_SUCCESS && ca) {
+                    r->wifi_connected = 1;
+                    WideCharToMultiByte(CP_UTF8, 0, ca->strProfileName, -1, r->wifi_name,
+                                        sizeof r->wifi_name, NULL, NULL);
+                    r->wifi_name[sizeof r->wifi_name - 1] = 0;
+                    fr(ca);
+                }
+            }
+            fr(list);
+        }
+        cl(h, NULL);
+    }
+    FreeLibrary(m);
+}
+
 /* ── public API ──────────────────────────────────────────────────── */
 void pf_run(pf_report *r)
 {
@@ -1797,6 +1871,7 @@ void pf_run(pf_report *r)
     check_encryption(r);
     check_storage_controller(r);
     check_memory(r);
+    check_wifi(r);
 
     if (r->n_block == 0)
         add(r, "ready", "", PF_PASS, "This PC is ready",

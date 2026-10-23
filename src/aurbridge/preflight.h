@@ -141,6 +141,12 @@ typedef struct {
      * 1 found. Unknown blocks; see check_encryption(). */
     int       fde_third_party;
 
+    /* D10: Windows is connected to Wi-Fi right now, and the name of the
+     * network as Windows calls it (UTF-8). Read-only; 0 when it is not,
+     * or when this edition has no Wi-Fi service at all. */
+    int       wifi_connected;
+    char      wifi_name[128];
+
     /* R4/R11: the nominated recovery stick, echoed so that a saved
      * report explains its own removable-media verdict. */
     char      recovery_serial[64];
