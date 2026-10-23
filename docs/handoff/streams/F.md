@@ -1,6 +1,6 @@
 # Stream F: install AurOS from a real Windows, end to end (handoff)
 
-Updated 2026-10-23 04:25 UTC. Branch `claude/brave-hypatia-x72g1m`.
+Updated 2026-10-23 04:40 UTC. Branch `claude/brave-hypatia-x72g1m`.
 Files: `.github/workflows/e2e.yml`, `tools/e2e/**` (nothing else).
 Full user guide: `tools/e2e/README.md`. This page is the state of the work.
 
@@ -21,7 +21,7 @@ Then the same on the PCs people really have (variants, below).
 | M1 Windows to desktop | **green** | runs 39891036021, 39891768538; prerelease `e2e-39891768538`. Windows 11 Enterprise Eval 10.0.26300 (26H2), Secure Boot 1, TPM 2.0 (swtpm), Fast Startup on, Smart App Control 2 (evaluation), BitLocker off. Setup from the ISO takes ~13 min on Actions (ISO download ~3 min). |
 | M2 website → download → wizard → restart | **half**: download proven, wizard not yet reached | run 39894079407 (prerelease `e2e-39894079407`): Edge opened the runner-served website, the driver pressed the real "Get AurOS", Edge downloaded all 34.9 MB, then stalled at Edge's "isn't commonly downloaded" flyout (see Traps). Fix pushed in `208b3ed`; **re-run 39896941765 in progress** (doing Windows Setup again, see Cache). |
 | M3 store install, program on disk | not reached | code is in `e2e.py` (store from the app list, search retried, exact "Install", then "Open" or the "Press here to open it" card; `inspect` checks the files with the machine off) |
-| Variants | code pushed (`f70760f`), **must be reworked before running** (see Next steps 3) | run 39897340342 cancelled by me: six jobs at once breaks the max-parallel ≤ 2 rule. Its smalldisk job showed first-logon variant setup works (leftover file made at 04:09). |
+| Variants | code pushed (`f70760f`); made safe in the 04:40 push (two at a time, base by default, only base cached); expectations per variant still to write (Next steps 4) | run 39897340342 cancelled by me: six jobs at once breaks the max-parallel ≤ 2 rule. Its smalldisk job showed first-logon variant setup works (leftover file made at 04:09). |
 
 Unpushed work: none. The working tree was clean at 04:25.
 
@@ -49,21 +49,21 @@ is published. Details: README "Pointing it at a new build".
 
 ## Next steps
 
-1. **Make the evidence visible again** (`tools/e2e/publish.sh`): in `init`,
-   try `--target $GITHUB_SHA`, then `--target <default branch>`, then fall back
-   to uploading into an existing prerelease with names prefixed
-   `r<RUN>-<variant>-`. Write the chosen tag to a file the `live` and `final`
-   modes read, and emit `::warning::` when it fails, so it doesn't pass silently.
+1. **Evidence visible again**: DONE in the 04:40 push, but not yet proven
+   on Actions. `publish.sh init` tries e2e-<run> at the commit, then at the
+   default branch, then the newest existing e2e-* prerelease with files named
+   `r<RUN>-<file>`. It warns (`::warning::`) and puts the links in the job
+   summary. Tested locally with a fake `gh` (all four paths). Check the first
+   run after the push: its job summary names where the files went.
 2. **Get M2 green, then M3**: read run 39896941765's result (job log via MCP;
    evidence wherever step 1 puts it). If the wizard is reached, follow the
    screenshots. The driver must press only Edge's own Keep / Show more /
    Keep anyway / Open file, never the page's.
-3. **Variants, made safe for the shared account** (`e2e.yml` gate + matrix):
+3. **Variants, made safe for the shared account**: DONE in the 04:40 push.
    `max-parallel: 2`; a harness change runs `base` only; `[e2e:all]` runs
-   all; `[e2e:a,b]` runs those; add `[e2e:none]` to skip. **Only the base
-   golden goes into the Actions cache.** Others build Windows fresh (~15 min)
-   and never save, because the repo cache limit is 10 GB and a golden is
-   several GB. Variants: `base`; `hdd` (base golden, QEMU throttle 100 MB/s,
+   all; `[e2e:a,b]` runs those; `[e2e:none]` skips. Only the base golden goes
+   into the Actions cache; the others build Windows fresh (~15 min) and never
+   save. Variants: `base`; `hdd` (base golden, QEMU throttle 100 MB/s,
    120 IOPS); `bitlocker` (first logon `Enable-BitLocker -TpmProtector
    -UsedSpaceOnly`, waits for FullyEncrypted); `smalldisk` (72 GB disk, 12 GB
    leftover in `C:\Windows\Temp`); `pending` (at the test's logon, a SYSTEM

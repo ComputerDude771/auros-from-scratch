@@ -46,13 +46,20 @@ answered with the keyboard.
    variant's job ends, `.../e2e-<RUN_ID>/e2e-evidence-<VARIANT>.zip` has
    every screenshot and log, and the release's notes get its timings.
    `<RUN_ID>` is the number in the Actions run's URL; `<VARIANT>` is
-   `base` for the plain PC (see Variants). To run only some variants,
-   put `[e2e:base,hdd]` in the commit's subject.
+   `base` for the plain PC (see Variants). If no release could be made
+   for the run, the job says so with a warning, and the files go into
+   the newest `e2e-*` prerelease as `r<RUN_ID>-<file>`. The job's summary
+   page has the links either way.
 
 ## Variants: the PCs people have
 
-Each is its own job, in parallel, with its own cached Windows where it
-needs one (`E2E_VARIANTS` in the workflow lists them):
+Each is its own job, two at a time (the account's runners are shared).
+A harness change runs `base` only; in the head commit's subject
+`[e2e:all]` runs every variant (`E2E_VARIANTS` in the workflow),
+`[e2e:base,hdd]` those, `[e2e:none]` nothing. Only the base Windows is
+kept in the Actions cache (a golden is several GB, and the repository's
+caches share 10 GB); the others install Windows afresh, about 15
+minutes, and `hdd` uses the base one.
 
 | Variant | The PC | How it is made |
 |---|---|---|
