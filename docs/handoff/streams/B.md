@@ -39,7 +39,7 @@ Windows for someone who is not technical. The rules it keeps:
 Edited outside B's files, as the smallest change each time: `build/aurbridge`
 (added `-loleacc -loleaut32 -lole32 -luuid` to the wizard link) and
 `.github/workflows/windows.yml` (the `screen reader    :` check in the
-selftest step).
+selftest step, and the bounded, retried `toolchain` step in `e6a888b`).
 
 ## Done and pushed
 
@@ -70,10 +70,12 @@ console `aurbridge.exe selftest` passes. `aurbridge-sim gzselftest` and
 `sbselftest` pass.
 
 **Not yet seen on real Windows.** Every windows.yml run since `ed5381f` was
-superseded or cancelled. Run **39897928905** (code up to `993ecf3`) was still
-in its `build` job at hand-off. That job had been sitting in the `toolchain`
-step (`apt-get update`) for over 10 minutes. The run before it, 39894915049,
-hung in the same `build` job for about 35 minutes and was cancelled by hand.
+superseded or cancelled. Two runs in a row hung in the `build` job's
+`toolchain` step (`apt-get update`): 39894915049 for about 35 minutes and
+39897928905 for 20 minutes. Both were cancelled by hand. `e6a888b` bounds that
+step: each apt call has a time limit, it tries three times, and the step stops
+at 12 minutes. The first run with all of this was **39899942038** (`df92af8`),
+pending at hand-off.
 
 ## Half-done
 
@@ -97,8 +99,8 @@ hung in the same `build` job for about 35 minutes and was cancelled by hand.
 1. **Get one green windows.yml run.** Run
    `gh run list --branch claude/brave-hypatia-x72g1m --workflow windows --limit 5`,
    then `gh run view <id> --json jobs`.
-   - If `build` sits in `toolchain` until its 20-minute limit, the runner's
-     apt mirror is the cause. Use `gh run rerun <id> --failed`.
+   - If `toolchain` fails after its three tries, the runner's apt mirror is
+     the cause. Use `gh run rerun <id> --failed`.
    - Then read the `windows-source` job log: the selftest step must show
      `screen reader    : "…", N parts, button "…"` and `preflight done   : 1`.
    - If the WLAN probe or MSAA misbehaves on Server, fix `check_wifi()` in
