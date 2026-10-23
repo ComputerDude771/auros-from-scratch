@@ -35,8 +35,9 @@
           <CreatePartitions>
             <CreatePartition wcm:action="add"><Order>1</Order><Type>EFI</Type><Size>100</Size></CreatePartition>
             <CreatePartition wcm:action="add"><Order>2</Order><Type>MSR</Type><Size>16</Size></CreatePartition>
-            <!-- 128 GiB disk: C: takes all but about 1 GB, which is the recovery partition. -->
-            <CreatePartition wcm:action="add"><Order>3</Order><Type>Primary</Type><Size>129900</Size></CreatePartition>
+            <!-- C: takes all but about 1 GB, which is the recovery partition
+                 (mkanswer.sh fills in the size from the disk's). -->
+            <CreatePartition wcm:action="add"><Order>3</Order><Type>Primary</Type><Size>@WINDOWS_MB@</Size></CreatePartition>
             <CreatePartition wcm:action="add"><Order>4</Order><Type>Primary</Type><Extend>true</Extend></CreatePartition>
           </CreatePartitions>
           <ModifyPartitions>

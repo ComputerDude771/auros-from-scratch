@@ -13,6 +13,10 @@
 # It takes hours, so it runs only when this harness changes or the head
 # commit says [e2e]. The installed Windows is cached (key below), so
 # later runs skip Setup.
+#
+# Variants, one job each, in parallel (tools/e2e/README.md): base, hdd,
+# bitlocker, smalldisk, pending, win10. "[e2e:base,hdd]" in the head
+# commit's message runs only those.
 name: e2e
 
 on:
@@ -36,12 +40,14 @@ env:
   WINDOWS_ISO_SHA256: ''
   # Bump to throw the cached Windows away.
   GOLDEN_VERSION: '1'
+  E2E_VARIANTS: base,hdd,bitlocker,smalldisk,pending,win10
 
 jobs:
   gate:
     runs-on: ubuntu-24.04
     outputs:
       run: ${{ steps.g.outputs.run }}
+      variants: ${{ steps.g.outputs.variants }}
     steps:
       - id: g
         env:
@@ -64,7 +70,12 @@ jobs:
                grep -qE '^(tools/e2e/|\.github/workflows/e2e\.yml$)'; then
             run=true
           fi
+          # "[e2e:base,hdd]" in the subject: run, and only those variants
+          list=$(printf '%s' "$MSG" | head -1 | sed -n 's/.*\[e2e:\([a-z0-9,]*\)\].*/\1/p')
+          [ -z "$list" ] || run=true
           echo "run=$run" | tee -a "$GITHUB_OUTPUT"
+          list=${list:-$E2E_VARIANTS}
+          echo "variants=$(printf '%s' "$list" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read().split(",")))')" | tee -a "$GITHUB_OUTPUT"
 
   e2e:
     needs: gate
@@ -73,12 +84,35 @@ jobs:
     # push runs the gate, and a workflow-wide group let a push that changes
     # nothing here cancel a run that was waiting.
     concurrency:
-      group: e2e-${{ github.ref }}
+      group: e2e-${{ github.ref }}-${{ matrix.variant }}
       cancel-in-progress: false
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: ${{ fromJSON(needs.gate.outputs.variants) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 355
+    env:
+      E2E_VARIANT: ${{ matrix.variant }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: which PC this is
+        run: |
+          # GOLDEN: which installed Windows (cached separately); the rest
+          # is the machine around it
+          golden=$E2E_VARIANT disk=128 winver=11 throttle=
+          case $E2E_VARIANT in
+            base)      ;;
+            hdd)       golden=base throttle=bps=104857600,iops=120 ;;
+            bitlocker) ;;
+            smalldisk) disk=72 ;;
+            pending)   ;;
+            win10)     winver=10 ;;
+            *) echo "unknown variant $E2E_VARIANT"; exit 1 ;;
+          esac
+          { echo "E2E_GOLDEN=$golden"; echo "E2E_DISK_GB=$disk"
+            echo "WINDOWS_VERSION=$winver"; echo "E2E_DISK_THROTTLE=$throttle"; } | tee -a "$GITHUB_ENV"
 
       - name: runner (disk, KVM, packages)
         run: |
@@ -99,7 +133,7 @@ jobs:
           h=$(cat tools/e2e/guest/autounattend.xml tools/e2e/guest/specialize.cmd \
                   tools/e2e/guest/firstlogon.ps1 tools/e2e/guest/boot.ps1 \
                   tools/e2e/guest/boot.vbs | sha256sum | cut -c1-16)
-          echo "key=e2e-windows-v$GOLDEN_VERSION-$h" | tee -a "$GITHUB_OUTPUT"
+          echo "key=e2e-windows-v$GOLDEN_VERSION-$E2E_GOLDEN-$E2E_DISK_GB-w$WINDOWS_VERSION-$h" | tee -a "$GITHUB_OUTPUT"
 
       - name: the installed Windows, from the cache
         id: golden
@@ -149,6 +183,6 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: e2e-evidence
-          path: ${{ env.E2E_DIR }}/out/e2e-evidence.zip
+          name: e2e-evidence-${{ matrix.variant }}
+          path: ${{ env.E2E_DIR }}/out/e2e-evidence-${{ matrix.variant }}.zip
           if-no-files-found: ignore

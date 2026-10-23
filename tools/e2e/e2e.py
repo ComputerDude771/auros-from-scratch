@@ -63,6 +63,11 @@ STORE_INSTALL = E("STORE_INSTALL", "Install")         # the button that installs
 STORE_OPEN = E("STORE_OPEN", "Open|Launch|Press here to open")  # appears when installed
 APP_FILES = E("APP_FILES", "usr/bin/vlc var/lib/flatpak/app/org.videolan.VLC")
 
+# ── which PC (tools/e2e/README.md, "Variants") ──────────────────────
+VARIANT = E("E2E_VARIANT", "base")
+DISK_GB = int(E("E2E_DISK_GB", "128"))
+DISK_THROTTLE = E("E2E_DISK_THROTTLE", "")     # e.g. bps=104857600,iops=120
+
 HUB = "http://10.0.2.2:8000"
 DEADLINE = time.time() + 60 * float(E("E2E_MINUTES", "300"))
 
@@ -102,7 +107,7 @@ def cmd_windows(a):
     hub = Hub(rec)
     os.makedirs(a.vm, exist_ok=True)
     disk, vars_fd, tpm = (os.path.join(a.vm, n) for n in ("win.qcow2", "vars.fd", "tpm"))
-    run(["qemu-img", "create", "-f", "qcow2", disk, "128G"], rec)
+    run(["qemu-img", "create", "-f", "qcow2", disk, f"{DISK_GB}G"], rec)
     shutil.copyfile(OVMF_VARS, vars_fd)
     m = Machine(rec, a.vm, disk, vars_fd, tpm, cdroms=[a.iso, a.answer])
     ok = False
@@ -161,7 +166,9 @@ class Flow:
                  os.path.join(a.golden, "win.qcow2"), self.disk], self.rec)
             shutil.copyfile(os.path.join(a.golden, "vars.fd"), self.vars)
             shutil.copytree(os.path.join(a.golden, "tpm"), self.tpm)
-        self.m = Machine(self.rec, a.work, self.disk, self.vars, self.tpm)
+        self.m = Machine(self.rec, a.work, self.disk, self.vars, self.tpm,
+                         throttle=DISK_THROTTLE)
+        self.rec.log(f"variant {VARIANT}: disk {DISK_GB} GB, throttle '{DISK_THROTTLE or 'none'}'")
 
     # -- the website a person starts from --
     def prepare_website(self):
@@ -285,6 +292,10 @@ class Flow:
             self.m.auto_shots(10)
             if self.hub.wait_event("helper-up", 25 * 60, since=t, alive=self.m.alive) is None:
                 raise Failure("Windows did not reach the desktop (the helper never started)")
+            if VARIANT == "pending":
+                # the feature that leaves a restart pending is enabled at logon
+                r = self.hub.wait_event("pending-ready", 15 * 60, since=t, alive=self.m.alive)
+                self.log(f"pending restart prepared: {r}")
             time.sleep(45)
             self.m.shot("windows-desktop")
             # What Windows says about itself, read as the signed-in user

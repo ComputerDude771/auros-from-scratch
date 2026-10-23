@@ -41,10 +41,31 @@ answered with the keyboard.
 2. Commit and push to a `claude/**` branch. Changing `e2e.yml` is what
    starts the run (so does `[e2e]` in a commit message). With the
    installed Windows cached, M2 starts about 8 minutes after the push.
-3. Watch `https://github.com/ComputerDude771/auros-from-scratch/releases/download/e2e-<RUN_ID>/live.png`
-   and `.../live.txt` (refreshed every 3 minutes); when the run ends,
-   `.../e2e-<RUN_ID>/e2e-evidence.zip` has every screenshot and log.
-   `<RUN_ID>` is the number in the Actions run's URL.
+3. Watch `https://github.com/ComputerDude771/auros-from-scratch/releases/download/e2e-<RUN_ID>/live-<VARIANT>.png`
+   and `.../live-<VARIANT>.txt` (refreshed every 3 minutes); when a
+   variant's job ends, `.../e2e-<RUN_ID>/e2e-evidence-<VARIANT>.zip` has
+   every screenshot and log, and the release's notes get its timings.
+   `<RUN_ID>` is the number in the Actions run's URL; `<VARIANT>` is
+   `base` for the plain PC (see Variants). To run only some variants,
+   put `[e2e:base,hdd]` in the commit's subject.
+
+## Variants: the PCs people have
+
+Each is its own job, in parallel, with its own cached Windows where it
+needs one (`E2E_VARIANTS` in the workflow lists them):
+
+| Variant | The PC | How it is made |
+|---|---|---|
+| `base` | Windows 11, 128 GB SSD, Fast Startup on (Windows' default) | as described above |
+| `hdd` | the same, on a hard disk | QEMU block throttling: 100 MB/s, 120 IO/s (`E2E_DISK_THROTTLE`); the timings are the wall clock on such a disk |
+| `bitlocker` | BitLocker / device encryption on | first logon: `Enable-BitLocker C: -TpmProtector -UsedSpaceOnly`, waited until fully encrypted; the installer must deal with it |
+| `smalldisk` | a 72 GB drive with 12 GB of old leftovers in `C:\Windows\Temp` | too little room until the installer's space fix cleans up |
+| `pending` | Windows waiting for a restart after servicing | at the test's logon a scheduled task enables a Windows feature with `/norestart` (real `RebootPending`, cleared by a real restart) |
+| `win10` | Windows 10 Enterprise 22H2 evaluation | `WINDOWS_VERSION=10` in `get-windows.sh` |
+
+The variant's Windows is set up by `guest/firstlogon.ps1` from
+`e2e\variant.txt` on the answer CD (`mkanswer.sh`, `E2E_GOLDEN`,
+`E2E_DISK_GB`).
 
 ## Running it
 
@@ -54,10 +75,11 @@ head commit message contains `[e2e]`. It needs nothing else: the
 repository is public, KVM is on the standard runners, and the evidence
 goes to a prerelease using the workflow's own token.
 
-The evidence of run N: `https://github.com/ComputerDude771/auros-from-scratch/releases/download/e2e-N/e2e-evidence.zip`
-(also an artifact named `e2e-evidence`). While it runs, `live.png` (the
-newest screenshot) and `live.txt` (timings and the driver's last lines)
-in the same release are refreshed every three minutes. Inside the zip: `windows/` (M1) and
+The evidence of run N: `https://github.com/ComputerDude771/auros-from-scratch/releases/download/e2e-N/e2e-evidence-VARIANT.zip`
+(also an artifact named `e2e-evidence-VARIANT`). While it runs,
+`live-VARIANT.png` (the newest screenshot) and `live-VARIANT.txt`
+(timings and the driver's last lines) in the same release are refreshed
+every three minutes. Inside the zip: `windows/` (M1) and
 `flow/` (M2, M3), each with `shots/` (every screen, numbered in order),
 `timings.md`, `driver.log`, `serial.log` (firmware, and AurOS's console),
 `guest-events.log`, `ui-elements.log` (what UI Automation saw in Edge and

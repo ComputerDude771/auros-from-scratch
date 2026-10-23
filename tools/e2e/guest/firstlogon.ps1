@@ -50,6 +50,53 @@ $facts = [ordered]@{
   screen      = Fact { Get-CimInstance Win32_VideoController | Select-Object Name, CurrentHorizontalResolution, CurrentVerticalResolution | Format-List }
 }
 
+# The machine this is meant to be (e2e\variant.txt, from mkanswer.sh): the
+# variants are the PCs people actually have, made here with Windows' own
+# tools, as their owners' Windows made them.
+$variant = 'base'
+if (Test-Path "$Src\variant.txt") { $variant = (Get-Content "$Src\variant.txt" -Raw).Trim() }
+Set-Content C:\e2e\variant.txt $variant
+switch ($variant) {
+  'bitlocker' {
+    # Device encryption as a PC with a TPM has it: BitLocker on C:,
+    # TPM protector, used space encrypted. Wait until it is done.
+    $facts.variant = Fact {
+      Enable-BitLocker -MountPoint C: -EncryptionMethod XtsAes128 -UsedSpaceOnly -TpmProtector -SkipHardwareTest
+      for ($i = 0; $i -lt 360; $i++) {
+        if ((Get-BitLockerVolume -MountPoint C:).VolumeStatus -eq 'FullyEncrypted') { break }
+        Start-Sleep 10
+      }
+      Get-BitLockerVolume -MountPoint C: | Select-Object VolumeStatus, ProtectionStatus, EncryptionPercentage, KeyProtector | Format-List
+    }
+  }
+  'smalldisk' {
+    # A small drive with years of leftovers in Windows' temp folder: too
+    # little room until something cleans up (the installer's space fix).
+    $facts.variant = Fact {
+      fsutil file createnew C:\Windows\Temp\e2e-old-leftovers.tmp 12884901888
+      Get-Volume -DriveLetter C | Select-Object Size, SizeRemaining | Format-List
+    }
+  }
+  'pending' {
+    # A Windows that has finished installing a feature and is waiting for
+    # a restart. Made at the test's own logon (a restart here would finish
+    # it), by enabling a feature without restarting: real servicing, which
+    # the next real restart completes.
+    Set-Content C:\e2e\pending.ps1 @'
+Unregister-ScheduledTask -TaskName 'E2E pending restart' -Confirm:$false
+dism.exe /online /enable-feature /featurename:Microsoft-Windows-Subsystem-Linux /norestart /quiet
+$k = Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending'
+Invoke-WebRequest -UseBasicParsing -Method Post -Uri 'http://10.0.2.2:8000/e2e/event?name=pending-ready' -Body "dism exit $LASTEXITCODE, RebootPending=$k"
+'@
+    $facts.variant = Fact {
+      $a = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoProfile -ExecutionPolicy Bypass -File C:\e2e\pending.ps1'
+      Register-ScheduledTask -TaskName 'E2E pending restart' -Action $a -Trigger (New-ScheduledTaskTrigger -AtLogOn) -User SYSTEM -RunLevel Highest -Force | Out-Null
+      'registered'
+    }
+  }
+}
+$facts.variant_name = $variant
+
 # Free space is given back to the host's disk image (the drive is an SSD
 # to Windows, and QEMU passes TRIM through), which keeps the cached copy
 # of this installed Windows small.

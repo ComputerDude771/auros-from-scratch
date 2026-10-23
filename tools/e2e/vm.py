@@ -284,11 +284,15 @@ _KEYS = {" ": ("spc", 0), "\n": ("ret", 0), "\t": ("tab", 0), "-": ("minus", 0),
 
 class Machine:
     def __init__(self, rec, vmdir, disk, vars_fd, tpm_dir, cdroms=(), ram=6144,
-                 cpus=4, xres=1280, yres=800, name="auros-e2e"):
+                 cpus=4, xres=1280, yres=800, name="auros-e2e", throttle=""):
         self.rec, self.dir = rec, vmdir
         self.disk, self.vars, self.tpm_dir = disk, vars_fd, tpm_dir
         self.cdroms, self.ram, self.cpus = list(cdroms), ram, cpus
         self.xres, self.yres, self.name = xres, yres, name
+        # "bps=104857600,iops=120": the drive limited to a hard disk's
+        # speed (QEMU's block throttling), for the wall clock on one
+        self.throttle = "".join(f",throttling.{k}-total={v}" for k, v in
+                                (kv.split("=") for kv in throttle.split(",") if kv))
         self.qmp = None
         self.proc = self.swtpm = None
         self.size = (xres, yres)
@@ -334,7 +338,7 @@ class Machine:
             "-tpmdev", "emulator,id=tpm0,chardev=chrtpm", "-device", "tpm-tis,tpmdev=tpm0",
             # q35's own AHCI controller; the disk says it is an SSD
             "-drive", f"id=disk0,if=none,file={self.disk},format=qcow2,cache=unsafe,"
-                      "discard=unmap,detect-zeroes=unmap",
+                      f"discard=unmap,detect-zeroes=unmap{self.throttle}",
             "-device", "ide-hd,drive=disk0,bus=ide.0,rotation_rate=1,bootindex=1,"
                        "serial=E2ESSD0001,model=E2E SATA SSD",
             "-netdev", "user,id=n0",
