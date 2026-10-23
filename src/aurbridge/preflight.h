@@ -58,6 +58,8 @@ typedef struct {
     char     serial[64];
     uint64_t size_bytes;
     int      is_removable;          /* removable bus OR removable media*/
+                                    /* (soldered eMMC is not: D4)      */
+    int      no_media;              /* an empty card reader: ignored   */
     int      removable_media;       /* the RemovableMedia flag alone   */
     int      bus_type;              /* STORAGE_BUS_TYPE, -1 unknown    */
     int      seek_penalty;          /* -1 unknown, 0 SSD, 1 spinning   */

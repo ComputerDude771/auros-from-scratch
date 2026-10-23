@@ -67,6 +67,40 @@ static void size_str(uint64_t bytes, char *out, size_t n)
     else          snprintf(out, n, "%.0f %s", v, u);
 }
 
+/* ── the kind of computer ─────────────────────────────────────────── */
+/* WINDOWS ON ARM RUNS THIS INSTALLER, and AurOS cannot run there: its
+ * image, kernel and boot chain are x86-64. Windows 11 on an ARM laptop
+ * runs an x64 .exe under emulation without a word, so the installer
+ * would check, download and restart into firmware that cannot start
+ * what it wrote. IsWow64Process2's native machine is the one answer
+ * emulation does not hide (GetNativeSystemInfo, from an x64 process,
+ * says AMD64). docs/research/every-machine-2026-10.md, section 4. */
+#ifndef IMAGE_FILE_MACHINE_ARM64
+#define IMAGE_FILE_MACHINE_ARM64 0xAA64
+#endif
+typedef BOOL (WINAPI *PFN_IsWow64Process2)(HANDLE, USHORT *, USHORT *);
+
+static int machine_is_arm(USHORT native)
+{
+    return native == IMAGE_FILE_MACHINE_ARM64 || native == 0x01C4 /* ARMNT */;
+}
+
+static int check_machine(pf_report *r)
+{
+    HMODULE k32 = GetModuleHandleA("kernel32.dll");
+    PFN_IsWow64Process2 fn = k32 ? (PFN_IsWow64Process2)(void *)
+        GetProcAddress(k32, "IsWow64Process2") : NULL;
+    USHORT proc = 0, native = 0;
+    /* Absent before Windows 10 1709, which never ran x64 code on ARM. */
+    if (!fn || !fn(GetCurrentProcess(), &proc, &native)) return 0;
+    if (!machine_is_arm(native)) return 0;
+    add(r, "arm-pc", "", PF_BLOCK, "This PC has an ARM processor",
+        "Windows on this PC runs on an ARM processor and is running this installer "
+        "under emulation. AurOS is built for Intel and AMD processors.",
+        "AurOS doesn't run on this kind of computer yet. Nothing has been changed.");
+    return 1;
+}
+
 /* ── R: elevation ────────────────────────────────────────────────── */
 static void check_admin(pf_report *r)
 {
@@ -112,12 +146,11 @@ static void check_firmware(pf_report *r)
         /* R8: Endless OS, better funded, failed for 20-30% of BIOS users
          * doing approximately this. There is no BootNext on MBR, so no
          * self-reverting boot attempt exists. */
-        add(r, "firmware-bios", "R8", PF_BLOCK, "This PC uses legacy BIOS boot",
+        add(r, "firmware-bios", "R8", PF_BLOCK, "This PC starts Windows the older way (BIOS)",
             "On BIOS/MBR systems there is no one-shot, self-reverting boot entry, so "
-            "a failed first boot cannot automatically fall back to Windows. Comparable "
-            "installers have failed for 20-30% of users on these systems.",
-            "AurOS does not support legacy BIOS installs yet. If your PC supports UEFI, "
-            "you would need a clean install rather than an upgrade.");
+            "a failed first boot cannot automatically fall back to Windows.",
+            "AurOS can't go on this PC yet, and nothing has been changed. The AurOS "
+            "website says what can be done.");
     }
 
     /* SECURE BOOT CAN STAY ON, on a PC that trusts the key the shim we
@@ -234,12 +267,11 @@ static void check_power(pf_report *r)
         break;
 
     default:
-        if (r->battery_percent >= 0 && r->battery_percent < 50)
-            add(r, "battery-low", "R6", PF_BLOCK, "Battery is below 50%",
-                "If the power cable is pulled out mid-install, the battery must be able "
-                "to carry the machine to a safe stopping point.",
-                "Leave it charging until the battery reaches at least 50%, then click "
-                "Re-check.");
+        /* ON MAINS IS WHAT MATTERS (D4). This used to refuse below 50%
+         * even when plugged in, which kept a 7-year-old laptop whose
+         * worn battery says 0% or "plugged in, not charging" waiting for
+         * ever -- and a dead battery on mains is exactly as safe as a
+         * desktop. The percentage is still recorded, for the report. */
         break;
     }
 }
@@ -387,6 +419,36 @@ static int bus_is_removable(int bus)
     }
 }
 
+/* EMMC IS THE COMPUTER'S OWN DRIVE. A cheap laptop's soldered 32/64 GB
+ * eMMC reports the SD or MMC bus, which bus_is_removable() has to count
+ * for a card in a reader -- and the system disk of an HP Stream was
+ * refused as "Windows is running from a USB drive". A card in a reader
+ * says its medium can be taken out (RemovableMedia); soldered eMMC does
+ * not. That is the difference, and it is the one used. */
+static int disk_is_removable(int bus, int removable_media)
+{
+    if ((bus == BusTypeSd || bus == BusTypeMmc) && !removable_media) return 0;
+    return (bus >= 0 && bus_is_removable(bus)) || removable_media;
+}
+
+/* AN EMPTY CARD READER IS NOT A DRIVE. Built-in readers and printers'
+ * card slots show up as removable disks with nothing in them; Windows
+ * lists them as "No Media", the handle still opens, and they were
+ * refused as "a USB drive is plugged in" -- for ever, since there is
+ * nothing to take out. A reader with no card answers CHECK_VERIFY2 with
+ * "not ready", or has no length. */
+static int disk_has_media(HANDLE h, const pf_disk *d)
+{
+    DWORD ret = 0;
+    if (!DeviceIoControl(h, IOCTL_STORAGE_CHECK_VERIFY2, NULL, 0, NULL, 0, &ret, NULL)) {
+        DWORD e = GetLastError();
+        if (e == ERROR_NOT_READY || e == ERROR_NO_MEDIA_IN_DRIVE ||
+            e == ERROR_MEDIA_CHANGED || e == ERROR_UNRECOGNIZED_MEDIA)
+            return 0;
+    }
+    return d->size_bytes > 0;
+}
+
 static void query_disk_props(HANDLE h, pf_disk *d)
 {
     d->bus_type = -1;
@@ -423,8 +485,7 @@ static void query_disk_props(HANDLE h, pf_disk *d)
         }
     }
 
-    d->is_removable = (d->bus_type >= 0 && bus_is_removable(d->bus_type))
-                      || d->removable_media;
+    d->is_removable = disk_is_removable(d->bus_type, d->removable_media);
 
     /* AURBRIDGE.md: shrink takes sectors, partition structures take
      * bytes, NTFS allocates in clusters. Hard-coding 512 on a 4Kn disk
@@ -680,6 +741,7 @@ static void check_disks(pf_report *r)
         d->index = i;
         d->is_system = (i == sys_disk);
         query_disk_props(h, d);
+        if (!d->is_system && d->is_removable && !disk_has_media(h, d)) d->no_media = 1;
         query_layout(h, d);
         query_smart(h, d);
         CloseHandle(h);
@@ -844,43 +906,34 @@ static void check_disks(pf_report *r)
                         "rescue files that can put Windows back. Copy anything you want "
                         "to keep off it first. Every other drive must be unplugged.");
                 }
-            } else if (d->is_removable && !serial_usable(d->serial)) {
-                /* A stick with no serial can never be nominated, so
-                 * saying "unplug everything except your recovery stick"
-                 * and nothing else would leave a user re-running this
-                 * forever with the stick they already chose. */
-                size_str(d->size_bytes, sz, sizeof sz);
-                snprintf(det, sizeof det,
-                    "%s (%s) does not report a serial number, so AurBridge cannot tell "
-                    "it apart from any other drive you plug in.",
-                    d->model[0] ? d->model : "A removable drive", sz);
-                add(r, "removable-no-serial", "R11", PF_BLOCK,
-                    "One of the plugged-in drives cannot be identified", det,
-                    "Unplug everything except the one stick you are using for recovery, "
-                    "then click Re-check. If this is the stick you meant to use for "
-                    "recovery, you will need a different one: AurBridge only writes to a "
-                    "drive it can recognise again afterwards.");
+            } else if (d->no_media) {
+                /* an empty card reader: nothing here, nothing to say */
             } else if (d->is_removable) {
+                /* A WARNING, NOT A STOP (D4). Unplugging was never what
+                 * kept this safe: the journal names the one disk the
+                 * install may write -- by serial, model and size -- and
+                 * the staging environment refuses any other. Asking her
+                 * to find and pull out a stick she may not know is there
+                 * bought nothing, and an empty built-in reader could
+                 * never be satisfied at all. */
                 size_str(d->size_bytes, sz, sizeof sz);
-                snprintf(det, sizeof det, "%s (%s) is plugged in on drive %d.",
+                snprintf(det, sizeof det, "%s (%s) is plugged in on drive %d. AurOS "
+                         "does not write to it.",
                          d->model[0] ? d->model : "A removable drive", sz, i);
-                add(r, "removable-attached", "R11", PF_BLOCK,
-                    "Unplug the drives that are not your recovery stick", det,
-                    "Unplug everything except the one stick you are using for recovery, "
-                    "then click Re-check. That one stick is the only removable drive "
-                    "AurBridge will write to, and having nothing else connected makes "
-                    "writing to the wrong drive impossible.");
+                add(r, "removable-attached", "R11", PF_WARN,
+                    "A USB drive or memory card is plugged in", det,
+                    "Nothing to do. You can leave it plugged in.");
             } else if (d->bus_type < 0) {
-                /* Cannot say how this disk is attached, so cannot say
-                 * whether the guard above applies to it. */
+                /* Cannot say how this disk is attached. It is not the one
+                 * Windows is on, and the journal names that one by serial,
+                 * model and size, so this is a note in the report and not
+                 * a reason to stop (D4). */
                 snprintf(det, sizeof det,
-                    "Drive %d (%s) would not say how it is connected to this PC.",
+                    "Drive %d (%s) would not say how it is connected to this PC. "
+                    "AurOS does not write to it.",
                     i, d->model[0] ? d->model : "unnamed");
-                add(r, "disk-unidentified", "R11", PF_BLOCK,
-                    "One of the drives in this PC cannot be identified", det,
-                    "Unplug everything except the one stick you are using for recovery, "
-                    "then click Re-check. If this drive is built into the PC and the "
-                    "message stays, AurOS will not install on this PC.");
+                add(r, "disk-unidentified", "R11", PF_INFO,
+                    "One of the other drives could not be identified", det, "");
             }
         }
     }
@@ -1670,20 +1723,52 @@ static int system_disk_rst(int disk, char *svc, size_t sn)
     return result;
 }
 
+/* WHICH DISKS BEHIND INTEL'S DRIVER LINUX CANNOT SEE. In "RAID On" mode
+ * an NVMe drive is remapped behind the SATA controller, and Linux's ahci
+ * driver finds it and says "Switch your BIOS from RAID to AHCI mode to
+ * use them" -- it does not drive it; VMD (iaStorVD) is NVMe by
+ * definition. SATA drives behind the same driver are driven by ahci in
+ * RAID mode as they are in AHCI mode. Under Intel's driver an NVMe drive
+ * names itself "NVMe <model>" (its SCSI vendor field), or reports the
+ * NVMe bus; Optane memory is NVMe too. */
+static int rst_hides_disk(const char *svc, int bus, const char *model)
+{
+    if (!_stricmp(svc, "iaStorVD")) return 1;
+    if (bus == BusTypeNvme) return 1;
+    if (!_strnicmp(model, "NVMe", 4)) return 1;
+    for (const char *p = model; *p; p++)
+        if (!_strnicmp(p, "Optane", 6)) return 1;
+    return 0;
+}
+
 static void check_storage_controller(pf_report *r)
 {
     if (r->system_disk < 0) return;
     char svc[128] = "";
     if (system_disk_rst(r->system_disk, svc, sizeof svc) != 1) return;
+    const pf_disk *sd = NULL;
+    for (int i = 0; i < r->n_disks; i++)
+        if (r->disks[i].index == r->system_disk) sd = &r->disks[i];
     char det[512];
+    if (sd && rst_hides_disk(svc, sd->bus_type, sd->model)) {
+        /* REFUSED HERE, NOT AFTER THE RESTART (D4, audit item 11). The
+         * staging environment cannot see this drive, so every install on
+         * such a PC used to download, shrink and restart, and then stop. */
+        snprintf(det, sizeof det,
+            "The drive Windows is on (%s) is an NVMe drive behind Intel's storage "
+            "driver (%s), in the mode that remaps it. Linux, and so AurOS, cannot "
+            "see a drive set up this way.", sd->model[0] ? sd->model : "unnamed", svc);
+        add(r, "intel-rst", "R10", PF_BLOCK,
+            "AurOS can't see this PC's drive", det,
+            "AurOS can't go on this PC yet. Nothing has been changed.");
+        return;
+    }
     snprintf(det, sizeof det,
         "The storage controller is managed by Intel Rapid Storage Technology "
-        "(%s). In this mode the drive is presented through an Intel remapping "
-        "layer that AurOS may not be able to see.", svc);
-    add(r, "intel-rst", "R10", PF_WARN,
-        "This PC uses Intel Rapid Storage Technology", det,
-        "AurBridge will verify from the rescue environment that AurOS can see "
-        "your drive before changing anything. If it cannot, nothing is changed.");
+        "(%s). The drive Windows is on is not one it remaps, so AurOS can see "
+        "it.", svc);
+    add(r, "intel-rst", "R10", PF_INFO,
+        "This PC uses Intel Rapid Storage Technology", det, "");
 }
 
 /* ── public API ──────────────────────────────────────────────────── */
@@ -1698,6 +1783,7 @@ void pf_run(pf_report *r)
     r->fde_third_party = -1;
     r->recovery_disk   = -1;
 
+    if (check_machine(r)) return;  /* nothing else matters on an ARM PC */
     check_admin(r);
     if (!r->is_admin) return;      /* everything below needs raw disk access */
 
@@ -1765,6 +1851,25 @@ int pf_selftest(void)
     t("bus: SD is removable",       bus_is_removable(BusTypeSd));
     t("bus: MMC is removable",      bus_is_removable(BusTypeMmc));
     t("bus: SATA is not",          !bus_is_removable(BusTypeSata));
+    t("eMMC system disk (MMC, fixed media) is the PC's own", !disk_is_removable(BusTypeMmc, 0));
+    t("eMMC on the SD bus, fixed media, is the PC's own",    !disk_is_removable(BusTypeSd, 0));
+    t("an SD card in a reader is removable",                  disk_is_removable(BusTypeSd, 1));
+    t("a USB stick is removable",                             disk_is_removable(BusTypeUsb, 1));
+    t("a USB hard drive is removable",                        disk_is_removable(BusTypeUsb, 0));
+    t("an internal SATA disk is not removable",              !disk_is_removable(BusTypeSata, 0));
+    t("machine: ARM64 is refused",          machine_is_arm(0xAA64));
+    t("machine: x64 is not ARM",           !machine_is_arm(0x8664));
+    t("machine: unknown (0) is not ARM",   !machine_is_arm(0));
+    t("RST: VMD hides the drive",           rst_hides_disk("iaStorVD", BusTypeNvme, "Samsung"));
+    t("RST: an NVMe drive under iaStorAC is hidden",
+      rst_hides_disk("iaStorAC", BusTypeRAID, "NVMe SAMSUNG MZVLW256HEHP"));
+    t("RST: Optane is hidden",              rst_hides_disk("iaStorAC", BusTypeRAID,
+                                                           "INTEL HBRPEKNX0202AH Optane"));
+    t("RST: NVMe bus is hidden",            rst_hides_disk("iaStorAVC", BusTypeNvme, "WDC PC SN520"));
+    t("RST: a SATA SSD in RAID mode is seen",
+      !rst_hides_disk("iaStorAC", BusTypeRAID, "SAMSUNG MZ7LN256HAJQ-000H1"));
+    t("RST: a SATA disk under iaStorA is seen",
+      !rst_hides_disk("iaStorA", BusTypeSata, "ST1000LM035-1RK172"));
     t("bus: NVMe is not",          !bus_is_removable(BusTypeNvme));
     t("bus: RAID is not",          !bus_is_removable(BusTypeRAID));
 
