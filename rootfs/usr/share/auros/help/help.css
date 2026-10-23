@@ -1,0 +1,72 @@
+/* AurOS help pages: on the computer, opened by the Help button.
+ *
+ * Read by someone with older eyes, at arm's length, possibly after she
+ * has made the words bigger: body text 24px, every colour pair 7:1 or
+ * better, link targets at least 48px tall, nothing that moves, no
+ * script, nothing loaded from anywhere but this folder (they must work
+ * with no internet -- "getting online" is one of them).
+ * tools/helptest.sh checks the sizes, the links and the words. */
+:root {
+  --bg: #FFFDF8;      /* warm paper, as Sandstone */
+  --soft: #F4EFE5;
+  --card: #FFFFFF;
+  --ink: #17181A;     /* 17:1 on --bg */
+  --ink-2: #33363B;   /* 11:1 on --bg */
+  --line: #CFC6B6;
+  --go: #0B5D4F;      /* white on it 7.6:1 */
+  --link: #1846A8;    /* 8:1 on --bg */
+  --warn-bg: #FFF4D6;
+  --warn-edge: #B07A00;
+  color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #15171A; --soft: #1E2125; --card: #23272C;
+    --ink: #F2EFE8; --ink-2: #D6D2CA; --line: #4A4F57;
+    --go: #7CCBB5; --link: #9DB8FF;
+    --warn-bg: #2E2614; --warn-edge: #E0B040;
+  }
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0; background: var(--bg); color: var(--ink);
+  font-family: "Inter", "Atkinson Hyperlegible", "Noto Sans", "DejaVu Sans", sans-serif;
+  font-size: 24px; line-height: 1.55;
+}
+main, .bar-in { max-width: 38em; margin-inline: auto; padding-inline: 24px; }
+main { padding-block: 8px 48px; }
+.bar { background: var(--soft); border-bottom: 2px solid var(--line); }
+.bar-in { display: flex; align-items: center; min-height: 64px; }
+a { color: var(--link); text-decoration-thickness: 2px; text-underline-offset: 0.18em; }
+a:focus-visible { outline: 4px solid var(--link); outline-offset: 3px; border-radius: 6px; }
+.back { display: inline-flex; align-items: center; min-height: 48px; padding: 4px 0; font-weight: 700; }
+h1 { font-size: 42px; line-height: 1.15; margin: 28px 0 12px; }
+h2 { font-size: 32px; line-height: 1.2; margin: 40px 0 10px; }
+p { margin: 0 0 16px; }
+.lede { font-size: 27px; }
+/* What she presses, drawn as a thing to press: the words on the button,
+ * in bold, inside a frame, so "press Internet" and the word internet
+ * in a sentence are not the same thing. */
+.press { font-weight: 700; white-space: nowrap; border: 2px solid var(--ink-2); border-radius: 8px; padding: 0 8px; background: var(--card); }
+.key { font-weight: 700; white-space: nowrap; border: 2px solid var(--ink-2); border-bottom-width: 4px; border-radius: 6px; padding: 0 8px; background: var(--card); }
+ol.steps { list-style: none; counter-reset: s; margin: 0 0 20px; padding: 0; }
+ol.steps > li { counter-increment: s; position: relative; padding: 4px 0 18px 64px; }
+ol.steps > li::before {
+  content: counter(s); position: absolute; left: 0; top: 0;
+  width: 46px; height: 46px; border-radius: 50%; background: var(--go); color: var(--bg);
+  font-weight: 700; display: grid; place-items: center; font-size: 26px;
+}
+ul { padding-left: 1.2em; } ul li { margin-bottom: 10px; }
+.box { background: var(--card); border: 2px solid var(--line); border-radius: 14px; padding: 16px 20px; margin: 20px 0; }
+.box > :last-child { margin-bottom: 0; }
+.warn { background: var(--warn-bg); border-left: 8px solid var(--warn-edge); border-radius: 10px; padding: 16px 20px; margin: 20px 0; }
+.warn > :last-child { margin-bottom: 0; }
+.topics { list-style: none; margin: 24px 0; padding: 0; display: grid; gap: 14px; }
+.topics a {
+  display: block; min-height: 64px; padding: 16px 20px; border: 2px solid var(--line); border-radius: 14px;
+  background: var(--card); color: var(--ink); text-decoration: none;
+}
+.topics a:hover { border-color: var(--go); }
+.topics b { display: block; font-size: 28px; color: var(--link); text-decoration: underline; text-decoration-thickness: 2px; text-underline-offset: 0.18em; }
+.done { margin-top: 40px; padding-top: 20px; border-top: 2px solid var(--line); }
