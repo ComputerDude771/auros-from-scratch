@@ -158,16 +158,21 @@ static const struct { const char *id; const wchar_t *line; } NOTES[] = {
 
 /* ── when it cannot go on: what she can do instead ────────────────── */
 
+/* The page for "someone who knows computers" (website/advanced.html):
+ * switching a BIOS-mode PC to the newer way, and Intel's "RAID On" to
+ * AHCI, safely. Written out in full, because she will copy it down. */
+#define ADVANCED L"computerdude771.github.io/auros-from-scratch/advanced.html"
+
 static const struct { const char *id; const wchar_t *line; } INSTEAD[] = {
     { "arm-pc",
       L"Keep using Windows on this computer. AurOS goes on most other Windows "
       L"computers, so a different one will probably be fine." },
     { "firmware-bios",
       L"Keep using Windows for now. Someone who knows computers may be able to "
-      L"switch it to the newer way; the AurOS website has more about this." },
+      L"switch it to the newer way; how is on " ADVANCED },
     { "intel-rst",
       L"Keep using Windows for now. Someone who knows computers can change one "
-      L"setting so AurOS can see the drive; the AurOS website has more about this." },
+      L"setting so AurOS can see the drive; how is on " ADVANCED },
     { "smart-bad-sectors",
       L"Copy your photos and documents somewhere else today, while the drive "
       L"still works. Then have the drive replaced." },
