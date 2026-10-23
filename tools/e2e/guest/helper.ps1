@@ -13,6 +13,7 @@
 # taken a screenshot. UI Automation only says where Microsoft's own
 # buttons are; the AurOS installer draws its own window and has none.
 $ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'    # Invoke-WebRequest's bar costs seconds
 $hub = 'http://10.0.2.2:8000'
 Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
 Add-Type @'
