@@ -365,6 +365,27 @@ void resize_do(const char *dev, uint64_t target_bytes, int allow_force,
                  (double)out->achieved_bytes / (1024.0*1024.0*1024.0));
 }
 
+/* ── how small to make Windows ───────────────────────────────────── */
+
+#define SHRINK_GIB (1024ull * 1024 * 1024)
+uint64_t shrink_pick_target(uint64_t current, uint64_t smallest,
+                            uint64_t install_need)
+{
+    if (current <= smallest) return current;        /* nothing to reclaim */
+    uint64_t reclaimable = current - smallest;
+    uint64_t reserve = current / 100 * 15;
+    if (reserve < 20 * SHRINK_GIB) reserve = 20 * SHRINK_GIB;
+    uint64_t headroom = reclaimable > reserve ? reclaimable - reserve : 0;
+
+    uint64_t share = headroom < 40 * SHRINK_GIB ? headroom : 40 * SHRINK_GIB;
+    if (share < install_need)  share = install_need;    /* the install must fit */
+    if (share < 16 * SHRINK_GIB) share = 16 * SHRINK_GIB;/* the stated floor    */
+    if (share > reclaimable)   share = reclaimable;     /* cannot free more     */
+
+    return current - share;
+}
+#undef SHRINK_GIB
+
 /* ── the surface test ────────────────────────────────────────────── */
 
 int surface_test(const char *dev, uint64_t from, uint64_t to,

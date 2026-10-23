@@ -141,6 +141,13 @@ static void dots(int pct)
     if (pct >= 100) fprintf(stderr, "\n");
 }
 
+/* surface_test() reports (done, total); the screen wants a percentage.
+ * The audit found this step was called with progress=NULL, so a ~3-hour
+ * read of a failing hard disk looked frozen and the person switched the
+ * machine off -- the one thing they must not do mid-install. */
+static void surf_dots(uint64_t done, uint64_t total)
+{ dots(total ? (int)(done * 100 / total) : 0); }
+
 /* The same bar, with a fault point in it.
  *
  * `dots` is used by four different long steps, so a single fault point
@@ -523,12 +530,28 @@ void install_run(const stage_machine *m)
     if (!sp.ok)
         refuse(sp.why, NULL, "cannot-measure");
 
-    /* The surface of the space that would be reclaimed. R5. */
+    /* HOW SMALL TO MAKE IT -- only what AurOS needs, not the floor.
+     * See pick_win_target(). The install need is min_root plus the two
+     * small partitions, with a little slack for megabyte alignment. */
+    uint64_t install_need = min_root_bytes() + boot_need + rsc_need + 4 * 1024 * 1024;
+    uint64_t win_target = shrink_pick_target(sp.current_bytes, sp.smallest_bytes,
+                                             install_need);
+    stage_say("Windows is %.1f GiB; it will be made %.1f GiB, freeing %.1f GiB "
+              "for AurOS",
+              (double)sp.current_bytes / (1024.0*1024*1024),
+              (double)win_target       / (1024.0*1024*1024),
+              (double)(sp.current_bytes - win_target) / (1024.0*1024*1024));
+
+    /* The surface of the space that would be reclaimed. R5. Only the
+     * region actually being freed -- [win_target, current] -- not every
+     * free byte up to ntfsresize's floor, which on a terabyte disk is
+     * hours of reading. With a real progress callback, because without
+     * one the screen sat frozen through it. */
     stage_say("reading every sector of the space that would be reclaimed");
     fprintf(stderr, "aurstage: ");
     uint64_t bad = 0;
-    if (surface_test(windev, sp.smallest_bytes, sp.current_bytes,
-                     (uint32_t)disk->logical_sector, &bad, NULL) != 0) {
+    if (surface_test(windev, win_target, sp.current_bytes,
+                     (uint32_t)disk->logical_sector, &bad, surf_dots) != 0) {
         snprintf(why, sizeof why,
                  "This disk could not read the space %llu MB into the Windows "
                  "drive. The drive is failing.",
@@ -538,9 +561,12 @@ void install_run(const stage_machine *m)
     }
     fprintf(stderr, "\n");
 
-    /* A layout that fits, checked against the table. */
+    /* A layout that fits, checked against the table. plan_compute works
+     * in the whole gap -- the space freed here plus any already
+     * unallocated after Windows -- so it remains the authority on
+     * whether there is room. */
     stage_layout L;
-    if (plan_compute(&old, wi, sp.smallest_bytes, img.root_len,
+    if (plan_compute(&old, wi, win_target, img.root_len,
                      boot_need, rsc_need, min_root_bytes(), &L,
                      why, sizeof why) != 0)
         refuse(why, NULL, "no-room");
@@ -578,7 +604,7 @@ void install_run(const stage_machine *m)
     fault_maybe("shrink-begin");
     fprintf(stderr, "aurstage: ");
     shrink_result sr;
-    shrink_do(windev, sp.smallest_bytes, dots, &sr);
+    shrink_do(windev, win_target, dots, &sr);
     if (!sr.ok) {
         if (!sr.started)
             give_up(sr.why, "Nothing on the Windows drive was touched.",
