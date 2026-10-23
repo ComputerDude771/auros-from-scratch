@@ -62,6 +62,12 @@ SHIM = '605dab50-e046-4300-abb6-3dd810dd8b23'
 # Every variable through which shim's MokManager is asked to do something
 # at the next start. Any one of them present means a blue firmware-looking
 # screen that waits for a key and a password.
+# AurOS's own vendor GUID, for the one variable that tells the Windows
+# side what she answered (docs/OTHER-SYSTEMS.md, "Put Windows back"):
+# AurOSOtherSysAnswer = b"answer=yes|no\nsystem=<id>\n", non-volatile,
+# readable at runtime, so GetFirmwareEnvironmentVariable finds it.
+AUROS_GUID = 'b89b3dc4-fc68-4749-a5e5-f3eb5f51d569'
+ANSWER_VAR = 'AurOSOtherSysAnswer'
 MOK_REQUESTS = ('MokNew', 'MokAuth', 'MokDel', 'MokDelAuth', 'MokXNew',
                 'MokXAuth', 'MokXDel', 'MokXDelAuth', 'MokPW', 'MokSB',
                 'MokDB', 'MokDBState', 'MokTML')
@@ -578,6 +584,20 @@ def hold(plan, state):
     log('boot: holding: BootOrder %s, BootNext %04X' % (fmt(boot_order()), ours))
 
 
+def record_answer(state):
+    """Leave her answer where the Windows side can read it. Never fatal:
+    the firmware already does what she said; this only lets Windows tidy
+    up (after "no": give C: its space back) without asking her again."""
+    data = ('answer=%s\nsystem=%s\n' % (state['answer'], state.get('system', ''))).encode('ascii')
+    try:
+        var_set(ANSWER_VAR, data, AUROS_GUID)
+        state['answer_recorded'] = True
+        log('answer: recorded for Windows (%s)' % ANSWER_VAR)
+    except Exception as e:
+        state['answer_recorded'] = 'failed: %s' % e
+        log('answer: could not record it for Windows: %s' % e)
+
+
 def confirm(state):
     ours = int(state['ubuntu_entry'], 16)
     new = promoted_order(boot_order(), ours)
@@ -585,6 +605,7 @@ def confirm(state):
     state['answer'] = 'yes'
     state['answered_at'] = int(time.time())
     log('answer: yes: BootOrder %s (Ubuntu first, everything else kept)' % fmt(new))
+    record_answer(state)
 
 
 def decline(state):
@@ -593,6 +614,7 @@ def decline(state):
     state['answer'] = 'no'
     state['answered_at'] = int(time.time())
     log('answer: no: BootNext cleared; BootOrder %s' % fmt(boot_order()))
+    record_answer(state)
 
 
 def take_answer(state):
@@ -632,6 +654,8 @@ def cmd_boot(plan):
     take_answer(state)
     if state.get('answer') not in ('yes', 'no'):
         hold(plan, state)
+    elif state.get('answer_recorded') is not True:
+        record_answer(state)
     pending = mok_pending()
     if pending:
         log('boot: WARNING: a MOK request is queued: %s' % pending)

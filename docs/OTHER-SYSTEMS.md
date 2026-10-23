@@ -180,11 +180,21 @@ committed **before** the restart (there is no staging step in this flow).
   then extend C:. The machine's ESP was never written, so nothing else
   to undo. The "ubuntu" `Boot####` is left like AurOS's own dead entry
   (inert: its partition is gone).
-- "No" in Ubuntu clears BootNext, so the next start is Windows. Windows
-  must then learn that she said no: proposed, the boot unit also writes
-  an AurOS-GUID NVRAM variable `AurOSOtherSysAnswer=no` that the Windows
-  startup task reads (`GetFirmwareEnvironmentVariable`) and acts on.
-  Not built yet.
+- "No" in Ubuntu clears BootNext, so the next start is Windows. Both
+  answers are also left in the firmware for Windows to read:
+  `AurOSOtherSysAnswer`, vendor GUID `b89b3dc4-fc68-4749-a5e5-f3eb5f51d569`
+  (AurOS's own; pinned in `othersys.py` and `tools/othersys/checks.py`),
+  attributes NV+BS+RT, data ASCII `answer=yes|no\nsystem=<manifest id>\n`.
+  The Windows startup task reads it with
+  `GetFirmwareEnvironmentVariableW(L"AurOSOtherSysAnswer", L"{b89b3dc4-fc68-4749-a5e5-f3eb5f51d569}", ...)`
+  (SeSystemEnvironmentPrivilege, as for BootNext): `no` -> put Windows
+  back as above and delete the variable; `yes` -> remove its own startup
+  task and delete the variable. Writing it is never fatal in Ubuntu (the
+  firmware already does what she said); the boot unit retries on every
+  start until it is written. Proven: selftest (both answers, and the
+  check fails when it is missing or says the other one); vmtest's
+  `confirm` phase reads it back from the VM's firmware. The Windows
+  reader is not built (engine).
 
 ## What is proven, and where
 
@@ -204,7 +214,7 @@ prerelease `othersys-<run id>` (`<variant>-results.md`,
 
 - Xubuntu, Ubuntu Cinnamon, Ubuntu Budgie 26.04: same installer; a
   manifest each (URL, hash, `source_id`, sizes) and a matrix entry.
-- The "no" path's NVRAM variable and the Windows-side put-back.
+- The Windows-side reader of `AurOSOtherSysAnswer` and the put-back.
 - Power cut between curtin's NVRAM write and `late`: Ubuntu first with a
   half-installed system. The boot unit does not exist yet at that point;
   the fix belongs in a Windows-side check of the journal on the next

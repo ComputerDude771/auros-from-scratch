@@ -194,6 +194,19 @@ def check_entry_gone(vars_, num, desc):
     return []
 
 
+AUROS = 'b89b3dc4-fc68-4749-a5e5-f3eb5f51d569'
+
+
+def check_answer_recorded(vars_, want):
+    """The variable the Windows side reads to learn what she answered."""
+    d = var(vars_, 'AurOSOtherSysAnswer', AUROS)
+    if d is None:
+        return ['AurOSOtherSysAnswer is not in the firmware: Windows cannot learn she said %s' % want]
+    if not d.startswith(('answer=%s\n' % want).encode()):
+        return ['AurOSOtherSysAnswer says %r, expected answer=%s' % (d[:40], want)]
+    return []
+
+
 def check_no_mok(vars_):
     pending = [n for n in MOK_REQUESTS if var(vars_, n, SHIM) is not None]
     if pending:

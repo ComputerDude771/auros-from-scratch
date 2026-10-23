@@ -421,10 +421,23 @@ def test_helper(d):
     o = fv.order()
     expect('yes: Ubuntu first', [] if o[0] == '0004' else [str(o)], False)
     expect('yes: Windows and everything else kept', [] if set(o) == {'0002', '0000', '0001', '0004', '0005'} else [str(o)], False)
+    a = fv.get(m.ANSWER_VAR, m.AUROS_GUID)
+    expect('yes: recorded for Windows', [] if a and a.startswith(b'answer=yes\n') else [repr(a)], False)
     # no
     st = {'ubuntu_entry': '0004'}
     m.decline(st)
     expect('no: BootNext cleared', [] if fv.get('BootNext') is None else ['still armed'], False)
+    a = fv.get(m.ANSWER_VAR, m.AUROS_GUID)
+    expect('no: recorded for Windows', [] if a and a.startswith(b'answer=no\n') else [repr(a)], False)
+    # the vmtest check reads the same thing from a firmware store, and must
+    # fail when it is missing or says the other answer
+    v = os.path.join(d, 'vars-answer.fd')
+    shutil.copyfile(OVMF_VARS, v)
+    expect('answer check: absent fails', checks.check_answer_recorded(efivarstore.read_store(v), 'yes'), True)
+    efivarstore.plant(v, m.ANSWER_VAR, m.AUROS_GUID, a)
+    expect('answer check: "no" read as "no" passes', checks.check_answer_recorded(efivarstore.read_store(v), 'no'), False)
+    expect('answer check: "no" when "yes" expected fails',
+           checks.check_answer_recorded(efivarstore.read_store(v), 'yes'), True)
     # answers: only the three words
     os.makedirs(os.path.join(d, 'inbox'), exist_ok=True)
     m.INBOX = os.path.join(d, 'inbox')

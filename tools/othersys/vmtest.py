@@ -449,6 +449,8 @@ def run_phases(rec, work, out, plan, boot, layout, before, phases, variant):
             rec.check('confirm', 'Ubuntu started and took the answer',
                       checks.check_marker(t, 'answer: yes'))
             firmware_checks(rec, 'confirm', work, plan, boot, 'ubuntu', None)
+            rec.check('confirm', 'her answer is in the firmware for Windows to read',
+                      checks.check_answer_recorded(vars_live(os.path.join(work, 'vars.fd')), 'yes'))
             windows_checks(rec, 'confirm', work, layout, before)
             screens_not_mok(rec, 'confirm')
 
