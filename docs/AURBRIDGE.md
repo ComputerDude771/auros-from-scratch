@@ -1062,3 +1062,83 @@ anyone's disk is at risk.
 
 Nothing destructive ships until the fault matrix is green on every named
 instant and the dry run has been through a fleet.
+
+## Fast path: status (2026-10-23)
+
+The fast path (decision D1/D2 in `docs/handoff/SESSION-2026-10-23.md`)
+moves the slow work into Windows while the image downloads: shrink C:
+with Windows' own online shrink, write AurOS's partitions raw into the
+freed gap as the pieces inflate, and after the restart only verify,
+commit the GPT and start AurOS -- about a minute, and BitLocker PCs
+install without decryption. It is being built in increments, and **the
+destructive half is NOT wired into the wizard or the engine yet** -- the
+shipped install is still the legacy staging-shrink path. Nothing selects
+`plat_gap_*` or `plat_shrink_system`.
+
+**Done and proven**
+
+- *Legacy-path fixes that make tonight's build shippable* (these ARE in
+  the shipped path):
+  - Phase 7 records the network instead of requiring it, and points the
+    firmware loader at the new root (`probe.c`, `/lib/firmware` symlink).
+    Fixes the Wi-Fi-only stall. Proven: `tools/probetest.sh`.
+  - The shrink takes only what AurOS needs -- `shrink_pick_target()` in
+    `shrink.c`: min(40 GiB, leaving Windows max(20 GiB,15%) free), floor
+    16 GiB, never below the install's need, never more than reclaimable;
+    the surface test covers only that region, with a progress callback
+    (`install.c`). Proven: `tools/shrinktargettest.sh`; a no-op on the
+    synthetic test disk, so `installtest`/`nosticktest` are unaffected.
+  - The PC is kept awake for the whole run (`plat_keep_awake`), and the
+    image download starts the moment the check passes, in the background
+    while she reads (`wizard.c` `download_begin`). Proven: build + Wine
+    `--navtest`.
+- *Fast-path foundation* (NOT wired in): the raw gap-write fence
+  (`fmt_gpt_parts` in `format.c`; `plat_gap_allow/gap_write/gap_forbid/
+  gap_flush` in `plat.h`/`plat_win.c`/`plat_sim.c`) and Windows' online
+  shrink (`plat_shrink_system`/`plat_grow_system` in `plat_win.c`, via
+  Resize-Partition; the simulation refuses these, as it refuses
+  manage-bde). A gap write may land only inside the armed window and
+  only where the LIVE table says no partition is -- refused, never
+  clamped -- with Windows' own refusal of raw writes inside a mounted
+  volume as the live second fence (no lock, no dismount). Proven:
+  `tools/gapfencetest.sh` against a real GPT through the simulation
+  (goes red when the window check is removed).
+
+**Why the old "nothing writes before the restart" rule changed.** It
+could not fit ten minutes, and it could not install on a BitLocker PC
+without hours of decryption. The fast path writes into the gap a
+reversible online shrink makes, referenced by nothing until the GPT
+commit after the restart; a power cut before that commit leaves Windows
+starting with every file intact (Windows' own shrink is power-safe, and
+the written bytes are in unallocated space). That is why `plat.h`'s
+fence is "only inside the computed gap, re-checked against the live
+table, never overlapping a partition" rather than "only the stick".
+
+**Left to do, next three steps**
+
+1. `gapselftest <disk number>` console subcommand (`main.c`) + a real
+   Windows job in `.github/workflows/windows.yml`: build a VHDX with
+   diskpart (NTFS + known files), run shrink + gap-write + read-back
+   verify + a fence refusal + undo (extend back), and check the files
+   are intact and `chkdsk` clean. This is where the Windows APIs meet
+   real Windows; make it thorough. Bonus: a BitLocker-enabled VHDX.
+2. The shared planner: compile `src/aurstage/plan.c` into aurbridge
+   (with a buffer GPT parse) so the Windows side lays out the gap
+   exactly as `commit.c` will, and the new journal mode
+   (`image_on=gap`, gap offsets, written extents + SHA-256, planned GPT
+   entries, original/new Windows size) in `format.c`/`journal.c`. Then
+   the engine's prepared-mode phases in `phases.c` (plan, shrink,
+   gap-write streamed from the download, journal, Wi-Fi via
+   `WlanGetProfile`, BitLocker suspend `-RebootCount 2`, undo), behind
+   the journal mode.
+3. Staging prepared mode in `src/aurstage/install.c`: verify the
+   written extents' SHA-256, never mount NTFS, capture the way back,
+   commit the GPT, boot, probe with the firmware path, write the Wi-Fi
+   keyfile; and `rescue.c`/putback's SYSTEM scheduled task that extends
+   C: back when AurOS's partitions are gone. Extend `plat_sim.c` to
+   emulate the online shrink (ntfsresize + GPT rewrite) for a KVM-free
+   end-to-end sim test, and add the BitLocker-shaped (`-FVE-FS-`)
+   Windows partition that staging must never mount.
+
+Until step 1 is green on real Windows and steps 2-3 are proven end to
+end, the fast path stays unwired and the legacy path ships.
