@@ -31,7 +31,7 @@ env:
   # To test a fresh build instead, set INSTALLER_PATH to the file on the
   # runner (an artifact from an earlier job); the website's links are
   # then pointed at it, served from the runner.
-  INSTALLER_URL: https://github.com/ComputerDude771/auros-from-scratch/raw/image-desktop/AurOS-Installer-test.exe
+  INSTALLER_URL: https://github.com/${{ github.repository }}/raw/image-desktop/AurOS-Installer-test.exe
   INSTALLER_SHA256: ef903efd9cdeb10e15e52b3ce9e4eac83788f3396ac9f029ed04f2cfca1c5891
   INSTALLER_PATH: ''
   WEBSITE_DIR: website
