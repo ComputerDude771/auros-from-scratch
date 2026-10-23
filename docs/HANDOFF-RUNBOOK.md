@@ -9,6 +9,47 @@ in git: a fresh checkout has to rebuild it.
 
 ---
 
+## On GitHub Actions: how it is done now (2026-10-23)
+
+Images, tests and releases are made by three workflows on GitHub's
+`ubuntu-24.04` runners, which have KVM and an open network (this
+container has neither: its images had no Firefox and its QEMU tests ran
+under TCG). `docs/RELEASE.md` "How a release is made" has the detail;
+the short version, **trigger words in the commit subject only**:
+
+```sh
+git commit --allow-empty -m "[build] ..."     # build + every test (also: any change to build/ src/ rootfs/ profiles/ themes/ shells/)
+git commit --allow-empty -m "[test] ..."      # tests only, against the newest build's artifacts
+git commit --allow-empty -m "[release] ..."   # build + tests + prerelease v<os_version>-<sha7>
+git commit --allow-empty -m "[publish] ..."   # prerelease of the newest build that passed everything; no rebuild
+git commit --allow-empty -m "[publish 12345] [latest] ..."  # that run, as a full release (moves releases/latest)
+```
+
+What each job is, and what to read when it fails:
+
+| Workflow / job | Proves | Read |
+|---|---|---|
+| `build / build` | the desktop image builds from Ubuntu's archive and Mozilla's Firefox, the staging environment builds, the installer carries both and the release address, and the pieces unpack to the image through the installer's own code | the job log; artifact `auros-installer` has `build-warnings`, `timings.txt`, `build-info.txt` |
+| `build / tests / unit` | the fast suites, Ferry, `aurbridge.exe selftest` under Wine | `transcripts-unit` |
+| `build / tests / e2e (NAME)` | that end-to-end test, under KVM | `transcripts-NAME` |
+| `release / publish` | the release exists and reads back byte for byte through GitHub's 302, with `Range` | the job log |
+| `release / windows` | the published AurOS-Setup.exe starts on real Windows; WinHTTP fetches the image from the release | the job log |
+
+**Artifacts cannot be downloaded into this container** (the storage host
+is blocked); job logs can, through the GitHub tools, and so can release
+assets. To inspect a file from a run, publish it (`[publish RUN-ID]`)
+and download it from the release.
+
+The end-to-end scripts are unchanged for Actions: `tests.yml` puts a
+`qemu-system-x86_64` in `/usr/local/bin` that rewrites `accel=tcg` to
+`accel=kvm` (or `$AUROS_QEMU_ACCEL`) and runs the real one; sudo's
+`secure_path` finds it first too.
+
+Everything below is the by-hand route this container used, kept because
+it is still how to reproduce a step locally.
+
+---
+
 ## Build order
 
 ```sh
@@ -147,8 +188,9 @@ path has run only in the simulation.
 
 ---
 
-## Publishing the image in pieces
+## Publishing the image in pieces (by hand, the older route)
 
+`release.yml` does this now, as release assets instead of a branch.
 What was done for v2 (the gzip header says `-9`):
 
 ```sh
@@ -182,9 +224,11 @@ scratch directory. A new container has none; `git fetch origin
 image-desktop` followed by `git worktree add ../imgwt image-desktop`
 recreates it, at the cost of downloading every piece.
 
-## Publishing the test installer
+## Publishing the test installer (by hand, the older route)
 
-Replace `AurOS-Installer-test.exe` at the top of `image-desktop`,
+`release.yml` publishes `AurOS-Setup.exe` as a release asset now; the
+website links to `releases/latest/download/AurOS-Setup.exe`. By hand:
+replace `AurOS-Installer-test.exe` at the top of `image-desktop`,
 update the table in that branch's `README.md` (SHA-256, source commit,
 test counts), commit, push, then re-download it and compare:
 

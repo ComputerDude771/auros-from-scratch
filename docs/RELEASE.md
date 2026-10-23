@@ -1,5 +1,71 @@
 # What stands between this repository and a public download
 
+> **2026-10-23.** Builds, tests and releases now happen on GitHub
+> Actions ("How a release is made", next), and AurOS-Setup.exe is
+> **unsigned by the owner's decision** (§2). Items 3 and 4 below are
+> done by that pipeline.
+
+---
+
+## How a release is made
+
+Three workflows, all on `ubuntu-24.04` runners (pinned: `ubuntu-latest`
+moves to 26.04 in November 2026), all triggered by a push to a
+`claude/**` branch. `workflow_dispatch` cannot be used: it only works
+for workflows on the repository's default branch. **The trigger words
+count only in the commit's subject line.**
+
+| To get | Push a commit that | What runs |
+|---|---|---|
+| A build and every test | changes `build/`, `src/`, `rootfs/`, `profiles/`, `themes/`, `shells/` or the workflows, or says `[build]` in its subject | `build.yml`: build, then `tests.yml` |
+| Tests only, no build | says `[test]` in its subject | `tests.yml` against the newest build of the branch whose artifacts have not expired (14 days) |
+| A prerelease, built and tested | says `[release]` | `build.yml`, `tests.yml`, then `release.yml` if every test passed |
+| A prerelease of a build that already passed | says `[publish]` (newest passing build of the branch) or `[publish RUN-ID]` | `release.yml` only: nothing is rebuilt, so what is published is exactly what was tested |
+| A full release (moves `releases/latest/...`, which the website links to) | says `[release] [latest]` or `[publish] [latest]` | as above, without `--prerelease` |
+
+A commit can be empty (`git commit --allow-empty -m "[publish] ..."`).
+
+**`build.yml`** (`build` job, about an hour): frees disk, installs the
+build tools, `build/all desktop --keep=raw` **without**
+`ALLOW_BROWSER_FALLBACK` (the runner reaches Mozilla, so Firefox must
+arrive or the build stops), `build/staging`, `gzip -9` and `split` into
+90 MiB pieces with `pieces.txt` whose `base` is
+`https://github.com/ComputerDude771/auros-from-scratch/releases/download/v<os_version>-<sha7>/`,
+then `AUROS_RELEASE=1 build/aurbridge` with that list baked in. It then
+asks the `.exe` itself what it carries (resources 1-5, the release
+address, the shim's Microsoft key, the manifest) and has
+`aurbridge-sim getimage` -- the installer's own phase engine and
+inflater -- fetch every piece over HTTP with `Range` from a local
+server, unpack it and check the image's SHA-256. Artifacts:
+`auros-installer` (AurOS-Setup.exe, aurbridge.exe, aurbridge-sim, the
+staging files, pieces.txt, the image's hash and size, the manifest,
+`/etc/auros/build-warnings` from the image, timings), `auros-pieces`
+and `auros-rootfs` (the forged rootfs, for the tests).
+
+**`tests.yml`**: `unit` (aurfirsttest, choicestest, nvramtest,
+bridgetest, manifesttest, Ferry, the simulation's selftests,
+`aurbridge.exe selftest` under Wine, signtest) and one `e2e` job per
+end-to-end test under KVM (installtest, nosticktest, firstboottest,
+choicesboottest, putbacktest). The scripts ask QEMU for `accel=tcg`;
+the job puts a `qemu-system-x86_64` in `/usr/local/bin` that turns it
+into `accel=kvm` (or `$AUROS_QEMU_ACCEL`), so no test script is edited.
+Each job uploads its transcript as `transcripts-<test>`.
+
+**`release.yml`**: creates release `v<os_version>-<sha7>` (the tag baked
+into that build's installer) with `AurOS-Setup.exe`, the pieces,
+`pieces.txt` and `SHA256SUMS`, and notes saying what was tested where;
+then reads every file back from its public address through GitHub's
+302 and checks a `Range` request is answered 206 from the right byte;
+then, on a Windows runner, starts the downloaded `AurOS-Setup.exe`
+(`--navtest`) and has `aurbridge.exe getimage` -- WinHTTP, the
+installer's own download code -- fetch the image from the release and
+check it.
+
+Reading results: `actions_list` / `get_job_logs` with the GitHub tools,
+or `https://api.github.com/repos/ComputerDude771/auros-from-scratch/actions/runs`
+without a token. Artifact downloads are blocked from the development
+container; release assets are not.
+
 Everything here is something a stranger's first download needs and this
 repository does not yet have. Each item says what it is, what to do,
 roughly what it costs, what it unblocks, and the exact switch in the
@@ -16,123 +82,73 @@ about a real PC; item 5 is where that gets proved.
 ## The order
 
 ```
- 1 legal entity ───────┬──► 2 code signing ──┐
-                       └──► 6 EULA + insurance├──► public download
- 3 image host ────────────────────────────────┤
- 4 Firefox on the builder ────────────────────┤
+ 1 legal entity ──────────► 6 EULA + insurance┬──► public download
+ 2 code signing: not done, by decision ───────┤
+ 3 image host: GitHub Releases, done ─────────┤
+ 4 Firefox on the builder: Actions, done ─────┤
  5 real hardware: dry-run fleet ─► spare-PC installs ─► small beta
  7 the code gaps below ───────────────────────┘
 ```
 
-1 is on the critical path twice (the certificate is issued to it, and
-the EULA is between it and the user). 5 is the longest and can start
+1 is on the critical path for the EULA, which is between it and the
+user. 5 is the longest and can start
 today: the dry run writes nothing, and the no-stick test build exists.
 
 ---
 
 ## 1. A legal entity
 
-**Why.** The code-signing certificate's subject name is what Windows
-shows in the "do you want to allow this app" prompt, and it has to be a
-verified organisation or person. The same entity is who the end-user
-licence is with and who is insured. This product repartitions consumer
+**Why.** The entity is who the end-user licence is with and who is
+insured. (It was also going to be the name on a code-signing
+certificate; there will not be one, §2.) This product repartitions consumer
 disks; somebody will lose data, and "a person's GitHub account" is not
 somebody a support request or a claim can go to.
 
 **Do.** Register a company where you live (a US LLC, a UK private
 limited company, or the local equivalent). Keep its registered name and
-address exactly consistent everywhere: the certificate authority checks
-them against public records.
+address exactly consistent everywhere.
 
 **Costs.** Usually tens to a few hundred US dollars in filing fees and
 days to a couple of weeks; varies by country and state. An accountant
 or a formation service is optional.
 
-**Unblocks.** 2 and 6.
+**Unblocks.** 6.
 
-## 2. Code signing
+## 2. Code signing: not done, by decision
 
-**Why.** An unsigned installer gets the full-screen "Windows protected
-your PC" panel whose only visible button is *Don't run*
-(`docs/SIGNING.md` explains why that is fatal for this audience), and
-Smart App Control on newer Windows 11 installs blocks it outright.
+**The owner's decision (2026-10-23): no code signing, no certificates,
+no Azure, no Microsoft services.** AurOS-Setup.exe is published
+unsigned. `docs/SIGNING.md` says what the person sees and clicks: Edge
+"isn't commonly downloaded" → **Keep** → **Keep anyway**; the blue
+SmartScreen panel → **More info** → **Run anyway**; on a PC with Smart
+App Control on, Smart App Control has to be switched off first.
+`AUROS_RELEASE=1` builds an unsigned installer; the release notes say
+so in one neutral line.
 
-**Do, in order of preference:**
+## 3. A host for the image: GitHub Releases (done by the pipeline)
 
-1. **Azure Artifact Signing** (formerly Trusted Signing), if eligible:
-   about **USD 9.99 a month**. Organisations in the US, Canada, the EU,
-   the UK and several other countries; individuals **only in the US and
-   Canada**. Microsoft holds the key and issues short-lived certificates.
-2. Otherwise an **OV** code-signing certificate from a public CA
-   (DigiCert, Sectigo, GlobalSign, SSL.com, Certum; resellers are
-   cheaper than list), roughly **USD 200–400 a year**, delivered on a
-   hardware token or a cloud HSM (required since June 2023). Certum's
-   open-source certificate is cheapest for an individual.
-3. **Not EV.** Since 2024 EV no longer skips the SmartScreen warning;
-   it earns reputation exactly like OV. `docs/SIGNING.md` has the
-   comparison and the sources.
+The image is published as release assets, in 90 MiB gzip pieces listed
+in `pieces.txt` (each asset must be under 2 GiB; pieces keep a dropped
+connection cheap). The address the installer has baked in is
+`https://github.com/ComputerDude771/auros-from-scratch/releases/download/<tag>/<piece>`;
+GitHub answers it with a 302 to a short-lived signed storage URL, which
+answers `Range` with 206. WinHTTP follows the redirect on every request,
+and every request is a fresh one to the original address, so a resume
+an hour later gets a fresh signed URL rather than an expired one. The
+release workflow checks all of this after every release, the last part
+on a real Windows runner. Releases have no bandwidth limit.
 
-**Know in advance.** Even a signed installer shows a SmartScreen
-warning until enough people have run it. Plan the first release for a
-small, known group, not a launch.
+The `image-desktop` branch (pieces through `raw.githubusercontent.com`)
+is the older route and stays for installers already built against it.
 
-**What flips.** Set the signing variables `build/sign` reads
-(`AUROS_SIGN_PKCS11_*` for a token, or `AUROS_SIGN_PKCS12` for a
-PKCS#12 bridge; `docs/SIGNING.md` has the lines), then
-`AUROS_RELEASE=1 ./build/aurbridge`. A release build **refuses to
-finish unsigned**, and `tools/signtest.sh` proves the pipeline end to
-end with a throwaway CA. Artifact Signing needs its own signing step
-added to `build/sign` (it uses Microsoft's `signtool` with a dlib, not
-`osslsigncode`); that is a small change and is not written yet.
+## 4. Firefox on the builder: done by building on Actions
 
-## 3. A host for the image
-
-**Why.** The installer downloads the 5.3 GB image (1.84 GB compressed)
-and checks it against a hash baked in when it was built. It needs an
-address that will still answer in a year.
-
-**Today.** The test build downloads it in 20 pieces from the
-`image-desktop` branch of this repository through
-`raw.githubusercontent.com`. That works (the pieces, their hashes and
-resuming have all been checked from here) but it is a git host, not a
-download service: it is fine for a handful of test machines and not
-for a public release, and the pieces make the repository 1.8 GB larger
-until the branch is deleted.
-
-**Do.** One of:
-
-- **GitHub Releases**: each file must be under 2 GiB, and the
-  compressed image is 1.84 GB, so it fits as **one** release asset,
-  published as a one-line piece list. Free; the simplest step from
-  here.
-- **Cloudflare R2**, or Backblaze B2 behind a CDN: no or low egress
-  fees, which matters at 1.84 GB a download.
-- **SourceForge** or another open-source mirror network.
-
-Whatever it is must answer `Range` requests (206 with a Content-Range),
-because a dropped connection is resumed rather than restarted; the
-installer refuses a server that ignores it rather than writing the
-wrong bytes.
-
-**What flips.** A piece list (`src/aurbridge/phases.h` has the format)
-and `AUROS_IMAGE_PIECES=<list> AUROS_IMAGE_SHA256=<sha>
-AUROS_IMAGE_BYTES=<bytes> ./build/aurbridge`. For a public build add
-`AUROS_RELEASE=1`, which refuses without an image address.
-
-## 4. Firefox on the builder
-
-**Why.** The profiles ask for Firefox and the images ship Epiphany: the
-network these images are built on answers 403 for every Mozilla and
-Launchpad host, so `build/forge` falls back, and says so, only because
-`ALLOW_BROWSER_FALLBACK=1` tells it to.
-
-**Do.** Build on a machine or network that can reach
-`packages.mozilla.org` (Mozilla's APT repository, the first of the
-three routes `build/forge` tries). Nothing in the code changes.
-
-**What flips.** Rebuild **without** `ALLOW_BROWSER_FALLBACK`;
-`/etc/auros/build-warnings` in the image must then be empty of browser
-lines, and the manifest in `docs/results/` records it.
+The images built in the development container shipped Epiphany, because
+that network answers 403 for Mozilla. `build.yml` builds on a GitHub
+runner **without** `ALLOW_BROWSER_FALLBACK`, so `build/forge` must
+install Firefox from Mozilla's APT repository or stop. Every build
+uploads the image's `/etc/auros/build-warnings` and the release notes
+quote it.
 
 ## 5. Real hardware
 
