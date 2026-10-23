@@ -369,8 +369,11 @@ jobs:
           echo "Pages is on ($(cat /tmp/pages.txt))"
       - uses: actions/checkout@v4
       - uses: actions/configure-pages@v5
+      # website/ names no repository; this one is written in (as pages.yml does).
+      - name: the site, with this repository written in
+        run: sh tools/site/stamp.sh website "$RUNNER_TEMP/site"
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: website
+          path: ${{ runner.temp }}/site
       - id: deploy
         uses: actions/deploy-pages@v4

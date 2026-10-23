@@ -3,7 +3,8 @@
  * steps, which is the right default. Nothing here sends anything.
  *
  * The download address lives in ONE place: the href of #get in
- * index.html. This file copies it to the other download links.
+ * index.html (on GitHub Pages, worked out from the page's own address,
+ * below). This file copies it to the other download links.
  */
 (function () {
   "use strict";
@@ -19,6 +20,21 @@
   var $ = function (id) { return document.getElementById(id); };
   var get = $("get");
   var DOWNLOAD_URL = get.getAttribute("href");
+
+  /* On GitHub Pages the page's own address says where the releases are:
+   * https://<owner>.github.io/<name>/ is github.com/<owner>/<name>, and
+   * the repository <owner>.github.io is the site at the top. Anywhere else
+   * (a custom domain, a test server) the href above stands: the deploy
+   * writes the repository it publishes from into it (tools/site/stamp.sh). */
+  var gh = /^([a-z0-9-]+)\.github\.io$/i.exec(location.hostname);
+  if (gh && location.protocol === "https:") {
+    var first = location.pathname.split("/")[1] || "";
+    var name = (first && !/\.html?$/i.test(first)) ? first : gh[1] + ".github.io";
+    if (/^[A-Za-z0-9._-]+$/.test(name)) {
+      DOWNLOAD_URL = "https://github.com/" + gh[1] + "/" + name + "/releases/latest/download/AurOS-Setup.exe";
+      get.setAttribute("href", DOWNLOAD_URL);
+    }
+  }
 
   if (SIGNED) root.classList.add("signed");
   Array.prototype.forEach.call(document.querySelectorAll(".publisher"), function (el) { el.textContent = PUBLISHER; });

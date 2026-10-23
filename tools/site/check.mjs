@@ -5,9 +5,10 @@
 //   node tools/site/check.mjs --dir <folder>       check another copy
 //   node tools/site/check.mjs --shots <folder>     also save screenshots
 //
-// Serves the site under /auros-from-scratch/ (as GitHub Pages does, so a
-// link that starts with "/" breaks here too), drives Chromium with
-// Playwright, and fails if:
+// Stamps a copy with the repository it is published from (tools/site/
+// stamp.sh, as pages.yml does), serves it under /<repository name>/ (as
+// GitHub Pages does, so a link that starts with "/" breaks here too),
+// drives Chromium with Playwright, and fails if:
 //   - "Get AurOS" is not wholly in the first screen at 1366x768 and
 //     390x844 (Windows, and with script off), or is shorter than 56px;
 //   - its href is not the release address;
@@ -21,7 +22,9 @@
 //   - a page asks any server but this one for anything;
 //   - the page scrolls sideways at 320px or at 200% zoom;
 //   - advanced.html (the page the installer names when it cannot go on)
-//     is missing, unlinked from the footer, or fails the same text floors.
+//     is missing, unlinked from the footer, or fails the same text floors;
+//   - published unstamped on another repository's GitHub Pages, the
+//     button does not find that repository's release (assets/door.js).
 //
 // Playwright: uses the one Node can find (a local install, the global
 // one, or the folder named by PLAYWRIGHT_DIR).
@@ -31,16 +34,26 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
-import { execSync } from "node:child_process";
+import os from "node:os";
+import { execSync, execFileSync } from "node:child_process";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, "..", "..");
-const RELEASE_URL = "https://github.com/ComputerDude771/auros-from-scratch/releases/latest/download/AurOS-Setup.exe";
-const BASE = "/auros-from-scratch/";
+// The repository the site is published from (AUROS_REPO, else
+// GITHUB_REPOSITORY, else the origin remote): never written here.
+const repoSh = (what) => execFileSync("sh", [path.join(REPO, "tools", "repo.sh"), what]).toString().trim();
+const AUROS_REPO = repoSh("repo");
+const RELEASE_URL = `https://github.com/${AUROS_REPO}/releases/latest/download/AurOS-Setup.exe`;
+const PAGES_HOST = repoSh("host");                      // owner.github.io/name/
+const BASE = PAGES_HOST.slice(PAGES_HOST.indexOf("/"));  // /name/, or / for owner.github.io
 
 const argv = process.argv.slice(2);
 const opt = (name) => { const i = argv.indexOf(name); return i >= 0 ? argv[i + 1] : undefined; };
-const SITE = path.resolve(opt("--dir") || path.join(REPO, "website"));
+const SRC = path.resolve(opt("--dir") || path.join(REPO, "website"));
+// What is served and read: the folder as the deploy publishes it.
+const SITE = fs.mkdtempSync(path.join(os.tmpdir(), "auros-site-"));
+process.stdout.write(execFileSync("sh", [path.join(REPO, "tools", "site", "stamp.sh"), SRC, SITE]));
+process.on("exit", () => fs.rmSync(SITE, { recursive: true, force: true }));
 const SHOTS = opt("--shots") ? path.resolve(opt("--shots")) : null;
 
 function loadPlaywright() {
@@ -191,7 +204,7 @@ const ORIGIN = `http://127.0.0.1:${server.address().port}`;
 const HOME = ORIGIN + BASE;
 const { chromium, devices } = loadPlaywright();
 const browser = await chromium.launch();
-console.log(`checking ${path.relative(REPO, SITE) || SITE} at ${HOME}`);
+console.log(`checking ${path.relative(REPO, SRC) || SRC} at ${HOME}`);
 
 const external = new Map();   // url -> page it was asked for on
 const broken = new Map();     // url -> status
@@ -392,6 +405,32 @@ for (const v of [
   }
   check(broken.size === 0, `requests: nothing the pages load is missing`, [...broken].map(([u, s]) => `${s} ${u.replace(ORIGIN, "")}`).slice(0, 10).join("; "));
   check(external.size === 0, `requests: no page asks another server for anything`, [...external].map(([u, w]) => `${u} (${w})`).slice(0, 10).join("; "));
+}
+
+// 6. Published as it is in the tree (no stamp) on another repository's
+//    GitHub Pages: the button works the release out from the page's own
+//    address (assets/door.js), for a project site and for owner.github.io.
+for (const [at, want] of [
+  ["https://someone-else.github.io/their-copy/", "https://github.com/someone-else/their-copy/releases/latest/download/AurOS-Setup.exe"],
+  ["https://someone-else.github.io/", "https://github.com/someone-else/someone-else.github.io/releases/latest/download/AurOS-Setup.exe"],
+]) {
+  const ctx = await browser.newContext({ viewport: { width: 1366, height: 768 }, userAgent: UA.winEdge });
+  await ctx.addInitScript(uadScript, UAD.winX64);
+  await ctx.route(() => true, (route) => {
+    const u = route.request().url();
+    if (!u.startsWith(at)) return route.abort();
+    let p = decodeURIComponent(new URL(u).pathname.slice(new URL(at).pathname.length));
+    if (p === "" || p.endsWith("/")) p += "index.html";
+    const file = path.resolve(SRC, p);
+    if (!file.startsWith(SRC + path.sep) || !fs.existsSync(file)) return route.fulfill({ status: 404, body: "404" });
+    return route.fulfill({ path: file, contentType: TYPES[path.extname(file).toLowerCase()] || "application/octet-stream" });
+  });
+  const page = await ctx.newPage();
+  await page.goto(at, { waitUntil: "load" });
+  await page.waitForTimeout(250);
+  const links = await page.evaluate(() => [document.getElementById("get"), ...document.querySelectorAll("[data-download]")].map((a) => a && a.href));
+  check(links.length > 0 && links.every((h) => h === want), `unstamped at ${at}: every download link is that repository's release`, links.join(" "));
+  await ctx.close();
 }
 
 await browser.close();

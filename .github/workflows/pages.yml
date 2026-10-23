@@ -1,11 +1,13 @@
 # The website (website/), on GitHub Pages:
-#   https://computerdude771.github.io/auros-from-scratch/
+#   https://<owner>.github.io/<repository>/
 #
-# First the front door is checked the way she meets it (tools/site/
-# check.mjs: the "Get AurOS" button on the first screen, its address,
-# text size and contrast, every link, the message for Macs, phones and
-# ARM PCs, no request to any other server); then the folder is published
-# as it is. There is no build step.
+# The folder names no repository: tools/site/stamp.sh writes in the one
+# this workflow runs in (${{ github.repository }}), so a move to another
+# repository edits nothing here. The stamped copy is checked the way she
+# meets it (tools/site/check.mjs: the "Get AurOS" button on the first
+# screen, its address, text size and contrast, every link, the message
+# for Macs, phones and ARM PCs, no request to any other server), and that
+# same copy is published.
 #
 # Not while the download is missing: the front door's one button goes to
 # releases/latest/download/AurOS-Setup.exe (the href of #get in
@@ -28,6 +30,7 @@ on:
     paths:
       - 'website/**'
       - 'tools/site/**'
+      - 'tools/repo.sh'
       - '.github/workflows/pages.yml'
   workflow_dispatch:
 
@@ -55,14 +58,16 @@ jobs:
         run: |
           npm install --no-save --no-audit --no-fund --prefix "$RUNNER_TEMP/pw" playwright@1.56.1
           "$RUNNER_TEMP/pw/node_modules/.bin/playwright" install --with-deps chromium
+      - name: The site, with this repository written in
+        run: sh tools/site/stamp.sh website "$RUNNER_TEMP/site"
       - name: Check the front door
         env:
           PLAYWRIGHT_DIR: ${{ runner.temp }}/pw
-        run: node tools/site/check.mjs
+        run: node tools/site/check.mjs --dir "$RUNNER_TEMP/site"
       - name: Is the download there?
         id: download
         run: |
-          url=$(grep -o 'id="get" href="[^"]*"' website/index.html | head -1 | sed 's/.*href="//; s/"$//')
+          url=$(grep -o 'id="get" href="[^"]*"' "$RUNNER_TEMP/site/index.html" | head -1 | sed 's/.*href="//; s/"$//')
           if [ -z "$url" ]; then echo "::error::no #get link in website/index.html"; exit 1; fi
           # GitHub redirects to a signed address that may refuse HEAD;
           # ask for the first byte, as a browser would ask for the file.
@@ -88,8 +93,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/configure-pages@v5
+      - name: The site, with this repository written in
+        run: sh tools/site/stamp.sh website "$RUNNER_TEMP/site"
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: website
+          path: ${{ runner.temp }}/site
       - id: deployment
         uses: actions/deploy-pages@v4
