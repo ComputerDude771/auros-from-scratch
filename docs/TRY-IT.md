@@ -104,16 +104,25 @@ Windows machine before it is published (`.github/workflows/windows.yml`).
    look. Press **Next**. Language, keyboard and time zone come from
    Windows without a question. You can change the look later in
    AurOS's Settings.
-6. **Ready** says what stays (Windows and your files), where AurOS goes,
-   that the PC restarts once, and how long it takes on this PC (longer
-   on a hard disk than an SSD). Press **Install AurOS**. Nothing to tick
-   and nothing to type. It checks the PC once more, then shows one bar
+6. **Ready** says what stays (Windows and your files), how much room
+   AurOS takes (up to 40 GB) and what Windows keeps free, that the PC
+   restarts once, and how long it takes on this PC (longer on a hard
+   disk than an SSD; measured from the download already running). Press
+   **Install AurOS**. Nothing to type, and nothing that must be ticked. It checks the PC once more, then shows one bar
    and the time left. You can leave it: it keeps the PC awake.
 7. When it is ready it says **Ready to restart** and restarts by itself
    after 60 seconds, counting down on the screen. **Restart now** does it
    at once; **Not yet** stops the count. Do not close the window
    instead: closing it before the restart takes everything back, on
    purpose.
+
+If it cannot go on at all (a Windows-on-ARM laptop, a PC that starts
+the older way, an Intel-remapped NVMe drive, a failing drive), the page
+says why in one line and *What you can do* in another, and its one
+button is **Close**.
+
+Narrator can read every page and press its buttons (the window answers
+as an accessible object, not one blank picture).
 
 Pictures of every page: `docs/shots/wizard/`.
 
