@@ -3671,7 +3671,7 @@ static int shot_run(const char *dir)
     g_ab_phase = AB_PREPARE; g_ab_pct = 41;
     g_eta_min = 12;
     shot_save(dir, "5a-progress");
-    g_ab_phase = AB_INSPECT; g_ab_pct = 0; g_eta_min = -1;
+    g_ab_phase = AB_INSPECT; g_ab_pct = 0; g_eta_min = -1; g_bar_f = 0.f;
     shot_save(dir, "5b-progress-starting");
 
     g_install_running = 0; g_install_finished = 1;
