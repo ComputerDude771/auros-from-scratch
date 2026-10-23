@@ -8,6 +8,7 @@
 
 #include "fix.h"
 #include "plat.h"
+#include "aurbridge-baked.h"   /* AUROS_SITE_W: the website, from build/aurbridge */
 
 /* ── the table ─────────────────────────────────────────────────────── */
 
@@ -160,8 +161,11 @@ static const struct { const char *id; const wchar_t *line; } NOTES[] = {
 
 /* The page for "someone who knows computers" (website/advanced.html):
  * switching a BIOS-mode PC to the newer way, and Intel's "RAID On" to
- * AHCI, safely. Written out in full, because she will copy it down. */
-#define ADVANCED L"computerdude771.github.io/auros-from-scratch/advanced.html"
+ * AHCI, safely. Written out in full, because she will copy it down.
+ * The site's address is baked by build/aurbridge from the repository it
+ * builds for (tools/repo.sh), so a move to another repository edits
+ * nothing here. */
+#define ADVANCED AUROS_SITE_W L"advanced.html"
 
 static const struct { const char *id; const wchar_t *line; } INSTEAD[] = {
     { "arm-pc",

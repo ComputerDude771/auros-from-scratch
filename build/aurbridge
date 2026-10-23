@@ -173,6 +173,16 @@ fi
 [ -n "${AUROS_IMAGE_PIECES:-}" ] && \
     note "the image is fetched in $(grep -c '^piece ' "$AUROS_IMAGE_PIECES") pieces"
 
+# ── the website the wizard names (src/aurbridge/fix_win.c) ─────────
+# From the repository this installer is built for (tools/repo.sh:
+# AUROS_REPO, else GITHUB_REPOSITORY, else the origin remote), so moving
+# to another repository edits nothing here. tools/repo.sh lets through
+# only the characters of a GitHub owner and name, so it is safe as C.
+SITE_HOST=$(sh "$ROOT/tools/repo.sh" host) \
+    || die "cannot tell which repository this installer is for; set AUROS_REPO=owner/name"
+printf '#define AUROS_SITE_W L"%s"\n' "$SITE_HOST" >> "$BAKED"
+note "the website it names: $SITE_HOST"
+
 PAYLOAD_OBJ=""
 if [ -f "$KERNEL" ] && [ -f "$INITRD" ]; then
     step "the staging environment, into the executable"
