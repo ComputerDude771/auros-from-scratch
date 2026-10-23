@@ -228,6 +228,9 @@ jobs:
     timeout-minutes: 90
     strategy:
       fail-fast: false
+      # The free plan runs 20 jobs at a time for the whole repository,
+      # and a dozen workflows share them (docs/handoff/STREAMS.md).
+      max-parallel: 2
       matrix:
         include:
           - { test: installtest,     args: '',        image: false }
