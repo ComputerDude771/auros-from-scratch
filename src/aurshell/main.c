@@ -605,8 +605,67 @@ static int media_key(shell_ctx *c, int code)
     return 0;
 }
 
+/* ── where programs from Flathub are found ───────────────────────────
+ *
+ * flatpak puts what it installs -- the program's .desktop file, its
+ * icons, the file types it opens -- under two "exports" directories,
+ * and announces them by adding both to XDG_DATA_DIRS in
+ * /etc/profile.d and in systemd's user environment generator. Neither
+ * reaches this process: it is a system service, started by no login
+ * shell and no user manager. So every program the desktop starts --
+ * the store, the file manager, a browser asked to open a PDF --
+ * searched only /usr/share, and a program she had just installed from
+ * Flathub was invisible to all of them: the store's own Open button
+ * worked and nothing else knew the program existed.
+ *
+ * Added in front, user's own first, the order flatpak itself uses, and
+ * only if they are not already there. Done once, before anything is
+ * started, so every child inherits it. */
+static int path_list_has(const char *list, const char *dir)
+{
+    size_t n = strlen(dir);
+    for (const char *p = list; p && *p; ) {
+        const char *e = strchr(p, ':');
+        size_t len = e ? (size_t)(e - p) : strlen(p);
+        if (len == n && !strncmp(p, dir, n)) return 1;
+        if (len == n + 1 && !strncmp(p, dir, n) && p[n] == '/') return 1;
+        p = e ? e + 1 : NULL;
+    }
+    return 0;
+}
+
+static void flatpak_data_dirs(void)
+{
+    const char *cur = getenv("XDG_DATA_DIRS");
+    /* The specification's default, which is what an unset variable
+     * means -- replacing it with only the flatpak directories would
+     * hide everything in /usr/share instead. */
+    if (!cur || !*cur) cur = "/usr/local/share:/usr/share";
+    char add[2][320];
+    int na = 0;
+    const char *home = getenv("HOME");
+    if (home && *home && strlen(home) < 200)
+        snprintf(add[na++], sizeof add[0], "%s/.local/share/flatpak/exports/share", home);
+    snprintf(add[na++], sizeof add[0], "%s", "/var/lib/flatpak/exports/share");
+
+    char out[4096];
+    size_t w = 0;
+    out[0] = 0;
+    for (int i = 0; i < na; i++) {
+        if (path_list_has(cur, add[i])) continue;
+        int k = snprintf(out + w, sizeof out - w, "%s:", add[i]);
+        if (k < 0 || (size_t)k >= sizeof out - w) return;
+        w += (size_t)k;
+    }
+    if (!w) return;                       /* both already there */
+    int k = snprintf(out + w, sizeof out - w, "%s", cur);
+    if (k < 0 || (size_t)k >= sizeof out - w) return;   /* absurd; leave it */
+    setenv("XDG_DATA_DIRS", out, 1);
+}
+
 int main(int argc, char **argv)
 {
+    flatpak_data_dirs();
     /* HER copy first, the machine's second.
      *
      * /etc/auros belongs to whoever set the computer up, and it has to
