@@ -72,6 +72,14 @@ jobs:
           echo "E2E_T0=$(date +%s)" >> "$GITHUB_ENV"
           bash tools/e2e/runner-setup.sh | tee -a "$GITHUB_ENV"
 
+      - name: the evidence's prerelease, refreshed while the run goes on
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          bash tools/e2e/publish.sh init
+          mkdir -p "$E2E_DIR/out"
+          nohup bash tools/e2e/publish.sh live "$E2E_DIR/out" >/dev/null 2>&1 &
+
       - name: cache key for the installed Windows
         id: key
         run: |
@@ -123,7 +131,7 @@ jobs:
         if: always()
         env:
           GH_TOKEN: ${{ github.token }}
-        run: bash tools/e2e/publish.sh "$E2E_DIR/out"
+        run: bash tools/e2e/publish.sh final "$E2E_DIR/out"
 
       - uses: actions/upload-artifact@v4
         if: always()

@@ -38,7 +38,9 @@ repository is public, KVM is on the standard runners, and the evidence
 goes to a prerelease using the workflow's own token.
 
 The evidence of run N: `https://github.com/ComputerDude771/auros-from-scratch/releases/download/e2e-N/e2e-evidence.zip`
-(also an artifact named `e2e-evidence`). Inside: `windows/` (M1) and
+(also an artifact named `e2e-evidence`). While it runs, `live.png` (the
+newest screenshot) and `live.txt` (timings and the driver's last lines)
+in the same release are refreshed every three minutes. Inside the zip: `windows/` (M1) and
 `flow/` (M2, M3), each with `shots/` (every screen, numbered in order),
 `timings.md`, `driver.log`, `serial.log` (firmware, and AurOS's console),
 `guest-events.log`, `ui-elements.log` (what UI Automation saw in Edge and
