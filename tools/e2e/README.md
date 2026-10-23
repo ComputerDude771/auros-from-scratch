@@ -131,6 +131,10 @@ All in `env:` at the top of `.github/workflows/e2e.yml`:
   change freely.
 - `E2E_STORE=0` skips M3.
 
+`python3 tools/e2e/selftest.py` (no VM, seconds; the job's first step)
+checks that each variant's expected words still match the wizard's
+titles in `src/aurbridge`, and every way `publish.sh` can publish.
+
 Locally (Linux with KVM, `runner-setup.sh` lists the packages):
 
 ```sh

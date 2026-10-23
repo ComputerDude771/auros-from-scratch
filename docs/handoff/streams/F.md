@@ -114,7 +114,9 @@ is published. Details: README "Pointing it at a new build".
 - Evidence (when publishing works): `releases/download/e2e-<RUN>/live[-<variant>].png`
   and `.txt` while it runs, `e2e-evidence[-<variant>].zip` after (screenshots
   `shots/`, `driver.log`, `timings.md`, serial logs, `windows-facts.json`).
-- Locally without KVM: `python3 -m pyflakes tools/e2e/*.py`,
+- Locally without KVM: `python3 tools/e2e/selftest.py` (36 checks: variant
+  words against the wizard's titles, publish.sh's four ways out with a fake
+  `gh`; also the job's first step), `python3 -m pyflakes tools/e2e/*.py`,
   `sh -n tools/e2e/*.sh`, `sh tools/e2e/mkanswer.sh /tmp/a.iso` (then check
   `autounattend.xml` in it with `xmllint`), and `python3 tools/e2e/vision.py shot.png`
   on any screenshot to see what the driver reads.

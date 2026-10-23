@@ -75,16 +75,17 @@ DISK_GB = int(E("E2E_DISK_GB", "128"))
 DISK_THROTTLE = E("E2E_DISK_THROTTLE", "")     # e.g. bps=104857600,iops=120
 
 # What the installer must say, and do, on each variant's PC (its stops
-# and fixes: src/aurbridge/preflight.c, fix_win.c). Without this a
+# and fixes: src/aurbridge/preflight.c, fix_win.c; selftest.py checks
+# each page pattern still matches both titles of its stop). Without this a
 # variant whose PC came out wrong (too much room left, encryption not
 # on) would pass by testing the plain PC again.
 #   page:     a regular expression some wizard page must show
 #   fix:      "Fix these for me" was pressed
 #   restarts: Windows restarted for the fix, before the install
 VARIANT_EXPECT = {
-    "smalldisk": dict(page=r"enough free space|free space on drive", fix=True, restarts=0),
-    "bitlocker": dict(page=r"is encrypted|encryption off", fix=True, restarts=0),
-    "pending":   dict(page=r"waiting to restart|finish an update", fix=True, restarts=1),
+    "smalldisk": {"page": r"enough free space|free space on drive", "fix": True, "restarts": 0},
+    "bitlocker": {"page": r"is encrypted|encryption off", "fix": True, "restarts": 0},
+    "pending":   {"page": r"waiting (to|for a) restart|finish an update", "fix": True, "restarts": 1},
 }
 
 HUB = "http://10.0.2.2:8000"

@@ -104,6 +104,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # seconds, before hours: the variants' expected words still match
+      # the wizard's, and the evidence still has somewhere to go
+      - name: the harness's own checks
+        run: python3 tools/e2e/selftest.py
+
       - name: which PC this is
         run: |
           # GOLDEN: which installed Windows (cached separately); the rest
