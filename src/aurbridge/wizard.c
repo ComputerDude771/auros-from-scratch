@@ -890,6 +890,7 @@ static int any_cannot(void)
 static void fix_start(void)
 {
     if (!fixable_now()) return;
+    if (g_selftest || g_nav_mode || g_shot_mode) return;   /* harnesses never fix */
     if (InterlockedCompareExchange(&g_fix_busy, 1, 0) != 0) return;
     for (int i = 0; i < g_report.n; i++) {
         if (g_report.results[i].sev != PF_BLOCK) continue;
@@ -3267,7 +3268,11 @@ static void tick(void)
                        (g_page == PAGE_WELCOME && g_reveal >= N_CHK && g_settle > 8));
         if (step == 0 && settled) {
             step = 1; at = g_ticks;
-            PostMessageW(g_hwnd, WM_KEYDOWN, VK_RETURN, 0);
+            /* NEVER ON THE STOP PAGE: Enter there is "Fix these for me",
+             * which can empty folders or restart the machine running the
+             * test. Only a clean first page gets its Next pressed. */
+            if (g_page == PAGE_WELCOME)
+                PostMessageW(g_hwnd, WM_KEYDOWN, VK_RETURN, 0);
         } else if (step == 1 && g_ticks > at + 6) {
             step = 2; at = g_ticks;
             PostMessageW(g_hwnd, WM_KEYDOWN, VK_TAB, 0);
