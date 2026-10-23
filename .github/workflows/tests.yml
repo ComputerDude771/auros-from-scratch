@@ -114,6 +114,12 @@ jobs:
       - name: bridgetest
         if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
         run: sh tools/bridgetest.sh 2>&1 | tee transcripts/bridgetest.txt
+      - name: shrinktargettest
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        run: sh tools/shrinktargettest.sh 2>&1 | tee transcripts/shrinktargettest.txt
+      - name: probetest
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        run: sh tools/probetest.sh 2>&1 | tee transcripts/probetest.txt
       - name: manifesttest (the published wizard)
         if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
         run: sh tools/manifesttest.sh dl/installer/AurOS-Setup.exe 2>&1 | tee transcripts/manifesttest.txt

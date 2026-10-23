@@ -538,6 +538,18 @@ int plat_restart(char *why, size_t wn)
     return 0;
 }
 
+/* The simulated machine does not sleep; it leaves a mark so a test can
+ * see the install asked to keep it awake. */
+void plat_keep_awake(void)
+{
+    char p[600];
+    simpath(p, sizeof p, "kept-awake");
+    FILE *f = fopen(p, "w");
+    if (f) fclose(f);
+}
+
+void plat_let_sleep(void) { }
+
 int plat_file_delete(const char *path, char *why, size_t wn)
 {
     if (unlink(path) == 0 || errno == ENOENT) return 0;

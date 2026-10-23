@@ -1189,9 +1189,22 @@ static void beside_me(char *out, size_t n, const char *leaf)
     out[n - 1] = 0;
 }
 
+static HANDLE g_dl_thread;             /* defined with download_begin() */
+
 static DWORD WINAPI ab_worker(LPVOID p)
 {
     (void)p;
+    /* WAIT FOR THE EARLY DOWNLOAD FIRST, so nothing writes \AurOS\ while
+     * ab_run's ensure_image() reads or rewrites it. This wait is on the
+     * worker thread, not the UI thread, so the window keeps painting;
+     * and because the download ran while she read the pages, it is
+     * usually already finished and this returns at once. A failed early
+     * fetch is not fatal -- ab_run's own ensure_image() retries it. */
+    if (g_dl_thread) {
+        WaitForSingleObject(g_dl_thread, INFINITE);
+        CloseHandle(g_dl_thread);
+        g_dl_thread = NULL;
+    }
     int rc = ab_run(AB_HANDOFF, &g_ab_choice, &g_report, &g_ab_machine,
                     ab_say_cb, ab_prog_cb, NULL, g_ab_why, sizeof g_ab_why);
     InterlockedExchange(&g_ab_state, rc == 0 ? 2 : 3);
@@ -1213,6 +1226,102 @@ static void choices_from_page(ab_choice *c)
     _snprintf(c->timezone, sizeof c->timezone - 1, "%s", g_tz_v[g_sel_tz]);
 }
 
+/* WHERE THE IMAGE IS, OR WILL BE -- the part of the choice that does
+ * not depend on anything she picks on the pages, so it can be filled in
+ * the moment the check passes and the early download (download_begin)
+ * can start while she reads. Both install_begin() and download_begin()
+ * fill their own ab_choice with this, so the two never share a struct
+ * one writes while the other reads. */
+static void choice_image_source(ab_choice *c)
+{
+    memset(c, 0, sizeof *c);
+    _snprintf(c->profile, sizeof c->profile - 1, "%s", "desktop");
+    /* NO MEMORY STICK. See page_backup() and docs/AURBRIDGE.md,
+     * "Installing without a memory stick". */
+    c->no_stick = 1;
+    c->stick_serial[0] = 0;
+    /* WHERE THE IMAGE GOES: \AurOS\ on the drive Windows started from,
+     * because that is the volume the staging environment will mount
+     * after the restart -- the journal names that partition and no
+     * other. An image already sitting beside the installer is moved
+     * there rather than downloaded again. */
+    {
+        char sd[16] = "C:";
+        DWORD k = GetEnvironmentVariableA("SystemDrive", sd, sizeof sd);
+        if (k == 0 || k >= sizeof sd || sd[1] != ':') snprintf(sd, sizeof sd, "C:");
+        sd[2] = 0;
+        _snprintf(c->image_path, sizeof c->image_path - 1,
+                  "%s\\AurOS\\auros-desktop.img", sd);
+    }
+    beside_me(c->image_alt_path, sizeof c->image_alt_path, "auros-desktop.img");
+    c->pieces_text = AUROS_PIECES_TEXT;
+    /* WHERE TO GET IT, BAKED IN WHEN THIS WAS BUILT. Empty in a
+     * developer build, which then requires the image to be sitting
+     * there already -- the arrangement this product had before it was
+     * one file. */
+    _snprintf(c->image_url, sizeof c->image_url - 1, "%s", AUROS_IMAGE_URL);
+    _snprintf(c->image_sha256, sizeof c->image_sha256 - 1, "%s", AUROS_IMAGE_SHA256);
+    c->image_expect = AUROS_IMAGE_BYTES;
+    /* AND THE STAGING ENVIRONMENT IS INSIDE THIS FILE. Leaving these
+     * empty is what says so: phases.c unpacks them from the
+     * executable's own resources. */
+    c->kernel_path[0] = 0;
+    c->initrd_path[0] = 0;
+}
+
+/* ── the early download ──────────────────────────────────────────────
+ *
+ * The five-gigabyte download is the floor of the whole install, and it
+ * used to start only after every page was read and the final button
+ * pressed -- so the wait came AFTER the reading, not during it. The
+ * 2026-10-23 audit put ~6 minutes of staring at a bar where it did not
+ * need to be. So the moment the check passes, this starts fetching the
+ * image into \AurOS\ in the background, keeping the machine awake, while
+ * she reads. It writes nothing but that one file (and its pieces),
+ * which is non-destructive and resumable -- closing the window leaves a
+ * partial download behind that the next run simply continues.
+ *
+ * It has its OWN ab_choice and its OWN worker thread. install_begin()'s
+ * worker waits for this one to finish before ab_run() touches the
+ * image, so the two never write \AurOS\ at once; and if the early fetch
+ * failed, ab_run()'s own ensure_image() retries it, so the early
+ * download is an optimisation, never a dependency. */
+/* g_dl_thread is declared above ab_worker, which waits on it. */
+static ab_choice    g_dl_choice;
+static volatile LONG g_dl_state;   /* 0 idle, 1 running, 2 done, 3 failed */
+static int          g_dl_started;
+static char         g_dl_why[400];
+
+static DWORD WINAPI dl_worker(LPVOID p)
+{
+    (void)p;
+    /* The same callbacks as the install: the lines and the percentage
+     * land in the shared log, so when she reaches the progress page the
+     * download is already reflected there. ab_worker does not run
+     * concurrently with this -- it waits for this thread first. */
+    int rc = ab_fetch_image(&g_dl_choice, ab_say_cb, ab_prog_cb, NULL,
+                            g_dl_why, sizeof g_dl_why);
+    InterlockedExchange(&g_dl_state, rc == 0 ? 2 : 3);
+    return 0;
+}
+
+static void download_begin(void)
+{
+    if (g_dl_started) return;              /* once per run of the wizard */
+    g_dl_started = 1;
+    ab_lock_init();
+    choice_image_source(&g_dl_choice);
+    /* Nothing to fetch in a developer build with no address baked in;
+     * the image is expected beside the installer, and ab_run handles
+     * that. Only start the background fetch when there is somewhere to
+     * fetch from. */
+    if (!g_dl_choice.pieces_text[0] && !g_dl_choice.image_url[0]) return;
+    plat_keep_awake();
+    InterlockedExchange(&g_dl_state, 1);
+    g_dl_thread = CreateThread(NULL, 0, dl_worker, NULL, 0, NULL);
+    if (!g_dl_thread) { InterlockedExchange(&g_dl_state, 0); g_dl_started = 0; }
+}
+
 static void install_begin(void)
 {
     ab_lock_init();
@@ -1227,52 +1336,18 @@ static void install_begin(void)
     g_install_running = 1;
     g_install_finished = 0;
 
-    memset(&g_ab_choice, 0, sizeof g_ab_choice);
-    _snprintf(g_ab_choice.profile, sizeof g_ab_choice.profile - 1, "%s",
-              "desktop");
+    choice_image_source(&g_ab_choice);
     choices_from_page(&g_ab_choice);
-    /* NO MEMORY STICK. See page_backup() and docs/AURBRIDGE.md,
-     * "Installing without a memory stick". */
-    g_ab_choice.no_stick = 1;
-    g_ab_choice.stick_serial[0] = 0;
-    /* WHERE THE IMAGE GOES: \AurOS\ on the drive Windows started from,
-     * because that is the volume the staging environment will mount
-     * after the restart -- the journal names that partition and no
-     * other. An image already sitting beside the installer is moved
-     * there rather than downloaded again. */
-    {
-        char sd[16] = "C:";
-        DWORD k = GetEnvironmentVariableA("SystemDrive", sd, sizeof sd);
-        if (k == 0 || k >= sizeof sd || sd[1] != ':') snprintf(sd, sizeof sd, "C:");
-        sd[2] = 0;
-        _snprintf(g_ab_choice.image_path, sizeof g_ab_choice.image_path - 1,
-                  "%s\\AurOS\\auros-desktop.img", sd);
-    }
-    beside_me(g_ab_choice.image_alt_path, sizeof g_ab_choice.image_alt_path,
-              "auros-desktop.img");
-    g_ab_choice.pieces_text = AUROS_PIECES_TEXT;
-    /* WHERE TO GET IT, BAKED IN WHEN THIS WAS BUILT. Empty in a
-     * developer build, which then requires the image to be sitting
-     * there already -- the arrangement this product had before it was
-     * one file. */
-    _snprintf(g_ab_choice.image_url, sizeof g_ab_choice.image_url - 1,
-              "%s", AUROS_IMAGE_URL);
-    _snprintf(g_ab_choice.image_sha256, sizeof g_ab_choice.image_sha256 - 1,
-              "%s", AUROS_IMAGE_SHA256);
-    g_ab_choice.image_expect = AUROS_IMAGE_BYTES;
-    /* AND THE STAGING ENVIRONMENT IS INSIDE THIS FILE. Leaving these
-     * empty is what says so: phases.c unpacks them from the
-     * executable's own resources. They were two more files a person
-     * had to have downloaded and put in the right folder, and "the
-     * copy of AurOS to install could not be found" was the product
-     * blaming her for that. */
-    g_ab_choice.kernel_path[0] = 0;
-    g_ab_choice.initrd_path[0] = 0;
     /* SET BY A PERSON AND NOTHING ELSE. Reaching this function means
      * she has read the page that says what happens and pressed the
      * button on it; phases.c refuses without it, and that refusal is
      * the last line of defence if this screen is ever reorganised. */
     g_ab_choice.consent_given = 1;
+
+    /* The machine stays awake from here through the restart even if the
+     * early download never started (a developer build, or she moved
+     * faster than download_begin). Idempotent. */
+    plat_keep_awake();
 
     InterlockedExchange(&g_ab_state, 1);
     g_ab_thread = CreateThread(NULL, 0, ab_worker, NULL, 0, NULL);
@@ -1332,6 +1407,10 @@ static void install_cancel(void)
 {
     if (g_ab_state == 1) return;      /* a phase is mid-write; let it finish */
     ab_abort(&g_ab_machine, ab_say_cb, NULL);
+    /* Give the machine's sleep timers back: the run is over, whether it
+     * got as far as the engine or only started the background download.
+     * A partial download left in \AurOS\ is harmless and resumes. */
+    plat_let_sleep();
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -2766,6 +2845,13 @@ static void check_advance(void)
     g_reveal = N_CHK;
     if (g_page != PAGE_WELCOME) goto_page(PAGE_WELCOME);
     check_passed();
+    /* THE CHECK PASSED. Start fetching the image now, in the background,
+     * so the five-gigabyte download runs while she reads the pages
+     * instead of after. It writes only \AurOS\ (non-destructive,
+     * resumable), and install_begin's worker waits for it before doing
+     * anything else. Nothing has been consented to yet, and nothing
+     * destructive happens here. */
+    download_begin();
     g_want_focus_id = ID_PRIMARY;      /* Next is now the obvious move */
 }
 

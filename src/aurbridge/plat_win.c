@@ -1026,6 +1026,22 @@ int plat_fast_startup_off(char *why, size_t wn)
     return -1;
 }
 
+void plat_keep_awake(void)
+{
+    /* ES_SYSTEM_REQUIRED, not ES_DISPLAY_REQUIRED: the install does not
+     * need the screen lit, only the machine not asleep. ES_CONTINUOUS
+     * makes it a standing request for this thread rather than a one-off
+     * nudge. */
+    SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED);
+}
+
+void plat_let_sleep(void)
+{
+    /* ES_CONTINUOUS with no other flag clears the request, so the
+     * machine's own sleep timers come back. */
+    SetThreadExecutionState(ES_CONTINUOUS);
+}
+
 int plat_restart(char *why, size_t wn)
 {
     HANDLE tok;

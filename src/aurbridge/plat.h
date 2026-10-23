@@ -273,6 +273,22 @@ int plat_run(const char *cmdline, char *tail, size_t n);
  * both are read back. 0 when both are off, -1 with a sentence. */
 int plat_fast_startup_off(char *why, size_t wn);
 
+/* ── keeping the computer awake ──────────────────────────────────────
+ *
+ * The whole Windows-side run -- the five-gigabyte download most of all
+ * -- outlasts a laptop's display and sleep timers when it is left
+ * alone, which is exactly what a person does while a progress bar
+ * fills. A machine that sleeps mid-download wakes to a dropped
+ * transfer; one that sleeps between "ready to restart" and the restart
+ * is worse. SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)
+ * holds off system sleep (the screen may still blank) until it is
+ * cleared or the thread that set it exits, so plat_keep_awake() is
+ * called from the thread that lives the whole time -- the wizard's UI
+ * thread -- and plat_let_sleep() gives the timers back at the end.
+ * Both are safe to call more than once. */
+void plat_keep_awake(void);
+void plat_let_sleep(void);
+
 /* ── the one restart ─────────────────────────────────────────────── */
 
 /* Restart the computer, now. The wizard's last button, after phase 3:
