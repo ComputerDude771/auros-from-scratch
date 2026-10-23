@@ -16,6 +16,7 @@ name: othersys
 on:
   push:
     branches: ['claude/**']
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -33,6 +34,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           run=false
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
+            echo "run=true" | tee -a "$GITHUB_OUTPUT"; exit 0
+          fi
           case "$(printf '%s' "$MSG" | head -1)" in *'[othersys]'*) run=true ;; esac
           case "$BEFORE" in
             ''|0000000000000000000000000000000000000000)
@@ -85,7 +89,7 @@ jobs:
       fail-fast: false
       max-parallel: 2
       matrix:
-        variant: [ntfs, bitlocker, nofixup]
+        variant: [ntfs, powercut, nofixup, bitlocker]
     steps:
       - uses: actions/checkout@v4
       - name: runner (disk, KVM, packages)

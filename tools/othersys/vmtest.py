@@ -21,6 +21,8 @@ none). Phases:
   afteryes      BootNext cleared: BootOrder alone now starts Ubuntu
   moknegative   a MOK request planted on a copy of the firmware: the
                 blue-screen check must FAIL here, proving it can see one
+  powercut      (alone) the plug pulled the moment the installer has put
+                Ubuntu first: the next start must be Windows
 
 Each phase records wall-clock time. Every check is recorded with what it
 was expected to do; "must fail" checks prove the check can fail.
@@ -362,6 +364,38 @@ def phase_boot(rec, work, plan, name, timeout=20 * 60):
     return t, marks, secs
 
 
+def phase_powercut(rec, work, plan, boot, layout, before):
+    """Pull the plug the moment the installer has put Ubuntu first (the
+    guard's log line says it has, and has put Windows back): the next
+    start must be Windows, with Windows untouched."""
+    vm = VM(rec, work, 'powercut')
+    exited, secs, marks = vm.run(timeout=60 * 60, every=30,
+                                 stop_on=('othersys: guard: Boot', 'OTHERSYS-TEST LATE-DONE',
+                                          'OTHERSYS-TEST INSTALL-ERROR'))
+    vm.shot('cut')
+    vm.proc.kill()          # SIGKILL: no shutdown, no flush in the guest
+    vm.proc.wait()
+    t = vm.text()
+    rec.time('powercut', 'power on to the cut', secs)
+    rec.check('powercut', 'the installer put Ubuntu first and the guard put Windows back',
+              checks.check_marker(t, 'othersys: guard: Boot'))
+    rec.check('powercut', 'the cut came before the install finished',
+              [] if 'OTHERSYS-TEST LATE-DONE' not in t else ['the install had already finished'])
+    v = vars_live(os.path.join(work, 'vars.fd'))
+    rec.log('[powercut] firmware at the cut: BootOrder %s BootNext %s' % (','.join(checks.order(v)), checks.bootnext(v)))
+    rec.check('powercut', 'at the cut: BootOrder starts Windows first',
+              checks.check_windows_first(v, boot['windows_entry']))
+    rec.check('powercut', 'at the cut: no BootNext',
+              [] if checks.bootnext(v) is None else ['BootNext %s' % checks.bootnext(v)])
+    windows_checks(rec, 'powercut', work, layout, before)
+    t, marks, secs = phase_boot(rec, work, plan, 'afterpowercut', timeout=6 * 60)
+    rec.time('afterpowercut', 'power on to Windows Boot Manager', marks.get('WINDOWS-STAND-IN-BOOTED', secs))
+    rec.check('afterpowercut', 'the next start is Windows',
+              checks.check_marker(t, 'WINDOWS-STAND-IN-BOOTED'))
+    rec.check('afterpowercut', 'and not the half-installed Ubuntu',
+              [] if 'Linux version' not in t else ['a Linux kernel started'])
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('work')
@@ -398,6 +432,8 @@ def run_phases(rec, work, out, plan, boot, layout, before, phases, variant):
         vm.kill()
         rec.log('[smoke] %s' % marks)
         return
+    if 'powercut' in phases:
+        return phase_powercut(rec, work, plan, boot, layout, before)
     if True:
         if 'install' in phases:
             if not phase_install(rec, work, plan, boot, layout, before, variant):

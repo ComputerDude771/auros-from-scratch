@@ -262,6 +262,10 @@ def lint_seed(seed, layout):
     for word in ('nopersistent', 'live-media=/dev/disk/by-partuuid/', 'autoinstall', 'ds=nocloud'):
         if word not in grub:
             bad.append('grub.cfg lacks %s' % word)
+    if not any('othersys.py guard' in c for c in ai.get('early-commands', [])):
+        bad.append('early-commands do not start the guard (a power cut would start half an Ubuntu)')
+    if not any('othersys.py error' in c for c in ai.get('error-commands', [])):
+        bad.append('error-commands do not put Windows first again')
     if not ai.get('identity', {}).get('password', '').startswith('$6$'):
         bad.append('the password is not hashed')
     return bad, ai
@@ -294,6 +298,14 @@ def test_plan(d, layout):
     doc['autoinstall']['storage']['config'].append({'type': 'format', 'id': 'x', 'volume': 'part3', 'fstype': 'ext4'})
     open(ud, 'w').write('#cloud-config\n' + json.dumps(doc))
     expect('lint: an answer file formatting C: fails', lint_seed(seed, layout)[0], True)
+    doc = json.loads(good.split('\n', 1)[1])
+    doc['autoinstall']['early-commands'] = [c for c in doc['autoinstall']['early-commands'] if 'guard' not in c]
+    open(ud, 'w').write('#cloud-config\n' + json.dumps(doc))
+    expect('lint: an answer file without the guard fails', lint_seed(seed, layout)[0], True)
+    doc = json.loads(good.split('\n', 1)[1])
+    doc['autoinstall'].pop('error-commands')
+    open(ud, 'w').write('#cloud-config\n' + json.dumps(doc))
+    expect('lint: an answer file without the error handler fails', lint_seed(seed, layout)[0], True)
     open(ud, 'w').write(good)
     g = os.path.join(seed, 'boot/grub/grub.cfg')
     gt = open(g).read()
@@ -405,6 +417,34 @@ def test_helper(d):
     m.cancel_mok(st)
     expect('late: queued MOK requests cancelled', [] if not m.mok_pending() else m.mok_pending(), False)
     expect('late: and recorded', [] if st['mok_pending_at_install'] == ['MokNew', 'MokAuth'] else [str(st)], False)
+    # the guard, during the install: the moment curtin puts Ubuntu first
+    machine_after_curtin()
+    new = m.windows_first_again(plan, 'guard')
+    o = fv.order()
+    expect('guard: Windows first the moment the installer puts Ubuntu first',
+           [] if o and o[0] == '0002' else [str(o)], False)
+    expect('guard: nothing left BootOrder', [] if set(o) == {'0002', '0000', '0001', '0004', '0005', '0003'} else [str(o)], False)
+    expect('guard: no BootNext armed (a power cut now starts Windows)', [] if fv.get('BootNext') is None else ['armed'], False)
+    expect('guard: Windows already first: no write', [] if m.windows_first_again(plan, 'guard') is None else ['wrote'], False)
+    m.firmware_fixup(plan, {})
+    o = fv.order()
+    expect('guard then late: Windows first, BootNext Ubuntu, restart entry gone',
+           [] if o[0] == '0002' and fv.get('BootNext') == b'\x04\x00' and fv.get('Boot0003') is None else [str(o)], False)
+    machine_after_curtin()
+    m.cmd_guard(dict(plan, test={'skip_fixup': True}))
+    expect('guard, TEST skip_fixup: does nothing (so nofixup still proves the check)',
+           [] if fv.order()[0] == '0004' else [str(fv.order())], False)
+    # the error handler: after curtin's write, and after late armed BootNext
+    for when, prep in (('after the installer\'s firmware write', lambda: None),
+                       ('after late armed BootNext', lambda: m.firmware_fixup(plan, {}))):
+        machine_after_curtin()
+        prep()
+        m.cmd_error(dict(plan, system='ubuntu-26.04.1-desktop'))
+        o = fv.order()
+        a = fv.get(m.ANSWER_VAR, m.AUROS_GUID)
+        expect('error %s: Windows first, no BootNext, "failed" recorded' % when,
+               [] if o[0] == '0002' and fv.get('BootNext') is None and a and a.startswith(b'answer=failed\n')
+               else ['order %s BootNext %r answer %r' % (o, fv.get('BootNext'), a)], False)
     # the hold
     machine_after_curtin()
     m.firmware_fixup(plan, {})

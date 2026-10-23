@@ -3,6 +3,8 @@
 #   ntfs       the whole P1 flow on a Windows with NTFS
 #   bitlocker  the same with a BitLocker-shaped Windows partition
 #   xubuntu, ubuntucinnamon, ubuntu-budgie   the same flow, that flavour
+#   powercut   the plug pulled the moment the installer puts Ubuntu
+#              first: the next start must be Windows
 #   nofixup    install only, AurOS's firmware fix-up switched off: proves
 #              the Windows-first check fails on what Ubuntu's installer
 #              really leaves behind
@@ -27,7 +29,7 @@ t=$(date +%s)
 extra=()
 v=$variant
 if [ "$variant" = nofixup ]; then extra=(--skip-fixup); v=ntfs; fi
-case $variant in xubuntu|ubuntucinnamon|ubuntu-budgie) v=ntfs ;; esac
+case $variant in xubuntu|ubuntucinnamon|ubuntu-budgie|powercut) v=ntfs ;; esac
 extra+=(--system "$here/../../src/othersys/systems/$system.json")
 python3 -I "$here/mkdisk.py" --iso "$ISO" --variant "$v" --out "$OS_DIR/work-$variant" \
     --test-hooks "$here/hooks" "${extra[@]}" > "$out/mkdisk.log" 2>&1 || { tail -40 "$out/mkdisk.log"; exit 1; }
@@ -39,6 +41,7 @@ sed 's/"password": "[^"]*"/"password": "(hash)"/' "$OS_DIR/work-$variant/seed/us
 cp "$OS_DIR/work-$variant/layout.json" "$OS_DIR/work-$variant/before.json" "$out/"
 phases=install,firstboot,windowsfirst,confirm,afteryes,moknegative
 [ "$variant" = nofixup ] && phases=install
+[ "$variant" = powercut ] && phases=powercut
 python3 -I "$here/vmtest.py" "$OS_DIR/work-$variant" "$out" --variant "$variant" --phases "$phases"
 rc=$?
 step "whole run" $(( $(date +%s) - T0 ))

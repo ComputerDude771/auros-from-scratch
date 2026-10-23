@@ -276,9 +276,13 @@ def main():
         'cp -r %s/othersys/. /run/othersys/lib/ && umount %s' % (seed, esp['guid'].lower(), seed, seed, seed),
         'cd /run/othersys/lib && sha256sum --quiet -c SHA256SUMS',
         '/usr/bin/python3 /run/othersys/lib/othersys.py early',
+        # from here until power-off: Windows stays first whatever the
+        # installer writes, so a power cut starts Windows
+        'systemd-run --unit=othersys-guard --collect /usr/bin/python3 '
+        '/run/othersys/lib/othersys.py guard',
     ]
     late = ['/usr/bin/python3 /run/othersys/lib/othersys.py late']
-    errors = []
+    errors = ['/usr/bin/python3 /run/othersys/lib/othersys.py error || true']
     if a.test_hooks:
         early.insert(0, 'systemd-run --unit=othersys-serial -p StandardOutput=file:/dev/ttyS0 '
                         'journalctl -f -o short-monotonic --no-pager || true')
@@ -303,8 +307,7 @@ def main():
         'late-commands': late,
         'shutdown': 'poweroff',
     }
-    if errors:
-        ai['error-commands'] = errors
+    ai['error-commands'] = errors
     with open(os.path.join(out, 'user-data'), 'w') as f:
         f.write('#cloud-config\n' + json.dumps({'autoinstall': ai}, indent=1) + '\n')
     with open(os.path.join(out, 'meta-data'), 'w') as f:

@@ -471,6 +471,58 @@ def install_helper(plan, target, state):
         % (plan['user'], bool(plan.get('autologin'))))
 
 
+def windows_first_again(plan, why):
+    """If something new was put ahead of what Windows recorded (what
+    Ubuntu's installer does with "ubuntu"), put Windows' order back in
+    front. Nothing leaves BootOrder. Returns the new order, or None."""
+    cur = boot_order()
+    recorded = [int(x, 16) for x in plan['bootorder_before']]
+    if not cur or cur[0] in recorded:
+        return None
+    new = restored_order(recorded, cur, cur[0])
+    set_boot_order(new)
+    log('%s: Boot%04X was put ahead of Windows; BootOrder %s again' % (why, cur[0], fmt(new)))
+    return new
+
+
+GUARD_MAX_WRITES = 20
+
+
+def cmd_guard(plan):
+    """Live session, from the early check until the machine switches off:
+    the moment the installer puts Ubuntu first, put Windows back first.
+    Without this, a power cut between the installer's firmware write and
+    the late fix-up would start a half-installed Ubuntu; with it, Windows.
+    The late fix-up then arms BootNext as before."""
+    if plan['test'].get('skip_fixup'):
+        log('guard: TEST: not guarding')
+        return
+    log('guard: watching BootOrder')
+    writes = 0
+    while writes < GUARD_MAX_WRITES:
+        try:
+            if windows_first_again(plan, 'guard'):
+                writes += 1
+        except Exception as e:      # keep watching; late fixes it anyway
+            log('guard: %s' % e)
+        time.sleep(1)
+    log('guard: %d rewrites; something keeps changing BootOrder; stopped' % writes)
+
+
+def cmd_error(plan):
+    """The install failed. Whatever the installer did to the firmware, the
+    next start is Windows, and Windows can learn what happened."""
+    try:
+        windows_first_again(plan, 'error')
+    except Exception as e:
+        log('error: could not put Windows first: %s' % e)
+    if boot_next() is not None:
+        var_del('BootNext')
+        log('error: BootNext cleared')
+    record_answer({'system': plan['system'], 'answer': 'failed'})
+    log('error: the next start is Windows; BootOrder %s' % fmt(boot_order()))
+
+
 def cmd_late(plan, target='/target'):
     state = {'system': plan['system']}
     firmware_fixup(plan, state)
@@ -678,14 +730,15 @@ def cmd_status(plan):
 
 def main(argv):
     what = argv[1] if len(argv) > 1 else 'status'
-    here = LIVE_LIB if what in ('early', 'late') else LIB
+    live = what in ('early', 'late', 'guard', 'error')
+    here = LIVE_LIB if live else LIB
     plan = json.load(open(os.path.join(here, 'plan.json')))
     plan.setdefault('test', {})
-    if what in ('early', 'late'):
+    if live:
         os.environ.setdefault('OTHERSYS_LOG', LOG_LIVE)
     try:
-        {'early': cmd_early, 'late': cmd_late, 'boot': cmd_boot,
-         'answer': cmd_answer, 'status': cmd_status}[what](plan)
+        {'early': cmd_early, 'late': cmd_late, 'guard': cmd_guard, 'error': cmd_error,
+         'boot': cmd_boot, 'answer': cmd_answer, 'status': cmd_status}[what](plan)
     except Refuse as e:
         log('REFUSED: %s' % e)
         return 3
