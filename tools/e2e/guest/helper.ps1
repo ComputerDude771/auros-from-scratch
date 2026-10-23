@@ -5,7 +5,8 @@
 #   windows    every top-level window: title, class, process, rectangle
 #   elements   buttons, links, check boxes, menu items... in the windows
 #              whose title, class or process matches, with their names,
-#              rectangles and tick state (UI Automation)
+#              rectangles, tick state, and whether they are part of a web
+#              page (UI Automation)
 #   run        a read-only diagnostic (file hashes, folder listings)
 #
 # It never clicks, types or invokes anything: every press in this test is
@@ -72,6 +73,16 @@ function Elements($match, $types, $max) {
       $c = $w.Current
       $p = ProcName $c.ProcessId
       if ($match -and -not ($c.Name -match $match -or $c.ClassName -match $match -or $p -match $match)) { continue }
+      # Which of them belong to a web page (inside a Document), so that a
+      # page's own words ("press Keep anyway") are never taken for the
+      # browser's buttons.
+      $docIds = @{}
+      try {
+        $dcond = New-Object System.Windows.Automation.PropertyCondition($AE::ControlTypeProperty, [System.Windows.Automation.ControlType]::Document)
+        foreach ($d in $w.FindAll($TS::Descendants, $dcond)) {
+          foreach ($x in $d.FindAll($TS::Descendants, $cond)) { $docIds[($x.GetRuntimeId() -join '.')] = $true }
+        }
+      } catch { }
       foreach ($e in $w.FindAll($TS::Descendants, $cond)) {
         try {
           $ec = $e.Current
@@ -83,6 +94,7 @@ function Elements($match, $types, $max) {
           $out += [pscustomobject]@{
             name = $ec.Name; type = $ec.ControlType.ProgrammaticName -replace '^ControlType\.', ''
             rect = $r; enabled = $ec.IsEnabled; toggle = $tog
+            doc = $docIds.ContainsKey(($e.GetRuntimeId() -join '.'))
             window = $c.Name; proc = $p; aid = $ec.AutomationId
           }
           if ($out.Count -ge $max) { return $out }

@@ -12,7 +12,7 @@ GitHub Actions Linux runner, and keeps a screenshot of every screen.
 |---|---|---|
 | M1 `e2e.py windows` | Windows 11 Enterprise evaluation, downloaded from Microsoft (`get-windows.sh`), installed unattended (`guest/autounattend.xml`) under QEMU/KVM: q35, OVMF with Secure Boot on and Microsoft's keys, TPM 2.0 (swtpm), a 128 GB SATA SSD (AHCI, TRIM), e1000e, 1280x800, USB tablet. EFI 100 MB, MSR, C:, Recovery after C:. Fast Startup, SmartScreen, Defender and UAC left as Windows ships them; Windows Update and Edge's first-run tour off by policy (`guest/specialize.cmd`). | A real, current Windows with a PC's boot set-up. `windows-facts.json` records what Windows itself says: Secure Boot, TPM, BitLocker state, Fast Startup, partitions, firmware boot entries. |
 | (cache) | The installed machine (disk, firmware variables, TPM state) is kept in the Actions cache. | Later runs start from the same fresh Windows in minutes. |
-| M2 `e2e.py flow` | Edge opens the real website (served from the runner, `http://10.0.2.2:8000`), the boxes are ticked, the download link pressed; Edge's download warnings answered (Keep, Keep anyway); the file's SHA-256 checked; SmartScreen's "More info", "Run anyway"; UAC's Yes (Alt+Y on the secure desktop); then the wizard: the teal primary button pressed whenever it is enabled, check boxes ticked, the typed word typed, until "Restart now". Then the restart is watched: firmware, the staging screen, AurOS's first start, and "Yes, it all works" is pressed. | The published installer, as a person gets it, takes this PC to AurOS: downloaded, trusted past Windows' warnings, elevated, preflight passes on a real machine, the image downloads and checks, BootNext is honoured by real firmware under Secure Boot (shim, grub, staging kernel), the real NTFS is shrunk, AurOS written, verified and started, and its first question answered. |
+| M2 `e2e.py flow` | Edge opens the real website (served from the runner, `http://10.0.2.2:8000`), its download button ("Get AurOS") is pressed (any boxes gating it ticked first); Edge's download warnings answered (Keep, Keep anyway); the file's SHA-256 checked; SmartScreen's "More info", "Run anyway"; UAC's Yes (Alt+Y on the secure desktop); then the wizard: the teal primary button pressed whenever it is enabled, check boxes ticked, the typed word typed, until "Restart now". Then the restart is watched: firmware, the staging screen, AurOS's first start, and "Yes, it all works" is pressed. | The published installer, as a person gets it, takes this PC to AurOS: downloaded, trusted past Windows' warnings, elevated, preflight passes on a real machine, the image downloads and checks, BootNext is honoured by real firmware under Secure Boot (shim, grub, staging kernel), the real NTFS is shrunk, AurOS written, verified and started, and its first question answered. |
 | M3 `e2e.py flow` (end) and `e2e.py inspect` | In AurOS: the store ("Get more programs") opened, a program searched for, installed and opened. Then the machine is shut down and its disk read with `qemu-nbd`, read-only. | A person can add a program; the program is on AurOS's disk, not just on the screen. |
 
 Every press is a QMP keyboard or tablet event (what a person's hands
@@ -69,7 +69,11 @@ All in `env:` at the top of `.github/workflows/e2e.yml`:
   wants `INSTALLER_SHA256` set to that file's hash, or empty to accept it.
 - `WEBSITE_DIR` (default `website`): the site Edge opens; `none` gives a
   one-link page. `WEBSITE_PAGE` (env of the flow step) picks the page;
-  `DOWNLOAD_LINK` is a regular expression for the link's accessible name.
+  `DOWNLOAD_LINK` is a regular expression for the link's accessible name
+  (default: "Get AurOS", or an older "Download ... installer"). Only the
+  page's own elements are candidates for it, and only Edge's own (never
+  the page's, which shows pictures and words of the same warnings) for
+  Keep / Show more / Keep anyway / Open file.
 - The store: `STORE_NAME`, `STORE_QUERY`, `STORE_RESULT`, `STORE_INSTALL`,
   `STORE_OPEN`, `APP_FILES` at the top of `e2e.py` (or as env).
 - `GOLDEN_VERSION`: bump to throw the cached Windows away. The cache key

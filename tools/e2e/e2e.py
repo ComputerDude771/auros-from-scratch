@@ -51,8 +51,9 @@ INSTALLER_STEM = re.sub(r"\.exe$", "", INSTALLER_NAME, flags=re.I)
 # a one-link page instead.
 WEBSITE_DIR = E("WEBSITE_DIR") or os.path.join(REPO, "website")
 WEBSITE_PAGE = E("WEBSITE_PAGE", "index.html")
-# The download link's name, as UI Automation reads it from Edge.
-DOWNLOAD_LINK = E("DOWNLOAD_LINK", r"(?i)download.*(installer|aurOS)")
+# The download link's name, as UI Automation reads it from Edge: the
+# website's "Get AurOS" button (an older page said "Download the ...").
+DOWNLOAD_LINK = E("DOWNLOAD_LINK", r"(?i)^\s*get aurOS\b|download.*(installer|aurOS)")
 
 # ── the store, after AurOS works (M3) ────────────────────────────────
 STORE_NAME = E("STORE_NAME", "Get more programs")    # the app list's name for it
@@ -212,7 +213,8 @@ class Flow:
                 f.write(f"--- {time.strftime('%H:%M:%S')} {match} {types} ({r.get('ms')} ms)\n")
                 for e in els:
                     f.write(f"{e.get('type')}\t{e.get('name')!r}\t{e.get('rect')}\t"
-                            f"toggle={e.get('toggle')}\t{e.get('window')!r}\n")
+                            f"toggle={e.get('toggle')}\t{'page' if e.get('doc') else 'ui'}\t"
+                            f"{e.get('window')!r}\n")
         return els
 
     def windows(self):
@@ -232,9 +234,13 @@ class Flow:
         self.m.click(x + w // 2, y + h // 2, label=why)
 
     @staticmethod
-    def pick(els, name, types=None, exact=False):
-        rx = re.compile(name if not exact else "^" + re.escape(name) + "$", re.I)
+    def pick(els, name, types=None, page=None):
+        """The first enabled element whose name matches; page=True only
+        a web page's own, page=False only the browser's or Windows'."""
+        rx = re.compile(name, re.I)
         for e in els:
+            if page is not None and bool(e.get("doc")) != page:
+                continue
             if (types is None or e.get("type") in types) and rx.search(e.get("name") or ""):
                 if e.get("enabled", True):
                     return e
@@ -317,13 +323,12 @@ class Flow:
             self.m.shot("website")
 
     def click_download(self):
-        with self.rec.phase("edge: tick the boxes and press Download"):
-            # The download is at the foot of the page: End, as a person
-            # scrolls there. The boxes gate the link (website/assets).
-            self.m.key("end", label="scroll to the download")
-            time.sleep(4)
+        with self.rec.phase("edge: press the website's download button"):
+            # The button as a person finds it: on screen, or further down
+            # (End, then the wheel). Any boxes that gate it get ticked.
             for attempt in range(8):
-                els = self.elements("msedge", ["CheckBox", "Hyperlink", "Button"])
+                els = [e for e in self.elements("msedge", ["CheckBox", "Hyperlink", "Button"])
+                       if e.get("doc")]
                 boxes = [e for e in els if e.get("type") == "CheckBox" and e.get("toggle") == "Off"]
                 if boxes:
                     self.click_el(boxes[0], "website tick: " + (boxes[0].get("name") or "")[:40])
@@ -331,11 +336,14 @@ class Flow:
                     continue
                 link = self.pick(els, DOWNLOAD_LINK, ("Hyperlink", "Button"))
                 if link:
-                    self.click_el(link, "website download link")
+                    self.click_el(link, "website: " + (link.get("name") or "download")[:40])
                     time.sleep(5)
                     return
-                self.m.scroll(640, 400, 5)
-                time.sleep(2)
+                if attempt == 0:
+                    self.m.key("end", label="look further down the page")
+                else:
+                    self.m.scroll(640, 400, 5)
+                time.sleep(3)
             raise Failure("no download link on the page (ui-elements.log has what Edge showed)")
 
     def keep_download(self):
@@ -345,11 +353,13 @@ class Flow:
             deadline = time.time() + 15 * 60
             pressed = []
             while time.time() < deadline:
-                els = self.elements("msedge", ["Button", "MenuItem", "Hyperlink", "ListItem",
-                                               "Text", "SplitButton"])
-                names = " | ".join((e.get("name") or "")[:80] for e in els)
-                for want, types in (("^Keep anyway$", None), ("^Show more$", ("Button",)),
-                                    ("^Keep$", None)):
+                els = [e for e in self.elements("msedge", ["Button", "MenuItem", "Hyperlink",
+                                                           "ListItem", "Text", "SplitButton"])
+                       if not e.get("doc")]     # never the page's own words
+                names = " | ".join((e.get("name") or "")[:120] for e in els)
+                for want, types in (("^Keep anyway$", ("Button", "MenuItem")),
+                                    ("^Show more", ("Button", "SplitButton")),
+                                    ("^Keep$", ("Button", "MenuItem"))):
                     e = self.pick(els, want, types)
                     if e and pressed.count(want) < 4:
                         self.click_el(e, "edge " + want.strip("^$"))
@@ -370,7 +380,8 @@ class Flow:
                         self.m.shot("downloaded")
                         return
                     warn = re.search(r"(isn.t commonly downloaded|can.t be downloaded securely|"
-                                     r"might be dangerous|was blocked|unsafe|verify)", names, re.I)
+                                     r"might be dangerous|download blocked|was blocked|unsafe|"
+                                     r"couldn.t verify)", names, re.I)
                     more = self.pick(els, r"^(More actions|See more|More options)", ("Button", "SplitButton", "MenuItem"))
                     if warn and more and pressed.count("more") < 4:
                         self.click_el(more, "edge download item: more actions")
@@ -393,7 +404,8 @@ class Flow:
     def open_installer(self):
         with self.rec.phase("windows: open the installer (SmartScreen, UAC)"):
             els = self.elements("msedge", ["Button", "Hyperlink", "ListItem", "MenuItem"])
-            op = self.pick(els, r"^Open file$") or self.pick(els, re.escape(INSTALLER_STEM))
+            op = (self.pick(els, r"^Open file$", page=False) or
+                  self.pick(els, re.escape(INSTALLER_STEM), page=False))
             if op:
                 self.click_el(op, "edge open file")
             else:
@@ -401,7 +413,8 @@ class Flow:
                 self.m.key("ctrl", "j", label="Edge downloads")
                 time.sleep(4)
                 els = self.elements("msedge", ["Button", "Hyperlink", "ListItem"])
-                op = self.pick(els, r"^Open file$") or self.pick(els, re.escape(INSTALLER_STEM))
+                op = (self.pick(els, r"^Open file$", page=False) or
+                      self.pick(els, re.escape(INSTALLER_STEM), page=False))
                 if not op:
                     raise Failure("Edge offers no way to open the download")
                 self.click_el(op, "edge open file")
