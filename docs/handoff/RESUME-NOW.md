@@ -108,6 +108,64 @@ which is `claude/linux-distro-from-scratch-tt5dx1`).
 
 At 03:20 the lead launched workflow `tonight-review` (run `wf_f84f4f83-bfc`): one reviewer per area (forge-shell, staging, ci, website, e2e, integration) over `c358a32..HEAD`, three skeptics per finding, confirmed findings SendMessage'd to the owning agent. Script: `/root/.claude/projects/-home-user-auros-from-scratch/0f9a7adc-af00-5b1e-9166-5e932ada07e6/workflows/scripts/tonight-review-wf_f84f4f83-bfc.js` (container-local). Re-run it after each big landing with a new `base`.
 
+
+## 6. STATE AT 03:40 UTC: owner at 92% of plan usage — read this first
+
+Stopped to save usage: the phase-2 agent (Stream H; it had read the
+Ubuntu installer's behaviour, pushed NOTHING — restart it from its brief
+in §2 when usage allows) and the review workflow `tonight-review`
+(partial results below). Streams A, B, C were told to land what's green,
+document, and stop. Streams E (release) and F (e2e) continue,
+economically, toward: a prerelease with `AurOS-Setup.exe`, then the e2e
+run on it.
+
+Trigger words changed (release agent, `d433874`/`948fdac`): the build
+job queues per job; the tests/release gates skip unless the commit
+subject contains `[test]` / `[publish]` (and `[latest]` to make it the
+latest). The authoritative list is in `docs/HANDOFF-RUNBOOK.md` and the
+header comments of `.github/workflows/{build,tests,release}.yml` —
+check there, not here.
+
+### First 30 minutes for a fresh session
+
+1. `git fetch origin claude/brave-hypatia-x72g1m`; read §0-§4 above and the
+   newest lines of the Progress log in `SESSION-2026-10-23.md`.
+2. List Actions runs on the branch (queued ones first — the free plan's 20
+   job slots fill up). Find the newest green `build` and whether a
+   prerelease exists (`mcp__github__list_releases`).
+3. If no prerelease: push an empty-ish docs commit whose subject carries
+   the publish word (see runbook). If one exists: point `e2e.yml`
+   (`INSTALLER_URL`, `INSTALLER_SHA256`) at it and push; watch
+   `releases/download/e2e-<RUNID>/live.png`.
+4. Work the "unverified review findings" list below: verify each (1 min),
+   fix the real ones (owners' files are now free — the agents stopped).
+5. When e2e passes website → AurOS → program installed: publish as
+   latest, update `windows.yml` `PUBLISHED_*`/`IMAGE_*`, confirm the
+   website button resolves, tell the owner the two links (§4.7).
+
+### Unverified review findings (from `tonight-review`, stopped before its 3-skeptic check)
+
+Verify each before fixing; some may already be fixed by later commits.
+
+| Sev | Area | Where | Finding → fix |
+|---|---|---|---|
+| blocker | shell | src/aurshell/apps.c:404 | rail Home shows 6; store ranked 7th → rank PackageManager right after WebBrowser (storetest `a2b5dba` may already cover this) |
+| high | shell | src/aurshell/apps.c:124 | `open_entry()` O_NOFOLLOW rejects flatpak's symlinked .desktop files → Flathub apps never appear; drop O_NOFOLLOW |
+| high | shell | src/aurshell/main.c:790 | app list read once → new programs invisible until reboot; inotify rescan |
+| high | shell | build/forge:1623 / :476 | gdebi re-execs via pkexec without WAYLAND_DISPLAY → .deb install fails; map .deb to gnome-software-local-file-packagekit |
+| high | shell | profiles/desktop.profile:112 | no `alsa-ucm-conf alsa-topology-conf` → no sound on most Intel SOF laptops |
+| medium | shell | src/aurshell/main.c:1344 | portal backend lacks WAYLAND_DISPLAY → Flatpak Open/Save dialogs fail; dbus-update-activation-environment --systemd ... |
+| high | fastpath | build/staging:515 | preflight now accepts eMMC (D4) but staging has no MMC driver → add `kernel/drivers/mmc` to MOD_DIRS, load mmc_block |
+| medium | fastpath | src/aurstage/probe.c:337 | firmware path dangles after unchecked umount → settle 3 s before umount, retry EBUSY, reset firmware_class.path |
+| medium | e2e/ci | .github/workflows/tests.yml:151 | shrink-to-target + probe change not exercised in CI → add shrinktargettest/probetest steps and a ≥40 GiB sparse-NTFS installtest case |
+| high | release | .github/workflows/release.yml:193 | `[publish][latest]` can't promote an existing prerelease → if tag exists, verify exe and `gh release edit --prerelease=false --latest` |
+| high | release | .github/workflows/release.yml:192 | `[latest]` goes public before read-back/real-Windows checks → always create as prerelease; a final `promote` job after checks |
+| medium | release | .github/workflows/release.yml:85 | a flaky test can't be cured by `[test]` → use rerun-failed-jobs on the build run |
+| medium | release | .github/workflows/build.yml:206 | warns "browser problem" on every good Firefox build → only warn on `browser=MISSING` or `(fallback;` |
+| high | website | website/index.html:287,360 | promises "until Yes, switching on starts Windows" but auros-hold re-arms BootNext → reword: Windows kept as it was; if AurOS fails to start, Windows starts; "No" brings Windows back |
+| high | website | .github/workflows/pages.yml:56 | deploys while the only download link 404s → add a check that `releases/latest/download/AurOS-Setup.exe` resolves |
+| medium | website | website/assets/door.js:94 | 32-bit Windows on Firefox gets the x64 button → if no UA-CH and no Win64/WOW64/x64/ARM64 in UA, show "this computer can't" |
+
 ## 5. Traps already hit tonight
 
 - Pushing races: always `git fetch && git rebase origin/claude/brave-hypatia-x72g1m` before `git push origin HEAD:refs/heads/claude/brave-hypatia-x72g1m`; retry.
