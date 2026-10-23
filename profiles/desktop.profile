@@ -98,7 +98,10 @@ keyboard_variant=""
 # 2019 (Sound Open Firmware): without it the speakers and the built-in
 # microphone simply do not exist. It is only a Recommends of the
 # metapackage, and this build installs no Recommends -- so every image
-# before this one shipped with silent laptops. 12 MB.
+# before this one shipped with silent laptops. 12 MB. alsa-ucm-conf and
+# alsa-topology-conf are the other half: the per-machine descriptions
+# that tell the sound stack which SOF output is the speakers and which
+# input is the microphone. Under 1 MB together.
 packages_hardware="linux-firmware-minimal linux-image-generic
                    linux-firmware-amd-graphics linux-firmware-amd-misc
                    linux-firmware-intel-graphics linux-firmware-intel-misc
@@ -109,7 +112,7 @@ packages_hardware="linux-firmware-minimal linux-image-generic
                    linux-firmware-broadcom-wireless linux-firmware-marvell-wireless
                    linux-firmware-mediatek linux-firmware-realtek
                    linux-firmware-misc
-                   firmware-sof-signed
+                   firmware-sof-signed alsa-ucm-conf alsa-topology-conf
                    network-manager wireless-tools wpasupplicant
                    polkitd
                    bluez
