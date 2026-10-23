@@ -35,13 +35,13 @@ answered with the keyboard.
 ## Testing a new installer (the short version)
 
 1. In `.github/workflows/e2e.yml`, `env:`, set
-   `INSTALLER_URL: https://github.com/ComputerDude771/auros-from-scratch/releases/download/<TAG>/AurOS-Setup.exe`
+   `INSTALLER_URL: https://github.com/${{ github.repository }}/releases/download/<TAG>/AurOS-Setup.exe`
    and `INSTALLER_SHA256: <its sha256>` (empty accepts any file and prints
    its hash).
 2. Commit and push to a `claude/**` branch. Changing `e2e.yml` is what
    starts the run (so does `[e2e]` in a commit message). With the
    installed Windows cached, M2 starts about 8 minutes after the push.
-3. Watch `https://github.com/ComputerDude771/auros-from-scratch/releases/download/e2e-<RUN_ID>/live-<VARIANT>.png`
+3. Watch `https://github.com/OWNER/REPO/releases/download/e2e-<RUN_ID>/live-<VARIANT>.png`
    and `.../live-<VARIANT>.txt` (refreshed every 3 minutes); when a
    variant's job ends, `.../e2e-<RUN_ID>/e2e-evidence-<VARIANT>.zip` has
    every screenshot and log, and the release's notes get its timings.
@@ -82,7 +82,7 @@ head commit message contains `[e2e]`. It needs nothing else: the
 repository is public, KVM is on the standard runners, and the evidence
 goes to a prerelease using the workflow's own token.
 
-The evidence of run N: `https://github.com/ComputerDude771/auros-from-scratch/releases/download/e2e-N/e2e-evidence-VARIANT.zip`
+The evidence of run N: `https://github.com/OWNER/REPO/releases/download/e2e-N/e2e-evidence-VARIANT.zip`
 (also an artifact named `e2e-evidence-VARIANT`). While it runs,
 `live-VARIANT.png` (the newest screenshot) and `live-VARIANT.txt`
 (timings and the driver's last lines) in the same release are refreshed
@@ -99,7 +99,7 @@ All in `env:` at the top of `.github/workflows/e2e.yml`:
 
 - `INSTALLER_URL` / `INSTALLER_SHA256`: the installer to test, for
   example a prerelease asset
-  (`https://github.com/ComputerDude771/auros-from-scratch/releases/download/TAG/AurOS-Setup.exe`).
+  (`https://github.com/OWNER/REPO/releases/download/TAG/AurOS-Setup.exe`).
   The website's links to any `AurOS*.exe` are rewritten to it, the file
   keeps the name the URL ends in, and the downloaded file must hash to
   `INSTALLER_SHA256` (empty: accept and print). The installer carries its

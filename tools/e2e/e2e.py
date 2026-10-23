@@ -24,6 +24,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 import time
 
@@ -36,9 +37,14 @@ REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 E = os.environ.get
 
 # ── what to install, and from where ──────────────────────────────────
-PUBLISHED_URL = ("https://github.com/ComputerDude771/auros-from-scratch/raw/"
-                 "image-desktop/AurOS-Installer-test.exe")
-INSTALLER_URL = E("INSTALLER_URL") or PUBLISHED_URL
+# The default: the test build published on branch image-desktop of the
+# repository this runs for (tools/repo.sh: AUROS_REPO, else
+# GITHUB_REPOSITORY, else the origin remote). e2e.yml always sets it.
+INSTALLER_URL = E("INSTALLER_URL") or (
+    "https://github.com/"
+    + subprocess.run(["sh", os.path.join(REPO, "tools", "repo.sh")], check=True,
+                     stdout=subprocess.PIPE, text=True).stdout.strip()
+    + "/raw/image-desktop/AurOS-Installer-test.exe")
 INSTALLER_SHA256 = E("INSTALLER_SHA256", "")
 # A file on the runner instead (an artifact from an earlier job): served
 # from this host and the website's download links are pointed at it.

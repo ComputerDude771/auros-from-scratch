@@ -5,7 +5,7 @@
 set -uo pipefail
 tag=othersys-${GITHUB_RUN_ID:-local}
 url=${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-}
-export GH_REPO=${GH_REPO:-${GITHUB_REPOSITORY:-ComputerDude771/auros-from-scratch}}
+export GH_REPO=${GH_REPO:-$(sh "$(dirname "$0")/../repo.sh")}
 [ -n "${GH_TOKEN:-}" ] || { echo "publish: no token; nothing published"; exit 0; }
 case $1 in
 init)

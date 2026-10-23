@@ -38,7 +38,7 @@ STATE=${E2E_PUBLISH_STATE:-${RUNNER_TEMP:-/tmp}/e2e-publish-$run.state}
 have_gh() { [ -n "${GH_TOKEN:-}" ]; }
 # gh works out the repository from the git checkout it runs in; the
 # evidence directory is not one
-export GH_REPO=${GH_REPO:-${GITHUB_REPOSITORY:-ComputerDude771/auros-from-scratch}}
+export GH_REPO=${GH_REPO:-$(sh "$(dirname "$0")/../repo.sh")}
 
 notes0="Running: $url/actions/runs/$run. live-VARIANT.png and live-VARIANT.txt are refreshed every few minutes."
 try_create() {  # TARGET -- e2e-<run> at TARGET; prints gh's error
