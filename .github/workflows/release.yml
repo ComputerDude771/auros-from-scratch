@@ -13,9 +13,12 @@
 #     and it only works for workflows on the default branch.)
 #
 # The release is v<os_version>-<sha7 of the BUILT commit> -- the address
-# baked into that build's installer -- and a prerelease unless the
-# message also says [latest]. Only a full release moves
-# releases/latest/download/AurOS-Setup.exe, which the website links to.
+# baked into that build's installer -- and is always made a prerelease
+# first. [latest] asks the promote job to make it the full release once
+# every check has passed, including a real-Windows end-to-end run of
+# THIS AurOS-Setup.exe (e2e.yml with INSTALLER_SHA256 pinned to it).
+# Only a full release moves releases/latest/download/AurOS-Setup.exe,
+# which the website links to.
 #
 #   publish   the release, with AurOS-Setup.exe, the image pieces,
 #             pieces.txt and SHA256SUMS; then every file read back from
@@ -25,6 +28,15 @@
 #             starts and passes its navigation test, and the installer's
 #             own WinHTTP code fetches the image from the release and
 #             checks it.
+#   promote   [latest] only: finds a successful e2e.yml run whose
+#             INSTALLER_SHA256 is this AurOS-Setup.exe (the website, the
+#             download, the wizard, the restart and AurOS, on a real
+#             Windows 11 VM), then makes the release the full, latest one.
+#
+# A flaky test: re-run the failed jobs of the build run (the run page's
+# "Re-run failed jobs", or the GitHub tools' rerun_failed_jobs); the jobs
+# API reports each job's latest attempt, so [publish RUN-ID] then sees
+# the pass.
 name: release
 
 on:
@@ -140,8 +152,6 @@ jobs:
           github-token: ${{ github.token }}
       - name: the files, and what was tested where
         id: files
-        env:
-          LATEST: ${{ needs.which.outputs.latest }}
         run: |
           cat dist/installer/build-info.txt
           # The tag is the one baked into this build's installer.
@@ -188,11 +198,22 @@ jobs:
             echo '```'
           } > notes.md
           cat notes.md
-          flags="--prerelease"
-          if [ "$LATEST" = true ]; then flags="--latest"; fi
-          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --target "$COMMIT" $flags \
-              --title "AurOS $TAG" --notes-file notes.md \
-              rel/AurOS-Setup.exe rel/pieces.txt rel/SHA256SUMS rel/auros-desktop.img.gz.*
+          # ALWAYS a prerelease here, [latest] or not: nothing becomes
+          # what the website's link serves until it has been read back
+          # and started on Windows (the promote job, below).
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json tagName >/dev/null 2>&1; then
+            # Published before (a [publish] [latest] of an existing
+            # prerelease): the same build or a refusal, and the checks
+            # below run again on what is there.
+            gh release download "$TAG" --repo "$GITHUB_REPOSITORY" -p AurOS-Setup.exe -D was --clobber
+            [ "$(sha256sum was/AurOS-Setup.exe | cut -d' ' -f1)" = "$setup" ] \
+              || { echo "::error::release $TAG exists with a different AurOS-Setup.exe"; exit 1; }
+            echo "release $TAG already exists with this build's AurOS-Setup.exe"
+          else
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --target "$COMMIT" --prerelease \
+                --title "AurOS $TAG" --notes-file notes.md \
+                rel/AurOS-Setup.exe rel/pieces.txt rel/SHA256SUMS rel/auros-desktop.img.gz.*
+          fi
 
       - name: what a person downloads is what was built
         run: |
@@ -271,3 +292,42 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "getimage exited $LASTEXITCODE" }
           if (-not (Select-String -Path getimage.log -Pattern 'verdict=ok' -Quiet)) { throw "no verdict=ok" }
           "fetched and checked in $([int]((Get-Date) - $t).TotalSeconds) s"
+
+  promote:
+    needs: [which, publish, windows]
+    if: needs.which.outputs.latest == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ needs.publish.outputs.tag }}
+      SETUP_SHA256: ${{ needs.publish.outputs.setup_sha256 }}
+    steps:
+      - name: a real Windows has installed THIS AurOS-Setup.exe end to end
+        run: |
+          # e2e.yml pins what it tests in its own env; a run counts if
+          # its e2e job passed and the file it ran pinned this hash.
+          ok=""
+          for r in $(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/e2e.yml/runs?status=success&per_page=50" \
+                       --jq '.workflow_runs[] | "\(.id),\(.head_sha)"'); do
+            id=${r%,*}; sha=${r#*,}
+            gh api "repos/$GITHUB_REPOSITORY/actions/runs/$id/jobs" --jq '.jobs[] | select(.name == "e2e") | .conclusion' > /tmp/c.txt
+            grep -qx success /tmp/c.txt || continue
+            gh api "repos/$GITHUB_REPOSITORY/contents/.github/workflows/e2e.yml?ref=$sha" --jq .content | base64 -d > /tmp/e2e.yml
+            if grep -qE "INSTALLER_SHA256: *'?$SETUP_SHA256'?" /tmp/e2e.yml; then ok=$id; break; fi
+          done
+          if [ -z "$ok" ]; then
+            echo "::error::no passing e2e.yml run has tested AurOS-Setup.exe $SETUP_SHA256. Pin INSTALLER_URL to https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/AurOS-Setup.exe and INSTALLER_SHA256 to it in e2e.yml, let it pass, then push [publish] [latest] again. $TAG stays a prerelease."
+            exit 1
+          fi
+          echo "e2e run $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$ok installed this AurOS-Setup.exe on Windows"
+      - name: the full release
+        run: |
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --prerelease=false --latest
+          curl -fsSL --retry 5 -o latest.exe "https://github.com/$GITHUB_REPOSITORY/releases/latest/download/AurOS-Setup.exe"
+          [ "$(sha256sum latest.exe | cut -d' ' -f1)" = "$SETUP_SHA256" ] \
+            || { echo "::error::releases/latest/download/AurOS-Setup.exe is not this build's"; exit 1; }
+          echo "releases/latest/download/AurOS-Setup.exe is now $SETUP_SHA256"

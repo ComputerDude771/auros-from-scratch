@@ -88,7 +88,7 @@ jobs:
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends \
               mingw-w64 wine wine64 osslsigncode openssl python3 gcc libc6-dev make \
               grub-common gdisk mtools dosfstools cpio sbsigntool libxml2-utils file \
-              binutils zstd e2fsprogs
+              binutils zstd e2fsprogs fonts-dejavu-core
       - uses: actions/download-artifact@v4
         with:
           name: auros-installer
@@ -134,6 +134,14 @@ jobs:
       - name: bridgetest
         if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
         run: sh tools/bridgetest.sh 2>&1 | tee transcripts/bridgetest.txt
+      - name: storetest (Get more programs within two presses of every home)
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        run: |
+          cc -O2 -std=gnu11 -o "$RUNNER_TEMP/storetest" tools/storetest.c src/aurshell/apps.c \
+             src/aurshell/appwatch.c src/aurshell/foot.c src/aurshell/draw.c \
+             src/aurshell/shellcommon.c src/aurshell/anim.c src/aurshell/layouts/*.c \
+             src/common/theme.c src/common/font.c -I src/aurshell -I src/common -lm
+          "$RUNNER_TEMP/storetest" 2>&1 | tee transcripts/storetest.txt
       - name: shrinktargettest
         if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
         run: sh tools/shrinktargettest.sh 2>&1 | tee transcripts/shrinktargettest.txt

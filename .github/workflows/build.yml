@@ -203,7 +203,9 @@ jobs:
           if sudo test -f "$W"; then sudo cat "$W" > dist/installer/build-warnings; else : > dist/installer/build-warnings; fi
           echo "--- /etc/auros/build-warnings ($(wc -l < dist/installer/build-warnings) lines)"
           cat dist/installer/build-warnings
-          if grep -q '^browser=' dist/installer/build-warnings; then
+          # forge records the browser it installed on every build; only a
+          # missing one or a fallback is a problem.
+          if grep -qE '^browser=MISSING$|^browser=.*\(fallback;' dist/installer/build-warnings; then
             echo "::warning::the image records a browser problem: $(grep '^browser=' dist/installer/build-warnings)"
           fi
           sudo cp out/manifests/desktop.json dist/installer/manifest-desktop.json
