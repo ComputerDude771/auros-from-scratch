@@ -275,9 +275,23 @@ class Flow:
                 raise Failure("Windows did not reach the desktop (the helper never started)")
             time.sleep(45)
             self.m.shot("windows-desktop")
-            self.guest("Get-Disk | Format-List Number,FriendlyName,Size; "
-                       "Get-Volume -DriveLetter C | Format-List SizeRemaining; "
-                       "(Get-ItemProperty 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Power').HiberbootEnabled")
+            # What Windows says about itself, read as the signed-in user
+            # (no elevation): the state the installer is about to meet.
+            facts = self.guest(
+                "$o = Get-CimInstance Win32_OperatingSystem; \"$($o.Caption) $($o.Version)\"; "
+                "'DisplayVersion: ' + (Get-ItemProperty 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion').DisplayVersion; "
+                "'SecureBoot (UEFISecureBootEnabled): ' + (Get-ItemProperty 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\SecureBoot\\State').UEFISecureBootEnabled; "
+                "'Fast Startup (HiberbootEnabled): ' + (Get-ItemProperty 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Power').HiberbootEnabled; "
+                "'BitLocker on C: (shell, 1=on 2=off 3=encrypting 6=on/suspended): ' + "
+                "(New-Object -ComObject Shell.Application).NameSpace('C:').Self.ExtendedProperty('System.Volume.BitLockerProtection'); "
+                "'SmartScreen: ' + (Get-ItemProperty 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer' -ErrorAction SilentlyContinue).SmartScreenEnabled; "
+                "'Smart App Control (0 off, 1 on, 2 evaluation): ' + (Get-ItemProperty 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\CI\\Policy' -ErrorAction SilentlyContinue).VerifiedAndReputablePolicyState; "
+                "Get-Volume -DriveLetter C | Format-List FileSystem,Size,SizeRemaining; "
+                "Get-CimInstance Win32_DiskPartition | Format-Table Index,Type,Size,StartingOffset -AutoSize; "
+                "Get-CimInstance Win32_VideoController | Format-List Name,CurrentHorizontalResolution,CurrentVerticalResolution")
+            self.log("windows, as the installer will find it:\n" + facts.strip())
+            with open(os.path.join(self.a.out, "windows-facts.txt"), "w") as fh:
+                fh.write(facts)
         self.m.auto_shots(30)
 
     # -- 2. Edge: the website, its download link, Edge's own warnings --

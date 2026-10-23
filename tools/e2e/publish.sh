@@ -21,6 +21,9 @@ what=$1
 tag=e2e-${GITHUB_RUN_ID:-local}
 url=${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-}
 have_gh() { [ -n "${GH_TOKEN:-}" ]; }
+# gh works out the repository from the git checkout it runs in; the
+# evidence directory is not one
+export GH_REPO=${GH_REPO:-${GITHUB_REPOSITORY:-ComputerDude771/auros-from-scratch}}
 
 case $what in
 init)
