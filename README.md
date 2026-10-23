@@ -12,6 +12,14 @@ by downloading one file.**
 <sub>Not a mock-up — a screendump of AurOS running in a VM with Secure Boot
 **enabled**, `aurshell` painting directly to DRM/KMS.</sub>
 
+> **Get the whole project (or update it) with one command** — see
+> [`docs/MOVING.md`](docs/MOVING.md):
+> ```sh
+> D=~/Desktop/auros; R=https://github.com/ComputerDude771/auros-from-scratch.git; B=claude/brave-hypatia-x72g1m; if [ -d "$D/.git" ]; then git -C "$D" pull --ff-only; else git clone --single-branch --branch "$B" "$R" "$D"; fi; cd "$D"
+> ```
+> Owner-only settings and secrets: [`docs/OWNER-SETUP.md`](docs/OWNER-SETUP.md).
+> Picking up the work: [`docs/handoff/RESUME-NOW.md`](docs/handoff/RESUME-NOW.md).
+
 ---
 
 ## What this is

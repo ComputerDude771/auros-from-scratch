@@ -62,6 +62,7 @@ DONE needs no respawn.
 | P | every profile builds and boots | `.github/workflows/profiles.yml`, `profiles/{office,revive,school-kiosk,multilingual}.profile`, `tools/profiletest*` | new 04:35 |
 | R | Ferry: her files come across | `src/ferry/**` | new 04:35 |
 | K | help, support and legal drafts | `rootfs/usr/share/auros/help/**`, `docs/legal/**`, `SECURITY.md`, `docs/SUPPORT.md`, `website/advanced.html` | new 04:35 |
+| M | portability: no hard-coded repository | replaces `ComputerDude771/auros-from-scratch` / `computerdude771.github.io/auros-from-scratch` outside docs with values derived from the repository (workflows: `${{ github.repository }}`, `${{ github.repository_owner }}`; build scripts: `AUROS_REPO` defaulting to `$GITHUB_REPOSITORY` or the git remote; website: derived from its own Pages address, else one constant; wizard/installer strings: baked at build time) — minimal edits in other streams' files, tests that grep for the literal | new 05:10 |
 | W | workflows (lead) | `security-audit` wf_fc726b57-c9a, `launch-readiness` wf_c7f2f6d7-f78, `tonight-review` wf_f84f4f83-bfc | running |
 
 ## Briefs for the streams started at 04:35
