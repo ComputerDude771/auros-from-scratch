@@ -413,8 +413,9 @@ class Flow:
                 self.m.key("ctrl", "j", label="Edge downloads")
                 time.sleep(4)
                 els = self.elements("msedge", ["Button", "Hyperlink", "ListItem"])
-                op = (self.pick(els, r"^Open file$", page=False) or
-                      self.pick(els, re.escape(INSTALLER_STEM), page=False))
+                # edge://downloads is Edge's own page, so a page is fine here
+                op = (self.pick(els, r"^Open file$") or
+                      self.pick(els, re.escape(INSTALLER_STEM), ("Hyperlink", "Button")))
                 if not op:
                     raise Failure("Edge offers no way to open the download")
                 self.click_el(op, "edge open file")
