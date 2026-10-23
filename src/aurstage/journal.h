@@ -85,6 +85,24 @@ typedef struct {
     char     image_on[JOURNAL_STR];
     uint64_t run_id;              /* this install attempt             */
     uint64_t written_unix;        /* when Windows wrote this          */
+
+    /* image_on = "gap": THE FAST PATH. Windows shrank itself and
+     * AurBridge wrote the root and EFI partitions raw into the gap; see
+     * src/aurbridge/format.h for every field. Extents in LOGICAL blocks;
+     * win_orig_sectors in 512-byte units. journal_read() refuses a "gap"
+     * journal with any of these missing. */
+    uint64_t gap_root_first, gap_root_last;
+    uint64_t gap_rsc_first,  gap_rsc_last;
+    uint64_t gap_rec_first,  gap_rec_last;
+    uint64_t root_len;
+    char     root_sha256[80];
+    uint64_t boot_len;
+    char     boot_sha256[80];
+    uint64_t rsc_bytes;
+    uint64_t min_root_bytes;
+    uint64_t win_orig_sectors;
+    int      bitlocker;
+    int      wifi;
 } journal;
 
 typedef enum {

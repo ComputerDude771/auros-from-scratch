@@ -116,6 +116,8 @@ int journal_read(const char *path, journal *j)
             STR("boot_from",    boot_from)
             STR("profile",      profile)
             STR("image_on",     image_on)
+            STR("root_sha256",  root_sha256)
+            STR("boot_sha256",  boot_sha256)
             #undef STR
         } else {
             char *end = NULL;
@@ -128,6 +130,19 @@ int journal_read(const char *path, journal *j)
             else if (!strcmp(key, "win_ntfs_serial")) j->win_ntfs_serial = v;
             else if (!strcmp(key, "written_unix"))   j->written_unix   = v;
             else if (!strcmp(key, "run_id"))         j->run_id         = v;
+            else if (!strcmp(key, "gap_root_first")) j->gap_root_first = v;
+            else if (!strcmp(key, "gap_root_last"))  j->gap_root_last  = v;
+            else if (!strcmp(key, "gap_rsc_first"))  j->gap_rsc_first  = v;
+            else if (!strcmp(key, "gap_rsc_last"))   j->gap_rsc_last   = v;
+            else if (!strcmp(key, "gap_rec_first"))  j->gap_rec_first  = v;
+            else if (!strcmp(key, "gap_rec_last"))   j->gap_rec_last   = v;
+            else if (!strcmp(key, "root_len"))       j->root_len       = v;
+            else if (!strcmp(key, "boot_len"))       j->boot_len       = v;
+            else if (!strcmp(key, "rsc_bytes"))      j->rsc_bytes      = v;
+            else if (!strcmp(key, "min_root_bytes")) j->min_root_bytes = v;
+            else if (!strcmp(key, "win_orig_sectors")) j->win_orig_sectors = v;
+            else if (!strcmp(key, "bitlocker"))      j->bitlocker      = v ? 1 : 0;
+            else if (!strcmp(key, "wifi"))           j->wifi           = v ? 1 : 0;
             p = end;
         }
     }
@@ -136,6 +151,25 @@ int journal_read(const char *path, journal *j)
      * must not be treated as one that can. */
     if (!j->disk_serial[0] || !j->win_start_lba || !j->win_sectors)
         return 0;
+    /* A FAST-PATH JOURNAL WITHOUT ITS PLAN is not a journal that can be
+     * checked, and what it would be checked for is whether to write a
+     * partition table over the bytes it describes. Every field, then:
+     * each extent non-empty and in order, both hashes 64 hex digits. */
+    if (!strcmp(j->image_on, "gap")) {
+        int hx = strlen(j->root_sha256) == 64 && strlen(j->boot_sha256) == 64;
+        for (int i = 0; hx && i < 64; i++)
+            if (!isxdigit((unsigned char)j->root_sha256[i]) ||
+                !isxdigit((unsigned char)j->boot_sha256[i])) hx = 0;
+        if (!hx || !j->root_len || !j->boot_len || !j->rsc_bytes ||
+            !j->min_root_bytes || !j->win_orig_sectors ||
+            j->win_orig_sectors <= j->win_sectors ||
+            !(j->gap_root_first && j->gap_root_first <= j->gap_root_last &&
+              j->gap_root_last < j->gap_rsc_first &&
+              j->gap_rsc_first <= j->gap_rsc_last &&
+              j->gap_rsc_last < j->gap_rec_first &&
+              j->gap_rec_first <= j->gap_rec_last))
+            return 0;
+    }
     j->present = 1;
     j->corrupt = 0;
     return 1;

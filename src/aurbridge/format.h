@@ -179,6 +179,31 @@ typedef struct {
     char     image_on[16];
     uint64_t run_id;
     uint64_t written_unix;
+
+    /* ── image_on = "gap": THE FAST PATH (docs/AURBRIDGE.md) ─────────
+     *
+     * Windows has already shrunk itself and AurBridge has written the
+     * image's root and EFI partitions raw into the gap. This is what the
+     * staging environment checks before it commits anything: that the
+     * plan it computes from the table it finds (plan_compute_prepared)
+     * is exactly the plan recorded here, and that the bytes at the two
+     * written extents hash to what was written. All six extents are in
+     * the disk's LOGICAL blocks, as a GPT entry is; win_orig_sectors is
+     * in 512-byte units like win_sectors (journal.h says why).
+     * Written into the JSON only when image_on is "gap", so every other
+     * journal is byte for byte what it was. */
+    uint64_t gap_root_first, gap_root_last;    /* AUROS-ROOT  */
+    uint64_t gap_rsc_first,  gap_rsc_last;     /* AUROS-SAVED */
+    uint64_t gap_rec_first,  gap_rec_last;     /* AUROS-BOOT  */
+    uint64_t root_len;            /* bytes written at gap_root_first */
+    char     root_sha256[65];
+    uint64_t boot_len;            /* bytes written at gap_rec_first  */
+    char     boot_sha256[65];
+    uint64_t rsc_bytes;           /* what the plan was asked to hold */
+    uint64_t min_root_bytes;      /* the floor the plan was made with */
+    uint64_t win_orig_sectors;    /* C: before Windows shrank it     */
+    int      bitlocker;           /* 1: never mount or read C:       */
+    int      wifi;                /* 1: \EFI\AurOS\wifi.conf is there  */
 } fmt_journal;
 
 /* Exactly the shape src/aurstage/journal.c's parser accepts. It is

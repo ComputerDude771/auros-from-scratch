@@ -488,7 +488,38 @@ size_t fmt_journal_json(const fmt_journal *j, char *out, size_t n)
         (unsigned long long)j->run_id,
         (unsigned long long)j->written_unix);
     if (k < 0 || (size_t)k >= n) return 0;
-    return (size_t)k;
+    if (strcmp(j->image_on, "gap") != 0) return (size_t)k;
+
+    /* THE FAST PATH'S FIELDS, after the closing brace is taken back off.
+     * The two hashes are checked to be exactly 64 hex characters rather
+     * than escaped: anything else is a journal this writer must not
+     * produce. */
+    for (int h = 0; h < 2; h++) {
+        const char *x = h ? j->boot_sha256 : j->root_sha256;
+        if (strlen(x) != 64) return 0;
+        for (int i = 0; i < 64; i++)
+            if (!((x[i] >= '0' && x[i] <= '9') || (x[i] >= 'a' && x[i] <= 'f')))
+                return 0;
+    }
+    k -= 2;                                   /* "}\n" */
+    int m = snprintf(out + k, n - (size_t)k,
+        ",\"gap_root_first\":%llu,\"gap_root_last\":%llu,"
+        "\"gap_rsc_first\":%llu,\"gap_rsc_last\":%llu,"
+        "\"gap_rec_first\":%llu,\"gap_rec_last\":%llu,"
+        "\"root_len\":%llu,\"root_sha256\":\"%s\","
+        "\"boot_len\":%llu,\"boot_sha256\":\"%s\","
+        "\"rsc_bytes\":%llu,\"min_root_bytes\":%llu,"
+        "\"win_orig_sectors\":%llu,\"bitlocker\":%d,\"wifi\":%d}\n",
+        (unsigned long long)j->gap_root_first, (unsigned long long)j->gap_root_last,
+        (unsigned long long)j->gap_rsc_first,  (unsigned long long)j->gap_rsc_last,
+        (unsigned long long)j->gap_rec_first,  (unsigned long long)j->gap_rec_last,
+        (unsigned long long)j->root_len, j->root_sha256,
+        (unsigned long long)j->boot_len, j->boot_sha256,
+        (unsigned long long)j->rsc_bytes, (unsigned long long)j->min_root_bytes,
+        (unsigned long long)j->win_orig_sectors,
+        j->bitlocker ? 1 : 0, j->wifi ? 1 : 0);
+    if (m < 0 || (size_t)m >= n - (size_t)k) return 0;
+    return (size_t)k + (size_t)m;
 }
 
 /* ── a cpio with one file in it ──────────────────────────────────── */
