@@ -6,6 +6,16 @@ carries over (no transcripts, no scratch files, no running agents). Read
 this file fully, then the files it points to, then act. The work was
 designed to be resumed exactly from here.
 
+## 0. If these files are missing, the session ended before they landed
+
+- `docs/handoff/CURRENT-STATE.md` (newest / problems / plan / owner actions):
+  run `tools/workflows/current-state.js` first (Workflow tool), or write it
+  yourself from the files below.
+- `docs/security/FINDINGS.md`: run `tools/workflows/security-audit.js`.
+- `docs/LAUNCH-READINESS.md`: run `tools/workflows/launch-readiness.js`.
+- A stream with no `docs/handoff/streams/<ID>.md`: its brief is in
+  `docs/handoff/STREAMS.md` or §5 below, its progress in the Progress log.
+
 ## 1. What AurOS is, in one paragraph
 
 A free Linux desktop (Ubuntu 24.04 base, our own shell `aurshell`) that a
