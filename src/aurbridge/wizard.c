@@ -277,6 +277,7 @@ static wchar_t g_det_lang[96], g_det_kbd[96], g_det_tz[128];
 /* dev harness only; never set by anything the user can click */
 static int   g_shot_mode = 0;
 static int   g_nav_mode  = 0;
+static int   g_selftest  = 0;
 
 /* SET ONLY BY "Restart now" (or its countdown), and by Windows itself
  * ending the session. Closing the window before the restart takes
@@ -2501,6 +2502,14 @@ static const wchar_t *stage_sentence(int phase)
     }
 }
 
+/* THE BAR NEVER GOES BACKWARDS. The early download (download_begin)
+ * reports through the same callbacks before the engine's phases start,
+ * and the engine then starts again at its first phase: shown as it is,
+ * the bar would fall back to nothing just after the longest wait. */
+static float g_bar_f;
+
+static int early_download_running(void) { return g_dl_state == 1; }
+
 static int install_ok(void)     { return g_install_finished && g_ab_state == 2; }
 static int install_failed(void) { return g_install_finished && g_ab_state == 3; }
 
@@ -2569,11 +2578,15 @@ static int page_progress(int x, int y, int w)
 
     int phase, pct;
     read_engine(&phase, &pct);
-    float f = overall_fraction(phase < 0 ? 0 : phase, pct);
+    if (phase < 0) phase = 0;
+    if (early_download_running() && phase < AB_PREPARE) phase = AB_PREPARE;
+    float f = overall_fraction(phase, pct);
+    if (f > g_bar_f) g_bar_f = f;
+    f = g_bar_f;
 
     y += text_draw(L"Setting up AurOS", g_f_title, C_FG_HI, x, y, w,
                    DT_WORDBREAK) + S(22);
-    y += text_draw(stage_sentence(phase < 0 ? 0 : phase), g_f_bodyb, C_FG_HI, x, y,
+    y += text_draw(stage_sentence(phase), g_f_bodyb, C_FG_HI, x, y,
                    narrow, DT_WORDBREAK) + S(16);
 
     /* The bar. Under 30 px tall at any scale the e2e driver runs at,
@@ -2836,6 +2849,7 @@ static void check_advance(void)
         if (!nav_allowed(PAGE_PROGRESS)) { goto_page(PAGE_READY); return; }
         if (g_nav_mode) { g_page = PAGE_PROGRESS; return; }   /* --navtest: no engine */
         eta_reset();
+        g_bar_f = 0.f;
         install_begin();
         goto_page(PAGE_PROGRESS);
         return;
@@ -2851,7 +2865,9 @@ static void check_advance(void)
      * resumable), and install_begin's worker waits for it before doing
      * anything else. Nothing has been consented to yet, and nothing
      * destructive happens here. */
-    download_begin();
+    /* Not from a harness: --navtest, --shot and --selftest only render
+     * and report, and a release build has an address to fetch from. */
+    if (!g_nav_mode && !g_shot_mode && !g_selftest) download_begin();
     g_want_focus_id = ID_PRIMARY;      /* Next is now the obvious move */
 }
 
@@ -3152,8 +3168,6 @@ static int save_bmp(const char *path)
  *  Window
  * ═══════════════════════════════════════════════════════════════════ */
 static int g_paints;
-static int g_awake;
-static int g_selftest;
 static char g_selftest_dir[MAX_PATH];
 
 /* The stop page's quiet re-check came back clean. It goes back to the
@@ -3221,19 +3235,14 @@ static void tick(void)
         else if (g_settle >= 0 && ++g_settle == 8) { check_advance(); need = 1; }
     } else if (g_page == PAGE_PROGRESS) {
         install_tick();
-        /* "You can leave it" is only true if Windows does not go to
-         * sleep half way through the download: the window keeps it
-         * awake (not the screen) while there is work, and lets go after. */
-        int want_awake = g_install_running || g_cd_on;
-        if (want_awake != g_awake) {
-            SetThreadExecutionState(want_awake ? (ES_CONTINUOUS | ES_SYSTEM_REQUIRED)
-                                               : ES_CONTINUOUS);
-            g_awake = want_awake;
-        }
         if (g_install_running) {
             int ph, pc;
             read_engine(&ph, &pc);
-            eta_sample(overall_fraction(ph < 0 ? 0 : ph, pc), GetTickCount64());
+            if (ph < 0) ph = 0;
+            if (early_download_running() && ph < AB_PREPARE) ph = AB_PREPARE;
+            float f = overall_fraction(ph, pc);
+            if (f > g_bar_f) g_bar_f = f;
+            eta_sample(g_bar_f, GetTickCount64());
         }
         if (install_ok() && !g_cd_offered && !g_selftest) {
             countdown_start(GetTickCount64());
