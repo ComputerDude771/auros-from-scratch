@@ -225,6 +225,23 @@ jobs:
           Get-Content "$d\selftest.log"
           if (-not (Select-String -Path "$d\selftest.log" -Pattern 'window created   : yes' -Quiet)) { throw "no window" }
           if (-not (Select-String -Path "$d\selftest.log" -Pattern 'preflight done   : 1' -Quiet)) { throw "preflight did not finish" }
+      - name: the installer says its own name, and has its icon
+        shell: pwsh
+        run: |
+          # What SmartScreen's "Run anyway", the administrator question and
+          # the Downloads folder show before it runs (src/aurbridge/aurbridge-info.rc).
+          $v = (Get-Item .\exe\aurbridge-wizard.exe).VersionInfo
+          $v | Format-List ProductName, FileDescription, CompanyName, FileVersion, OriginalFilename
+          if ($v.ProductName -ne 'AurOS') { throw "ProductName is '$($v.ProductName)'" }
+          if ($v.FileDescription -ne 'AurOS Setup') { throw "FileDescription is '$($v.FileDescription)'" }
+          if ($v.CompanyName -ne 'AurOS') { throw "CompanyName is '$($v.CompanyName)'" }
+          Add-Type -AssemblyName System.Drawing
+          $i = [System.Drawing.Icon]::ExtractAssociatedIcon((Resolve-Path .\exe\aurbridge-wizard.exe).Path)
+          $b = $i.ToBitmap()
+          $c = $b.GetPixel([int]($b.Width / 2), [int]($b.Height / 2))
+          "icon centre: $c"
+          # the teal diamond, not Windows' blank program icon
+          if (-not ($c.G -gt 150 -and $c.B -gt 130 -and $c.R -lt 160)) { throw "the icon is not AurOS's: centre pixel $c" }
       - name: wizard starts the way a double-click starts it
         shell: pwsh
         run: |

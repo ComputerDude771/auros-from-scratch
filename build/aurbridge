@@ -240,10 +240,24 @@ WINDRES="${WINDRES:-x86_64-w64-mingw32-windres}"
 MANIFEST_OBJ=""
 python3 "$ROOT/tools/pe_payload.py" check "$SRC/aurbridge.manifest" >/dev/null \
     || die "the wizard's manifest is one Windows would refuse; the wizard would not start"
+# WITH IT, ITS NAME AND ITS ICON (src/aurbridge/aurbridge-info.rc): what
+# SmartScreen, the administrator question and the Downloads folder show
+# before it runs. AUROS_VERSION=x.y.z sets the version they show.
+VER="${AUROS_VERSION:-0.1.0}"
+case "$VER" in
+    [0-9]*.[0-9]*.[0-9]*) ;;
+    *) die "AUROS_VERSION=$VER is not x.y.z" ;;
+esac
+VMAJ=$(echo "$VER" | cut -d. -f1); VMIN=$(echo "$VER" | cut -d. -f2)
+VPAT=$(echo "$VER" | cut -d. -f3 | sed 's/[^0-9].*//')
 if command -v "$WINDRES" >/dev/null 2>&1; then
-    printf '1 24 "%s"\n' "$SRC/aurbridge.manifest" > "$OUT/aurbridge-manifest.rc"
-    "$WINDRES" -O coff -i "$OUT/aurbridge-manifest.rc" -o "$OUT/aurbridge-manifest.o" \
-        || die "the wizard's manifest would not build"
+    printf '1 24 "%s"\n#include "aurbridge-info.rc"\n' "$SRC/aurbridge.manifest" \
+        > "$OUT/aurbridge-manifest.rc"
+    "$WINDRES" -O coff --include-dir "$SRC" \
+        -DAUROS_VER_MAJOR="$VMAJ" -DAUROS_VER_MINOR="$VMIN" -DAUROS_VER_PATCH="${VPAT:-0}" \
+        -DAUROS_VER_STR="\\\"$VER\\\"" \
+        -i "$OUT/aurbridge-manifest.rc" -o "$OUT/aurbridge-manifest.o" \
+        || die "the wizard's manifest, name and icon would not build"
     MANIFEST_OBJ="$OUT/aurbridge-manifest.o"
 elif [ "${AUROS_RELEASE:-0}" = 1 ]; then
     die "no $WINDRES, so the wizard would not ask for administrator rights"

@@ -1,0 +1,45 @@
+/* What Windows says about AurOS-Setup.exe before it has run: the icon in
+ * her Downloads folder, and the name and publisher on SmartScreen's
+ * "Run anyway" panel and the administrator question. Without this they
+ * said "aurbridge-wizard.exe" with the blank icon of a file nobody
+ * should open. build/aurbridge links it into the wizard, with the
+ * manifest, and passes AUROS_VER_* (AUROS_VERSION, default 0.1.0). */
+#include <winver.h>
+
+#ifndef AUROS_VER_MAJOR
+#define AUROS_VER_MAJOR 0
+#define AUROS_VER_MINOR 1
+#define AUROS_VER_PATCH 0
+#define AUROS_VER_STR "0.1.0"
+#endif
+
+1 ICON "auros.ico"
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION    AUROS_VER_MAJOR, AUROS_VER_MINOR, AUROS_VER_PATCH, 0
+ PRODUCTVERSION AUROS_VER_MAJOR, AUROS_VER_MINOR, AUROS_VER_PATCH, 0
+ FILEFLAGSMASK  VS_FFI_FILEFLAGSMASK
+ FILEFLAGS      0
+ FILEOS         VOS_NT_WINDOWS32
+ FILETYPE       VFT_APP
+ FILESUBTYPE    VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "CompanyName",      "AurOS"
+            VALUE "FileDescription",  "AurOS Setup"
+            VALUE "FileVersion",      AUROS_VER_STR
+            VALUE "InternalName",     "AurOS Setup"
+            VALUE "LegalCopyright",   "AurOS contributors"
+            VALUE "OriginalFilename", "AurOS-Setup.exe"
+            VALUE "ProductName",      "AurOS"
+            VALUE "ProductVersion",   AUROS_VER_STR
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0409, 1200
+    END
+END
