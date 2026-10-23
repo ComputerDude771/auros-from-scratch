@@ -32,6 +32,20 @@ rectangles; it never presses anything. UAC is on the secure desktop,
 which nothing inside the session can see: it is found by OCR and
 answered with the keyboard.
 
+## Testing a new installer (the short version)
+
+1. In `.github/workflows/e2e.yml`, `env:`, set
+   `INSTALLER_URL: https://github.com/ComputerDude771/auros-from-scratch/releases/download/<TAG>/AurOS-Setup.exe`
+   and `INSTALLER_SHA256: <its sha256>` (empty accepts any file and prints
+   its hash).
+2. Commit and push to a `claude/**` branch. Changing `e2e.yml` is what
+   starts the run (so does `[e2e]` in a commit message). With the
+   installed Windows cached, M2 starts about 8 minutes after the push.
+3. Watch `https://github.com/ComputerDude771/auros-from-scratch/releases/download/e2e-<RUN_ID>/live.png`
+   and `.../live.txt` (refreshed every 3 minutes); when the run ends,
+   `.../e2e-<RUN_ID>/e2e-evidence.zip` has every screenshot and log.
+   `<RUN_ID>` is the number in the Actions run's URL.
+
 ## Running it
 
 It runs on GitHub Actions (`.github/workflows/e2e.yml`) when a push to a

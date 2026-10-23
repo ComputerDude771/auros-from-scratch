@@ -59,7 +59,9 @@ jobs:
               files=$(gh api "repos/$GITHUB_REPOSITORY/compare/$BEFORE...$GITHUB_SHA" --jq '.files[].filename' || true) ;;
           esac
           printf '%s\n' "$files"
-          if printf '%s\n' "$files" | grep -qE '^(tools/e2e/|\.github/workflows/e2e\.yml$)'; then
+          # (the README alone is not worth hours of runner)
+          if printf '%s\n' "$files" | grep -v '^tools/e2e/README\.md$' |
+               grep -qE '^(tools/e2e/|\.github/workflows/e2e\.yml$)'; then
             run=true
           fi
           echo "run=$run" | tee -a "$GITHUB_OUTPUT"
