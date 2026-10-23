@@ -30,18 +30,25 @@ Branch `claude/brave-hypatia-x72g1m` only; push recipe in STREAMS.md rule 1.
   questions, `[CHECK: ...]` facts to re-verify (privacy host list: do a packet capture of an idle
   AurOS VM and make the table match). README.md lists what the owner must do.
 
+- ced6642 help pages `rootfs/usr/share/auros/help/` (index, getting-online, programs, printing,
+  video-calls, windows, never-call, help.css). 17ffb48 `tools/helptest.py` (33 checks, each shown
+  to fail on a broken copy). 2045c6f helptest step in `.github/workflows/tests.yml` (stream E's file,
+  3 lines).
+
 ## Half-done / not pushed
 
-- Nothing unpushed. Help pages and the Help-panel hook: not started yet.
+- **Nothing opens the help pages yet.** Next step 5 below (the Help-panel button) is the entry point.
+- When S2's "Get me out of this page" control lands, mention it in `never-call.html` (today it
+  says Close this / Turn off, which exist).
 
 ## Next steps
 
-1. Help pages as self-contained HTML (no network, no scripts, 22px+ text, sandstone-like
+1. (done) Help pages as self-contained HTML (no network, no scripts, 22px+ text, sandstone-like
    light colours, "Back to all help" links): `index.html` + `getting-online.html`,
    `installing-programs.html`, `printing.html`, `video-calls.html`, `back-to-windows.html`,
    `never-call.html`, shared `help.css`. `build/forge` copies all of `rootfs/` into the image
    (stage "THE WHOLE rootfs/ TREE"), so no forge change is needed.
-2. A test `tools/helptest.sh` (new file): every page exists and links resolve, no http(s)
+2. (done, as tools/helptest.py) A test (new file): every page exists and links resolve, no http(s)
    requests, none of docs/EASY.md rule 2's forbidden words in visible text, font sizes.
    Prove it fails on a broken copy.
 3. (done) SECURITY.md, SUPPORT.md. 4. (done) legal drafts.
