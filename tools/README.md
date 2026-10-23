@@ -33,6 +33,7 @@ exit non-zero when they fail.
 | `bridgetest.sh` | **Do the two halves agree about the bytes?** AurBridge writes on Windows; the staging environment reads after the restart and refuses the install if it does not recognise what it finds. They are separate programs in separate toolchains and nothing in either build would notice a renamed field. This links the *real* writer (`src/aurbridge/format.c`) and the *real* reader (`src/aurstage/journal.c`) into one program and makes the second read what the first wrote, field by field — then hands the cpio to `cpio`, the gzip to `gzip` and the stick's partition table to `sgdisk`, because the things that read these formats on a user's machine are the kernel and the firmware. The partition-table hash is checked against a third implementation in python that follows the words in `aurstage.h` and shares no code with either side. |
 | `gpttest.sh` · `wrtest.sh` · `committest.sh` | The three files that can destroy a disk, each on its own. `gpttest` checks CRC32 against a published vector and the table against `sgdisk`; `wrtest` injects faults into the write gate and requires every out-of-window write to be a **refusal and not a clamp**; `committest` snapshots the disk after each flush and asks an independent tool what a reader would see at that instant — which is how the commit order was found to be backwards. |
 | `healthtest.sh` · `shrinktest.sh` · `imagetest.sh` · `probetest.sh` · `ntfstest.sh` | The gates, one at a time: AC power and SMART; what `ntfsresize` will actually say and what it does when it is lying; finding and hashing the image on the stick; the hardware probe; and the NTFS reader, against volumes built to be in each bad state. |
+| `storetest.c` | **Can she get to "Get more programs" from where she lands?** On the default desktop she could not: rail's Home showed six programs and the store ranked seventh. A machine is made from a folder of `.desktop` files (this image's programs under forge's names, and the same machine after forty more installs), each of rail, tiles, taskbar, dock and workbench is painted at four panel sizes and two text sizes with the shell's text log on, and the exact words "Get more programs" are pressed -- or, if absent, every word on the screen and then the store on the screen it leads to. The store must start within two presses; a label cut to "Get more prog..." does not count (it caught the taskbar menu doing exactly that at 1.5x). Then a Flathub program is installed while the desktop runs (a symlink, in a directory that did not exist): the watcher must fire, the rescan find it, Home show it above the store, pressing it start it, and an open window keep pointing at its own program. Each of these was shown to fail with its feature reverted. |
 | `hittest.c` | Two things. **Clicks land where the archetype paints** — sweeps `click()` across four resolutions and checks each consumed click against a mask of what was actually drawn. **Nothing highlights that cannot be clicked** — wherever hovering changes the frame, clicking must change it further. |
 
 ```sh
@@ -57,6 +58,12 @@ cc -O2 -std=gnu11 -o /tmp/targets tools/targets.c src/aurshell/foot.c \
    src/aurshell/welcome.c src/aurshell/run.c src/aurshell/power.c \
    src/aurshell/layouts/*.c src/common/theme.c src/common/font.c \
    -I src/aurshell -I src/common -lm && /tmp/targets
+
+cc -O2 -std=gnu11 -o /tmp/storetest tools/storetest.c src/aurshell/apps.c \
+   src/aurshell/appwatch.c src/aurshell/foot.c src/aurshell/draw.c \
+   src/aurshell/shellcommon.c src/aurshell/anim.c src/aurshell/layouts/*.c \
+   src/common/theme.c src/common/font.c -I src/aurshell -I src/common -lm \
+   && /tmp/storetest                                      # from the repo root
 
 cc -O2 -std=gnu11 -o /tmp/modaltest tools/modaltest.c src/aurshell/foot.c \
    src/aurshell/draw.c src/aurshell/shellcommon.c src/aurshell/anim.c \

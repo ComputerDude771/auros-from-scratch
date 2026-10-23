@@ -252,10 +252,24 @@ static rect win_part(shell_ctx *c, int W, int H, int i, int part)
  * The list has to hold EVERY program, so its shape is derived from how
  * many rows actually fit above the bar; when they do not all fit it
  * says so on the last row rather than quietly dropping the tail. */
+/* Row height, column width and heading height, at HER text size. They
+ * were fixed pixels, so at 1.5x every name in the menu was cut short --
+ * "Get more pro..." among them, which tools/storetest.c caught: a name
+ * nobody can read is a row nobody can find. */
+static void menu_metrics(const shell_ctx *c, int *row_h, int *col_w, int *head)
+{
+    float k = (c->text_scale > 0.1f) ? c->text_scale : 1.f;
+    if (k < 1.f) k = 1.f;
+    *row_h = (int)((float)(c->target_large ? 46 : 38) * k);
+    *col_w = (int)((float)(c->target_large ? 262 : 226) * k);
+    *head  = (int)((float)(c->target_large ? 56 : 46) * k);
+}
+
 static void menu_shape(shell_ctx *c, int W, int H, int *cols, int *rows, int *shown)
 {
-    int row_h = c->target_large ? 46 : 38;
-    int head  = c->target_large ? 56 : 46;
+    int row_h, col_w, head;
+    menu_metrics(c, &row_h, &col_w, &head);
+    (void)col_w;
     int bot   = H - bar_height(c) - 8;
     int avail = bot - (work_top(c) + c->margin);
 
@@ -281,9 +295,8 @@ static rect menu_part(shell_ctx *c, int W, int H, int part)
     int cols, rows, shown;
     menu_shape(c, W, H, &cols, &rows, &shown);
 
-    int row_h = c->target_large ? 46 : 38;
-    int col_w = c->target_large ? 262 : 226;
-    int head  = c->target_large ? 56 : 46;
+    int row_h, col_w, head;
+    menu_metrics(c, &row_h, &col_w, &head);
     int pad   = c->padding;
 
     int pw = pad * 2 + cols * col_w;
@@ -801,7 +814,9 @@ static void paint_menu(shell_ctx *c, surface *s, shell_fonts *f)
     draw_frame(s, a, 1, c->fg, t);
     draw_hrule(s, a.x, a.y, a.w, 3, c->accent, t);
 
-    int head = c->target_large ? 56 : 46;
+    int row_h_, col_w_, head;
+    menu_metrics(c, &row_h_, &col_w_, &head);
+    (void)row_h_; (void)col_w_;
     float hx = (float)(a.x + c->padding + 4);
     shell_text(s, f->dmid, hx,
                (float)(a.y + c->padding) + (f->dmid ? font_ascent(f->dmid) : 16.f) + 2.f,
