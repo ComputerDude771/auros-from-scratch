@@ -1,4 +1,25 @@
-# Website: the page is the drive
+# Website
+
+**Front door (`index.html`, `assets/door.css`, `assets/door.js`).** Written
+for one person: a great-grandmother on her own Windows PC. One sentence,
+one "Get AurOS" button (the href of `#get` is the only copy of the
+download address), then three picture steps of exactly what her screen
+shows, including the browser's and Windows' warnings about a program
+they haven't seen often (the installer is unsigned by decision, so these
+steps are permanent) and a separate Smart App Control path. The Windows
+boxes are HTML/CSS drawings with `shot-*` ids; swap in real screenshots
+from the e2e run when they exist. A Mac, phone, Chromebook, Linux or ARM
+Windows visit gets "Open this page on the Windows computer you want to
+change" with email and copy-link buttons. `node tools/site/check.mjs`
+keeps all of that true (first screen, sizes, contrast, links, no other
+servers).
+
+Everything below is the story page, which now lives at
+`how-it-works.html` ("for the curious"), without its checkbox gate.
+
+---
+
+## The story page: the page is the drive
 
 The first redesign read like every other product site: a hero, three
 cards, a features grid, a theme switcher. This one starts from a single
@@ -12,13 +33,13 @@ still work."), because it is the one with something to lose.
 
 | on the page | what it is on a disk | where |
 |---|---|---|
-| the top line | LBA 0, protective MBR | `index.html` |
+| the top line | LBA 0, protective MBR | `how-it-works.html` |
 | the partition table under the drive | the primary GPT at LBA 1, and also the menu | `#gpt-rows`, drawn by `drive.js` |
 | each section, with a coloured edge and its sector range | a partition: EFI, Windows (C:), the gap / AUROS-ROOT, AUROS-BOOT, Recovery | `[data-part]` |
 | the head in the left margin, sliding along a to-scale map | the read/write head; the LBA you are reading | `.ruler`, `moveHead()` |
 | the test results, as a SMART table | drive firmware; the head *parks* while you read it | `#smart` |
 | the known problems, as bad sectors (open) and remapped ones (fixed) | the grown defect list | `#defects` |
-| the footer and the download | the backup GPT header in the last sector | `#backup` |
+| the footer, linking to the front door's download | the backup GPT header in the last sector | `#backup` |
 
 Things you can do to it:
 
@@ -44,4 +65,5 @@ and the one number that matters next (real PCs resized: 0) is red.
 
 Kept from the first redesign: `desktop.html` (click around AurOS),
 `wallpaper.html` (press your own wallpaper) and `guide.html` (one page to
-print). The other pages redirect into the matching partition.
+print). The old addresses (`check`, `download`, `restart`, `safety`,
+`organizations`) redirect to the matching place on either page.

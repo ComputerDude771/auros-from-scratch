@@ -48,13 +48,13 @@
              AurOS can go on (assets/door.js). Never shown without script. -->
         <div class="elsewhere" id="elsewhere" hidden>
           <h2 class="else-title" data-kind="phone mac chromeos linux">Open this page on the Windows computer you want to change.</h2>
-          <h2 class="else-title" data-kind="arm win32">AurOS can&rsquo;t go on this computer yet.</h2>
+          <h2 class="else-title" data-kind="arm win32">AurOS can&rsquo;t go on this computer.</h2>
           <p data-kind="phone">You&rsquo;re on a phone or tablet, and AurOS goes on a Windows computer. Send yourself the link:</p>
           <p data-kind="mac">This is a Mac, and AurOS goes on a Windows computer. Send yourself the link:</p>
           <p data-kind="chromeos">This is a Chromebook, and AurOS goes on a Windows computer. Send yourself the link:</p>
           <p data-kind="linux">This computer isn&rsquo;t running Windows, and AurOS goes on a Windows computer. Send yourself the link:</p>
-          <p data-kind="arm">This computer has a different kind of chip inside from most Windows computers (it&rsquo;s called ARM; laptops with a Snapdragon chip are like this). AurOS only works on the usual kind. If you have another Windows computer, send yourself the link and open it there:</p>
-          <p data-kind="win32">This computer has the older, 32-bit kind of Windows, and AurOS needs the 64-bit kind. If you have another Windows computer, send yourself the link and open it there:</p>
+          <p data-kind="arm">It has a different kind of chip inside (called ARM, as in Snapdragon laptops), and AurOS only works on the usual kind. Have another Windows computer? Send yourself the link:</p>
+          <p data-kind="win32">It has the older, 32-bit kind of Windows, and AurOS needs the 64-bit kind. Have another Windows computer? Send yourself the link:</p>
           <div class="else-actions">
             <a class="btn2" id="mail-link" href="mailto:?subject=AurOS">
               <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 6h18v12H3zM3 6l9 7 9-7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round"/></svg>
@@ -223,13 +223,12 @@
                has no "Run anyway", so this is its own clearly separate path. -->
           <div class="sac unsigned-only" id="smart-app-control">
             <h4>Only if Windows says &ldquo;Smart App Control blocked an app that may be unsafe&rdquo;</h4>
-            <p>Some newer Windows&nbsp;11 computers have a setting called Smart App Control. It blocks programs Windows hasn&rsquo;t seen many times, and it has no Run anyway button. Nothing has been changed on your computer. To go on, switch that setting off:</p>
+            <p>Some newer Windows&nbsp;11 computers have a setting called Smart App Control. It blocks programs Windows hasn&rsquo;t seen many times, and it has no Run anyway button. Nothing has been changed on your computer. Close the message, then switch that setting off:</p>
             <div class="pics">
-              <figure class="replica" id="shot-sac-blocked" role="img" aria-label="Picture of the message Smart App Control blocked an app that may be unsafe. Press OK.">
+              <figure class="replica" id="shot-sac-blocked" role="img" aria-label="Picture of the message Smart App Control blocked an app that may be unsafe, naming AurOS-Setup.exe.">
                 <div class="r-dialog">
                   <p class="r-dialog-title">Smart App Control blocked an app that may be unsafe</p>
                   <p class="r-dialog-body">AurOS-Setup.exe</p>
-                  <div class="r-row r-right"><span class="tap">1</span><span class="r-btn r-primary hit">OK</span></div>
                 </div>
               </figure>
             </div>

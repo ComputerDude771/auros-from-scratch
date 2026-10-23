@@ -106,6 +106,7 @@ h4 { font-size: 23px; }
 .else-title { font-size: clamp(25px, 2.4vw, 30px); margin-bottom: 0.4em; }
 .elsewhere [data-kind] { display: none; }
 .else-actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 4px; }
+.else-actions .btn2 { padding-inline: 16px; font-size: 20px; }
 .copied { min-height: 0; margin: 10px 0 0; font-weight: 700; color: var(--go); }
 .copied:empty { display: none; }
 .else-address { margin: 14px 0 0; font-size: 20px; }
