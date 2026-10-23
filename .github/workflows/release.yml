@@ -109,6 +109,11 @@ jobs:
     if: needs.which.outputs.go == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    # One publish per build at a time: a second request for the same
+    # build waits, then fails at `gh release create`, which is right.
+    concurrency:
+      group: release-${{ github.ref }}-${{ needs.which.outputs.run-id }}
+      cancel-in-progress: false
     permissions:
       contents: write
       actions: read

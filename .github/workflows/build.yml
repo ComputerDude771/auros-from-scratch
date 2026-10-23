@@ -42,15 +42,14 @@ defaults:
   run:
     shell: bash
 
-# One run at a time per branch. A push while one runs queues the newest
-# and drops older queued ones (GitHub keeps one pending run per group), so
-# a fast stream of pushes cannot fill the runner pool -- the free plan caps
-# a repository at 20 concurrent jobs, and every push used to start up to
-# five of these -- and a run that has started always finishes, so there is
-# always a result for a recent commit.
-concurrency:
-  group: build-${{ github.ref }}
-  cancel-in-progress: false
+# ONE BUILD AT A TIME PER BRANCH, QUEUED, NEVER CANCELLED -- and the
+# group is on the build JOB (below), not on the workflow. At workflow
+# level every push's run joins the group, including the many that only
+# change docs and build nothing; GitHub keeps one pending run per group,
+# so such a push would replace a queued build of the commit before it
+# (or a queued [release]) with a run that then decides not to build. A
+# job whose `if` is false never joins its group, so only real builds
+# queue there.
 
 jobs:
   gate:
