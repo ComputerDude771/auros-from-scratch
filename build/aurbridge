@@ -309,9 +309,12 @@ note "neither shipped binary contains the simulation"
 # who get past it having just been taught to ignore a warning before
 # handing a program their whole disk.
 #
-# So a release does not get built without a signature. A developer
-# build says what is missing and carries on, because requiring a
-# hardware token to compile is how nobody compiles.
+# UNSIGNED BY THE OWNER'S DECISION (2026-10-23: no keys, no
+# certificates, no Microsoft services). A release used to refuse to be
+# built without a signature; it no longer does, because there will not
+# be one. The person is shown the clicks past the warnings instead
+# (docs/SIGNING.md). If signing material is ever configured, build/sign
+# still signs and verifies, release or not.
 # ── what a release must carry ──────────────────────────────────────
 step "checking what this installer carries"
 if [ -n "$PAYLOAD_OBJ" ]; then
@@ -354,14 +357,9 @@ step "signing"
 if sh "$ROOT/build/sign" --configured 2>/dev/null; then
     sh "$ROOT/build/sign" "$OUT/aurbridge.exe" "$OUT/aurbridge-wizard.exe" \
         || die "the installer could not be signed"
-elif [ "${AUROS_RELEASE:-0}" = 1 ]; then
-    die "this is a release build and there is nothing to sign with, so
-     refusing to publish an unsigned installer. Windows will put a
-     full-screen warning in front of it whose only visible button says
-     Don't run. See docs/SIGNING.md for what has to be bought."
 else
-    note "not signed: no signing material configured (see docs/SIGNING.md)"
-    note "a release build -- AUROS_RELEASE=1 -- will refuse to finish this way"
+    note "unsigned, by design: AurOS ships without a code-signing key"
+    note "(docs/SIGNING.md says what the person sees and clicks)"
 fi
 
 if [ "${1:-}" = "test" ]; then
