@@ -15,7 +15,10 @@ OUT="${1:-${OUT:-/tmp/auros-fuzz}}"
 MODE="${MODE:-fuzz}"
 mkdir -p "$OUT"
 
-SAN="-fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer"
+# float-cast-overflow is named explicitly: clang's "undefined" group
+# includes it, gcc's does not, and a NaN or 1e30 cast to int is the
+# commonest UB a theme file can cause.
+SAN="-fsanitize=address,undefined,float-cast-overflow -fno-sanitize-recover=all -fno-omit-frame-pointer"
 CFLAGS="-g -O1 -std=gnu11 -Wall -Wno-unused-function $SAN"
 if [ "$MODE" = fuzz ]; then
     CC="${CC:-clang}"

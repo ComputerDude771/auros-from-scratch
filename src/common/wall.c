@@ -9,7 +9,9 @@
 #define TAU 6.28318530717958647692
 
 /* ── small float helpers ─────────────────────────────────────────── */
-static float clampf(float v, float a, float b) { return v < a ? a : (v > b ? b : v); }
+/* NaN lands on the lower bound instead of passing through to the
+ * final (uint32_t) conversion, which is undefined for a NaN. */
+static float clampf(float v, float a, float b) { return v > a ? (v < b ? v : b) : a; }
 static float lerpf(float a, float b, float t)  { return a + (b - a) * t; }
 static float smoothstep(float e0, float e1, float x) {
     float t = clampf((x - e0) / (e1 - e0 + 1e-9f), 0.f, 1.f);
@@ -534,11 +536,16 @@ void wall_render(uint32_t *px, int w, int h, const theme_t *t)
     c.c2 = unpack(theme_color(t, "wall_c2", 0x14303A));
     c.c3 = unpack(theme_color(t, "wall_c3", 0x7DD3C0));
     c.c4 = unpack(theme_color(t, "wall_c4", 0xA78BFA));
-    c.intensity = (float)theme_num(t, "wall_intensity", 0.55);
-    c.grain     = (float)theme_num(t, "wall_grain",     0.05);
-    c.vignette  = (float)theme_num(t, "wall_vignette",  0.45);
+    /* The theme can say anything; the styles are tuned for 0..1. A
+     * value far outside that is a hostile or broken file, and 1e30 is
+     * finite but turns every mix into an infinity. Shipped themes use
+     * 0.30-0.78, 0-0.07 and 0.22-0.55, well inside these. */
+    c.intensity = clampf((float)theme_num(t, "wall_intensity", 0.55), 0.f, 4.f);
+    c.grain     = clampf((float)theme_num(t, "wall_grain",     0.05), 0.f, 1.f);
+    c.vignette  = clampf((float)theme_num(t, "wall_vignette",  0.45), 0.f, 2.f);
 
     const char *style = theme_str(t, "wall_style", "aurora");
+    if (w <= 0 || h <= 0) return;
     rgb *fb = malloc((size_t)w * h * sizeof *fb);
     if (!fb) return;
 

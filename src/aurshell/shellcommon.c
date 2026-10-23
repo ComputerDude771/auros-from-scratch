@@ -452,19 +452,37 @@ void shell_text_tracked(surface *s, font *f, float x, float y,
     }
 }
 
+/* Theme numbers are clamped HERE, once, because every layout does its
+ * own arithmetic with them -- s->h - bar_h - 2 * margin and the like --
+ * and the theme the shell reads may be her own copy of shell.conf,
+ * which any program she runs can rewrite. radius=2147483647 used to
+ * reach draw.c as signed overflow (tools/fuzz/fuzz_theme). The ranges
+ * are several times what any shipped theme uses (radius <= 18,
+ * border 2, bar 38, blur and shadow 0), so no real theme changes. */
+static int theme_int_in(const theme_t *t, const char *k, int fb, int lo, int hi)
+{
+    int v = theme_int(t, k, fb);
+    return v < lo ? lo : v > hi ? hi : v;
+}
+static float theme_frac(const theme_t *t, const char *k, double fb)
+{
+    double v = theme_num(t, k, fb);         /* finite: theme_num refuses nan/inf */
+    return (float)(v < 0.0 ? 0.0 : v > 1.0 ? 1.0 : v);
+}
+
 void shell_theme_load(shell_ctx *c, const theme_t *t)
 {
     c->theme = *t;
-    c->radius    = theme_int(t, "radius", 14);
-    c->radius_sm = theme_int(t, "radius_sm", 8);
-    c->margin    = theme_int(t, "margin", 14);
-    c->padding   = theme_int(t, "padding", 14);
-    c->border    = theme_int(t, "border", 2);
-    c->bar_h     = theme_int(t, "bar_height", 38);
-    c->blur_r    = theme_int(t, "blur_radius", 20);
-    c->shadow_r  = theme_int(t, "shadow_radius", 28);
-    c->panel_a   = (float)theme_num(t, "opacity_panel", 0.88);
-    c->shadow_a  = (float)theme_num(t, "shadow_opacity", 0.50);
+    c->radius    = theme_int_in(t, "radius", 14, 0, 64);
+    c->radius_sm = theme_int_in(t, "radius_sm", 8, 0, 64);
+    c->margin    = theme_int_in(t, "margin", 14, 0, 128);
+    c->padding   = theme_int_in(t, "padding", 14, 0, 128);
+    c->border    = theme_int_in(t, "border", 2, 0, 16);
+    c->bar_h     = theme_int_in(t, "bar_height", 38, 0, 256);
+    c->blur_r    = theme_int_in(t, "blur_radius", 20, 0, 128);
+    c->shadow_r  = theme_int_in(t, "shadow_radius", 28, 0, 256);
+    c->panel_a   = theme_frac(t, "opacity_panel", 0.88);
+    c->shadow_a  = theme_frac(t, "shadow_opacity", 0.50);
     c->bg         = theme_color(t, "col_bg",          theme_color(t, "bg", 0x0B0E14));
     c->bg_alt     = theme_color(t, "col_bar_bg",      theme_color(t, "bg_alt", 0x10151F));
     c->surface_c  = theme_color(t, "col_surface",     theme_color(t, "surface", 0x161C28));
@@ -586,11 +604,14 @@ void shell_fonts_load(shell_fonts *f, const shell_ctx *c)
     if (!text || !*text) text = sans;
     if (!bold || !*bold) bold = text;
 
-    float base = (float)theme_int(&c->theme, "font_size", 14);
-    float sm   = (float)theme_int(&c->theme, "font_size_sm",
-                                  (int)(base * 0.85f + 0.5f));
-    float lg   = (float)theme_int(&c->theme, "font_size_lg",
-                                  (int)(base * 1.45f + 0.5f));
+    /* Clamped before the derived defaults are computed from them:
+     * (int)(base * 1.45f) is undefined once base is near INT_MAX, and a
+     * 2000px UI font is a few hundred megabytes of glyph bitmaps. */
+    float base = (float)theme_int_in(&c->theme, "font_size", 14, 6, 96);
+    float sm   = (float)theme_int_in(&c->theme, "font_size_sm",
+                                     (int)(base * 0.85f + 0.5f), 6, 96);
+    float lg   = (float)theme_int_in(&c->theme, "font_size_lg",
+                                     (int)(base * 1.45f + 0.5f), 6, 144);
 
     /* Her choice multiplies the theme's scale rather than replacing it,
      * so the RELATIONSHIPS the theme set up -- how much bigger a heading
@@ -606,7 +627,10 @@ void shell_fonts_load(shell_fonts *f, const shell_ctx *c)
     f->label = open_font(bold, sm);
     f->small = open_font(text, base);
     f->tiny  = open_font(text, sm);
-    f->lh    = (float)theme_num(&c->theme, "line_height", 1.45);
+    {
+        double lh = theme_num(&c->theme, "line_height", 1.45);
+        f->lh = (float)(lh < 0.8 ? 0.8 : lh > 3.0 ? 3.0 : lh);
+    }
 }
 void shell_fonts_free(shell_fonts *f)
 {

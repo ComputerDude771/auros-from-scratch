@@ -1,0 +1,7 @@
+# draw.c: (int)ceilf(spread) with spread past INT_MAX
+shadow_radius=2147483647
+shadow_opacity=0.5
+radius=4
+margin=2
+padding=3
+bar_height=5
