@@ -60,7 +60,7 @@ STORE_NAME = E("STORE_NAME", "Get more programs")    # the app list's name for i
 STORE_QUERY = E("STORE_QUERY", "VLC")                 # typed into its search
 STORE_RESULT = E("STORE_RESULT", "VLC")               # the result to open
 STORE_INSTALL = E("STORE_INSTALL", "Install")         # the button that installs
-STORE_OPEN = E("STORE_OPEN", "Open|Launch")           # appears when installed
+STORE_OPEN = E("STORE_OPEN", "Open|Launch|Press here to open")  # appears when installed
 APP_FILES = E("APP_FILES", "usr/bin/vlc var/lib/flatpak/app/org.videolan.VLC")
 
 HUB = "http://10.0.2.2:8000"
@@ -213,7 +213,7 @@ class Flow:
                 f.write(f"--- {time.strftime('%H:%M:%S')} {match} {types} ({r.get('ms')} ms)\n")
                 for e in els:
                     f.write(f"{e.get('type')}\t{e.get('name')!r}\t{e.get('rect')}\t"
-                            f"toggle={e.get('toggle')}\t{'page' if e.get('doc') else 'ui'}\t"
+                            f"toggle={e.get('toggle')}\t{'page' if self.is_page(e) else 'ui'}\t"
                             f"{e.get('window')!r}\n")
         return els
 
@@ -234,12 +234,18 @@ class Flow:
         self.m.click(x + w // 2, y + h // 2, label=why)
 
     @staticmethod
+    def is_page(e):
+        """Part of a website: inside a web document that fills most of a
+        window. Edge's downloads flyout and menus are small documents."""
+        return (e.get("doc") or 0) >= 250000
+
+    @staticmethod
     def pick(els, name, types=None, page=None):
         """The first enabled element whose name matches; page=True only
         a web page's own, page=False only the browser's or Windows'."""
         rx = re.compile(name, re.I)
         for e in els:
-            if page is not None and bool(e.get("doc")) != page:
+            if page is not None and Flow.is_page(e) != page:
                 continue
             if (types is None or e.get("type") in types) and rx.search(e.get("name") or ""):
                 if e.get("enabled", True):
@@ -328,7 +334,7 @@ class Flow:
             # (End, then the wheel). Any boxes that gate it get ticked.
             for attempt in range(8):
                 els = [e for e in self.elements("msedge", ["CheckBox", "Hyperlink", "Button"])
-                       if e.get("doc")]
+                       if self.is_page(e)]
                 boxes = [e for e in els if e.get("type") == "CheckBox" and e.get("toggle") == "Off"]
                 if boxes:
                     self.click_el(boxes[0], "website tick: " + (boxes[0].get("name") or "")[:40])
@@ -350,13 +356,13 @@ class Flow:
         """Edge's download warnings, answered the way a person who wants
         the file does; returns once the file is downloaded."""
         with self.rec.phase("edge: download, and keep it"):
-            deadline = time.time() + 15 * 60
+            deadline = time.time() + 8 * 60
             pressed = []
             seen = None
             while time.time() < deadline:
                 els = [e for e in self.elements("msedge", ["Button", "MenuItem", "Hyperlink",
                                                            "ListItem", "Text", "SplitButton"])
-                       if not e.get("doc")]     # never the page's own words
+                       if not self.is_page(e)]  # never the page's own words
                 names = " | ".join((e.get("name") or "")[:120] for e in els)
                 if names != seen:
                     self.log("edge shows: " + names[:900])
@@ -394,12 +400,21 @@ class Flow:
                         continue
                     if warn and not more:
                         # Edge shows an item's buttons when the pointer is on it
-                        item = next((e for e in els if e.get("type") == "ListItem" and
+                        item = next((e for e in els if e.get("type") in ("ListItem", "Text", "Button") and
                                      re.search(warn.group(1), e.get("name") or "", re.I)), None)
-                        if item:
+                        if item and pressed.count("hover") < 6:
                             x, y, w, h = item["rect"]
                             self.m.move(x + w // 2, y + h // 2)
+                            pressed.append("hover")
                             time.sleep(2)
+                            continue
+                    if not warn and pressed.count("flyout") < 3:
+                        # the flyout went away: the toolbar's Downloads button
+                        tb = self.pick(els, r"^Downloads", ("Button", "SplitButton"))
+                        if tb:
+                            self.click_el(tb, "edge Downloads button")
+                            pressed.append("flyout")
+                            time.sleep(3)
                             continue
                     time.sleep(5)
             raise Failure("the download never finished (ui-elements.log has Edge's buttons)")
@@ -684,41 +699,59 @@ class Flow:
                 raise Failure("the store did not open")
             self.m.shot("store-open")
         with self.rec.phase("aurOS: find and install " + STORE_QUERY):
-            b, _ = self.ocr_find("Search")
-            if b:
-                self.m.click(*vision.centre(b), label="store search")
-            else:
-                self.m.key("ctrl", "f", label="store search (Ctrl+F)")
-            time.sleep(2)
-            self.m.type(STORE_QUERY, label="search")
-            self.m.key("ret")
-            time.sleep(10)
-            p, b, _ = self.wait_text([STORE_RESULT], 300, every=10)
-            if not p:
-                raise Failure(f"no '{STORE_RESULT}' in the search results")
-            self.m.click(*vision.centre(b), label="open result " + STORE_RESULT)
-            time.sleep(8)
-            p, b, _ = self.wait_text([STORE_INSTALL], 300, every=10)
-            if not p:
+            found = None
+            for attempt in range(4):
+                b, _ = self.ocr_find("Search")
+                if b:
+                    self.m.click(*vision.centre(b), label="store search")
+                else:
+                    self.m.key("ctrl", "f", label="store search (Ctrl+F)")
+                time.sleep(2)
+                self.m.key("ctrl", "a")
+                self.m.type(STORE_QUERY, label="search")
+                self.m.key("ret")
+                # the catalogue can take a minute or two after first going online
+                p, found, _ = self.wait_text([STORE_RESULT], 120, every=10)
+                if p:
+                    break
+                self.m.shot("store-no-result-yet")
+            if not found:
+                raise Failure(f"no '{STORE_RESULT}' in the search results after four searches")
+            self.m.click(*vision.centre(found), label="open result " + STORE_RESULT)
+            # "Install" exactly: OCR would happily match the "Installed" tab
+            deadline = time.time() + 300
+            btn = None
+            while time.time() < deadline and not btn:
+                time.sleep(8)
+                btn = vision.find_lone_word(vision.ocr(self.m.screendump()), STORE_INSTALL)
+            if not btn:
+                self.m.shot("store-no-install")
                 raise Failure(f"no '{STORE_INSTALL}' button")
-            self.m.click(*vision.centre(b), label="install")
-            # an authentication prompt would show here; that is a finding
+            self.m.click(*vision.centre(btn), label="install")
             done = None
             deadline = time.time() + 45 * 60
             while time.time() < deadline and not done:
+                time.sleep(15)
+                img = self.m.screendump()
+                words = vision.ocr(img)
+                for bad in ("Authentication", "Failed to install", "Unable to install"):
+                    if vision.find_text(words, bad):
+                        self.m.save(img, "store-" + bad)
+                        raise Failure(f"the store says '{bad}': {vision.text_of(words)[:500]}")
                 for o in STORE_OPEN.split("|"):
-                    p, b, words = self.wait_text([o], 30, every=15,
-                                                 fail=["Authentication", "Failed to install"])
-                    if p:
-                        done = (o, b)
+                    box = (vision.find_lone_word(words, o) if " " not in o
+                           else vision.find_text(words, o))
+                    if box:
+                        done = (o, box)
                         break
             if not done:
                 raise Failure("the install did not finish in 45 minutes")
             self.m.shot("store-installed")
         with self.rec.phase("aurOS: open " + STORE_QUERY):
-            self.m.click(*vision.centre(done[1]), label="open the installed program")
-            time.sleep(20)
-            self.m.shot("program-open")
+            self.m.click(*vision.centre(done[1]), label="open the installed program: " + done[0])
+            time.sleep(25)
+            img = self.m.shot("program-open")
+            self.log("on screen: " + vision.text_of(vision.ocr(img))[:500])
 
     def shutdown(self):
         with self.rec.phase("aurOS: shut down"):

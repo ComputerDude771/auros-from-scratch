@@ -73,14 +73,22 @@ function Elements($match, $types, $max) {
       $c = $w.Current
       $p = ProcName $c.ProcessId
       if ($match -and -not ($c.Name -match $match -or $c.ClassName -match $match -or $p -match $match)) { continue }
-      # Which of them belong to a web page (inside a Document), so that a
+      # Which of them belong to a web document, and how big it is: a
+      # website fills the window, while Edge's own flyouts (downloads,
+      # menus) are small documents too. The host uses the size so that a
       # page's own words ("press Keep anyway") are never taken for the
       # browser's buttons.
       $docIds = @{}
       try {
         $dcond = New-Object System.Windows.Automation.PropertyCondition($AE::ControlTypeProperty, [System.Windows.Automation.ControlType]::Document)
         foreach ($d in $w.FindAll($TS::Descendants, $dcond)) {
-          foreach ($x in $d.FindAll($TS::Descendants, $cond)) { $docIds[($x.GetRuntimeId() -join '.')] = $true }
+          $dr = Rect $d
+          $area = 1
+          if ($dr) { $area = [int64]$dr[2] * [int64]$dr[3] }
+          foreach ($x in $d.FindAll($TS::Descendants, $cond)) {
+            $k = ($x.GetRuntimeId() -join '.')
+            if (-not $docIds.ContainsKey($k) -or $docIds[$k] -lt $area) { $docIds[$k] = $area }
+          }
         }
       } catch { }
       foreach ($e in $w.FindAll($TS::Descendants, $cond)) {
@@ -94,7 +102,7 @@ function Elements($match, $types, $max) {
           $out += [pscustomobject]@{
             name = $ec.Name; type = $ec.ControlType.ProgrammaticName -replace '^ControlType\.', ''
             rect = $r; enabled = $ec.IsEnabled; toggle = $tog
-            doc = $docIds.ContainsKey(($e.GetRuntimeId() -join '.'))
+            doc = [int64]$docIds[($e.GetRuntimeId() -join '.')]
             window = $c.Name; proc = $p; aid = $ec.AutomationId
           }
           if ($out.Count -ge $max) { return $out }
