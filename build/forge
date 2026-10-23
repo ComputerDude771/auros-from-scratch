@@ -906,21 +906,12 @@ stage_overlay() {
         gcc -O2 -std=gnu11 -Wall -Wextra -o /usr/sbin/aurfirst aurfirst/*.c -I aurfirst" \
         || die "building the AurOS stack inside the image failed"
 
-    # Ferry — first-boot migration. The shell tools and data tables
-    # install verbatim; the two C helpers (which parse hostile on-disk
-    # data as root, hence the warning set) compile in place next to
-    # them. The directory is created BEFORE the in-chroot compile that
-    # writes into it.
-    install -d "$RFS/usr/lib/ferry" "$RFS/usr/share/ferry"
-    for t in ferry ferry-detect ferry-wifi ferry-files ferry-firefox \
-             ferry-settings ferry-report ferry-hive ferry-dpapi ferry-common.sh; do
-        install -Dm755 "$ROOT/src/ferry/$t" "$RFS/usr/lib/ferry/$t"
-    done
-    cp "$ROOT/src/ferry/data"/*.tab "$RFS/usr/share/ferry/" 2>/dev/null || true
-    ln -sf /usr/lib/ferry/ferry "$RFS/usr/bin/ferry"
-    inchroot "cd /usr/src/auros/ferry && \
-        gcc -O2 -std=gnu11 -Wall -Wextra -o /usr/lib/ferry/ferry-hivepeek hivepeek.c && \
-        gcc -O2 -std=gnu11 -Wall -Wextra -o /usr/lib/ferry/ferry-winattr  winattr.c" \
+    # Ferry — first-boot migration. Its own install.sh holds the list of
+    # its tools and builds its C helpers (hostile on-disk data, read as
+    # root) inside the image; scripts first, so the directory exists.
+    sh "$ROOT/src/ferry/install.sh" scripts "$RFS" \
+        || die "installing Ferry's tools into the image failed"
+    inchroot "sh /usr/src/auros/ferry/install.sh helpers /" \
         || die "building Ferry's helpers inside the image failed"
 
     # aurshell needs the kernel DRM headers and libm; it links nothing else.

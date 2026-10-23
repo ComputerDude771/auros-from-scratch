@@ -128,39 +128,47 @@ eq "re-run is idempotent (no new files)" "$AFTER" "$BEFORE"
 echo "firefox:"
 ferry-firefox --root "$WIN" --home "$HOME1" --owner "$(id -un)" >/dev/null 2>&1
 FP="$HOME1/.mozilla/firefox/Profiles/a1b2c3d4.default-release"
-assert "key4.db (the login key) copied" test -f "$FP/key4.db"
-assert "logins.json copied" test -f "$FP/logins.json"
 assert "places.sqlite (bookmarks/history) copied" test -f "$FP/places.sqlite"
+assert "prefs.js (settings) copied" test -f "$FP/prefs.js"
+refute "key4.db (the password key) NOT copied" test -e "$FP/key4.db"
+refute "logins.json (saved passwords) NOT copied" test -e "$FP/logins.json"
+refute "a password file in odd case NOT copied" test -e "$FP/LOGINS-BACKUP.JSON"
+assert "the report says passwords were left on Windows" \
+    grep -q 'firefox/passwords' "$FERRY_STATE/report.d/firefox.tsv"
 assert "profiles.ini copied" test -f "$HOME1/.mozilla/firefox/profiles.ini"
+refute "installs.ini (claims the profile for Windows) NOT copied" \
+    test -e "$HOME1/.mozilla/firefox/installs.ini"
 refute "cache NOT copied" test -e "$FP/cache2"
 refute "stale lock NOT copied" test -e "$FP/.parentlock"
 refute "compatibility.ini NOT copied" test -e "$FP/compatibility.ini"
 
-echo "wifi:"
+echo "wifi (never a password):"
 NMDIR="$TMP/nm"
-ferry-wifi --root "$WIN" --to "$NMDIR" --no-reload >/dev/null 2>&1
-assert "open network imported" test -f "$NMDIR/CoffeeShop.nmconnection"
-assert "cleartext WPA3 PSK imported" \
-    grep -q '^psk=hunter2hunter2' "$NMDIR/Phone Hotspot.nmconnection"
-assert "WPA3 uses key-mgmt=sae" \
-    grep -q '^key-mgmt=sae' "$NMDIR/Phone Hotspot.nmconnection"
-assert "hidden network marked hidden" \
-    grep -q '^hidden=true' "$NMDIR/Phone Hotspot.nmconnection"
-assert "DPAPI network created without a bogus PSK" \
-    sh -c "grep -q '^key-mgmt=wpa-psk' '$NMDIR/HomeNet.nmconnection' && ! grep -q '^psk=' '$NMDIR/HomeNet.nmconnection'"
-assert "DPAPI network flagged for the user" \
-    grep -qi 'HomeNet' "$FERRY_STATE/report.d/wifi.tsv"
-assert "enterprise EAP network reported, not faked" \
-    sh -c "grep -qi eduroam '$FERRY_STATE/report.d/wifi.tsv' && ! test -f '$NMDIR/eduroam.nmconnection'"
-assert "keyfiles are mode 0600" \
-    sh -c "[ \"\$(stat -c %a '$NMDIR/CoffeeShop.nmconnection')\" = 600 ]"
-# DPAPI helper seam: when a helper answers, the PSK gets filled
-printf '#!/bin/sh\necho FilledSecret\n' > "$TMP/helper"; chmod +x "$TMP/helper"
-rm -rf "$TMP/state2" "$TMP/nm2"
-FERRY_STATE="$TMP/state2" FERRY_DPAPI_HELPER="$TMP/helper" \
-    ferry-wifi --root "$WIN" --to "$TMP/nm2" --no-reload >/dev/null 2>&1
-assert "DPAPI helper seam fills the PSK when present" \
-    grep -q '^psk=FilledSecret' "$TMP/nm2/HomeNet.nmconnection"
+# A helper planted where the old decryption call-out looked. It must
+# never run: Ferry does not decrypt saved passwords.
+printf '#!/bin/sh\ntouch "%s"\necho FilledSecret\n' "$TMP/helper-ran" > "$TMP/helper"
+chmod +x "$TMP/helper"
+FERRY_DPAPI_HELPER="$TMP/helper" \
+    ferry-wifi --root "$WIN" --to "$NMDIR" --no-reload >/dev/null 2>&1
+eq "wifi stage succeeds" "$?" 0
+refute "no decryption helper was ever run" test -e "$TMP/helper-ran"
+refute "no network file written at all" \
+    sh -c "find '$NMDIR' /etc/NetworkManager/system-connections -name '*.nmconnection' -newer '$TMP/helper' 2>/dev/null | grep -q ."
+assert "secured networks listed by name" \
+    sh -c "grep -q 'HomeNet' '$FERRY_STATE/report.d/wifi.tsv' && grep -q 'Phone Hotspot' '$FERRY_STATE/report.d/wifi.tsv'"
+assert "open network listed" grep -q 'CoffeeShop' "$FERRY_STATE/report.d/wifi.tsv"
+assert "enterprise network listed" grep -q 'eduroam' "$FERRY_STATE/report.d/wifi.tsv"
+refute "no Wi-Fi password in the report" \
+    grep -rq 'hunter2hunter2' "$FERRY_STATE"
+# An SSID only in <hex> (no <name>): mawk has no strtonum, the image's
+# awk is mawk, so the decode must not need it.
+W2="$TMP/w2"; mkdir -p "$W2/Windows/System32" \
+    "$W2/ProgramData/Microsoft/Wlansvc/Profiles/Interfaces/{x}"
+printf '<WLANProfile><SSIDConfig><SSID><hex>4F6C6473</hex></SSID></SSIDConfig><MSM><security><authEncryption><authentication>WPA2PSK</authentication></authEncryption></security></MSM></WLANProfile>' \
+    > "$W2/ProgramData/Microsoft/Wlansvc/Profiles/Interfaces/{x}/a.xml"
+FERRY_STATE="$TMP/state-w2" ferry-wifi --root "$W2" >/dev/null 2>&1
+assert "a hex-only SSID is decoded with the image's awk" \
+    grep -q 'Olds' "$TMP/state-w2/report.d/wifi.tsv"
 
 echo "settings (timezone mapping is the point):"
 rm -rf "$TMP/state3"
@@ -193,6 +201,23 @@ FERRY_STATE="$TMP/state4" ferry-files --root "$TMP/hib" --home "$TMP/h4" \
 eq "hibernated volume is refused (exit 3)" "$?" 3
 FERRY_STATE="$TMP/state4b" ferry-detect --root "$TMP/hib" --quick >/dev/null 2>&1
 eq "detect still succeeds on a hibernated volume" "$?" 0
+
+echo "no saved password anywhere on the AurOS side:"
+refute "no Wi-Fi key, no Firefox login, anywhere under the new home or state" \
+    sh -c "grep -rqs -e hunter2hunter2 -e bank.example '$HOME1' '$FERRY_STATE' '$TMP/nm'"
+refute "no password file anywhere under the new home" \
+    sh -c "find '$HOME1' -iname 'logins*.json' -o -iname 'key[34].db' -o -iname 'signons*' | grep -q ."
+
+echo "install list:"
+for _f in $(sh "$FERRY/install.sh" list); do
+    [ -f "$FERRY/$_f" ] || bad "install.sh names $_f, which does not exist"
+done
+_missing=""
+for _f in "$FERRY"/ferry*; do
+    _b=$(basename "$_f")
+    sh "$FERRY/install.sh" list | grep -qx "$_b" || _missing="$_missing $_b"
+done
+eq "every ferry tool in the tree is installed by install.sh" "$_missing" ""
 
 echo "read-only guarantee:"
 # Every import stage above ran against $WIN. Not one byte, size or mtime

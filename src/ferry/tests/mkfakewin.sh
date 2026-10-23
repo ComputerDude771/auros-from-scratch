@@ -133,7 +133,10 @@ INI
 P="$FF/Profiles/a1b2c3d4.default-release"
 echo "SQLite format 3 places"   > "$P/places.sqlite"
 echo "SQLite format 3 key4"     > "$P/key4.db"
-echo '{"logins":[]}'            > "$P/logins.json"
+echo '{"logins":[{"hostname":"https://bank.example"}]}' > "$P/logins.json"
+# The same in odd case, as a profile copied about by hand can be: the
+# password skip must not depend on capitalisation.
+echo '{"logins":[{"hostname":"https://bank.example"}]}' > "$P/LOGINS-BACKUP.JSON"
 echo "user_pref()"              > "$P/prefs.js"
 echo "LastVersion=115.0"        > "$P/compatibility.ini"
 mkdir -p "$P/cache2/entries" "$P/storage/default"

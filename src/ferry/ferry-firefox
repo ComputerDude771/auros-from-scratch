@@ -1,26 +1,28 @@
 #!/bin/sh
 # ═══════════════════════════════════════════════════════════════════
-#  ferry-firefox — the clean win.
+#  ferry-firefox — her Firefox comes across, without its passwords.
 #
-#  Firefox is the one browser whose entire signed-in life migrates
-#  offline with no Windows password (spec §2, §5). It uses NSS, not
-#  DPAPI: the key that unlocks saved logins lives in key4.db, right
-#  next to logins.json, self-contained. So the strategy is not to parse
-#  anything — it is to copy the whole profile folder verbatim. Bookmarks,
-#  history, open tabs, cookies AND saved passwords all just work on the
-#  other side, because Firefox on Linux reads the exact same files.
+#  Firefox keeps everything in one profile folder in files Firefox on
+#  Linux reads unchanged, so the strategy is not to parse anything: the
+#  profile is copied file by file. Bookmarks, history, open tabs,
+#  cookies and settings all just work on the other side.
 #
-#  The only thing that blocks this is a Primary Password: then key4.db
-#  is itself encrypted under a passphrase we do not have. The logins
-#  still migrate (Firefox will ask for the Primary Password once), so we
-#  copy anyway and note it.
+#  SAVED PASSWORDS DO NOT COME. Ferry never copies or decrypts saved
+#  passwords (docs/FERRY.md, "Passwords"). Firefox keeps them in
+#  logins.json, sealed with the key in key4.db; both are left on
+#  Windows, together with the older forms of the same thing (key3.db,
+#  signons.sqlite, logins-backup.json) and saved payment cards and
+#  addresses (autofill-profiles.json, sealed with the same key). The
+#  report tells her so in plain words; websites ask once, and Windows
+#  still has them while it is on the disk.
 #
-#  What we deliberately DROP from the copy:
+#  What we also DROP from the copy:
 #    - cache2/, startupCache/, thumbnails/ — regenerated, and big;
 #    - lock / .parentlock — a stale lock stops Firefox starting;
 #    - compatibility.ini — pins the profile to the old binary's path;
+#    - installs.ini — claims the profile for the WINDOWS Firefox, so
+#      Linux Firefox would not use it;
 #    - crashes/, minidumps/, datareporting/ telemetry.
-#  Everything else is copied byte for byte.
 #
 #    ferry-firefox                import every Firefox profile
 #    ferry-firefox --dry-run      show what would copy
@@ -59,6 +61,10 @@ _dest="$FERRY_HOME/.mozilla/firefox"
 # title contains "cache" is not.
 SKIP_COMPONENTS="cache2 startupCache shader-cache thumbnails crashes minidumps datareporting"
 SKIP_FILES=".parentlock parent.lock lock compatibility.ini"
+# Saved passwords and what they are sealed with. Never copied; the
+# test suite fails if any of these appears under the new home.
+SECRET_FILES="logins.json logins-backup.json key4.db key3.db signons.sqlite \
+signons.txt signons2.txt signons3.txt autofill-profiles.json"
 
 # Uniquely-named locals: POSIX sh has no lexical scope, and the caller's
 # loop variable is $_f. A plain `for _f in ...` here would overwrite the
@@ -69,8 +75,11 @@ should_skip() {
     for _ssc in $SKIP_COMPONENTS; do
         case "/$_ssrel/" in */"$_ssc"/*) return 0 ;; esac
     done
-    for _ssf in $SKIP_FILES; do
-        [ "$(basename "$_ssrel")" = "$_ssf" ] && return 0
+    # Case-insensitive: NTFS is, and a profile copied about by hand
+    # can come back as LOGINS.JSON.
+    _ssb=$(printf '%s' "${_ssrel##*/}" | tr 'A-Z' 'a-z')
+    for _ssf in $SKIP_FILES $SECRET_FILES; do
+        [ "$_ssb" = "$(printf '%s' "$_ssf" | tr 'A-Z' 'a-z')" ] && return 0
     done
     return 1
 }
@@ -95,8 +104,9 @@ copy_profile_tree() {
 _ini=$(path_ci "$_ffsrc" "profiles.ini" 2>/dev/null || true)
 _profdir=$(path_ci "$_ffsrc" "Profiles" 2>/dev/null || true)
 
-# Copy profiles.ini and installs.ini so Firefox picks the same default.
-for _meta in profiles.ini installs.ini; do
+# Copy profiles.ini so Firefox picks the same default. NOT installs.ini:
+# it names the Windows Firefox as the profile's owner.
+for _meta in profiles.ini; do
     _m=$(path_ci "$_ffsrc" "$_meta" 2>/dev/null || true)
     [ -n "$_m" ] || continue
     if [ "$FERRY_DRYRUN" = 0 ]; then safe_copy "$_m" "$_dest/$_meta" >/dev/null; fi
@@ -117,16 +127,12 @@ if [ -n "$_profdir" ]; then
             copy_profile_tree "$_p" "$_dest/Profiles/$_pname"
         fi
 
-        # Report what came, and the one caveat that can apply.
-        if [ -n "$_logins" ] && [ -n "$_pw" ]; then
-            # A Primary Password leaves a recognisable marker in key4.db,
-            # but we cannot read it reliably offline; state the condition
-            # rather than claim certainty.
-            note firefox info "Firefox/$_pname" \
-                "bookmarks, history, cookies, open tabs and saved logins copied verbatim — if this profile had a Primary Password, Firefox will ask for it once"
-        else
-            note firefox info "Firefox/$_pname" \
-                "bookmarks, history, cookies and open tabs copied verbatim"
+        # Report what came, and what was left behind on purpose.
+        note firefox/profile info "Firefox/$_pname" \
+            "bookmarks, history, open tabs and settings brought across"
+        if [ -n "$_logins" ] || [ -n "$_pw" ]; then
+            note firefox/passwords manual "Firefox saved passwords" \
+                "left on Windows on purpose: AurOS never copies saved passwords. Websites ask for each one once."
         fi
         _count=$((_count+1))
     done
