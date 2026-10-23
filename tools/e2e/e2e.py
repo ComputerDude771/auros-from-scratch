@@ -352,11 +352,15 @@ class Flow:
         with self.rec.phase("edge: download, and keep it"):
             deadline = time.time() + 15 * 60
             pressed = []
+            seen = None
             while time.time() < deadline:
                 els = [e for e in self.elements("msedge", ["Button", "MenuItem", "Hyperlink",
                                                            "ListItem", "Text", "SplitButton"])
                        if not e.get("doc")]     # never the page's own words
                 names = " | ".join((e.get("name") or "")[:120] for e in els)
+                if names != seen:
+                    self.log("edge shows: " + names[:900])
+                    seen = names
                 for want, types in (("^Keep anyway$", ("Button", "MenuItem")),
                                     ("^Show more", ("Button", "SplitButton")),
                                     ("^Keep$", ("Button", "MenuItem"))):

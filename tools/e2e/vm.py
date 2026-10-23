@@ -297,6 +297,9 @@ class Machine:
         self._auto_every = 30
         self._last_saved = None
         self._last_saved_t = 0
+        self.pointer = (xres // 2, yres // 2)
+        self._last_input = time.time()
+        self.hands = threading.RLock()      # one gesture at a time
 
     # -- life cycle --
     def start(self):
@@ -425,6 +428,14 @@ class Machine:
     def _auto_loop(self):
         while self._auto_every and self.alive():
             try:
+                # Someone is at this PC: a pointer that has not moved for two
+                # minutes moves by one pixel and back, so Windows' display
+                # timeout never blanks what the test is looking at.
+                if time.time() - self._last_input > 120:
+                    with self.hands:
+                        x, y = self.pointer
+                        self.move(x + 1, y)
+                        self.move(x, y)
                 img = self.screendump()
                 prev = self._last_saved
                 changed = (prev is None or prev.shape != img.shape or
@@ -443,6 +454,8 @@ class Machine:
         return (int(round(x * 32767 / max(1, w - 1))), int(round(y * 32767 / max(1, h - 1))))
 
     def move(self, x, y):
+        self.pointer = (x, y)
+        self._last_input = time.time()
         ax, ay = self._abs(x, y)
         self.qmp.cmd("input-send-event", events=[
             {"type": "abs", "data": {"axis": "x", "value": ax}},
@@ -461,15 +474,16 @@ class Machine:
                         mark[yy, xx] = (255, 0, 255)
             path = self.save(mark, "click-" + label)
             self.rec.log(f"click ({x},{y}) {label}  [{os.path.basename(path)}]")
-        self.move(x, y)
-        time.sleep(0.15)
-        for _ in range(2 if double else 1):
-            self.qmp.cmd("input-send-event", events=[
-                {"type": "btn", "data": {"down": True, "button": button}}])
-            time.sleep(0.08)
-            self.qmp.cmd("input-send-event", events=[
-                {"type": "btn", "data": {"down": False, "button": button}}])
-            time.sleep(0.12)
+        with self.hands:
+            self.move(x, y)
+            time.sleep(0.15)
+            for _ in range(2 if double else 1):
+                self.qmp.cmd("input-send-event", events=[
+                    {"type": "btn", "data": {"down": True, "button": button}}])
+                time.sleep(0.08)
+                self.qmp.cmd("input-send-event", events=[
+                    {"type": "btn", "data": {"down": False, "button": button}}])
+                time.sleep(0.12)
 
     def scroll(self, x, y, clicks):
         """Mouse wheel: positive scrolls down."""
@@ -487,6 +501,7 @@ class Machine:
         if label:
             self.shot("key-" + label)
             self.rec.log(f"key {'+'.join(keys)}  ({label})")
+        self._last_input = time.time()
         self.qmp.cmd("send-key", keys=[{"type": "qcode", "data": k} for k in keys],
                      **{"hold-time": 90})
         time.sleep(0.12)
