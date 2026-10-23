@@ -22,9 +22,17 @@ Branch `claude/brave-hypatia-x72g1m` only; push recipe in STREAMS.md rule 1.
   advanced.html (18px, 4.5:1, 320px no sideways scroll, footer link). `node tools/site/check.mjs`
   = 105 passed, 0 failed; shown to fail with the footer link removed and 16px command text.
 
+- 8c4bfff `SECURITY.md` (GitHub private vulnerability reporting; owner must enable it once in
+  Settings -> Code security) and `docs/SUPPORT.md` (Help button, help pages, website pages,
+  public issues, no phone line).
+- `docs/legal/{README,TERMS,PRIVACY,DISCLAIMER}.md`: drafts, every file banner-marked
+  "DRAFT: must be reviewed by a lawyer before use"; `[OWNER: ...]` placeholders, `[LAWYER: ...]`
+  questions, `[CHECK: ...]` facts to re-verify (privacy host list: do a packet capture of an idle
+  AurOS VM and make the table match). README.md lists what the owner must do.
+
 ## Half-done / not pushed
 
-- Nothing unpushed. Help pages, SECURITY.md, SUPPORT.md, legal drafts: not started yet.
+- Nothing unpushed. Help pages and the Help-panel hook: not started yet.
 
 ## Next steps
 
@@ -36,8 +44,7 @@ Branch `claude/brave-hypatia-x72g1m` only; push recipe in STREAMS.md rule 1.
 2. A test `tools/helptest.sh` (new file): every page exists and links resolve, no http(s)
    requests, none of docs/EASY.md rule 2's forbidden words in visible text, font sizes.
    Prove it fails on a broken copy.
-3. `SECURITY.md`, `docs/SUPPORT.md`.
-4. `docs/legal/{TERMS,PRIVACY,DISCLAIMER}.md` + `docs/legal/README.md` (what the owner must do).
+3. (done) SECURITY.md, SUPPORT.md. 4. (done) legal drafts.
 5. Help-panel hook (shared aurshell files; do last, smallest edit): a button in the band's
    Help panel ("Show me how to do things") that runs `xdg-open /usr/share/auros/help/index.html`
    via a flag in `shell_ctx` handled in `main.c` with `run_detached`, shown only when the file
@@ -66,7 +73,7 @@ Branch `claude/brave-hypatia-x72g1m` only; push recipe in STREAMS.md rule 1.
   "First copy anything you want to keep onto a memory stick.").
 - Boot menu (`rootfs/usr/lib/auros/grub.cfg.in`): 3 s, entries AurOS, Windows (if found),
   "Put Windows back (remove AurOS)" submenu with "No, keep AurOS" first.
-- Printing: cups, cups-filters, avahi, gutenprint, hplip-cups, system-config-printer
+- Printing: cups, cups-filters, avahi, gutenprint, printer-driver-hpcups, system-config-printer
   ("Print Settings" appears in the program list). S1 may remove cups-browsed (remote discovery).
 
 ## Traps
