@@ -1,0 +1,78 @@
+# The Preferences policy's own allowlist, copied from Firefox's
+# browser/components/enterprisepolicies/Policies.sys.mjs (Preferences:
+# allowedPrefixes, allowedSecurityPrefs, blockedPrefs) on the release
+# (159.0) and esr140 (140.17.1) branches of github.com/mozilla-firefox/firefox.
+# A pref outside this list is DROPPED by Firefox with only a console
+# message, so a policy that names one is a control that silently is not.
+# Lines: "prefix <p>" (allowed if the name starts with it, both versions),
+# "security <name>" (exact; security.* is allowed only by exact name, in
+# both versions), "blocked <name>" (never allowed).
+prefix accessibility.
+prefix alerts.
+prefix app.update.
+prefix browser.
+prefix datareporting.policy.
+prefix devtools.
+prefix dom.
+prefix extensions.
+prefix general.autoScroll
+prefix general.smoothScroll
+prefix geo.
+prefix gfx.
+prefix identity.fxaccounts.toolbar.
+prefix intl.
+prefix keyword.enabled
+prefix layers.
+prefix layout.
+prefix mathml.disabled
+prefix media.
+prefix network.
+prefix pdfjs.
+prefix places.
+prefix pref.
+prefix print.
+prefix privacy.baselineFingerprintingProtection
+prefix privacy.fingerprintingProtection
+prefix privacy.globalprivacycontrol.enabled
+prefix privacy.userContext.enabled
+prefix privacy.userContext.ui.enabled
+prefix sidebar.
+prefix signon.
+prefix spellchecker.
+prefix svg.context-properties.content.enabled
+prefix svg.disabled
+prefix toolkit.legacyUserProfileCustomizations.stylesheets
+prefix ui.
+prefix webgl.disabled
+prefix webgl.force-enabled
+prefix widget.
+prefix xpinstall.enabled
+prefix xpinstall.whitelist.required
+security security.OCSP.enabled
+security security.OCSP.require
+security security.block_fileuri_script_with_wrong_mime
+security security.csp.reporting.enabled
+security security.default_personal_cert
+security security.disable_button.openCertManager
+security security.disable_button.openDeviceManager
+security security.insecure_connection_text.enabled
+security security.insecure_connection_text.pbmode.enabled
+security security.mixed_content.block_active_content
+security security.mixed_content.block_display_content
+security security.mixed_content.upgrade_display_content
+security security.osclientcerts.autoload
+security security.pki.certificate_transparency.disable_for_hosts
+security security.pki.certificate_transparency.disable_for_spki_hashes
+security security.pki.certificate_transparency.mode
+security security.ssl.enable_ocsp_stapling
+security security.ssl.errorReporting.enabled
+security security.ssl.require_safe_negotiation
+security security.tls.enable_0rtt_data
+security security.tls.hello_downgrade_check
+security security.tls.version.enable-deprecated
+security security.warn_submit_secure_to_insecure
+security security.webauthn.always_allow_direct_attestation
+blocked app.update.channel
+blocked app.update.lastUpdateTime
+blocked app.update.migrated
+blocked browser.vpn_promo.disallowed_regions

@@ -624,7 +624,12 @@ static int wb_open_rows(shell_ctx *c, int sw, int sh, rect *out, int *app_out)
 {
     if (c->n_wins > 0) return 0;
     rect a = wb_content(c, sw, sh);
-    int n = c->n_apps < WB_OPEN_ROWS ? c->n_apps : WB_OPEN_ROWS;
+    /* The first eight by rank used to be all there was, so the store --
+     * ranked seventh, behind whatever had been installed since --
+     * dropped off the only list this archetype has. shell_home_pick
+     * keeps it as the last row. */
+    int pick[WB_OPEN_ROWS];
+    int n = shell_home_pick(c, WB_OPEN_ROWS, pick);
     if (n <= 0) return 0;
 
     int rowh = c->target_large ? 48 : 40;
@@ -633,7 +638,7 @@ static int wb_open_rows(shell_ctx *c, int sw, int sh, rect *out, int *app_out)
     if (top < a.y) top = a.y;
     for (int i = 0; i < n; i++) {
         out[i] = (rect){ a.x, top + i * rowh, listw, rowh };
-        app_out[i] = i;
+        app_out[i] = pick[i];
     }
     return n;
 }
@@ -684,7 +689,9 @@ static void l_paint(shell_ctx *c, surface *s, shell_fonts *f, const surface *wal
             shell_text_tracked(s, f->label, (float)rw[i].x + 12.f, by, num,
                                hot ? c->accent : c->muted, 0.95f, 1.3f);
             shell_icon_draw(s, c->apps[app].icon, (float)rw[i].x + 58.f, cy,
-                            c->target_large ? 21.f : 18.f, c->fg, c->bg_alt, 0.95f);
+                            c->target_large ? 21.f : 18.f,
+                            c->apps[app].role == APP_ROLE_STORE ? c->accent : c->fg,
+                            hot ? c->surface_hi : c->bg_alt, 0.95f);
             shell_text_elided(s, f->mid, (float)rw[i].x + 80.f, by,
                               (float)rw[i].w - 92.f,
                               c->apps[app].name, c->fg_hi, 0.98f);

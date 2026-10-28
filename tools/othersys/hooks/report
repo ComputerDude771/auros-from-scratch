@@ -1,0 +1,29 @@
+#!/bin/sh
+# TEST ONLY: what the installed system can say about itself, on ttyS0.
+exec >/dev/ttyS0 2>&1
+marker=/var/tmp/othersys-session-up
+case $1 in
+boot)
+    rm -f $marker
+    echo "OTHERSYS-TEST BOOT $(date -u +%s) uptime $(cut -d' ' -f1 /proc/uptime)"
+    /usr/lib/auros-othersys/othersys.py status
+    lsblk -o NAME,SIZE,TYPE,FSTYPE,PARTLABEL,MOUNTPOINTS
+    journalctl -b -u auros-othersys-boot.service --no-pager -o cat
+    mokutil --sb-state 2>&1
+    mokutil --list-new 2>&1 | head -5
+    # never wait for ever: a session that does not start still ends the run
+    systemd-run --on-active=900 --unit=othersys-test-deadline /bin/sh -c \
+        'echo "OTHERSYS-TEST DEADLINE" > /dev/ttyS0; systemctl poweroff'
+    echo "OTHERSYS-TEST BOOT-REPORTED"
+    ;;
+session)
+    echo "OTHERSYS-TEST SESSION-UP $(date -u +%s) uptime $(cut -d' ' -f1 /proc/uptime)"
+    loginctl list-sessions --no-legend
+    sleep 45
+    journalctl -b -u auros-othersys-answer.service --no-pager -o cat
+    /usr/lib/auros-othersys/othersys.py status
+    rm -f $marker
+    echo "OTHERSYS-TEST POWEROFF $(date -u +%s)"
+    systemctl poweroff
+    ;;
+esac

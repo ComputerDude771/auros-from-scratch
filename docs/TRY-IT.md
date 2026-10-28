@@ -1,0 +1,177 @@
+# Trying the no-stick test build on a spare PC
+
+This is for **a PC whose files you do not need**, or a virtual machine.
+The installer is unsigned, and this is the first time its Windows half
+meets a real computer. Read `docs/RELEASE.md`, "What the test build is,
+and is not", before starting.
+
+## What you need
+
+- A PC with **Windows 10 or 11**, started the modern way (UEFI). Almost
+  every PC from 2013 on is.
+- **About 50 GB free on C:**. AurOS needs 28 GB once it is installed,
+  Windows keeps 8 GB, and the 5 GB copy of AurOS stays on C: while it
+  installs (plus 1.8 GB of download for a while).
+- A wired or reliable internet connection: about **1.8 GB** is
+  downloaded. It resumes if it drops.
+- **The charger plugged in**, for the whole thing. The battery level
+  does not matter (a worn battery at 0% on the charger is fine).
+- USB sticks and memory cards can stay plugged in: the installer says
+  so and never writes to them.
+
+## Before you start, in Windows
+
+Nothing. If the check finds something, the stop page lists each
+problem in one line with what happens about it, and **Fix these for
+me** does it:
+
+| Problem | What the installer does |
+|---|---|
+| Fast Startup on | switches it off (always, as its first step) |
+| Not enough space on C: | empties the Recycle Bin, Windows' temp folders and Disk Cleanup's leftovers (not Downloads, not the previous Windows) |
+| Drive encrypted (BitLocker / Device encryption) | switches it off, then waits for Windows to finish |
+| Updates waiting for a restart, or a drive check pending | restarts Windows once, and opens again by itself after you sign in |
+| Charger unplugged | nothing to press: plug it in and the page carries on by itself |
+
+A USB stick, a memory card, an empty built-in card reader, little
+memory: not stops. The first page lists them under *Good to know*, one
+line each, and carries on.
+
+Some things nothing on the PC can fix: a PC that starts the old way
+(BIOS), a Windows-on-ARM laptop, an NVMe drive that Intel's storage
+driver remaps (some 2016-2020 Dell and HP laptops; Linux cannot see
+it), a failing drive, some multi-drive setups. Then the page says so in
+one line, before anything is downloaded, and changes nothing.
+
+Leave **Secure Boot on**; AurOS starts with it on. On the rare PC that
+trusts only Windows (some Secured-core laptops), the installer stops on
+its first page and shows the one firmware setting to switch on.
+
+## If antivirus stops it
+
+The test installer is unsigned and new, so antivirus programs that
+judge files by how many people have run them will hold it. It also
+carries about 30 MB of start-up files, asks for administrator rights,
+and writes to the disk and the firmware's start-up list: exactly what
+they are built to be wary of.
+
+- **Avast / AVG** show *"Suspicious file detected"*, upload the file
+  to their Threat Labs, then *"This needs a closer look"* and block it
+  "for a few hours". Either wait for their verdict, or open Avast →
+  *Menu* → *Settings* → *General* → *Exceptions* → *Add exception* and
+  add the downloaded file. Download it again afterwards if Avast moved
+  it to the Virus Chest.
+- **Microsoft Defender** is the SmartScreen step below.
+- **Any other antivirus**: add an exception for the file the same way.
+
+**Also pause its real-time protection while the installer runs**, up to
+*Restart now*. Before the restart it only reads the drive, downloads
+into `C:\AurOS`, writes its files under `\EFI\AurOS` and sets a one-time
+start-up entry; nothing resizes or rewrites the Windows drive until
+after the restart. A behaviour blocker that stops it part way therefore
+leaves Windows as it was, but it will not install either; if that
+happens, take a photo of what the antivirus said. Turn protection back
+on afterwards.
+
+## If nothing opens at all
+
+If double-clicking shows *"The application has failed to start because
+its side-by-side configuration is incorrect"*, that is the test build
+published on 2026-09-25 (SHA-256 `3e32e929...`); Windows refused its
+manifest before any of it ran, and nothing on the PC was changed.
+Download the installer again: the current one is checked on a real
+Windows machine before it is published (`.github/workflows/windows.yml`).
+
+## Running it
+
+1. Download `AurOS-Installer-test.exe` from
+   https://github.com/ComputerDude771/auros-from-scratch/raw/image-desktop/AurOS-Installer-test.exe
+   and double-click it. (Its SHA-256 is in the `image-desktop`
+   branch's README, with what was tested on real Windows.)
+2. Windows shows **"Windows protected your PC"**, because the file is
+   not signed yet. Click **More info**, then **Run anyway**.
+   (If there is no *Run anyway*, the PC has Smart App Control on, and
+   an unsigned installer cannot run on it. Use a different PC.)
+3. Windows asks **"Do you want to allow this app to make changes?"** →
+   **Yes**.
+4. **The first page checks the PC by itself** while you read it (it only
+   reads). When it says *This computer can take AurOS*, press **Next**.
+   If something stops it, the page says what in one line each; press
+   **Fix these for me** (see above).
+5. **Pick the look you want**: *Like Windows* (chosen to begin with),
+   *Like a Mac*, *Big and simple* or *One thing at a time*. Each is a
+   picture of the screen you get; all four use the light Sandstone
+   look. Press **Next**. Language, keyboard and time zone come from
+   Windows without a question. You can change the look later in
+   AurOS's Settings.
+6. **Ready** says what stays (Windows and your files), how much room
+   AurOS takes (up to 40 GB) and what Windows keeps free, that the PC
+   restarts once, and how long it takes on this PC (longer on a hard
+   disk than an SSD; measured from the download already running). Press
+   **Install AurOS**. Nothing to type, and nothing that must be ticked. It checks the PC once more, then shows one bar
+   and the time left. You can leave it: it keeps the PC awake.
+7. When it is ready it says **Ready to restart** and restarts by itself
+   after 60 seconds, counting down on the screen. **Restart now** does it
+   at once; **Not yet** stops the count. Do not close the window
+   instead: closing it before the restart takes everything back, on
+   purpose.
+
+If it cannot go on at all (a Windows-on-ARM laptop, a PC that starts
+the older way, an Intel-remapped NVMe drive, a failing drive), the page
+says why in one line and *What you can do* in another, and its one
+button is **Close**.
+
+Narrator can read every page and press its buttons (the window answers
+as an accessible object, not one blank picture).
+
+Pictures of every page: `docs/shots/wizard/`.
+
+## After the restart
+
+- The screen shows **text**, not a desktop. That is the installer. It
+  makes the Windows drive smaller (minutes, or longer on an old hard
+  drive), saves a copy of the PC's start-up onto the drive, copies
+  AurOS, checks it, and starts it. **Do not switch the PC off** while
+  it says *Making room on the Windows drive*.
+- If it stops with a sentence and `verdict=...`, **take a photo of the
+  screen** and send it. A stop before *Making room* has changed
+  nothing; switch the PC off and on and Windows starts as before.
+- On its first start AurOS applies what you chose in the installer. The
+  language sets dates, numbers and the programs that carry their own
+  translations; AurOS's own menus are English for now.
+- When AurOS starts, it asks **whether it works**. Say **yes** to make
+  AurOS what the PC starts from now on; say **no** and the PC goes back
+  to starting Windows. Windows is still there either way.
+
+## Getting to Windows afterwards
+
+Windows stays in the PC's start-up menu. Press the menu key when the PC
+switches on (often **F12**, **F9** or **Esc**; the maker's logo screen
+usually says which) and choose **Windows Boot Manager**. AurOS's own
+start menu also has a **Windows** entry.
+
+The `C:\AurOS` folder keeps the 5 GB copy of AurOS. Once AurOS works
+you can delete it from Windows.
+
+## Putting Windows back
+
+To remove AurOS and give Windows all of its drive back:
+
+- in AurOS: **Settings → Put Windows back**, then press **Remove AurOS
+  and put Windows back** twice (the first press says what goes with
+  it). The PC restarts into the restore, which shows text while it
+  works and then **switches itself off**; switch it on again and
+  Windows starts. **Do not switch it off while the text is still
+  moving.**
+- or, if AurOS itself does not start: in AurOS's start-up menu (the list
+  that appears for three seconds when AurOS starts), choose **Put Windows
+  back (remove AurOS)**, then **Yes**.
+
+Everything saved inside AurOS goes with it; copy what you want to keep
+onto a memory stick first. If the restore stops with a sentence and
+`verdict=...`, take a photo of the screen, as with the install.
+
+This is in the v3 image, which is what the installer downloads from
+2026-09-26 on. A PC installed before that (with the v2 image) has the
+restore on its disk but nothing on screen that starts it; install again
+with the current installer to get it.

@@ -188,14 +188,14 @@ into space that is already free.
 
 | ID | Stream | Status |
 |----|--------|--------|
-| W1 | Distro core — toolchain, base system, init, package manager | **in progress** |
-| W2 | Desktop shell + theme engine | theme engine done; shell in progress |
-| W3 | Forge — profiles, image builder, lockdown, locale | not started |
-| W4 | AurBridge — the Windows installer | not started |
-| W5 | Ferry — migration engine | research in progress |
-| W6 | Website, signing, update channel | not started |
-| W7 | Safety, hardware matrix, rollback, QA | research in progress |
-| W8 | Documentation and runbooks | this file |
+| W1 | Distro core — base system, init, package manager | **done** on the Ubuntu base; see §2.3 for the line that was drawn |
+| W2 | Desktop shell + theme engine | **done**: six archetypes, six themes, `aurshell` on DRM/KMS |
+| W3 | Forge — profiles, image builder, lockdown, locale | **done**: five profiles build (`docs/results/images.md`) |
+| W4 | AurBridge — the Windows installer | **done on a synthetic machine**; never yet run on a real PC |
+| W5 | Ferry — migration engine | **done**, runs after the person says AurOS works |
+| W6 | Website, signing, update channel | site and signing pipeline done; **certificate, image host and update channel are not** (`docs/RELEASE.md`) |
+| W7 | Safety, hardware matrix, rollback, QA | power-cut and geometry matrices green in QEMU; **real hardware not started** |
+| W8 | Documentation and runbooks | this file, `docs/RELEASE.md` |
 
 ---
 
@@ -211,12 +211,16 @@ that no amount of code replaces.
    Microsoft's signature is already on them and no submission is
    needed. `tools/loadertest.sh` proves it against
    `OVMF_CODE_4M.ms.fd` with Microsoft's keys enrolled and Secure
-   Boot enforcing. The shim is *dual*-signed — by the 2011 CA as well
-   as the 2023 one — and the 2011 CA is the one old firmware trusts,
-   which is the whole reason the chain is borrowed: the dual-signing
-   window closed in June 2026, so a distribution applying on its own
-   today gets a 2023-only shim that would not boot on exactly the
-   machines this product exists for. See `docs/SIGNING.md`.
+   Boot enforcing. Ubuntu's "dualsigned" shim is signed by Canonical
+   and by Microsoft's 2011 third-party CA -- not the 2023 one -- and the
+   2011 CA is the one old firmware trusts, which is the whole reason the
+   chain is borrowed: a distribution applying on its own today gets a
+   2023-signed shim that would not boot on exactly the machines this
+   product exists for. The installer itself restarts through the same
+   shim, so **Secure Boot stays on**; a PC whose firmware does not trust
+   that key (a Secured-core PC with third-party keys off, or one listing
+   only the 2023 key) is found from Windows, before anything changes.
+   See `docs/SIGNING.md` and `docs/AURBRIDGE.md`.
 2. **Code signing — still a purchase.** An unsigned `.exe` gets
    SmartScreen's full-screen panel whose only visible button says
    *Don't run*. For an audience defined as non-technical that is
@@ -224,10 +228,11 @@ that no amount of code replaces.
    worse: they have been taught to click past a security warning
    immediately before handing a program their whole disk. The
    pipeline is written and tested (`build/sign`, `tools/signtest.sh`,
-   12 checks); what is missing is an OV or EV certificate on a
+   12 checks); what is missing is an OV certificate on a
    hardware token or cloud HSM, which since June 2023 is the only
-   form any public CA will issue. `docs/SIGNING.md` says what to buy
-   and why EV is the one worth the difference here.
+   form any public CA will issue -- or Microsoft's Azure Artifact
+   Signing where eligible. `docs/SIGNING.md` says what to buy and why
+   EV is not worth the difference any more.
 3. **BitLocker — refused, permanently.** There is no shrink path for
    a protected volume, online or offline, and suspension does not
    decrypt a sector. Preflight blocks and the remedy says what is
@@ -284,6 +289,7 @@ What proves it, and the numbers are the current transcripts in
 | | |
 |---|---|
 | `installtest.sh` | 37 — install, start, put Windows back twice, refuse a damaged copy, refuse a stick for another AurOS |
+| `nosticktest.sh` | 45 — the same with no stick at all: image read from inside Windows, the way back kept on the disk, the restart through shim and grub from firmware with Secure Boot on and the kernel locked down, and two firmwares that do not trust shim's key, each refused by AurBridge before anything changes |
 | `loadertest.sh` | 18 — and does it come back up in AurOS with the stick out, including under Secure Boot |
 | `powercuttest.sh` | 138 — the power goes at each of seventeen named instants |
 | `matrixtest.sh` | 10 — shapes of computer that cannot be bought |
@@ -298,7 +304,14 @@ What proves it, and the numbers are the current transcripts in
 | `targets.c` | 10021 — everything she has to press, at every text size |
 | `modaltest.c` | 53 — a panel covers the desktop and can always be left |
 
-**What is left is not code.** A certificate. A host for the image. A
-network that allows Firefox. A legal entity. And the thing none of the
-above can substitute for: a real, old, dusty PC with a real firmware
-and a real disk that lies about having flushed.
+**What is left is mostly not code.** A certificate. A host for the
+image. A network that allows Firefox. A legal entity. And the thing none
+of the above can substitute for: a real, old, dusty PC with a real
+firmware and a real disk that lies about having flushed.
+
+It is not *only* not code, and this paragraph used to say it was. Four
+things in the product are still missing or wrong, and `docs/RELEASE.md`
+lists them with the rest: the wizard has no screen-reader support; it
+has no page to choose a memory stick on, so today it installs only in
+the no-stick mode; "Put Windows back" works but nothing a person can
+press starts it; and the Windows half has never run on Windows.

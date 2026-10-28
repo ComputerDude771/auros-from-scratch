@@ -39,6 +39,15 @@ static const char *APP_DIRS[] = {
     "/var/lib/flatpak/exports/share/applications",
     NULL
 };
+/* And two that belong to her, searched last so they win: her own
+ * launchers, and programs Flathub installed for her alone. Both are
+ * hers to write, so neither is searched on a managed machine (see the
+ * allow-list below). Relative to $HOME. */
+static const char *USER_APP_DIRS[] = {
+    ".local/share/flatpak/exports/share/applications",
+    ".local/share/applications",
+    NULL
+};
 
 typedef struct {
     char name[96], comment[160], exec[192], wmclass[64], icon[96], cats[192];
@@ -119,9 +128,21 @@ static int have_try_exec(const char *cmd)
  * the first frame, so either one means the desktop never appears. On a
  * kiosk allow_tty is off, so there is no console to recover from
  * either: one file and the machine does not come back. */
+/*
+ * SYMLINKS ARE FOLLOWED, and that is deliberate. Every program Flathub
+ * installs is announced by a symlink -- exports/share/applications/
+ * org.videolan.VLC.desktop points into the app's own deployment -- and
+ * this used to open with O_NOFOLLOW, so not one program from the store
+ * could ever appear on her home screen. The two attacks above do not
+ * need the flag to be stopped: a link to /dev/zero opens a character
+ * device and a link to a FIFO opens a FIFO, and the S_ISREG test below
+ * refuses both (O_NONBLOCK is what keeps the FIFO open from waiting).
+ * A link to a huge regular file is cut at ENTRY_MAX_BYTES. A link in
+ * her own directory can only point at something she can already read.
+ */
 static FILE *open_entry(const char *path)
 {
-    int fd = open(path, O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC);
+    int fd = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
     if (fd < 0) return NULL;
     struct stat st;
     if (fstat(fd, &st) < 0 || !S_ISREG(st.st_mode)) { close(fd); return NULL; }
@@ -314,6 +335,33 @@ static int exec_to_argv(const char *e, char *out, size_t cap, int max_args)
     return n;
 }
 
+/* Flathub's entries end `--file-forwarding org.videolan.VLC @@u %U @@`.
+ * %U is gone by now (strip_field_codes); the @@u and @@ around where it
+ * was are markers for flatpak to find forwarded files between, and with
+ * no files they are noise at best. Removed, as whole tokens only. */
+static int drop_forwarding_marks(char *blob, int n)
+{
+    char tmp[192];
+    size_t w = 0;
+    int kept = 0;
+    const char *r = blob;
+    for (int i = 0; i < n; i++) {
+        size_t len = strlen(r);
+        int mark = !strcmp(r, "@@") || !strcmp(r, "@@u") || !strcmp(r, "@@f");
+        if (!mark) {
+            if (w + len + 2 > sizeof tmp) return n;      /* leave it alone */
+            memcpy(tmp + w, r, len + 1);
+            w += len + 1;
+            kept++;
+        }
+        r += len + 1;
+    }
+    if (!kept) return n;
+    tmp[w] = 0;
+    memcpy(blob, tmp, w + 1);
+    return kept;
+}
+
 /* The absolute path of the program an argv actually runs, resolved
  * through PATH. This -- not the desktop file's name, not the window
  * class it claims, not the raw Exec string -- is what an allow-list has
@@ -487,6 +535,19 @@ static int allowed(const shell_ctx *c, const char *program)
     return 0;
 }
 
+/* The store, by the name of its desktop file. Not by category: gdebi
+ * and synaptic say PackageManager too, and neither is where she finds
+ * a program she does not already have. */
+static int is_store(const char *stem)
+{
+    static const char *ids[] = {
+        "org.gnome.Software", "gnome-software", "org.kde.discover",
+        "io.elementary.appcenter", "mintinstall", NULL
+    };
+    for (int i = 0; ids[i]; i++) if (!strcmp(stem, ids[i])) return 1;
+    return 0;
+}
+
 int shell_scan_apps(shell_ctx *c)
 {
     const char *lang_env = getenv("LC_ALL");
@@ -503,23 +564,39 @@ int shell_scan_apps(shell_ctx *c)
 
     /* A user's own directory comes last so that its copy of a desktop
      * file replaces the system one, per the XDG search order. */
-    char home_dir[256] = {0};
+    char home_dirs[2][256];
     const char *home = getenv("HOME");
-    if (home && *home) snprintf(home_dir, sizeof home_dir, "%s/.local/share/applications", home);
 
     found *list = calloc(512, sizeof *list);
     if (!list) return -1;
     int n = 0, any_dir = 0;
 
-    const char *dirs[8]; int n_dirs = 0;
-    for (int d = 0; APP_DIRS[d] && n_dirs < 7; d++) dirs[n_dirs++] = APP_DIRS[d];
-    /* Not on a managed machine. The user directory is searched last so
-     * that a customised launcher overrides the system one -- which is
-     * the correct XDG behaviour and exactly the wrong thing where an
-     * allow-list is in force, because the override would let a student
-     * replace the allowed browser's entry with their own. */
-    int locked = c->deny_all_apps || c->allowed_apps[0] || c->kiosk;
-    if (home_dir[0] && !locked) dirs[n_dirs++] = home_dir;
+    const char *dirs[12]; int n_dirs = 0;
+    /* AUROS_APP_DIRS, colon-separated, replaces every directory below:
+     * it is how tools/storetest.c builds a machine out of a folder of
+     * .desktop files instead of reading whatever the build host has
+     * installed. Unset on every real machine. */
+    static char override[1024];
+    const char *ov = getenv("AUROS_APP_DIRS");
+    if (ov && *ov) {
+        snprintf(override, sizeof override, "%s", ov);
+        for (char *t = strtok(override, ":"); t && n_dirs < 11; t = strtok(NULL, ":"))
+            if (*t) dirs[n_dirs++] = t;
+    } else {
+        for (int d = 0; APP_DIRS[d] && n_dirs < 9; d++) dirs[n_dirs++] = APP_DIRS[d];
+        /* Not on a managed machine. The user directory is searched last
+         * so that a customised launcher overrides the system one --
+         * which is the correct XDG behaviour and exactly the wrong
+         * thing where an allow-list is in force, because the override
+         * would let a student replace the allowed browser's entry with
+         * their own. */
+        int locked = c->deny_all_apps || c->allowed_apps[0] || c->kiosk;
+        if (home && *home && strlen(home) < 180 && !locked)
+            for (int d = 0; USER_APP_DIRS[d] && n_dirs < 11; d++) {
+                snprintf(home_dirs[d], sizeof home_dirs[d], "%s/%s", home, USER_APP_DIRS[d]);
+                dirs[n_dirs++] = home_dirs[d];
+            }
+    }
 
     for (int d = 0; d < n_dirs; d++) {
         const char *dir = dirs[d];
@@ -542,6 +619,7 @@ int shell_scan_apps(shell_ctx *c)
             char argv_blob[sizeof e.exec];
             int nargs = exec_to_argv(e.exec, argv_blob, sizeof argv_blob, APP_MAX_ARGS);
             if (nargs < 1) continue;
+            nargs = drop_forwarding_marks(argv_blob, nargs);
             char program[PATH_MAX];
             if (resolve_program(argv_blob, program, sizeof program) < 0) continue;
             if (!allowed(c, program)) continue;
@@ -565,7 +643,31 @@ int shell_scan_apps(shell_ctx *c)
     if (!any_dir) { free(list); return -1; }
     qsort(list, (size_t)n, sizeof *list, cmp_found);
 
-    int keep = n < SHELL_MAX_APPS ? n : SHELL_MAX_APPS;
+    /* THE STORE IS KEPT, whatever else is not. The table holds
+     * SHELL_MAX_APPS and the list is cut at the bottom of its rank
+     * order -- which is where a package manager ranks. Someone who has
+     * installed enough programs to fill the table must not lose the
+     * way to install another. And a machine whose policy says she may
+     * not install anything has no store at all: a "Get more programs"
+     * whose every Install refuses is a button that lies. */
+    int store = -1;
+    for (int i = 0; i < n; i++)
+        if (is_store(list[i].file)) { store = i; break; }
+    if (store >= 0 && (!c->allow_install || c->kiosk)) {
+        memmove(&list[store], &list[store + 1], (size_t)(n - store - 1) * sizeof *list);
+        n--; store = -1;
+    }
+    int want_settings = c->allow_settings && !c->kiosk;
+    int room = SHELL_MAX_APPS - (want_settings ? 1 : 0);
+    int keep = n < room ? n : room;
+    if (store >= keep && keep > 0) {
+        /* It takes the last place; the program that was there is the
+         * one that falls off instead. */
+        list[keep - 1] = list[store];
+        store = keep - 1;
+    }
+
+    int pinned = 0;
     for (int i = 0; i < keep; i++) {
         app_entry *a = &c->apps[i];
         memset(a, 0, sizeof *a);
@@ -585,13 +687,28 @@ int shell_scan_apps(shell_ctx *c)
          * row of differently tinted marks is decoration standing in for
          * hierarchy, and colour here means state. */
         a->tint   = c->fg;
-        a->pinned = (i < 4);
+        if (i == store) {
+            /* Her words, the same on every machine and in every
+             * archetype, whatever the package calls itself this year.
+             * build/forge renames it to the same thing as data; this is
+             * what makes it true even where the rename did not reach
+             * (a store from Flathub, a translated Name= that wins). */
+            a->role = APP_ROLE_STORE;
+            a->icon = ICON_STORE;
+            snprintf(a->name, sizeof a->name, "%s", "Get more programs");
+            snprintf(a->hint, sizeof a->hint, "%s", "Find and add programs to this computer");
+        } else if (pinned < 4) {
+            /* The dock's favourites: the first four PROGRAMS. The store
+             * has a labelled place of its own there. */
+            a->pinned = 1;
+            pinned++;
+        }
     }
     c->n_apps = keep;
     /* Settings is the shell's own, not a package's: without it a user
      * who changes nothing else still has no way to change the one thing
      * the product promises they can. */
-    if (c->allow_settings && keep < SHELL_MAX_APPS && !c->kiosk) {
+    if (want_settings && keep < SHELL_MAX_APPS) {
         app_entry *a = &c->apps[keep];
         memset(a, 0, sizeof *a);
         snprintf(a->id,   sizeof a->id,   "settings");
@@ -599,8 +716,63 @@ int shell_scan_apps(shell_ctx *c)
         snprintf(a->hint, sizeof a->hint, "Change how this computer looks and works");
         a->icon = ICON_SETTINGS;
         a->tint = c->fg;
+        a->role = APP_ROLE_SETTINGS;
         c->n_apps = ++keep;
     }
     free(list);
     return keep;
+}
+
+/* ── while the desktop is running ───────────────────────────────── */
+
+/* Larger is newer; 0 means "was here when the desktop started". */
+static unsigned fresh_seq;
+
+int shell_rescan_apps(shell_ctx *c, int *added, int max)
+{
+    /* The old table, by name: indices are about to move. */
+    static app_entry old[SHELL_MAX_APPS];
+    int n_old = c->n_apps;
+    memcpy(old, c->apps, sizeof old);
+
+    if (shell_scan_apps(c) < 0) {
+        memcpy(c->apps, old, sizeof old);
+        c->n_apps = n_old;
+        return -1;
+    }
+
+    int n_added = 0;
+    for (int i = 0; i < c->n_apps; i++) {
+        app_entry *a = &c->apps[i];
+        int was = -1;
+        for (int j = 0; j < n_old; j++)
+            if (!strcmp(old[j].id, a->id)) { was = j; break; }
+        if (was >= 0) {
+            /* Her favourites are hers: a new program that ranks high
+             * does not push one off the dock. Only the store and
+             * Settings, which have places of their own, are left as
+             * the scan made them. */
+            if (a->role == APP_ROLE_PROGRAM) a->pinned = old[was].pinned;
+            a->fresh = old[was].fresh;
+        } else {
+            a->pinned = 0;
+            if (a->role == APP_ROLE_PROGRAM) {
+                a->fresh = ++fresh_seq;
+                if (added && n_added < max) added[n_added++] = i;
+            }
+        }
+    }
+
+    /* Every window goes on pointing at its own program -- or at
+     * nothing, if that program was removed while it was open. */
+    for (int w = 0; w < c->n_wins; w++) {
+        int a = c->wins[w].app;
+        if (a < 0 || a >= n_old) continue;
+        int now = -1;
+        for (int i = 0; i < c->n_apps; i++)
+            if (!strcmp(c->apps[i].id, old[a].id)) { now = i; break; }
+        c->wins[w].app = now;
+    }
+    if (c->hover >= c->n_apps) c->hover = -1;
+    return n_added;
 }

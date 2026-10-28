@@ -30,6 +30,23 @@ reasonable until they bite.
   warning until a restore case six checks later failed with a
   misleading message.
 
+- **Wine is not Windows.** Wine loaded a manifest real Windows refuses
+  ("side-by-side configuration is incorrect"), so the first real PC could
+  not start an installer every test had passed. Anything shipped for
+  Windows is started on a real Windows VM before it is published
+  (`.github/workflows/windows.yml`); a hash check proves the file is the
+  file, not that it runs.
+- **A unit test runs outside the sandbox the real thing runs in.**
+  `aurfirsttest` drove `answer.sh` with every "Put Windows back" case
+  green; inside `auros-answer.service` (`ProtectSystem=strict`) `/run`
+  and `/boot` are read-only and it failed on the first real boot. Test
+  a root-side change in the booted image (`firstboottest`,
+  `putbacktest`), not only in the scratch directory.
+- **A check that stops firing may have stopped looking.** When a false
+  alarm is fixed, also prove the check still fires on the real thing
+  (the Intel RST walk is told a real driver is Intel's, and must name
+  it).
+
 ## Shell and build
 
 - **`[ -e link ]` follows the link.** systemd's enable links are
@@ -38,6 +55,11 @@ reasonable until they bite.
   says they are missing. Use `-L`. This bug was written twice.
 - **`pkill -f pattern` matches the shell running it** when the pattern
   is in its own command line, and kills it (exit 144). Kill by PID.
+  (It happened again on 2026-09-26, with this line already written
+  here. Read the list before the command, not after.)
+- **A test killed by a signal does not run its EXIT trap** under `sh`;
+  `/tmp/installtest.lock` and the scratch directory stay behind and the
+  next end-to-end test refuses to start. Remove them by hand.
 - **Under `set -e`, `[ test ] && action` ends the script silently** when
   the test is false. Use `if`.
 - **`forge build`'s stage 7 is a deliberate no-op.** Images come from
@@ -69,6 +91,37 @@ reasonable until they bite.
 - **`/sys` reports partition offsets in 512-byte units** whatever the
   disk's sector size. GPT LBAs are in logical-sector units, so a 4Kn
   disk is 8x off if you mix them.
+
+## The boot chain (2026-10-04)
+
+- **`sbverify --cert X` is not a trust check.** It trusts the
+  certificates a signature carries, and passes a real shim against a
+  certificate made up a moment ago. `osslsigncode verify -CAfile` is
+  stricter but refuses an intermediate as the anchor, which is what UEFI
+  db holds. `rootfs/usr/lib/auros/bootchain` verifies the Authenticode
+  digest, the signed attributes and the chain itself
+  (python3-cryptography); `tools/bootchaintest.sh` has a forged shim
+  that carries Microsoft's real 2011 CA to keep it honest.
+- **grub's `fallback` is a number.** Ubuntu's 2.12 reads it with
+  `grub_strtoul` and unsets anything else, so `set fallback=some-id`
+  is silently nothing, and a kernel that does not start is retried at
+  every timeout forever.
+- **The shim and grub postinsts do nothing without
+  `/boot/grub/x86_64-efi/core.efi`.** A machine whose grub was never
+  installed by grub-install gets new packages and the old boot chain.
+- **Under Secure Boot, Canonical's grub refuses `loadfont` and every
+  module from disk.** Each refusal prints "prohibited by secure boot
+  policy"; `search` with a `fs.lst` beside it prints one per filesystem
+  module per partition. No modules at the prefix, no gfxterm.
+- **PE section names over eight bytes are `/N`**, an offset into the
+  COFF string table. shim's `.sbatlevel` and `.vendor_cert` are both
+  stored that way; a parser keyed on the raw name finds neither, and an
+  SBAT check against an empty level passes everything.
+- **A shim writes its SBAT level into NVRAM the first time it runs**,
+  and nothing lowers it. A shim newer than the grub beside it is a
+  machine broken for good, not until the next update.
+- **`rm -rf *` after a `cd` in the same command is refused by the
+  harness**, rightly. Extract into a fresh `mktemp -d` instead.
 
 ## Environment
 

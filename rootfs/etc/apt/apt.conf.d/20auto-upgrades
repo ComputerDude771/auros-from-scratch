@@ -1,0 +1,5 @@
+// AurOS: security updates from Ubuntu, fetched and installed daily by
+// unattended-upgrades, whose own 50unattended-upgrades limits them to
+// the -security pocket. See profiles/desktop.profile.
+APT::Periodic::Update-Package-Lists "1";
+APT::Periodic::Unattended-Upgrade "1";

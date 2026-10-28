@@ -62,9 +62,17 @@ shell_archetype="taskbar"
 # LibreOffice is not on this list because the desktop profile does not
 # install it -- listing it would read as "we take that away from you"
 # when nobody had it.
+#
+# EVERY NAME HERE MUST BE A PACKAGE THIS SUITE HAS. forge purges the
+# list in one apt call, and apt refuses the WHOLE call for one name it
+# does not know -- so `tracker3`, `tracker3-miners` and
+# `gnome-software-plugin-deb`, which noble does not have (its Tracker 3
+# is called tracker / tracker-miner-fs / tracker-extract, and there is
+# no -deb plugin), meant nothing on this list was ever removed, behind
+# the build's `|| true`. tools/profiletest.sh lint checks every name.
 packages_exclude="snapd ubuntu-advantage-tools popularity-contest
-                  tracker tracker3 tracker-miner-fs tracker3-miners
-                  gnome-software gnome-software-plugin-deb
+                  tracker tracker-miner-fs tracker-extract
+                  gnome-software gnome-software-plugin-flatpak
                   fwupd fwupd-signed"
 
 software_store=""

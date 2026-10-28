@@ -46,6 +46,10 @@ warn_note() {
     printf '%s\n' "$*" >> "$RFS/etc/auros/build-warnings"
 }
 
+# The hardening stage and its seal-time check (stream S1).
+# shellcheck source=build/harden
+. "$ROOT/build/harden"
+
 # ── profile loading, with single-parent inheritance ────────────────
 load_profile() {
     local name=$1 chain="" cur=$1 depth=0 f
@@ -207,7 +211,13 @@ stage_packages() {
     mkdir -p "$RFS/etc/auros"
     : > "$RFS/etc/auros/build-warnings"
     chroot_prep
-    local pkgs="$packages_hardware $packages_boot $packages_base $packages_desktop $packages_files $packages_apps $packages_extra"
+    # `locales` IN EVERY IMAGE, not in any one profile's list. Stage 4
+    # runs locale-gen and writes LANG from the profile whatever the
+    # profile says, and without this package there is no locale-gen:
+    # every image shipped LANG=en_US.UTF-8 naming a locale that did not
+    # exist, which glibc quietly turns into C -- and the language chosen
+    # in the installer had nothing to be generated with.
+    local pkgs="locales $packages_hardware $packages_boot $packages_base ${packages_security:-} $packages_desktop $packages_files $packages_apps $packages_extra"
     # The letters this image can draw in. Not decoration: a page in a
     # language with no font is a page of empty boxes, and this product
     # promises a school can ship it in its own language.
@@ -222,6 +232,9 @@ stage_packages() {
     esac
     pkgs=$(echo "$pkgs" | tr -s ' \n' ' ')
     note "installing: $(echo "$pkgs" | wc -w) packages"
+    # Before the first install, not after: a pin only stops what has
+    # not happened yet.
+    pin_no_snap
     inchroot "apt-get update -qq"
     inchroot "apt-get install -y --no-install-recommends $pkgs" \
         || die "package install failed — see the log above"
@@ -244,8 +257,108 @@ stage_packages() {
     stage_browser
     stage_store
     stage_file_types
+    # AND AGAIN, AFTER EVERYTHING THAT CAN INSTALL SOMETHING.
+    #
+    # The purge above runs before the browser stage, and the browser
+    # stage is exactly what put snapd back: every image built where
+    # Mozilla was unreachable tried `apt-get install firefox` against
+    # Ubuntu's archive, got the 120 KB package whose only job is to run
+    # `snap install`, and with it snapd (116 MB) -- installed, ii, on an
+    # image whose profile says packages_exclude="snapd". The pin in
+    # pin_no_snap now stops that happening; this removes whatever got
+    # in by some other road, and stage 6 refuses to seal an image that
+    # still has any of it.
+    purge_snap_leftovers
+    trim_server_firmware
     inchroot "apt-get clean; rm -rf /var/lib/apt/lists/*"
     chroot_done
+}
+
+# ── no snap, and none of the packages whose only job is to fetch one ──
+#
+# Ubuntu's firefox, thunderbird and chromium-browser are transitional
+# packages that install snapd and then a snap. This image has no snapd
+# by design, so on it each of them is a program that is not there --
+# and the store would offer them: she searches "Thunderbird", presses
+# Install on the Ubuntu one, and gets nothing. Pinned to -1 they can
+# never be installed, by this build or later by the store, and the
+# store shows the real program (Mozilla's, or Flathub's) instead.
+#
+# One stanza per pattern rather than a list on one line: whether apt
+# reads several names in one Package: field has changed between
+# versions, and a pin that quietly matches nothing is this whole bug
+# again.
+pin_no_snap() {
+    case " ${browser_source:-} " in
+        *" snap "*) warn "browser_source asks for a snap; snapd is not pinned out"
+                    return 0 ;;
+    esac
+    install -d "$RFS/etc/apt/preferences.d"
+    {
+        echo "# Written by build/forge. AurOS has no snap: these never install."
+        echo
+        printf 'Package: snapd\nPin: release a=*\nPin-Priority: -1\n'
+        for _p in 'firefox*' 'thunderbird*' 'chromium-browser*' \
+                  'chromium-chromedriver*' 'chromium-codecs-ffmpeg*'; do
+            printf '\nPackage: %s\nPin: release o=Ubuntu\nPin-Priority: -1\n' "$_p"
+        done
+    } > "$RFS/etc/apt/preferences.d/auros-no-snap"
+    note "snapd and Ubuntu's snap-only firefox/thunderbird/chromium pinned out"
+}
+
+# What is installed that is a snap, or exists only to fetch one. Names,
+# one per line; nothing when there is none.
+snap_leftovers() {
+    inchroot "dpkg-query -W -f='\${Package} \${Version} \${Status}\n' \
+              snapd firefox thunderbird chromium-browser 2>/dev/null || true" \
+        | awk '$NF == "installed" && ($1 == "snapd" || $2 ~ /snap/) { print $1 }'
+}
+
+purge_snap_leftovers() {
+    local left
+    left=$(snap_leftovers | tr '\n' ' ')
+    if [ -n "${left// /}" ]; then
+        note "removing snap leftovers: $left"
+        inchroot "apt-get purge -y $left" >/dev/null 2>&1 \
+            || warn "could not purge: $left"
+    fi
+}
+
+# ── firmware for machines that are not in anybody's house ──────────
+#
+# See packages_hardware in profiles/desktop.profile. If the metapackage
+# came in anyway (an older profile naming `linux-firmware`, or apt
+# preferring the real package over linux-firmware-minimal's Provides),
+# the four server pieces are removed here -- in ONE apt call that also
+# installs linux-firmware-minimal, so the kernel's dependency on
+# "linux-firmware" stays satisfied and apt has no reason to take
+# linux-image-generic with them. Checked afterwards anyway: a removal
+# that took the kernel meta with it would be an image that never takes
+# another kernel update.
+FW_SERVER="linux-firmware-mellanox-spectrum linux-firmware-marvell-prestera
+           linux-firmware-netronome linux-firmware-qlogic"
+pkg_installed() {
+    inchroot "dpkg-query -W -f='\${Status}' $1 2>/dev/null | grep -q 'ok installed'"
+}
+trim_server_firmware() {
+    local have="" p
+    for p in $FW_SERVER; do
+        if pkg_installed "$p"; then have="$have $p"; fi
+    done
+    if [ -z "$have" ]; then
+        note "no data-centre firmware in this image"
+        return 0
+    fi
+    local minus=""
+    for p in $have; do minus="$minus $p-"; done
+    if inchroot "apt-get install -y --no-install-recommends linux-firmware-minimal $minus" \
+            >/dev/null 2>&1; then
+        note "removed data-centre firmware:$have"
+    else
+        warn "could not remove data-centre firmware:$have"
+    fi
+    pkg_installed linux-image-generic || die "removing$have took linux-image-generic
+     with it; this image would never take another kernel update."
 }
 
 # ── the store, if this build wants one ────────────────────────────
@@ -255,15 +368,94 @@ stage_packages() {
 # drops it can still install software: from the archive, and by
 # downloading a .deb and opening it, which is the path most people
 # actually use for the one program they came for.
+#
+# AND FLATHUB IN IT, because Ubuntu's archive does not have what she
+# came for. Chrome, Zoom, Spotify, WhatsApp clients: none of them are
+# in it, and Firefox and Thunderbird there are snap stubs (pinned out
+# above). With flatpak and the store's flatpak plugin, typing "Zoom"
+# into Get more programs finds Zoom. Measured against a desktop build:
+# 9 MB, because the store already brought bubblewrap, gpg and appstream.
+#
+# xdg-desktop-portal is how a Flathub program asks for a file she
+# chooses; without it "Open" in LibreOffice-from-Flathub falls back to
+# whatever the program can see by itself.
 stage_store() {
     case "${software_store:-none}" in
-      none|"") note "no software store in this build" ;;
-      gnome-software)
-        inchroot "apt-get install -y --no-install-recommends gnome-software packagekit" \
-            && note "gnome-software installed" \
-            || note "gnome-software would not install; .deb files still open" ;;
+      none|"") note "no software store in this build"; return 0 ;;
+      gnome-software) ;;
       *) die "unknown software_store: $software_store" ;;
     esac
+    if inchroot "apt-get install -y --no-install-recommends gnome-software packagekit appstream"; then
+        note "gnome-software installed"
+    else
+        warn "gnome-software would not install; .deb files still open"
+        warn_note "store=MISSING"
+        return 0
+    fi
+    # A machine whose user may not install anything gets no Flathub: a
+    # store full of programs that all refuse is a store that lies.
+    case "$(printf '%s' "${allow_user_install:-yes}" | tr 'A-Z' 'a-z')" in
+        no|false|0|off|n)
+            note "allow_user_install=no: no Flathub in the store"
+            return 0 ;;
+    esac
+    if inchroot "apt-get install -y --no-install-recommends flatpak \
+                 gnome-software-plugin-flatpak xdg-desktop-portal xdg-desktop-portal-gtk"; then
+        note "flatpak and the store's Flathub plugin installed"
+    else
+        warn "flatpak would not install: the store has only Ubuntu's own programs"
+        warn_note "flatpak=MISSING"
+        return 0
+    fi
+    stage_flathub
+}
+
+# ── Flathub: added now if this builder can reach it, else at first online ──
+#
+# The .flatpakrepo is a small INI file that carries Flathub's public
+# signing key inline. It is fetched over TLS from Flathub itself --
+# the same thing Flathub's own setup page tells everyone to run -- and
+# never typed in from memory: a wrong key would be a remote whose
+# every download fails its signature check.
+#
+# GitHub's runners can reach dl.flathub.org; the container this was
+# written in cannot. Either way the machine ends up with Flathub:
+# auros-software.service adds it the first time the computer is online
+# if the image does not already have it. Which of the two happened is
+# written into the image (/etc/auros/software-sources, and the build's
+# own record), so nobody has to guess afterwards.
+FLATHUB_URL="https://dl.flathub.org/repo/flathub.flatpakrepo"
+flatpakrepo_ok() {
+    grep -q '^\[Flatpak Repo\]' "$1" &&
+    grep -q '^Url=https://' "$1" &&
+    grep -q '^GPGKey=.' "$1"
+}
+stage_flathub() {
+    install -d "$RFS/usr/share/auros" "$RFS/etc/auros"
+    local repo="$RFS/usr/share/auros/flathub.flatpakrepo" sum=""
+    rm -f "$repo.new"
+    if curl -fsSL --max-time 60 "$FLATHUB_URL" -o "$repo.new" 2>/dev/null &&
+       flatpakrepo_ok "$repo.new"; then
+        mv -f "$repo.new" "$repo"
+        sum=$(sha256sum "$repo" | cut -d' ' -f1)
+        if inchroot "flatpak remote-add --system --if-not-exists flathub \
+                     /usr/share/auros/flathub.flatpakrepo" &&
+           inchroot "flatpak remotes --system --columns=name | grep -qx flathub"; then
+            printf 'flathub=build\nflathub_sha256=%s\n' "$sum" \
+                > "$RFS/etc/auros/software-sources"
+            warn_note "flathub=build ($sum)"
+            note "Flathub added to the image (flathub.flatpakrepo sha256 $sum)"
+            return 0
+        fi
+        warn "flatpak remote-add failed here; the first time it is online the"
+        warn "computer adds Flathub itself (auros-software.service)"
+    else
+        rm -f "$repo.new"
+        note "dl.flathub.org is not reachable from this builder: the computer"
+        note "adds Flathub itself the first time it is online (auros-software.service)"
+    fi
+    printf 'flathub=first-online\n' > "$RFS/etc/auros/software-sources"
+    warn_note "flathub=first-online"
 }
 
 # ── what opens what ───────────────────────────────────────────────
@@ -296,7 +488,7 @@ image/tiff=org.xfce.ristretto.desktop
 image/webp=org.xfce.ristretto.desktop
 
 # Documents she is most likely to have brought with her
-application/pdf=atril.desktop
+application/pdf=org.gnome.Evince.desktop
 text/plain=org.xfce.mousepad.desktop
 text/markdown=org.xfce.mousepad.desktop
 text/csv=org.xfce.mousepad.desktop
@@ -311,6 +503,25 @@ application/vnd.rar=xarchiver.desktop
 # Folders
 inode/directory=thunar.desktop
 EOL
+    # A link she presses in an email or a document opens in THE browser
+    # -- the one on her home screen -- and not in whichever of several
+    # programs that claim web pages the database ranks first. Once she
+    # installs Chrome from the store it claims them too, and then the
+    # one she was given is still the one that opens, until she says
+    # otherwise in Chrome.
+    local _web=""
+    for _d in firefox org.gnome.Epiphany; do
+        if [ -f "$RFS/usr/share/applications/$_d.desktop" ]; then _web="$_d.desktop"; break; fi
+    done
+    if [ -n "$_web" ]; then
+        printf '%s\n' "" "# Web pages and links" \
+            "x-scheme-handler/http=$_web" "x-scheme-handler/https=$_web" \
+            "text/html=$_web" "application/xhtml+xml=$_web" \
+            >> "$RFS/etc/xdg/mimeapps.list"
+        note "links open in $_web"
+    else
+        warn "no browser .desktop found; links have no default program"
+    fi
 
     # ── what these programs are CALLED ─────────────────────────────
     #
@@ -382,7 +593,7 @@ mpv|Music and video|Play a song or a film
 mate-calc|Calculator|Add up, and work things out
 system-config-printer|Printers|Set up a printer, or check one you have
 gdebi|Install a program you downloaded|Opens a program you have downloaded and puts it on this computer
-atril|Documents|Read PDFs and other documents
+org.gnome.Evince|Documents|Read PDFs and other documents
 org.xfce.ristretto|Photos|Look at your pictures
 org.xfce.mousepad|Notes|Write and read plain notes
 xarchiver|Zip files|Open a zip file, or make one
@@ -474,16 +685,43 @@ browser_unconfigure() {
           "$RFS/etc/apt/keyrings/mozillateam.asc"
 }
 
+# Mozilla's own instructions for Debian and Ubuntu, step for step
+# (support.mozilla.org, "Install Firefox on Linux", .deb section): the
+# key from packages.mozilla.org, its fingerprint checked against the
+# one Mozilla publishes, the repository, and a pin of 1000 on Mozilla's
+# origin. Ubuntu's own firefox* is pinned to -1 by pin_no_snap, so the
+# snap stub cannot win even when this repository is unreachable -- the
+# install then fails, which is what sends the build to the next route.
+MOZILLA_KEY_FPR="35BAA0B33E9EB396F59CA838C0BA5CE6DC6315A3"
 try_mozilla_apt() {
     inchroot "install -d -m 0755 /etc/apt/keyrings"
     inchroot "curl -fsSL --max-time 30 https://packages.mozilla.org/apt/repo-signing-key.gpg \
               -o /etc/apt/keyrings/packages.mozilla.org.asc" 2>/dev/null || return 1
+    # The fingerprint, with the build host's gpg (the image has none
+    # yet at this stage). A host with no gpg skips the check and says
+    # so; apt still verifies every download against the key.
+    if command -v gpg >/dev/null 2>&1; then
+        local fpr
+        fpr=$(gpg --show-keys --with-colons \
+                  "$RFS/etc/apt/keyrings/packages.mozilla.org.asc" 2>/dev/null \
+              | awk -F: '$1 == "fpr" { print $10; exit }')
+        if [ -z "$fpr" ]; then
+            note "could not read the fingerprint of Mozilla's key; apt still checks it"
+        elif [ "$fpr" != "$MOZILLA_KEY_FPR" ]; then
+            warn "packages.mozilla.org's key is $fpr, not Mozilla's published"
+            warn "$MOZILLA_KEY_FPR; not using it"
+            return 1
+        else
+            note "Mozilla's key fingerprint matches"
+        fi
+    else
+        note "no gpg on this build host; Mozilla's key fingerprint not checked"
+    fi
     cat > "$RFS/etc/apt/sources.list.d/mozilla.list" <<'EOL'
 deb [signed-by=/etc/apt/keyrings/packages.mozilla.org.asc] https://packages.mozilla.org/apt mozilla main
 EOL
-    # Pin so Ubuntu's snap transitional package can never win.
     cat > "$RFS/etc/apt/preferences.d/mozilla" <<'EOL'
-Package: firefox*
+Package: *
 Pin: origin packages.mozilla.org
 Pin-Priority: 1000
 EOL
@@ -672,21 +910,12 @@ stage_overlay() {
         gcc -O2 -std=gnu11 -Wall -Wextra -o /usr/sbin/aurfirst aurfirst/*.c -I aurfirst" \
         || die "building the AurOS stack inside the image failed"
 
-    # Ferry — first-boot migration. The shell tools and data tables
-    # install verbatim; the two C helpers (which parse hostile on-disk
-    # data as root, hence the warning set) compile in place next to
-    # them. The directory is created BEFORE the in-chroot compile that
-    # writes into it.
-    install -d "$RFS/usr/lib/ferry" "$RFS/usr/share/ferry"
-    for t in ferry ferry-detect ferry-wifi ferry-files ferry-firefox \
-             ferry-settings ferry-report ferry-hive ferry-dpapi ferry-common.sh; do
-        install -Dm755 "$ROOT/src/ferry/$t" "$RFS/usr/lib/ferry/$t"
-    done
-    cp "$ROOT/src/ferry/data"/*.tab "$RFS/usr/share/ferry/" 2>/dev/null || true
-    ln -sf /usr/lib/ferry/ferry "$RFS/usr/bin/ferry"
-    inchroot "cd /usr/src/auros/ferry && \
-        gcc -O2 -std=gnu11 -Wall -Wextra -o /usr/lib/ferry/ferry-hivepeek hivepeek.c && \
-        gcc -O2 -std=gnu11 -Wall -Wextra -o /usr/lib/ferry/ferry-winattr  winattr.c" \
+    # Ferry — first-boot migration. Its own install.sh holds the list of
+    # its tools and builds its C helpers (hostile on-disk data, read as
+    # root) inside the image; scripts first, so the directory exists.
+    sh "$ROOT/src/ferry/install.sh" scripts "$RFS" \
+        || die "installing Ferry's tools into the image failed"
+    inchroot "sh /usr/src/auros/ferry/install.sh helpers /" \
         || die "building Ferry's helpers inside the image failed"
 
     # aurshell needs the kernel DRM headers and libm; it links nothing else.
@@ -848,6 +1077,47 @@ stage_overlay() {
     done
     note "rootfs overlay: $(cd "$ROOT/rootfs" && find . -type f | wc -l) files"
     chmod 755 "$RFS/usr/lib/auros/firstboot.sh" 2>/dev/null || true
+    chmod 755 "$RFS/usr/lib/auros/choices.sh" 2>/dev/null || true
+    chmod 755 "$RFS/usr/lib/auros/software-ready.sh" "$RFS/usr/lib/auros/not-first-hour" \
+        2>/dev/null || true
+
+    # THE BOOT CHAIN BELONGS TO AUROS, NOT TO update-grub AND grub-install.
+    #
+    # Ubuntu's kernel, grub and shim packages call both from their
+    # maintainer scripts. update-grub would replace AurOS's hand-made
+    # menu -- the Windows entry and "Put Windows back" -- and
+    # grub-install would write to /boot/efi/EFI/ubuntu (where AurOS's
+    # firmware entry does not point) and reorder BootOrder. Diverted,
+    # both reach /usr/lib/auros/bootchain, and the three packages can
+    # take security updates like everything else (51auros-unattended).
+    # `--rename` keeps Ubuntu's own as *.ubuntu; a later package upgrade
+    # installs its new version there too, never over ours.
+    for _t in update-grub grub-install; do
+        inchroot "dpkg-divert --local --rename --divert /usr/sbin/$_t.ubuntu \
+                  --add /usr/sbin/$_t" >/dev/null \
+            || die "could not divert /usr/sbin/$_t"
+        install -m755 "$ROOT/rootfs/usr/lib/auros/$_t" "$RFS/usr/sbin/$_t"
+    done
+    ln -sf /usr/lib/auros/bootchain "$RFS/usr/sbin/auros-bootchain"
+    # And if anything does reach the real grub-install (a person typing
+    # update-grub.ubuntu's sibling by hand), it does not touch NVRAM.
+    #
+    # cloud_style_installation is the one that matters most, and it is
+    # not about clouds. Without it, grub-multi-install -- which the shim
+    # and grub postinsts run -- lists EVERY EFI System partition on the
+    # machine, offers them as install targets, and MOUNTS any it is told
+    # to use that is not mounted already. On an AurOS PC one of them is
+    # Windows' own, which R12 says this product never mounts. With it
+    # set, grub-multi-install calls grub-install (ours) once and exits:
+    # no list, no mount.
+    inchroot "printf '%s\n' \
+        'grub-efi-amd64 grub2/update_nvram boolean false' \
+        'grub-efi-amd64-signed grub2/update_nvram boolean false' \
+        'grub-efi-amd64 grub-efi/cloud_style_installation boolean true' \
+        | debconf-set-selections" || die "could not preseed grub's debconf answers"
+    inchroot "debconf-show grub-efi-amd64 | grep -q 'cloud_style_installation: true'" \
+        || die "grub-efi/cloud_style_installation did not take; grub-multi-install
+     would enumerate (and could mount) Windows' EFI partition"
 
     enable_unit auros-firstboot.service multi-user.target
     # Phases 9 and 10. The hold runs on every boot until somebody has
@@ -855,6 +1125,9 @@ stage_overlay() {
     # things that have to happen as root. See src/aurfirst/aurfirst.h.
     enable_unit auros-hold.service  multi-user.target
     enable_unit auros-answer.path   multi-user.target
+    # The store's catalogue and Flathub, fetched the first time the
+    # computer is online (rootfs/usr/lib/auros/software-ready.sh).
+    enable_unit auros-software.service multi-user.target
     # Not `[ -x ... ] && enable_unit ...`: under `set -e` a false test
     # at the end of a list ends the build with no message at all.
     if [ -x "$RFS/usr/bin/aurshell" ]; then
@@ -1404,6 +1677,51 @@ EOP
             warn "cups-browsed discovers by itself will work."
         fi
 
+        # FLATHUB, BY THE SAME METHOD: the action ids read out of the
+        # policy file flatpak installed, then kept only if they are on
+        # this list. Installing, removing and updating programs and the
+        # runtimes they need, and refreshing the catalogue. NOT
+        # configure-remote or configure -- adding a new software source
+        # is what package-install-untrusted is on the apt side, and is
+        # not granted there either -- and not override-parental-controls.
+        #
+        # noble's flatpak already lets an active, local member of sudo
+        # install without a password. This is the belt to that pair of
+        # braces, for the same reason the rest of this file is: a
+        # session that is not "active" on some machine is a store whose
+        # Install button asks for a password nothing here can supply.
+        flatpak_cases=""
+        fp_policy="$RFS/usr/share/polkit-1/actions/org.freedesktop.Flatpak.policy"
+        if [ "$allow_user_install" = "yes" ] && [ -f "$fp_policy" ]; then
+            n_fp=0
+            while read -r _a; do
+                case "$_a" in
+                    org.freedesktop.Flatpak.app-install|org.freedesktop.Flatpak.runtime-install|\
+                    org.freedesktop.Flatpak.app-uninstall|org.freedesktop.Flatpak.runtime-uninstall|\
+                    org.freedesktop.Flatpak.app-update|org.freedesktop.Flatpak.runtime-update|\
+                    org.freedesktop.Flatpak.update-remote|org.freedesktop.Flatpak.appstream-update|\
+                    org.freedesktop.Flatpak.metadata-update|org.freedesktop.Flatpak.modify-repo) ;;
+                    *) continue ;;
+                esac
+                flatpak_cases="$flatpak_cases    case \"$_a\":
+"
+                n_fp=$((n_fp + 1))
+            done <<EOP
+$(sed -n 's/.*<action id="\(org\.freedesktop\.Flatpak\.[^"]*\)".*/\1/p' "$fp_policy")
+EOP
+            flatpak_cases=${flatpak_cases%
+}
+            if [ "$n_fp" -ge 4 ]; then
+                note "$default_user may install programs from Flathub ($n_fp permissions, read from flatpak)"
+            else
+                warn "flatpak's policy file names only $n_fp of the actions the store"
+                warn "needs; installing from Flathub may ask for a password."
+            fi
+        elif [ "$allow_user_install" = "yes" ] && [ -x "$RFS/usr/bin/flatpak" ]; then
+            warn "flatpak is installed and its permission list is not; installing"
+            warn "from Flathub will ask for a password nothing here can supply."
+        fi
+
         cat > "$RFS/etc/polkit-1/rules.d/49-auros.rules" <<EOL
 // Generated by forge from profile '$profile_id'.
 //
@@ -1437,6 +1755,7 @@ polkit.addRule(function(action, subject) {
     case "org.freedesktop.udisks2.encrypted-unlock":
     case "org.freedesktop.timedate1.set-timezone":
 $install_cases
+$flatpak_cases
 $net_cases
 $print_cases
         return polkit.Result.YES;
@@ -1634,6 +1953,17 @@ squash_preconditions() {
              usr/bin/aurshell \
              usr/lib/auros/answer.sh \
              usr/lib/auros/firstboot.sh \
+             usr/lib/auros/choices.sh \
+             usr/lib/auros/software-ready.sh \
+             usr/lib/auros/not-first-hour \
+             etc/systemd/system/auros-software.service \
+             etc/systemd/system/apt-daily-upgrade.service.d/50-auros-first-hour.conf \
+             usr/lib/auros/bootchain \
+             usr/lib/auros/grub.cfg.in \
+             usr/lib/python3/dist-packages/cryptography \
+             usr/sbin/update-grub.ubuntu \
+             usr/sbin/grub-install.ubuntu \
+             etc/apt/apt.conf.d/52auros-bootchain \
              etc/systemd/system/auros-hold.service \
              etc/systemd/system/auros-answer.path \
              etc/systemd/system/auros-answer.service \
@@ -1646,10 +1976,18 @@ squash_preconditions() {
     for f in multi-user.target.wants/auros-hold.service \
              multi-user.target.wants/auros-answer.path \
              multi-user.target.wants/auros-firstboot.service \
+             multi-user.target.wants/auros-software.service \
              graphical.target.wants/aurshell.service; do
         [ -L "$RFS/etc/systemd/system/$f" ] ||
         [ -e "$RFS/etc/systemd/system/$f" ] || missing="$missing
        etc/systemd/system/$f  (enabled?)"
+    done
+    # Present is not enough for these two: a grub package upgrade that
+    # ran before the divert put Ubuntu's back over ours.
+    for f in update-grub grub-install; do
+        grep -q /usr/lib/auros/bootchain "$RFS/usr/sbin/$f" 2>/dev/null ||
+            missing="$missing
+       usr/sbin/$f  (is Ubuntu's, not auros-bootchain)"
     done
     if [ -n "$missing" ]; then
         die "this rootfs is not ready to become an image. Missing:$missing
@@ -1661,9 +1999,53 @@ squash_preconditions() {
     note "phases 9 and 10 are in this rootfs and enabled"
 }
 
+# ── what an image may not carry, removed or refused at the last moment ──
+#
+# Stage 3 runs `apt-get update` again to fetch a compiler, and nothing
+# cleaned up after it: every image shipped 214 MB of apt lists and
+# 165 MB of apt caches (pkgcache.bin, srcpkgcache.bin and the .debs it
+# had downloaded) -- weeks out of date by the time anybody used them,
+# regenerated by apt on first use anyway, and inside every download. The
+# lists are fetched fresh the first time the computer is online
+# (auros-software.service), which is also when they would be needed.
+#
+# And no snap. pin_no_snap and purge_snap_leftovers are the mechanism;
+# this is the refusal, at the one moment nothing can come after it.
+seal_rootfs() {
+    local left before after
+    case " ${browser_source:-} " in
+        *" snap "*) ;;
+        *)  left=$(snap_leftovers | tr '\n' ' ')
+            if [ -n "${left// /}" ]; then
+                die "this image still has $left installed. snapd is 116 MB that
+     does nothing on AurOS, and a snap-transitional firefox is a browser
+     that is not there. See pin_no_snap in build/forge."
+            fi ;;
+    esac
+    if [ "${browser:-}" = firefox ] && browser_present firefox &&
+       pkg_installed epiphany-browser; then
+        warn "Firefox AND the fallback browser are both in this image; the"
+        warn "fallback (and its own copy of WebKit) is about 125 MB of nothing."
+    fi
+    before=$(du -sxm "$RFS" | cut -f1)
+    find "$RFS/var/lib/apt/lists" -maxdepth 2 -type f ! -name lock -delete 2>/dev/null || true
+    rm -f "$RFS/var/cache/apt/pkgcache.bin" "$RFS/var/cache/apt/srcpkgcache.bin"
+    find "$RFS/var/cache/apt/archives" -maxdepth 2 -type f -name '*.deb' -delete 2>/dev/null || true
+    after=$(du -sxm "$RFS" | cut -f1)
+    note "sealed: apt's lists and caches removed, ${before} MB -> ${after} MB of rootfs"
+    warn_note "rootfs_mb=$after"
+}
+
 stage_squash() {
     step "stage 6/7  compress"
+    # AurOS's own files become dpkg packages and the signed apt source is
+    # pinned, so a fix can reach a computer already installed. Last, so
+    # dpkg records the files as every earlier stage left them.
+    "$ROOT/build/aptchannel" image "$RFS" "$profile_id" "$os_version" \
+        || die "AurOS's update channel could not be set up (build/aptchannel, docs/security/UPDATES.md)"
+    seal_rootfs
     squash_preconditions
+    harden_verify
     mkdir -p "$OUT"
     local sq="$OUT/$profile_id-$os_version.squashfs"
     rm -f "$sq"
@@ -1681,7 +2063,7 @@ stage_image() {
 run_stage() {
     case $1 in
         1) stage_bootstrap ;; 2) stage_packages ;; 3) stage_overlay ;;
-        4) stage_configure ;; 5) stage_theme ;; 6) stage_squash ;;
+        4) stage_configure; stage_harden ;; 5) stage_theme ;; 6) stage_squash ;;
         7) stage_image ;;
         *) die "no such stage: $1" ;;
     esac

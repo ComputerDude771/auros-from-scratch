@@ -1,0 +1,9 @@
+// AurOS: AurOS's own fixes install by themselves, the same way and at
+// the same time as Ubuntu's security updates (20auto-upgrades,
+// 51auros-unattended). The origin is AurOS's own signed repository
+// (sources.list.d/auros.sources, Signed-By pinned to AurOS's key);
+// preferences.d/auros limits it to AurOS's packages.
+// docs/security/UPDATES.md
+Unattended-Upgrade::Origins-Pattern {
+        "origin=AurOS,label=AurOS,archive=stable";
+};

@@ -1,0 +1,107 @@
+# Phase 2: an official, unmodified Ubuntu installed beside Windows through
+# AurOS's installer (docs/OTHER-SYSTEMS.md). Runs when src/othersys,
+# tools/othersys or this file change, or the head commit says [othersys].
+#
+#   selftest  every check and refusal, sabotaged, is seen to fail (no VM)
+#   vm        a KVM VM per variant: OVMF with Microsoft's keys and Secure
+#             Boot on, a disk laid out as Windows leaves it, the real
+#             Ubuntu 26.04.1 ISO (verified against Canonical's signature),
+#             BootNext planted as Windows would; then install, first boot,
+#             Windows-first, "yes", after-yes, and the MOK negative proof
+#
+# Evidence: https://github.com/<repo>/releases/download/othersys-<run id>/<variant>-results.md
+# (and <variant>-evidence.zip, the desktop screenshots, the serial logs).
+name: othersys
+
+on:
+  push:
+    branches: ['claude/**']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  gate:
+    runs-on: ubuntu-24.04
+    outputs:
+      run: ${{ steps.g.outputs.run }}
+    steps:
+      - id: g
+        env:
+          MSG: ${{ github.event.head_commit.message }}
+          BEFORE: ${{ github.event.before }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          run=false
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
+            echo "run=true" | tee -a "$GITHUB_OUTPUT"; exit 0
+          fi
+          case "$(printf '%s' "$MSG" | head -1)" in *'[othersys]'*) run=true ;; esac
+          case "$BEFORE" in
+            ''|0000000000000000000000000000000000000000)
+              files=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA" --jq '.files[].filename' || true) ;;
+            *)
+              files=$(gh api "repos/$GITHUB_REPOSITORY/compare/$BEFORE...$GITHUB_SHA" --jq '.files[].filename' || true) ;;
+          esac
+          if printf '%s\n' "$files" | grep -qE '^(src/othersys/|tools/othersys/|\.github/workflows/othersys\.yml$)'; then
+            run=true
+          fi
+          # a change that does not alter what the running proof tests
+          case "$(printf '%s' "$MSG" | head -1)" in *'[othersys-skip]'*) run=false ;; esac
+          echo "run=$run" | tee -a "$GITHUB_OUTPUT"
+
+  selftest:
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          sudo apt-get update -q
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends \
+            gdisk fdisk dosfstools mtools ovmf tesseract-ocr tesseract-ocr-eng python3-pil gpgv openssl fonts-dejavu-core
+      - run: python3 -I tools/efivarstore.py --self-test
+      - run: python3 -I tools/othersys/selftest.py
+
+  prep:
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          OS_DIR: /tmp
+        run: bash tools/othersys/publish.sh init
+
+  vm:
+    needs: [gate, prep]
+    if: needs.gate.outputs.run == 'true'
+    # one run per branch at a time, never cancelled (docs/handoff/STREAMS.md rule 6)
+    concurrency:
+      group: othersys-vm-${{ github.ref }}-${{ matrix.variant }}
+      cancel-in-progress: false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        variant: [ntfs, powercut, xubuntu, ubuntu-budgie, ubuntucinnamon, bitlocker, nofixup]
+    steps:
+      - uses: actions/checkout@v4
+      - name: runner (disk, KVM, packages)
+        run: bash tools/othersys/runner-setup.sh | tee -a "$GITHUB_ENV"
+      - name: live evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: nohup bash tools/othersys/publish.sh live ${{ matrix.variant }} >/dev/null 2>&1 &
+      - name: the proof (${{ matrix.variant }})
+        run: bash tools/othersys/run.sh ${{ matrix.variant }}
+      - name: publish the evidence
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash tools/othersys/publish.sh variant ${{ matrix.variant }}

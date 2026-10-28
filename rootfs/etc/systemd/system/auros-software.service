@@ -1,0 +1,27 @@
+[Unit]
+Description=AurOS: get "Get more programs" ready the first time this computer is online
+Documentation=file:/usr/lib/auros/software-ready.sh
+# The image ships with no catalogue -- apt's lists are hundreds of
+# megabytes, out of date the day after the build, and would be in
+# every download whether or not anybody ever opens the store. So the
+# first time this computer is online it fetches them, adds Flathub if
+# the image could not, and fetches Flathub's catalogue, in the
+# background, while she is still reading the welcome screen.
+#
+# Type=simple, so nothing waits for it: a oneshot pulled in by
+# multi-user.target would hold that target up for as long as the
+# network takes, and the script waits for the network by itself.
+After=auros-firstboot.service NetworkManager.service
+ConditionPathExists=!/var/lib/auros/software-ready
+
+[Service]
+Type=simple
+ExecStart=/usr/lib/auros/software-ready.sh
+# It is the background. Her clicks come first.
+Nice=10
+IOSchedulingClass=idle
+Restart=on-failure
+RestartSec=60
+
+[Install]
+WantedBy=multi-user.target

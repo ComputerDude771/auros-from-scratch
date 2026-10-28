@@ -1,0 +1,375 @@
+diff --git a/build/forge b/build/forge
+index c8915a4..0cfe5df 100755
+--- a/build/forge
++++ b/build/forge
+@@ -16,6 +16,9 @@
+ set -euo pipefail
+ 
+ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
++# HARDEN_CFLAGS / HARDEN_PIE for every C program built below; checked
++# on the binaries by tools/cflagstest.sh after the build.
++. "$ROOT/build/hardening.sh"
+ PROFILE_DIR="$ROOT/profiles"
+ WORK="$ROOT/work/forge"
+ OUT="$ROOT/out"
+@@ -902,12 +905,12 @@ stage_overlay() {
+               libwayland-dev libwayland-bin wayland-protocols libxkbcommon-dev" \
+         >/dev/null 2>&1 || true
+     inchroot "cd /usr/src/auros && \
+-        gcc -O2 -std=gnu11 -o /usr/sbin/aurinit aurinit/aurinit.c && \
+-        gcc -O2 -std=gnu11 -o /usr/bin/aurctl  aurinit/aurctl.c && \
+-        gcc -O2 -std=gnu11 -o /usr/bin/aurwall aurwall/main.c common/theme.c common/wall.c common/png.c -lm && \
+-        gcc -O2 -std=gnu11 -o /usr/bin/aursorry aurshell/sorry.c aurshell/kms.c \
++        gcc $HARDEN_CFLAGS $HARDEN_PIE -std=gnu11 -o /usr/sbin/aurinit aurinit/aurinit.c && \
++        gcc $HARDEN_CFLAGS $HARDEN_PIE -std=gnu11 -o /usr/bin/aurctl  aurinit/aurctl.c && \
++        gcc $HARDEN_CFLAGS $HARDEN_PIE -std=gnu11 -o /usr/bin/aurwall aurwall/main.c common/theme.c common/wall.c common/png.c -lm && \
++        gcc $HARDEN_CFLAGS $HARDEN_PIE -std=gnu11 -o /usr/bin/aursorry aurshell/sorry.c aurshell/kms.c \
+             aurshell/draw.c common/font.c common/png.c -lm && \
+-        gcc -O2 -std=gnu11 -Wall -Wextra -o /usr/sbin/aurfirst aurfirst/*.c -I aurfirst" \
++        gcc $HARDEN_CFLAGS $HARDEN_PIE -std=gnu11 -Wall -Wextra -o /usr/sbin/aurfirst aurfirst/*.c -I aurfirst" \
+         || die "building the AurOS stack inside the image failed"
+ 
+     # Ferry — first-boot migration. Its own install.sh holds the list of
+@@ -992,7 +995,7 @@ stage_overlay() {
+         esac
+     done
+ 
+-    if inchroot "cd /usr/src/auros && gcc -O2 -std=gnu11 -o /usr/bin/aurshell \
++    if inchroot "cd /usr/src/auros && gcc $HARDEN_CFLAGS $HARDEN_PIE -std=gnu11 -o /usr/bin/aurshell \
+             $SHELL_SRC \
+             aurwl/aurwl.c aurwl/gen/xdg-shell-protocol.c \
+             aurwl/gen/xdg-decoration-protocol.c aurwl/gen/viewporter-protocol.c \
+@@ -1004,6 +1007,10 @@ stage_overlay() {
+     else
+         die "aurshell did not build - the image would boot to a console"
+     fi
++    # Refused, not warned: a program of ours that lost its hardening on
++    # the way to the compiler is a regression nobody would otherwise see.
++    sh "$ROOT/tools/cflagstest.sh" --rootfs "$RFS" >&2 \
++        || die "AurOS programs were built without build/hardening.sh's flags"
+ 
+     # ── THE WHOLE rootfs/ TREE, not a list of files from it ────────
+     #
+diff --git a/build/hardening.sh b/build/hardening.sh
+new file mode 100644
+index 0000000..d709a92
+--- /dev/null
++++ b/build/hardening.sh
+@@ -0,0 +1,36 @@
++# shellcheck shell=sh
++# hardening.sh -- the compiler flags every AurOS C program is built with.
++#
++# Sourced by build/forge (programs in the image) and build/staging (the
++# static programs in the staging environment). One file, so the two can
++# never drift apart, and so tools/cflagstest.sh has one thing to check
++# the binaries against.
++#
++# Ubuntu's gcc already turns most of these on by default, which is
++# exactly why they are written down: a default is a property of the
++# build host, and the day the image is built with a different compiler
++# or distribution they would quietly go away. Written here, they are a
++# property of AurOS.
++#
++#   _FORTIFY_SOURCE=3           size-checked memcpy/snprintf/... where the
++#                               size is known, even dynamically (needs -O)
++#   -fstack-protector-strong    canaries on every function with an array
++#                               or an address-taken local
++#   -fstack-clash-protection    a huge alloca/VLA cannot jump the guard page
++#   -fcf-protection=full        Intel CET: IBT landing pads + shadow stack
++#                               markings (used where the CPU and kernel do)
++#   -fPIE -pie / -static-pie    the program itself is randomised (ASLR)
++#   -z relro -z now             relocations resolved at start, then the
++#                               GOT is read-only: no GOT overwrite
++#   -frecord-gcc-switches       the flags each object was REALLY compiled
++#                               with go into the binary, so cflagstest can
++#                               prove them instead of trusting this file
++#
++# Cost: a few percent at most on string-heavy code, nothing measurable in
++# a shell that spends its time blending pixels.
++HARDEN_CFLAGS="-O2 -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3 -fstack-protector-strong -fstack-clash-protection -fcf-protection=full -frecord-gcc-switches"
++HARDEN_PIE="-fPIE -pie -Wl,-z,relro,-z,now"
++# PID 1 of the staging environment and its splash are static on purpose
++# (they must not depend on the build host's libraries). static-pie keeps
++# that and still randomises where they load.
++HARDEN_STATIC="-fPIE -static-pie -Wl,-z,relro,-z,now"
+diff --git a/build/staging b/build/staging
+index a6680f8..7862c51 100755
+--- a/build/staging
++++ b/build/staging
+@@ -33,6 +33,9 @@
+ set -euo pipefail
+ 
+ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
++# HARDEN_CFLAGS / HARDEN_STATIC: PID 1 here reads her disks, so it gets
++# the same hardening as the image's programs, as a static-pie.
++. "$ROOT/build/hardening.sh"
+ PROFILE="${1:-desktop}"
+ RFS="$ROOT/work/forge/$PROFILE/rootfs"
+ # AUROS_STAGING_OUT: somewhere else to put it. tools/nvramtest.sh
+@@ -280,7 +283,7 @@ if [ "${AURSTAGE_FAULT:-0}" = 1 ]; then
+     warn "building a FAULT INJECTION image: aurstage.die_at= will stop"
+     warn "this machine dead in the middle of writing to a disk."
+ fi
+-gcc -O2 -std=gnu11 -Wall -Wextra -static $FAULTDEF -o init \
++gcc $HARDEN_CFLAGS -std=gnu11 -Wall -Wextra $HARDEN_STATIC $FAULTDEF -o init \
+     "$ROOT"/src/aurstage/*.c -I "$ROOT/src/aurstage" \
+     || die "aurstage did not build"
+ # NOT A PIPELINE INTO grep -q. Third time in this file; see the two
+@@ -289,7 +292,7 @@ gcc -O2 -std=gnu11 -Wall -Wextra -static $FAULTDEF -o init \
+ # fails for a reason nobody can find.
+ FILEOUT=$(file init 2>/dev/null || true)
+ case "$FILEOUT" in
+-  *"statically linked"*) ;;
++  *"statically linked"*|*"static-pie linked"*) ;;
+   *) die "init is not statically linked; PID 1 would depend on the build host" ;;
+ esac
+ 
+@@ -340,14 +343,16 @@ note "init $(du -h init | cut -f1)"
+ # framebuffer, no GPU driver) and two fonts; without either it exits
+ # and the console text is what is left, as before.
+ mkdir -p usr/bin usr/share/fonts/truetype/dejavu
+-gcc -O2 -std=gnu11 -Wall -Wextra -static -o usr/bin/aurscreen \
++gcc $HARDEN_CFLAGS -std=gnu11 -Wall -Wextra $HARDEN_STATIC -o usr/bin/aurscreen \
+     "$ROOT/src/aurscreen/screen.c" "$ROOT/src/aurshell/kms.c" \
+     "$ROOT/src/aurshell/draw.c" "$ROOT/src/common/font.c" "$ROOT/src/common/png.c" -lm \
+     || die "aurscreen did not build"
+ case "$(file usr/bin/aurscreen 2>/dev/null || true)" in
+-  *"statically linked"*) ;;
++  *"statically linked"*|*"static-pie linked"*) ;;
+   *) die "aurscreen is not statically linked" ;;
+ esac
++sh "$ROOT/tools/cflagstest.sh" init usr/bin/aurscreen >&2 \
++    || die "staging programs were built without build/hardening.sh's flags"
+ for f in DejaVuSans.ttf DejaVuSans-Bold.ttf; do
+     cp "$RFS/usr/share/fonts/truetype/dejavu/$f" usr/share/fonts/truetype/dejavu/ \
+         || die "no $f in $RFS for the staging screen"
+diff --git a/src/ferry/install.sh b/src/ferry/install.sh
+index 7b336ca..8f23203 100644
+--- a/src/ferry/install.sh
++++ b/src/ferry/install.sh
+@@ -28,7 +28,7 @@ HELPERS="ferry-hivepeek:hivepeek.c ferry-winattr:winattr.c"
+ 
+ HARDEN="-O2 -D_FORTIFY_SOURCE=3 -fstack-protector-strong \
+ -fstack-clash-protection -fcf-protection=full -fPIE -pie \
+--Wl,-z,relro,-z,now"
++-Wl,-z,relro,-z,now -frecord-gcc-switches"
+ 
+ case "${1:-}" in
+     scripts)
+diff --git a/tools/cflagstest.sh b/tools/cflagstest.sh
+new file mode 100644
+index 0000000..ee6bd3c
+--- /dev/null
++++ b/tools/cflagstest.sh
+@@ -0,0 +1,182 @@
++#!/bin/sh
++# cflagstest.sh -- are AurOS's own programs really built hardened?
++#
++# build/hardening.sh says which flags every C program gets. This checks
++# the BINARIES, not the build script, because a flag that is written
++# down and then lost on the way to the compiler (a second gcc line
++# somebody adds, a CC override, a different distribution's defaults)
++# protects nothing. Per ELF file:
++#
++#   PIE        ELF type DYN (static programs: static-pie)      -fPIE -pie
++#   RELRO      a GNU_RELRO segment                             -z relro
++#   BIND_NOW   DT_FLAGS BIND_NOW / FLAGS_1 NOW                 -z now
++#   NX stack   GNU_STACK without E
++#   CET        .note.gnu.property x86 feature IBT and SHSTK    -fcf-protection=full
++#   switches   .GCC.command.line present, and every compile unit it
++#              records has -fstack-protector-strong,
++#              -fstack-clash-protection, -fcf-protection=full and -fPIE
++#   FORTIFY    at least one __*_chk call                       _FORTIFY_SOURCE
++#              (gcc does not record -D options, so this is the
++#              evidence; programs with no symbol table are exempt)
++#
++#   sh tools/cflagstest.sh FILE...          check these programs
++#   sh tools/cflagstest.sh --rootfs DIR     AurOS's programs in an image tree
++#   sh tools/cflagstest.sh --staging DIR    the staging environment's
++#   sh tools/cflagstest.sh --self-test      prove every check above fails
++#                                           when its flag is removed
++#
++# Exit 0 only if every file passes.
++set -u
++HERE=$(cd "$(dirname "$0")" && pwd)
++ROOT=$(cd "$HERE/.." && pwd)
++
++for t in readelf nm; do
++    command -v "$t" >/dev/null 2>&1 || { echo "FAIL: $t not installed (binutils)"; exit 2; }
++done
++
++# Prints the reasons a file is not hardened, one per line; nothing if it is.
++reasons() {
++    f=$1
++    if ! hdr=$(readelf -hW "$f" 2>/dev/null); then echo "not an ELF file"; return; fi
++    case "$hdr" in *"Type:"*"DYN"*) ;; *) echo "not PIE (ELF type is not DYN)";; esac
++    ph=$(readelf -lW "$f" 2>/dev/null)
++    printf '%s\n' "$ph" | grep -q 'GNU_RELRO' || echo "no RELRO segment (-z relro)"
++    dyn=$(readelf -dW "$f" 2>/dev/null)
++    printf '%s\n' "$dyn" | grep -Eq 'BIND_NOW|Flags:.* NOW' || echo "no BIND_NOW (-z now)"
++    st=$(printf '%s\n' "$ph" | awk '$1 == "GNU_STACK" { print $7 }')
++    case "$st" in
++        "") echo "no GNU_STACK header (stack executable by default)" ;;
++        *E*) echo "executable stack" ;;
++    esac
++    cet=$(readelf -nW "$f" 2>/dev/null | grep 'x86 feature' || true)
++    case "$cet" in *IBT*) ;; *) echo "no CET IBT marking (-fcf-protection=full)";; esac
++    case "$cet" in *SHSTK*) ;; *) echo "no CET SHSTK marking (-fcf-protection=full)";; esac
++
++    sw=$(readelf -p .GCC.command.line "$f" 2>/dev/null | grep 'GNU C' || true)
++    if [ -z "$sw" ]; then
++        echo "no recorded compile switches (built without build/hardening.sh?)"
++    else
++        # The LAST option of each family is the one gcc obeys, and the
++        # distribution's implicit defaults are recorded too, so
++        # "-fstack-protector-strong ... -fno-stack-protector" must fail.
++        printf '%s\n' "$sw" | awk '
++            {
++                ssp = clash = cf = pie = ""
++                for (i = 1; i <= NF; i++) {
++                    t = $i
++                    if (t ~ /^-f(no-)?stack-protector(-strong|-all|-explicit)?$/) ssp = t
++                    else if (t ~ /^-f(no-)?stack-clash-protection$/)          clash = t
++                    else if (t ~ /^-fcf-protection(=.*)?$/)                    cf = t
++                    else if (t ~ /^-f(no-)?(PIE|pie|PIC|pic)$/)                 pie = t
++                }
++                if (ssp != "-fstack-protector-strong" && ssp != "-fstack-protector-all") bad["-fstack-protector-strong"] = 1
++                if (clash != "-fstack-clash-protection") bad["-fstack-clash-protection"] = 1
++                if (cf != "-fcf-protection=full" && cf != "-fcf-protection") bad["-fcf-protection=full"] = 1
++                if (pie !~ /^-f(PIE|pie|PIC|pic)$/) bad["-fPIE"] = 1
++            }
++            END { for (k in bad) print "a compile unit lacks " k }' | sort
++    fi
++
++    syms=$(nm -D "$f" 2>/dev/null; nm "$f" 2>/dev/null)
++    if [ -n "$syms" ]; then
++        # A whole symbol ending in _chk (__memcpy_chk, __snprintf_chk...),
++        # not __stack_chk_fail, which the stack protector brings in alone.
++        printf '%s\n' "$syms" | grep -E ' __[a-z0-9_]+_chk(@.*)?$' | grep -vq '__stack_chk' || \
++            echo "no __*_chk calls (_FORTIFY_SOURCE off)"
++    fi
++}
++
++check() {
++    bad=0
++    for f in "$@"; do
++        if [ ! -f "$f" ]; then echo "FAIL  $f: missing"; bad=$((bad + 1)); continue; fi
++        r=$(reasons "$f")
++        if [ -z "$r" ]; then echo "ok    $f"
++        else
++            echo "FAIL  $f"
++            printf '%s\n' "$r" | sed 's/^/        /'
++            bad=$((bad + 1))
++        fi
++    done
++    return $bad
++}
++
++# The programs AurOS builds from its own sources. Keep in step with the
++# gcc lines in build/forge and build/staging.
++ROOTFS_PROGS="usr/sbin/aurinit usr/bin/aurctl usr/bin/aurwall usr/bin/aursorry
++usr/sbin/aurfirst usr/bin/aurshell usr/lib/ferry/ferry-hivepeek usr/lib/ferry/ferry-winattr"
++STAGING_PROGS="init usr/bin/aurscreen"
++
++self_test() {
++    . "$ROOT/build/hardening.sh"
++    d=$(mktemp -d "${TMPDIR:-/tmp}/cflagstest.XXXXXX") || exit 2
++    trap 'rm -rf "$d"' EXIT
++    cat > "$d/p.c" <<'EOF'
++#include <stdio.h>
++#include <string.h>
++int main(int argc, char **argv)
++{
++    char b[16];
++    strcpy(b, argc > 1 ? argv[1] : "x");   /* __strcpy_chk under FORTIFY */
++    puts(b);
++    return 0;
++}
++EOF
++    CC=${CC:-cc}
++    pass=0; fail=0
++    expect() {   # name, "ok" or reason substring, compiler flags...
++        name=$1; want=$2; shift 2
++        # shellcheck disable=SC2068
++        if ! $CC "$@" -o "$d/$name" "$d/p.c" 2>"$d/$name.log"; then
++            echo "FAIL  self-test $name: did not compile"; sed 's/^/        /' "$d/$name.log"
++            fail=$((fail + 1)); return
++        fi
++        r=$(reasons "$d/$name")
++        if [ "$want" = ok ]; then
++            if [ -z "$r" ]; then pass=$((pass + 1)); echo "ok    self-test $name: passes"
++            else echo "FAIL  self-test $name: should pass but:"; printf '%s\n' "$r" | sed 's/^/        /'; fail=$((fail + 1)); fi
++        else
++            case "$r" in
++                *"$want"*) pass=$((pass + 1)); echo "ok    self-test $name: refused ($want)" ;;
++                *) echo "FAIL  self-test $name: not refused for '$want'"; [ -n "$r" ] && printf '%s\n' "$r" | sed 's/^/        /'
++                   fail=$((fail + 1)) ;;
++            esac
++        fi
++    }
++    # shellcheck disable=SC2086
++    {
++    expect hardened        ok                         $HARDEN_CFLAGS $HARDEN_PIE
++    expect hardened-static ok                         $HARDEN_CFLAGS $HARDEN_STATIC
++    expect no-pie          "not PIE"                  $HARDEN_CFLAGS -fno-PIE -no-pie -Wl,-z,relro,-z,now
++    expect plain-static    "not PIE"                  $HARDEN_CFLAGS -static
++    expect lazy            "no BIND_NOW"              $HARDEN_CFLAGS -fPIE -pie -Wl,-z,relro,-z,lazy
++    expect norelro         "no RELRO"                 $HARDEN_CFLAGS -fPIE -pie -Wl,-z,norelro,-z,now
++    expect execstack       "executable stack"         $HARDEN_CFLAGS $HARDEN_PIE -Wl,-z,execstack
++    expect no-cet          "no CET IBT"               $HARDEN_CFLAGS -fcf-protection=none $HARDEN_PIE
++    expect no-ssp          "lacks -fstack-protector-strong" $HARDEN_CFLAGS -fno-stack-protector $HARDEN_PIE
++    expect no-clash        "lacks -fstack-clash-protection" $HARDEN_CFLAGS -fno-stack-clash-protection $HARDEN_PIE
++    expect no-fortify      "_FORTIFY_SOURCE off"      $HARDEN_CFLAGS -U_FORTIFY_SOURCE $HARDEN_PIE
++    expect no-record       "no recorded compile switches" -O2 -D_FORTIFY_SOURCE=3 -fstack-protector-strong \
++                                                      -fstack-clash-protection -fcf-protection=full $HARDEN_PIE
++    }
++    echo "self-test: $pass ok, $fail failed"
++    [ $fail -eq 0 ]
++}
++
++case "${1:-}" in
++    --self-test) self_test; exit $? ;;
++    --rootfs|--staging)
++        [ $# -eq 2 ] || { echo "usage: $0 $1 DIR"; exit 2; }
++        [ "$1" = --rootfs ] && list=$ROOTFS_PROGS || list=$STAGING_PROGS
++        set -- "$2" $list
++        dir=$1; shift
++        files=""
++        for p in "$@"; do files="$files $dir/$p"; done
++        # shellcheck disable=SC2086
++        check $files; n=$?
++        ;;
++    ""|-h|--help) sed -n '2,30p' "$0"; exit 2 ;;
++    *) check "$@"; n=$? ;;
++esac
++[ $n -eq 0 ] && echo "PASS: hardened" || echo "FAIL: $n program(s) not hardened"
++exit $n
+diff --git a/tools/fuzz/font.dict b/tools/fuzz/font.dict
+new file mode 100644
+index 0000000..c2c317b
+--- /dev/null
++++ b/tools/fuzz/font.dict
+@@ -0,0 +1,23 @@
++# sfnt table tags and magic, for fuzz_font (libFuzzer -dict=)
++"glyf"
++"loca"
++"cmap"
++"CFF "
++"CFF2"
++"GPOS"
++"kern"
++"head"
++"hhea"
++"maxp"
++"hmtx"
++"ttcf"
++"OTTO"
++"true"
++"\x00\x01\x00\x00"
++"\x5F\x0F\x3C\xF5"
++"\x00\x03\x00\x0A"
++"\x00\x04"
++"\x00\x0C"
++"\x0C\x1E"
++"\x0C\x24"
++"\x0C\x25"

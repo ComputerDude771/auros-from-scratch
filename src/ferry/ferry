@@ -8,8 +8,8 @@
 #  imports; then the things that need the user to decide.
 #
 #      AUTOMATIC (safe, no prompts)          ASK FIRST
-#      1  wifi      -> get online            onedrive   (ferry-files --include-onedrive)
-#      2  settings  -> tz/locale/keyboard    chromium   (needs old password)
+#      1  wifi      -> list her networks     onedrive   (ferry-files --include-onedrive)
+#      2  settings  -> tz/locale/keyboard    (passwords: never, by design)
 #      3  files     -> known folders         mail       (re-add IMAP)
 #      4  firefox   -> whole profile         printers / mapped drives
 #      5  wallpaper (part of settings)       apps       (user picks)

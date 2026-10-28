@@ -97,6 +97,40 @@ void shrink_do(const char *dev, uint64_t target_bytes,
 void resize_do(const char *dev, uint64_t target_bytes, int allow_force,
                void (*progress)(int percent), shrink_result *out);
 
+/* HOW SMALL TO MAKE WINDOWS -- which is NOT "as small as it will go".
+ *
+ * The first version shrank the Windows volume to ntfsresize's absolute
+ * floor (`smallest`), so AurOS swallowed every free byte on the disk.
+ * The 2026-10-23 journey audit measured the cost: on a 1 TB hard disk
+ * that is a ~3-hour surface test and a ~30-80-minute shrink, it leaves
+ * Windows essentially full, and it makes "AurOS will use about 28 GB" a
+ * lie.
+ *
+ * So Windows is shrunk by only what AurOS needs, with headroom:
+ *
+ *   AurOS's share = min(40 GiB, what can be freed while leaving Windows
+ *                        max(20 GiB, 15% of the volume) free),
+ *   but never less than `install_need` (min_root + the boot partition +
+ *   the saved copy), never below a 16 GiB floor, and never more than
+ *   can be reclaimed (current - smallest).
+ *
+ * Returns the TARGET SIZE for the Windows partition (bytes). Pure
+ * arithmetic, no I/O, so both the staging side and -- once the Windows
+ * fast path lands -- the Windows side can compute the same number, and
+ * a test can check it without a disk.
+ *
+ * Deliberately permissive: it never refuses, it clamps. The amount it
+ * frees from the END of Windows joins any unallocated space already
+ * after it, and plan_compute() works in that whole gap, so plan_compute
+ * stays the authority on whether there is room -- a genuine shortfall
+ * surfaces there, with the disk untouched. On a real machine (Windows
+ * filling the disk up to WinRE, no pre-existing gap) the share equals
+ * the amount freed, so AurOS gets 40 GiB and Windows keeps the rest; on
+ * a tiny volume the need exceeds everything reclaimable, so it returns
+ * `smallest` and takes it all, exactly as before. */
+uint64_t shrink_pick_target(uint64_t current, uint64_t smallest,
+                            uint64_t install_need);
+
 /* Read every sector of a region and report the first one that will
  * not come back.
  *

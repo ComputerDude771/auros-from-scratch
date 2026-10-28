@@ -15,8 +15,9 @@
 #      what a tool's default was in some versions.
 #    - a signature that survives a byte being changed afterwards --
 #      which would mean it is not a signature.
-#    - a release build that shipped unsigned because the key was not
-#      configured and nothing checked.
+#    - a build that says it signed when nothing did. AurOS ships
+#      unsigned by the owner's decision (docs/SIGNING.md), so the
+#      property is that the build is honest either way.
 #
 #  A throwaway CA is made here, so the chain is real and ours.
 #
@@ -164,24 +165,39 @@ sh build/sign --check "$TMP/tampered.exe" >/dev/null 2>&1 \
   || ok "a byte changed afterwards breaks the signature"
 
 echo
-echo "  and a release that has nothing to sign with"
-# THE SIGNING GATE, REACHED. build/aurbridge checks the payload, then
-# the image address, then signing -- so with no AUROS_IMAGE_URL set
-# this died two gates early and never exercised the one this file is
-# about. It was failing for that reason when a review ran it.
-OUT=$( unset AUROS_SIGN_CERT AUROS_SIGN_KEY
-       AUROS_RELEASE=1 \
-       AUROS_IMAGE_URL=http://example.invalid/auros.img \
-       AUROS_IMAGE_SHA256=0000000000000000000000000000000000000000000000000000000000000000 \
-       AUROS_IMAGE_BYTES=1 \
-       sh build/aurbridge 2>&1 || true )
-case "$OUT" in
-  *"not signed"*|*"nothing to sign with"*|*"refusing to publish"*)
-    ok "a release build refuses to publish an unsigned installer" ;;
-  *)
-    bad "a release build refuses to publish an unsigned installer" \
-        "$(printf '%s' "$OUT" | tail -4)" ;;
-esac
+echo "  and the build's own signing step"
+# UNSIGNED BY DESIGN (the owner's decision, 2026-10-23): a release no
+# longer refuses to be built without a key, because there will not be
+# one. What is left to prove is that the build does what it says either
+# way: with signing material configured it signs what it builds (and
+# build/sign verifies it), and without it it finishes, says so, and the
+# file really is unsigned -- not "signed" by a step that did nothing.
+# Built in a copy of the tree, as tools/manifesttest.sh does, so out/
+# (which other tests read) is left alone.
+if command -v x86_64-w64-mingw32-gcc >/dev/null 2>&1; then
+    mkdir -p "$TMP/tree/src" "$TMP/tree/tools"
+    cp -r build "$TMP/tree/"
+    cp -r src/aurbridge "$TMP/tree/src/"
+    cp tools/pe_payload.py "$TMP/tree/tools/"
+    if sh "$TMP/tree/build/aurbridge" > "$TMP/b1.log" 2>&1 &&
+       sh build/sign --check "$TMP/tree/out/aurbridge-wizard.exe" "$TMP/tree/out/aurbridge.exe" >/dev/null 2>&1; then
+        ok "with a key configured, the build signs what it builds"
+    else
+        bad "with a key configured, the build signs what it builds" "$(tail -4 "$TMP/b1.log")"
+    fi
+    OUT2=$( unset AUROS_SIGN_CERT AUROS_SIGN_KEY
+            AUROS_RELEASE=0 sh "$TMP/tree/build/aurbridge" 2>&1 ) \
+      && B2=0 || B2=1
+    if [ "$B2" = 0 ] && printf '%s' "$OUT2" | grep -q 'unsigned, by design' &&
+       ! sh build/sign --check "$TMP/tree/out/aurbridge-wizard.exe" >/dev/null 2>&1; then
+        ok "without one it builds, says it is unsigned, and is"
+    else
+        bad "without one it builds, says it is unsigned, and is" \
+            "exit $B2: $(printf '%s' "$OUT2" | tail -3)"
+    fi
+else
+    echo "    (no mingw-w64: the build's own signing step was not run)"
+fi
 
 echo
 if [ "$fail" -gt 0 ]; then
@@ -191,5 +207,5 @@ if [ "$fail" -gt 0 ]; then
     exit 1
 fi
 echo "$checked checks: it signs, it verifies what it signed, a changed byte"
-echo "breaks it, and a release with no key does not get built."
+echo "breaks it, and the build signs when it has a key and says so when not."
 exit 0

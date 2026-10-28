@@ -174,8 +174,36 @@ typedef struct {
      * narrower of the two, so 64 is the width, and phases.c refuses a
      * longer one before anything is written. */
     char     profile[64];
+    /* "stick" or "windows": where the staging environment will find
+     * the image. See src/aurstage/journal.h. */
+    char     image_on[16];
     uint64_t run_id;
     uint64_t written_unix;
+
+    /* ── image_on = "gap": THE FAST PATH (docs/AURBRIDGE.md) ─────────
+     *
+     * Windows has already shrunk itself and AurBridge has written the
+     * image's root and EFI partitions raw into the gap. This is what the
+     * staging environment checks before it commits anything: that the
+     * plan it computes from the table it finds (plan_compute_prepared)
+     * is exactly the plan recorded here, and that the bytes at the two
+     * written extents hash to what was written. All six extents are in
+     * the disk's LOGICAL blocks, as a GPT entry is; win_orig_sectors is
+     * in 512-byte units like win_sectors (journal.h says why).
+     * Written into the JSON only when image_on is "gap", so every other
+     * journal is byte for byte what it was. */
+    uint64_t gap_root_first, gap_root_last;    /* AUROS-ROOT  */
+    uint64_t gap_rsc_first,  gap_rsc_last;     /* AUROS-SAVED */
+    uint64_t gap_rec_first,  gap_rec_last;     /* AUROS-BOOT  */
+    uint64_t root_len;            /* bytes written at gap_root_first */
+    char     root_sha256[65];
+    uint64_t boot_len;            /* bytes written at gap_rec_first  */
+    char     boot_sha256[65];
+    uint64_t rsc_bytes;           /* what the plan was asked to hold */
+    uint64_t min_root_bytes;      /* the floor the plan was made with */
+    uint64_t win_orig_sectors;    /* C: before Windows shrank it     */
+    int      bitlocker;           /* 1: never mount or read C:       */
+    int      wifi;                /* 1: \EFI\AurOS\wifi.conf is there  */
 } fmt_journal;
 
 /* Exactly the shape src/aurstage/journal.c's parser accepts. It is
@@ -221,6 +249,23 @@ size_t fmt_gzip_store(const void *data, size_t len, uint8_t *out, size_t n);
  * most 16 MiB. Outside them is "cannot be read", which is a refusal. */
 int fmt_gpt_sha256(int (*read_at)(void *ud, uint64_t off, void *buf, size_t n),
                    void *ud, uint32_t sector, char *hex, size_t n);
+
+/* ── where the partitions are, for the fast path's gap fence ──────────
+ *
+ * The fast path writes AurOS raw into the unallocated gap a shrink
+ * makes, on the system disk itself. The one safety property that makes
+ * that defensible is that a write can only land inside the gap and
+ * never on a partition -- re-checked against the LIVE table right
+ * before it is written. This reads that live table (through the same
+ * read-at callback fmt_gpt_sha256 uses, so both platform backends and
+ * the simulation share one parser) and returns each used partition's
+ * byte range on the disk, inclusive. Returns 0 with the count in
+ * `n_out`, or -1 with a sentence. */
+typedef struct { uint64_t first_byte, last_byte; } fmt_extent;
+
+int fmt_gpt_parts(int (*read_at)(void *ud, uint64_t off, void *buf, size_t n),
+                  void *ud, uint32_t sector, fmt_extent *out, int max,
+                  int *n_out, char *why, size_t wn);
 
 /* Every pure function above, checked against vectors. Returns the
  * number that failed. */

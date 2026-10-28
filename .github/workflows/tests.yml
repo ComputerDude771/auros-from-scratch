@@ -1,0 +1,342 @@
+# The test suites, against one build's artifacts.
+#
+# Called by build.yml after every build (run-id = that run). Also runs on
+# its own when the head commit says [test]: then it tests the newest
+# build of this branch whose artifacts have not expired, without
+# building anything -- for a change to a test, or to see a flaky one
+# again. (workflow_dispatch would be the obvious way, and it only works
+# for workflows on the default branch.)
+#
+#   unit   the fast suites: aurfirsttest, choicestest (with the image's
+#          aurshell), nmtest, sessionenvtest, looktest, storetest,
+#          shrinktargettest, probetest, nvramtest, bridgetest,
+#          manifesttest, signtest, Ferry's, and the console installer's
+#          selftest under Wine
+#   e2e    one job per end-to-end test, in QEMU with KVM: installtest,
+#          nosticktest, firstboottest, choicesboottest, putbacktest
+#
+# The scripts were written for a container without KVM, so each has
+# `-machine ...,accel=tcg` written into it. They are not edited for
+# this: a qemu-system-x86_64 earlier on PATH (/usr/local/bin, which
+# sudo's secure_path also puts first) turns accel=tcg into accel=kvm,
+# or into $AUROS_QEMU_ACCEL, and starts the real one.
+name: tests
+
+on:
+  push:
+    branches: ['claude/**']
+  workflow_call:
+    inputs:
+      run-id:
+        description: the run whose artifacts are tested
+        type: string
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+# `bash` named explicitly is `bash -eo pipefail`; left to the default it
+# is `bash -e`, and `sh tools/x.sh | tee log` then passes whatever x
+# says.
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  which:
+    # Decided without a runner where it can be: every push to the
+    # branch starts this workflow, and runners are shared by them all.
+    if: inputs.run-id != '' || contains(github.event.head_commit.message, '[test]')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      go: ${{ steps.w.outputs.go }}
+      run-id: ${{ steps.w.outputs.run_id }}
+    steps:
+      - id: w
+        env:
+          IN_RUN: ${{ inputs.run-id }}
+          MSG: ${{ github.event.head_commit.message }}
+          BRANCH: ${{ github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          go=false; rid=""
+          if [ -n "$IN_RUN" ]; then
+            go=true; rid=$IN_RUN
+          else
+            # In the subject line only, as in build.yml.
+            case "${MSG%%$'\n'*}" in *'[test]'*)
+              # The newest build of this branch with its artifacts still there.
+              rid=$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=auros-installer&per_page=100" \
+                     --jq "[.artifacts[] | select(.expired == false and .workflow_run.head_branch == \"$BRANCH\") | .workflow_run.id] | first // empty")
+              [ -n "$rid" ] || { echo "::error::no build of $BRANCH has artifacts left; push with [build]"; exit 1; }
+              go=true ;;
+            esac
+          fi
+          echo "go=$go" | tee -a "$GITHUB_OUTPUT"
+          echo "run_id=$rid" | tee -a "$GITHUB_OUTPUT"
+          [ -z "$rid" ] || echo "testing the artifacts of $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$rid" | tee -a "$GITHUB_STEP_SUMMARY"
+
+  unit:
+    needs: which
+    if: needs.which.outputs.go == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: tools
+        run: |
+          sudo apt-get update -q
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends \
+              mingw-w64 wine wine64 osslsigncode openssl python3 gcc libc6-dev make \
+              grub-common gdisk mtools dosfstools cpio sbsigntool libxml2-utils file \
+              binutils zstd e2fsprogs fonts-dejavu-core
+      - uses: actions/download-artifact@v4
+        with:
+          name: auros-installer
+          path: dl/installer
+          run-id: ${{ needs.which.outputs.run-id }}
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: auros-rootfs
+          path: dl/rootfs
+          run-id: ${{ needs.which.outputs.run-id }}
+          github-token: ${{ github.token }}
+      - name: the build's out/ and work/, put back where the tests look
+        id: setup
+        run: |
+          mkdir -p out transcripts
+          cp dl/installer/aurbridge.exe dl/installer/aurbridge-wizard.exe dl/installer/aurbridge-sim \
+             dl/installer/auros-staging.img dl/installer/auros-staging-vmlinuz dl/installer/auros-staging-*.efi out/
+          chmod +x out/aurbridge-sim
+          sudo mkdir -p work/forge/desktop
+          zstd -dc dl/rootfs/rootfs.tar.zst | sudo tar -C work/forge/desktop --numeric-owner -xf -
+          rm -rf dl/rootfs
+          # build/staging's tree (tools/machine.sh takes its modules).
+          # A build from before it was an artifact: remade from the same
+          # rootfs, which is where its modules come from, into a scratch
+          # out/ so the tested files are untouched.
+          if [ -f dl/installer/staging-work.tar.zst ]; then
+            zstd -dc dl/installer/staging-work.tar.zst | sudo tar -C work --numeric-owner -xf -
+          else
+            sudo AUROS_STAGING_OUT="$RUNNER_TEMP/staging-out" ./build/staging desktop > /dev/null
+          fi
+          sudo test -d work/staging/lib/modules
+          cat dl/installer/build-info.txt
+      - name: aurfirsttest
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        run: sh tools/aurfirsttest.sh 2>&1 | tee transcripts/aurfirsttest.txt
+      - name: choicestest
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        run: |
+          # AURSHELL: the image's own aurshell, through the image's own
+          # loader and libraries, for the "the desktop starts as" checks.
+          R="$PWD/work/forge/desktop/rootfs"
+          printf '#!/bin/sh\nexec "%s/lib64/ld-linux-x86-64.so.2" --library-path "%s/usr/lib/x86_64-linux-gnu:%s/lib/x86_64-linux-gnu" "%s/usr/bin/aurshell" "$@"\n' \
+              "$R" "$R" "$R" "$R" > "$RUNNER_TEMP/aurshell"
+          chmod +x "$RUNNER_TEMP/aurshell"
+          AURSHELL="$RUNNER_TEMP/aurshell" sh tools/choicestest.sh 2>&1 | tee transcripts/choicestest.txt
+          grep -q 'the desktop starts as' transcripts/choicestest.txt \
+            || { echo "choicestest did not start the image's aurshell"; exit 1; }
+      - name: nmtest (the image's NetworkManager - the cable is managed, names resolve)
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        run: RFS=work/forge/desktop/rootfs sh tools/nmtest.sh 2>&1 | tee transcripts/nmtest.txt
+      - name: sessionenvtest
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        run: |
+          cc -O2 -std=gnu11 -o "$RUNNER_TEMP/sessionenvtest" tools/sessionenvtest.c src/aurshell/run.c -I src/aurshell
+          "$RUNNER_TEMP/sessionenvtest" 2>&1 | tee transcripts/sessionenvtest.txt
+      - name: looktest
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        run: |
+          cc -O2 -std=gnu11 -o "$RUNNER_TEMP/looktest" tools/looktest.c \
+             src/aurshell/settings.c src/aurshell/power.c src/aurshell/run.c \
+             src/aurshell/foot.c src/aurshell/welcome.c src/aurshell/draw.c \
+             src/aurshell/shellcommon.c src/aurshell/anim.c \
+             src/aurshell/layouts/[a-z]*.c src/common/theme.c src/common/font.c \
+             -I src/aurshell -I src/common -lm
+          "$RUNNER_TEMP/looktest" 2>&1 | tee transcripts/looktest.txt
+      - name: nvramtest
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        run: sudo sh tools/nvramtest.sh 2>&1 | tee transcripts/nvramtest.txt
+      - name: bridgetest
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        run: sh tools/bridgetest.sh 2>&1 | tee transcripts/bridgetest.txt
+      - name: helptest (the help pages work offline, in her words)
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        run: python3 -I tools/helptest.py 2>&1 | tee transcripts/helptest.txt
+      - name: storetest (Get more programs within two presses of every home)
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        run: |
+          cc -O2 -std=gnu11 -o "$RUNNER_TEMP/storetest" tools/storetest.c src/aurshell/apps.c \
+             src/aurshell/appwatch.c src/aurshell/foot.c src/aurshell/draw.c \
+             src/aurshell/shellcommon.c src/aurshell/anim.c src/aurshell/layouts/*.c \
+             src/common/theme.c src/common/font.c -I src/aurshell -I src/common -lm
+          "$RUNNER_TEMP/storetest" 2>&1 | tee transcripts/storetest.txt
+      - name: shrinktargettest
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        run: sh tools/shrinktargettest.sh 2>&1 | tee transcripts/shrinktargettest.txt
+      - name: probetest
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        run: sudo sh tools/probetest.sh 2>&1 | tee transcripts/probetest.txt
+      - name: gapfencetest
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        run: sh tools/gapfencetest.sh 2>&1 | tee transcripts/gapfencetest.txt
+      - name: manifesttest (the published wizard)
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        run: sh tools/manifesttest.sh dl/installer/AurOS-Setup.exe 2>&1 | tee transcripts/manifesttest.txt
+      - name: Ferry (make && tests/run.sh)
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        run: |
+          cd src/ferry && make && sh tests/run.sh 2>&1 | tee ../../transcripts/ferry.txt
+      - name: aurbridge-sim selftests
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        run: |
+          { out/aurbridge-sim gzselftest && out/aurbridge-sim sbselftest; } 2>&1 | tee transcripts/simselftest.txt
+      - name: aurbridge.exe selftest under Wine
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        env:
+          WINEDEBUG: -all
+          WINEDLLOVERRIDES: mscoree,mshtml=
+        run: |
+          wineboot -i >/dev/null 2>&1 || true
+          wine out/aurbridge.exe selftest 2>&1 | tee transcripts/wineselftest.txt
+      # Last: its final check runs build/aurbridge in this tree, which
+      # rewrites out/.
+      - name: signtest
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        run: sh tools/signtest.sh 2>&1 | tee transcripts/signtest.txt
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: transcripts-unit
+          path: transcripts/
+          retention-days: 30
+      # The end of each transcript, at the end of the log, which is the
+      # part the GitHub tools show (artifacts cannot be fetched from the
+      # development container).
+      - name: summary
+        if: ${{ !cancelled() }}
+        run: |
+          for f in transcripts/*.txt; do
+            echo "=== $(basename "$f" .txt)"; tail -n 3 "$f"
+          done
+
+  e2e:
+    needs: which
+    if: needs.which.outputs.go == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      # The free plan runs 20 jobs at a time for the whole repository,
+      # and a dozen workflows share them (docs/handoff/STREAMS.md).
+      max-parallel: 2
+      matrix:
+        include:
+          - { test: installtest,     args: '',        image: false }
+          - { test: nosticktest,     args: '',        image: false }
+          - { test: firstboottest,   args: 'desktop', image: true }
+          - { test: choicesboottest, args: '',        image: true }
+          - { test: putbacktest,     args: '',        image: true }
+    name: e2e (${{ matrix.test }})
+    steps:
+      - uses: actions/checkout@v4
+      - name: KVM, QEMU, OVMF
+        run: |
+          T0=$(date +%s); echo "T0=$T0" >> "$GITHUB_ENV"
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' |
+              sudo tee /etc/udev/rules.d/99-kvm4all.rules >/dev/null
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          sudo apt-get update -q
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends \
+              qemu-system-x86 qemu-utils ovmf gdisk dosfstools mtools e2fsprogs cpio python3 \
+              zstd grub-common sbsigntool file binutils iproute2 gcc libc6-dev
+          ls -l /dev/kvm
+          [ -w /dev/kvm ] || { echo "no usable /dev/kvm"; exit 1; }
+          ls -l /usr/share/OVMF/
+          dpkg -l ovmf qemu-system-x86 | tail -2
+          # accel=tcg -> accel=kvm, without touching the test scripts.
+          sudo tee /usr/local/bin/qemu-system-x86_64 >/dev/null <<'EOF'
+          #!/bin/sh
+          # CI only (tests.yml): the end-to-end tests ask for TCG because
+          # the container they were written in has no KVM.
+          accel="${AUROS_QEMU_ACCEL:-kvm}"
+          for a do
+              shift
+              case "$a" in *accel=tcg*) a=$(printf '%s' "$a" | sed "s/accel=tcg/accel=$accel/") ;; esac
+              set -- "$@" "$a"
+          done
+          exec /usr/bin/qemu-system-x86_64 "$@"
+          EOF
+          sudo chmod 755 /usr/local/bin/qemu-system-x86_64
+          sudo sh -c 'command -v qemu-system-x86_64'
+      - uses: actions/download-artifact@v4
+        with:
+          name: auros-installer
+          path: dl/installer
+          run-id: ${{ needs.which.outputs.run-id }}
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: auros-rootfs
+          path: dl/rootfs
+          run-id: ${{ needs.which.outputs.run-id }}
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@v4
+        if: matrix.image
+        with:
+          name: auros-pieces
+          path: dl/pieces
+          run-id: ${{ needs.which.outputs.run-id }}
+          github-token: ${{ github.token }}
+      - name: the build's out/ and work/, put back where the tests look
+        run: |
+          mkdir -p out transcripts
+          cp dl/installer/aurbridge.exe dl/installer/aurbridge-wizard.exe dl/installer/aurbridge-sim \
+             dl/installer/auros-staging.img dl/installer/auros-staging-vmlinuz dl/installer/auros-staging-*.efi out/
+          chmod +x out/aurbridge-sim
+          sudo mkdir -p work/forge/desktop
+          zstd -dc dl/rootfs/rootfs.tar.zst | sudo tar -C work/forge/desktop --numeric-owner -xf -
+          rm -rf dl/rootfs
+          # build/staging's tree (tools/machine.sh takes its modules).
+          # A build from before it was an artifact: remade from the same
+          # rootfs, which is where its modules come from, into a scratch
+          # out/ so the tested files are untouched.
+          if [ -f dl/installer/staging-work.tar.zst ]; then
+            zstd -dc dl/installer/staging-work.tar.zst | sudo tar -C work --numeric-owner -xf -
+          else
+            sudo AUROS_STAGING_OUT="$RUNNER_TEMP/staging-out" ./build/staging desktop > /dev/null
+          fi
+          sudo test -d work/staging/lib/modules
+          if [ -d dl/pieces ]; then
+            # The pieces, joined and unpacked: the same bytes the
+            # installer would write, checked against the same hash.
+            ( cd dl/pieces && sha256sum -c --quiet <(grep '^piece ' pieces.txt | awk '{print $4"  "$2}') )
+            cat dl/pieces/auros-desktop.img.gz.* | gzip -dc | cp --sparse=always /dev/stdin out/auros-desktop.img
+            echo "$(cat dl/pieces/image.sha256)  out/auros-desktop.img" | sha256sum -c
+            rm -rf dl/pieces
+          fi
+          ls -la out
+          df -h /
+          echo "setup $(( $(date +%s) - T0 )) s" | tee transcripts/timing-${{ matrix.test }}.txt
+      - name: ${{ matrix.test }} under KVM
+        run: |
+          T=$(date +%s)
+          set +e
+          sudo env PATH="$PATH" sh tools/${{ matrix.test }}.sh ${{ matrix.args }} > transcripts/${{ matrix.test }}.txt 2>&1
+          rc=$?
+          set -e
+          cat transcripts/${{ matrix.test }}.txt
+          echo "${{ matrix.test }} exit=$rc $(( $(date +%s) - T )) s" | tee -a transcripts/timing-${{ matrix.test }}.txt
+          tail -3 transcripts/${{ matrix.test }}.txt >> "$GITHUB_STEP_SUMMARY"
+          exit $rc
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: transcripts-${{ matrix.test }}
+          path: transcripts/
+          retention-days: 30

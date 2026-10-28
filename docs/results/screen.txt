@@ -1,0 +1,34 @@
+
+The staging screen
+
+  the sentences it follows are the ones aurstage says
+    read 6 step sentences from screen.c                            ok
+    install.c says: Saving this computer's Windows startup         ok
+    install.c says: Making room on the Windows drive               ok
+    install.c says: Copying AurOS onto this computer               ok
+    install.c says: Making this computer able to start AurOS       ok
+    install.c says: Checking that this computer works under AurOS  ok
+    install.c says: Writing the new layout                         ok
+
+  states
+    part way: copying, 47%, not stopped                            ok
+    ...in aurstage's own words                                     ok
+    finished: last step reached, handed over                       ok
+    a failure: stopped, verdict kept                               ok
+    ...and what to do is what it shows                             ok
+    a refusal: stopped                                             ok
+    a restore: its own mode, its own bar                           ok
+    a restore with nothing saved: stopped, and says why            ok
+    a restore with no usable copy: stopped                         ok
+    a restore that worked: finished, not stopped                   ok
+    start-up: her sentence, not the technician's lines             ok
+    a restore under way: says what it is doing                     ok
+    garbage and out-of-range numbers: no crash, clamped            ok
+
+  pictures
+    paints at 1024x768                                             ok
+    paints at 1366x768                                             ok
+    paints at 1920x1080                                            ok
+    paints at 800x600                                              ok
+
+screentest: 24/24

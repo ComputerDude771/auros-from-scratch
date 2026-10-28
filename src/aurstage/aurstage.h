@@ -175,6 +175,11 @@ int  stage_switch_root(const char *root_dev);
 int  stage_cmdline_has(const char *word);
 int  stage_cmdline_value(const char *key, char *out, size_t n);
 
+/* MemAvailable, in bytes; 0 if the kernel will not say. */
+uint64_t stage_mem_available(void);
+/* One line: Secure Boot on or off, and the kernel's lockdown mode. */
+void stage_say_secure(void);
+
 /* ── saying things ───────────────────────────────────────────────── */
 
 /* Everything this environment says goes through here: to the console
@@ -183,5 +188,13 @@ int  stage_cmdline_value(const char *key, char *out, size_t n);
  * a machine that has to be posted back. */
 void stage_say(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 void stage_warn(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+
+/* The progress screen (src/aurscreen), fed through a pipe from
+ * stage_say. Starting it is optional and failing to is silent: the
+ * console is always written first. Stopped before switch_root so the
+ * installed desktop can take the display. */
+void stage_screen_start(void);
+void stage_screen_stop(void);
+void stage_progress(int pct);
 
 #endif

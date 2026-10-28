@@ -1,0 +1,417 @@
+diff --git a/tools/hardenboottest.sh b/tools/hardenboottest.sh
+new file mode 100644
+index 0000000..f0e126e
+--- /dev/null
++++ b/tools/hardenboottest.sh
+@@ -0,0 +1,411 @@
++#!/bin/sh
++# ═══════════════════════════════════════════════════════════════════
++#  hardenboottest — the hardening and recovery controls, on the real
++#  image, booted; and what they cost
++#
++#  hardentest reads files. This boots out/auros-<profile>.img (the bytes
++#  AurBridge writes) in a 4 GB, 2-CPU KVM machine under OVMF, with a
++#  network, and asks the running system:
++#
++#    measurement boots (HARDEN_BOOTS, default 3), each untouched:
++#      seconds to the desktop, systemd-analyze, RAM in use after a
++#      minute of idle, slab, swap; the listening sockets; the kernel
++#      command line and settings as the kernel has them; the firewall
++#      as loaded; an inbound connection FROM THE NETWORK (QEMU forwards
++#      a host port to the guest's own address) to a listener the test
++#      starts on 0.0.0.0 -- which must NOT be answered, while the same
++#      listener answers on loopback and the machine can still reach
++#      the internet itself
++#    one proof boot, with things broken on purpose:
++#      dpkg left half-configured before the start (as a power cut
++#      would) -- mended by the time the desktop is up; a DCCP socket
++#      (module autoload) refused; Flatpak's sandbox (bwrap under the
++#      flatpak AppArmor profile) still made; a print job through cups
++#      to an IPP printer (ippeveprinter, no network discovery) still
++#      printed; the desktop crashed three times -- the fourth start is
++#      safe mode; a program eating all memory -- stopped while the
++#      desktop survives, and the longest the machine stopped answering
++#
++#  The harness injected into a scratch copy of the image is NOT part of
++#  AurOS (/usr/lib/auros-harden, auros-harden.service), like
++#  firstboottest's. It runs as Type=simple so the boot it measures can
++#  finish without it.
++#
++#  Exit 0 when every check passes. HARDEN_MEASURE_ONLY=1 prints the
++#  same report and exits 0 regardless (an image from before the
++#  hardening, measured for the "before" column).
++#
++#    sudo sh tools/hardenboottest.sh [profile]
++# ═══════════════════════════════════════════════════════════════════
++set -u
++cd "$(dirname "$0")/.."
++
++PROFILE="${1:-desktop}"
++E=tools/efivarstore.py
++CODE=/usr/share/OVMF/OVMF_CODE_4M.fd
++VARS=/usr/share/OVMF/OVMF_VARS_4M.fd
++BOOTS="${HARDEN_BOOTS:-3}"
++BOOT_TIMEOUT="${HARDEN_TIMEOUT:-900}"
++HP="${HARDEN_HOSTPORT:-18000}"
++OUTDIR="${HARDEN_OUT:-transcripts/hardenboot}"
++
++fail=0; checked=0
++ok()  { checked=$((checked+1)); printf '    %-64s %s\n' "$1" "ok"; }
++bad() { checked=$((checked+1)); fail=$((fail+1)); printf '    %-64s %s\n' "$1" "FAIL"
++        shift; for m in "$@"; do printf '      %s\n' "$m"; done; }
++
++for t in qemu-system-x86_64 sgdisk python3 losetup mount; do
++    command -v "$t" >/dev/null 2>&1 || { echo "need $t"; exit 2; }
++done
++[ -f "$CODE" ] && [ -f "$VARS" ] || { echo "need OVMF"; exit 2; }
++SRC="out/auros-$PROFILE.img"
++[ -f "$SRC" ] || [ -f "$SRC.zst" ] || { echo "no image: $SRC"; exit 2; }
++
++T=$(mktemp -d "${TMPDIR:-/tmp}/hardenboot.XXXXXX") || exit 2
++mkdir -p "$OUTDIR"
++QP=""; LP=""
++cleanup() {
++    [ -n "$QP" ] && kill -9 "$QP" 2>/dev/null
++    mountpoint -q "$T/m" 2>/dev/null && umount "$T/m"
++    [ -n "$LP" ] && losetup -d "$LP" 2>/dev/null
++    rm -rf "$T"
++}
++trap cleanup EXIT
++
++part_of() { sgdisk -p "$1" 2>/dev/null | awk -v n="$2" '$NF==n {print $1, $2, $3}'; }
++mount_root() {
++    set -- $(part_of "$DISK" AUROS-ROOT)
++    [ -n "${2:-}" ] || { echo "  no AUROS-ROOT"; return 1; }
++    LP=$(losetup --find --show -o $(( $2 * 512 )) --sizelimit $(( ($3 - $2 + 1) * 512 )) "$DISK") || return 1
++    mkdir -p "$T/m"; mount "$LP" "$T/m" || { losetup -d "$LP"; LP=""; return 1; }
++}
++umount_root() { sync; umount "$T/m" 2>/dev/null; losetup -d "$LP" 2>/dev/null; LP=""; }
++
++# ── the harness, inside the guest ───────────────────────────────────
++inject() {
++    mkdir -p "$T/m/usr/lib/auros-harden" "$T/m/etc/auros-harden"
++    cat > "$T/m/usr/lib/auros-harden/run.sh" <<'EOS'
++#!/bin/sh
++# NOT PART OF AUROS: tools/hardenboottest.sh's harness, in a scratch copy.
++n=$(cat /etc/auros-harden/boot 2>/dev/null || echo 0)
++mode=$(cat /etc/auros-harden/mode 2>/dev/null || echo measure)
++O=/var/lib/auros-harden/$n; mkdir -p "$O"
++up() { cut -d' ' -f1 /proc/uptime; }
++log() { printf '%s %s\n' "$(up)" "$*" >> "$O/log"; }
++ser() { printf '\n%s\n' "$*" > /dev/ttyS0 2>/dev/null; }
++u=$(sed -n 's/^User=//p' /etc/systemd/system/aurshell.service.d/user.conf 2>/dev/null | head -1)
++uid=$(id -u "$u" 2>/dev/null)
++log "start mode=$mode user=$u uid=$uid"
++desk() { ls /run/user/"$uid"/wayland-* /run/auros/wayland-* 2>/dev/null | grep -qv '\.lock$'; }
++i=0; while ! desk && [ $i -lt 1500 ]; do sleep 0.2; i=$((i+1)); done
++if desk; then echo "$(up)" > "$O/desktop_s"; log "desktop"; else log "desktop NEVER"; fi
++i=0; while ! systemd-analyze time > "$O/analyze" 2>&1 && [ $i -lt 120 ]; do sleep 1; i=$((i+1)); done
++systemd-analyze blame 2>/dev/null | head -25 > "$O/blame"
++systemd-analyze critical-chain graphical.target > "$O/chain" 2>&1
++# Idle: a minute with nothing touched.
++sleep 60
++cp /proc/meminfo "$O/meminfo"; free -m > "$O/free"
++cat /proc/cmdline > "$O/cmdline"
++for k in kernel.kptr_restrict kernel.dmesg_restrict kernel.unprivileged_bpf_disabled \
++         net.core.bpf_jit_harden kernel.yama.ptrace_scope kernel.kexec_load_disabled \
++         fs.protected_symlinks fs.protected_hardlinks fs.protected_fifos fs.protected_regular \
++         fs.suid_dumpable kernel.sysrq dev.tty.ldisc_autoload vm.unprivileged_userfaultfd \
++         kernel.io_uring_disabled kernel.panic kernel.panic_on_oops vm.swappiness \
++         vm.page-cluster kernel.unprivileged_userns_clone kernel.apparmor_restrict_unprivileged_userns \
++         net.ipv4.conf.all.accept_redirects net.ipv4.tcp_syncookies; do
++    printf '%s=%s\n' "$k" "$(sysctl -n "$k" 2>/dev/null)"
++done > "$O/sysctl"
++ss -Htulpn > "$O/ss" 2>&1
++nft list ruleset > "$O/nft" 2>&1
++for s in nftables zramswap earlyoom avahi-daemon cups cups-browsed auros-dpkg-repair aurshell apparmor; do
++    printf '%s=%s\n' "$s" "$(systemctl is-active $s.service 2>/dev/null)"
++done > "$O/units"
++systemctl --failed --no-legend --plain > "$O/failed" 2>&1
++swapon --show=NAME,TYPE,SIZE --noheadings > "$O/swap" 2>&1
++[ -d /sys/kernel/debug ] && echo present > "$O/debugfs" || echo absent > "$O/debugfs"
++ps -o args= -C earlyoom > "$O/earlyoom_args" 2>&1
++# Inbound, from the network.
++cat > /run/harden-listen.py <<'EOP'
++import socket, sys, time
++s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
++s.bind(("0.0.0.0", 8000)); s.listen(5); s.settimeout(1)
++end = time.time() + 50
++with open(sys.argv[1], "a") as log:
++    while time.time() < end:
++        try: c, a = s.accept()
++        except OSError: continue
++        log.write("accepted %s\n" % (a[0],)); log.flush()
++        try: c.sendall(b"AUROS-LISTENER-REACHED\n")
++        except OSError: pass
++        c.close()
++EOP
++python3 /run/harden-listen.py "$O/listener" & lp=$!
++sleep 2
++python3 -c 'import socket; s=socket.create_connection(("127.0.0.1",8000),5); print(s.recv(64).decode().strip())' > "$O/loopback" 2>&1
++curl -sS -m 25 -o /dev/null -w '%{http_code}\n' https://github.com/ > "$O/outbound" 2>&1
++ser "HARDEN-PROBE-READY $n"
++wait $lp
++log "probe window over"
++
++if [ "$mode" = proof ]; then
++    # dpkg, mended at this start?
++    dpkg-query -W -f='${Status}\n' less > "$O/dpkg_less" 2>&1
++    dpkg --audit > "$O/dpkg_audit" 2>&1
++    journalctl -b -u auros-dpkg-repair.service --no-pager -o cat > "$O/dpkg_journal" 2>&1
++    # A socket family whose module is not allowed to load.
++    runuser -u "$u" -- python3 -c 'import socket; socket.socket(socket.AF_INET, socket.SOCK_DCCP, 33); print("opened")' > "$O/dccp" 2>&1
++    lsmod | awk '{print $1}' | grep -qx dccp && echo loaded >> "$O/dccp" || echo not-loaded >> "$O/dccp"
++    # Flatpak's sandbox, the way flatpak makes it.
++    runuser -u "$u" -- aa-exec -p flatpak -- bwrap --unshare-user --unshare-pid --ro-bind / / --proc /proc --dev /dev true > "$O/bwrap" 2>&1 && echo rc=0 >> "$O/bwrap" || echo "rc=$?" >> "$O/bwrap"
++    runuser -u "$u" -- bwrap --unshare-user --ro-bind / / true > "$O/bwrap_unconfined" 2>&1; echo "rc=$?" >> "$O/bwrap_unconfined"
++    # Printing, locally, through the whole cups pipeline.
++    mkdir -p /run/harden-spool
++    ippeveprinter -n localhost -p 8631 -r off -k -d /run/harden-spool -f application/pdf,image/pwg-raster,text/plain,application/octet-stream "Harden Printer" > "$O/ippeve.log" 2>&1 & ip=$!
++    sleep 3
++    lpadmin -p hardentest -E -v ipp://localhost:8631/ipp/print -m everywhere > "$O/print" 2>&1
++    echo "hello from hardenboottest" | lp -d hardentest >> "$O/print" 2>&1
++    i=0; while [ $i -lt 90 ]; do
++        [ -n "$(lpstat -o hardentest 2>/dev/null)" ] || break; sleep 1; i=$((i+1)); done
++    lpstat -W completed -o hardentest >> "$O/print" 2>&1
++    find /run/harden-spool -type f | head > "$O/print_spool"
++    kill $ip 2>/dev/null; lpadmin -x hardentest 2>/dev/null
++    # The desktop, crashed three times.
++    : > "$O/crash"
++    for c in 1 2 3; do
++        p=$(pgrep -x aurshell | head -1)
++        [ -n "$p" ] || { echo "no aurshell before crash $c" >> "$O/crash"; break; }
++        kill -SEGV "$p"; echo "crash $c pid $p at $(up)" >> "$O/crash"
++        i=0; while [ $i -lt 240 ]; do
++            q=$(pgrep -x aurshell | head -1)
++            [ -n "$q" ] && [ "$q" != "$p" ] && break; sleep 1; i=$((i+1)); done
++        echo "  back after ${i}s as ${q:-none}" >> "$O/crash"
++    done
++    sleep 5
++    q=$(pgrep -x aurshell | head -1)
++    tr '\0' ' ' < /proc/"$q"/cmdline > "$O/crash_cmdline" 2>/dev/null
++    systemctl is-active aurshell.service > "$O/crash_active"
++    journalctl -b -u aurshell.service --no-pager -o cat 2>/dev/null | grep -i 'shell-guard' > "$O/crash_journal"
++    # Memory, all of it, by one program, while a ticker measures stalls.
++    cat > /run/harden-hog.py <<'EOP'
++import os, time
++page = os.urandom(1365) + bytes(2731)        # about 3:1 compressible, like real memory
++chunk = page * 4096 * 4                      # 64 MiB
++keep = []
++t0 = time.time()
++while len(keep) < 160 and time.time() - t0 < 240:   # at most 10 GiB, at most 4 minutes
++    keep.append(bytearray(chunk))
++print("survived", len(keep))
++EOP
++    ( while :; do date +%s.%N; sleep 0.1; done ) > "$O/ticker" & tk=$!
++    sp=$(systemctl show -p MainPID --value aurshell.service)
++    t0=$(up)
++    runuser -u "$u" -- python3 /run/harden-hog.py > "$O/hog" 2>&1; echo "rc=$?" >> "$O/hog"
++    t1=$(up)
++    kill $tk
++    echo "$t0 $t1" > "$O/hog_time"
++    sleep 5
++    echo "$sp $(systemctl show -p MainPID --value aurshell.service) $(systemctl is-active aurshell.service)" > "$O/hog_shell"
++    journalctl -b -u earlyoom.service --no-pager -o cat 2>/dev/null | tail -20 > "$O/hog_earlyoom"
++    journalctl -b -k --no-pager -o cat 2>/dev/null | grep -i 'out of memory\|oom-kill\|Killed process' | tail -5 > "$O/hog_kernel"
++fi
++journalctl -b --no-pager -o short-monotonic > "$O/journal" 2>&1
++log "done"
++sync
++systemctl poweroff
++EOS
++    chmod 755 "$T/m/usr/lib/auros-harden/run.sh"
++    cat > "$T/m/etc/systemd/system/auros-harden.service" <<'EOU'
++[Unit]
++Description=NOT PART OF AUROS: hardenboottest's harness
++After=aurshell.service
++[Service]
++Type=simple
++ExecStart=/usr/lib/auros-harden/run.sh
++[Install]
++WantedBy=multi-user.target
++EOU
++    ln -sf /etc/systemd/system/auros-harden.service \
++        "$T/m/etc/systemd/system/multi-user.target.wants/auros-harden.service"
++}
++
++# ── a machine: the image, AurOS first in the firmware's boot order ───
++fresh_machine() {
++    DISK="$T/disk.img"; NV="$T/vars.fd"
++    rm -f "$DISK" "$NV"
++    if [ -f "$SRC" ]; then cp --sparse=always "$SRC" "$DISK"
++    else zstd -q -d --sparse "$SRC.zst" -o "$DISK" || return 1; fi
++    mount_root || return 1
++    inject
++    umount_root
++    set -- $(part_of "$DISK" AUROS-ESP)
++    [ -n "${1:-}" ] || { echo "  no AUROS-ESP"; return 1; }
++    cp "$VARS" "$NV"
++    python3 "$E" "$NV" plant-hd Boot0002 "AurOS" '\EFI\AurOS\shimx64.efi' "$DISK" "$1" &&
++    python3 "$E" "$NV" set-order 0002
++}
++
++power_on() { # n mode
++    N=$1
++    mount_root || return 1
++    printf '%s\n' "$1" > "$T/m/etc/auros-harden/boot"
++    printf '%s\n' "$2" > "$T/m/etc/auros-harden/mode"
++    if [ "$2" = proof ] && grep -q '^Package: less$' "$T/m/var/lib/dpkg/status"; then
++        # As a power cut in the middle of an update leaves it.
++        awk '/^Package: /{p=$2} p=="less" && /^Status: install ok installed$/ {print "Status: install ok half-configured"; next} {print}' \
++            "$T/m/var/lib/dpkg/status" > "$T/status" && cat "$T/status" > "$T/m/var/lib/dpkg/status"
++    fi
++    umount_root
++    SER="$T/serial.$N"; : > "$SER"; PROBE="$T/probe.$N"; : > "$PROBE"
++    qemu-system-x86_64 -machine q35,accel=kvm -cpu host -m 4096 -smp 2 -no-reboot \
++        -drive if=pflash,format=raw,unit=0,readonly=on,file="$CODE" \
++        -drive if=pflash,format=raw,unit=1,file="$NV" \
++        -drive file="$DISK",format=raw,if=none,id=d0 -device virtio-blk-pci,drive=d0 \
++        -netdev user,id=n0,hostfwd=tcp:127.0.0.1:$HP-:8000 -device virtio-net-pci,netdev=n0 \
++        -device virtio-vga -display none -serial file:"$SER" >"$T/qemu.$N" 2>&1 &
++    QP=$!
++    i=0; probed=0
++    while kill -0 "$QP" 2>/dev/null && [ "$i" -lt "$BOOT_TIMEOUT" ]; do
++        if [ $probed = 0 ] && grep -aq "HARDEN-PROBE-READY $N" "$SER"; then
++            probed=1
++            python3 - "$HP" > "$PROBE" 2>&1 <<'EOP'
++import socket, sys
++try:
++    s = socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=5)
++    s.settimeout(8)
++    d = s.recv(64)
++except Exception as e:
++    d = b""
++print("REACHED" if b"AUROS-LISTENER" in d else "NOT-REACHED")
++EOP
++        fi
++        sleep 1; i=$((i + 1))
++    done
++    if kill -0 "$QP" 2>/dev/null; then kill -9 "$QP" 2>/dev/null; wait "$QP" 2>/dev/null; OFF=0
++    else wait "$QP" 2>/dev/null; OFF=1; fi
++    QP=""
++    mount_root || return 1
++    R="$OUTDIR/boot$N"; rm -rf "$R"; mkdir -p "$R"
++    cp -a "$T/m/var/lib/auros-harden/$N/." "$R/" 2>/dev/null
++    rm -rf "$T/m/var/lib/auros-harden"
++    umount_root
++    cp "$SER" "$R/serial.txt"; cp "$PROBE" "$R/probe"
++    [ "$OFF" = 1 ] || echo "killed after ${i}s" > "$R/killed"
++}
++
++# ── the report ──────────────────────────────────────────────────────
++val() { cat "$R/$1" 2>/dev/null; }
++sysv() { sed -n "s/^$1=//p" "$R/sysctl" 2>/dev/null; }
++mi() { awk -v k="$1:" '$1 == k {print int($2/1024)}' "$R/meminfo" 2>/dev/null; }
++
++check_boot() { # every boot: the always-on controls
++    [ -s "$R/desktop_s" ] && ok "the desktop comes up" \
++        || bad "the desktop comes up" "$(tail -3 "$R/log" 2>/dev/null)" "$(val killed)"
++    for o in init_on_alloc=1 slab_nomerge randomize_kstack_offset=on vsyscall=none debugfs=off panic=10 fsck.repair=yes; do
++        case " $(val cmdline) " in *" $o "*) ;; *) miss="${miss:-} $o" ;; esac
++    done
++    [ -z "${miss:-}" ] && ok "the kernel started with every hardening option" \
++        || bad "the kernel started with every hardening option" "missing:$miss" "cmdline: $(val cmdline)"
++    miss=""
++    [ "$(val debugfs)" = absent ] && ok "debugfs does not exist" || bad "debugfs does not exist" "/sys/kernel/debug is there"
++    bads=""
++    for kv in kernel.kptr_restrict=2 kernel.dmesg_restrict=1 kernel.unprivileged_bpf_disabled=1 \
++              net.core.bpf_jit_harden=2 kernel.yama.ptrace_scope=1 kernel.kexec_load_disabled=1 \
++              fs.protected_symlinks=1 fs.protected_hardlinks=1 fs.protected_fifos=2 fs.protected_regular=2 \
++              fs.suid_dumpable=0 kernel.sysrq=176 dev.tty.ldisc_autoload=0 vm.unprivileged_userfaultfd=0 \
++              kernel.io_uring_disabled=2 kernel.panic=10 kernel.panic_on_oops=0 vm.swappiness=150 \
++              vm.page-cluster=0 kernel.unprivileged_userns_clone=1 net.ipv4.conf.all.accept_redirects=0; do
++        [ "$(sysv "${kv%=*}")" = "${kv#*=}" ] || bads="$bads ${kv%=*}=$(sysv "${kv%=*}")(want ${kv#*=})"
++    done
++    [ -z "$bads" ] && ok "the running kernel has every hardening setting" \
++        || bad "the running kernel has every hardening setting" "$bads"
++    grep -q 'nftables=active' "$R/units" && ok "the firewall is loaded" || bad "the firewall is loaded" "$(grep nftables "$R/units")"
++    grep -q 'hook input priority filter; policy drop;' "$R/nft" && ok "...inbound policy drop, as the kernel has it" \
++        || bad "...inbound policy drop, as the kernel has it" "$(head -5 "$R/nft")"
++    # Listening sockets reachable from outside this computer: none but
++    # avahi's mDNS (printer search, answers only through the firewall)
++    # and the DHCP client.
++    ext=$(awk '{ split($5, a, ":"); addr = $5; sub(/:[^:]*$/, "", addr)
++                 if (addr ~ /^(127\.|\[::1\]|\[::ffff:127\.)/ || addr ~ /%lo$/) next; print }' "$R/ss" \
++          | grep -v '"avahi-daemon"' | grep -vE 'udp .*:(68|546) .*"NetworkManager"' | grep -v 'harden-listen')
++    [ -z "$ext" ] && ok "nothing listens to the network but printer search and DHCP" \
++        || bad "nothing listens to the network but printer search and DHCP" "$ext"
++    grep -qx 'AUROS-LISTENER-REACHED' "$R/loopback" && ok "a test listener on 0.0.0.0 answers on loopback (control)" \
++        || bad "a test listener on 0.0.0.0 answers on loopback (control)" "$(val loopback)"
++    if grep -qx NOT-REACHED "$R/probe" && ! grep -q accepted "$R/listener" 2>/dev/null; then
++        ok "...and a connection from the network never reaches it"
++    else bad "...and a connection from the network never reaches it" "probe: $(val probe); listener: $(val listener)"; fi
++    case "$(val outbound)" in 2??|3??) ok "the machine itself still reaches the internet ($(val outbound))" ;;
++        *) bad "the machine itself still reaches the internet" "$(val outbound)" ;; esac
++    grep -q 'cups-browsed=active' "$R/units" && bad "cups-browsed is not running" "it is" || ok "cups-browsed is not running"
++    grep -q 'zram' "$R/swap" && ok "swap is compressed RAM ($(awk '{print $3}' "$R/swap" | head -1))" \
++        || bad "swap is compressed RAM" "swap: $(val swap)"
++    grep -q 'earlyoom=active' "$R/units" && ok "earlyoom is watching memory" || bad "earlyoom is watching memory" "$(grep earlyoom "$R/units")"
++    case "$(val earlyoom_args)" in *"--avoid (^|/)(aurshell"*) ok "...and it will never pick the desktop" ;;
++        *) bad "...and it will never pick the desktop" "args: $(val earlyoom_args)" ;; esac
++    f=$(grep -v auros-harden "$R/failed" 2>/dev/null)
++    [ -z "$f" ] && ok "no unit failed" || bad "no unit failed" "$f"
++}
++
++check_proof() {
++    case "$(val dpkg_less)" in "install ok installed") ok "an update cut off half-way is finished at the next start" ;;
++        *) bad "an update cut off half-way is finished at the next start" "less: $(val dpkg_less)" "$(tail -3 "$R/dpkg_journal" 2>/dev/null)" ;; esac
++    [ ! -s "$R/dpkg_audit" ] && ok "...and dpkg has nothing left to complain about" \
++        || bad "...and dpkg has nothing left to complain about" "$(head -3 "$R/dpkg_audit")"
++    if ! grep -q opened "$R/dccp" && grep -q not-loaded "$R/dccp"; then ok "a program cannot get the DCCP module loaded"
++    else bad "a program cannot get the DCCP module loaded" "$(val dccp)"; fi
++    grep -qx rc=0 "$R/bwrap" && ok "Flatpak's sandbox is still made (bwrap, flatpak profile)" \
++        || bad "Flatpak's sandbox is still made (bwrap, flatpak profile)" "$(val bwrap)"
++    if [ -s "$R/print_spool" ]; then ok "a print job still prints (cups -> IPP printer)"
++    else bad "a print job still prints (cups -> IPP printer)" "$(tail -4 "$R/print")" "$(tail -3 "$R/ippeve.log" 2>/dev/null)"; fi
++    case "$(val crash_cmdline)" in *"--shell /usr/share/auros/shells/rail.shell --conf /etc/auros/shell.conf"*)
++        ok "three desktop crashes: the fourth start is safe mode" ;;
++        *) bad "three desktop crashes: the fourth start is safe mode" "cmdline: $(val crash_cmdline)" "$(cat "$R/crash")" ;; esac
++    grep -qx active "$R/crash_active" && ok "...and the desktop is up" || bad "...and the desktop is up" "$(val crash_active)"
++    set -- $(val hog_shell)
++    if [ -n "${1:-}" ] && [ "$1" = "${2:-}" ] && [ "${3:-}" = active ]; then ok "a program eating all memory: the desktop survives"
++    else bad "a program eating all memory: the desktop survives" "MainPID before/after/state: $(val hog_shell)"; fi
++    grep -q '^survived' "$R/hog" && bad "...and the program is stopped" "$(val hog)" || ok "...and the program is stopped"
++    grep -qi 'sending SIG\|killing' "$R/hog_earlyoom" && ok "...by earlyoom, not the kernel's last resort" \
++        || bad "...by earlyoom, not the kernel's last resort" "earlyoom: $(tail -2 "$R/hog_earlyoom")" "kernel: $(tail -2 "$R/hog_kernel")"
++}
++
++measure_line() { # n
++    ds=$(val desktop_s); used=$(( $(mi MemTotal) - $(mi MemAvailable) ))
++    an=$(head -1 "$R/analyze" 2>/dev/null | sed 's/^Startup finished in //')
++    printf 'measure boot%s desktop_s=%s mem_used_mb=%s slab_mb=%s analyze="%s"\n' \
++        "$1" "${ds:-NA}" "$used" "$(mi Slab)" "$an"
++}
++
++echo
++echo "The hardened image, booted: is it unreachable, and does it recover?"
++fresh_machine || { echo "could not prepare the machine"; exit 2; }
++k=1
++while [ $k -le "$BOOTS" ]; do
++    echo
++    echo "  start $k of $BOOTS, untouched"
++    power_on $k measure
++    check_boot
++    measure_line $k | tee -a "$OUTDIR/measure.txt"
++    k=$((k + 1))
++done
++echo
++echo "  one more start, with things broken on purpose"
++power_on $k proof
++check_boot
++check_proof
++measure_line $k | tee -a "$OUTDIR/measure.txt"
++if [ -s "$R/hog_time" ]; then
++    set -- $(val hog_time)
++    gap=$(awk 'NR > 1 { d = $1 - p; if (d > m) m = d } { p = $1 } END { printf "%.1f", m }' "$R/ticker")
++    echo "measure memory_hog seconds_to_stop=$(awk -v a="$1" -v b="$2" 'BEGIN{printf "%.0f", b-a}') longest_stall_s=$gap" \
++        | tee -a "$OUTDIR/measure.txt"
++fi
++awk '$1 == "measure" && $2 ~ /^boot/ { for (i = 3; i <= NF; i++) { split($i, a, "="); if (a[1] == "desktop_s") d[++n] = a[2]; if (a[1] == "mem_used_mb") m[n] = a[2] } }
++     END { if (!n) exit; asort(d); asort(m); printf "median of %d starts: desktop %.1f s, RAM in use after a minute idle %d MB\n", n, d[int((n+1)/2)], m[int((n+1)/2)] }' \
++    "$OUTDIR/measure.txt" | tee -a "$OUTDIR/measure.txt"
++
++echo
++if [ "$fail" -eq 0 ]; then echo "hardenboottest: $checked checks, all ok"; exit 0; fi
++echo "hardenboottest: $fail of $checked checks FAILED"
++[ -n "${HARDEN_MEASURE_ONLY:-}" ] && exit 0
++exit 1

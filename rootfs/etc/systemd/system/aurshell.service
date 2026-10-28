@@ -89,7 +89,10 @@ PAMName=aurshell
 # itself the moment it appears -- a second or so into the boot, long
 # before anything is clicked -- and this wrapper is what a machine
 # whose user manager never starts falls back to. See run.c.
-ExecStart=/usr/bin/dbus-run-session -- /usr/bin/aurshell
+# $AURSHELL_SAFE is empty unless the desktop has failed three times in
+# ten minutes; then it names the plain home and the machine's own
+# settings (aurshell.service.d/50-auros-safe-mode.conf, shell-guard).
+ExecStart=/usr/bin/dbus-run-session -- /usr/bin/aurshell $AURSHELL_SAFE
 
 # A Wayland socket has to live somewhere a client can find it, and a
 # system service gets no XDG_RUNTIME_DIR from anybody. This unit used

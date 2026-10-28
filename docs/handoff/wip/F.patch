@@ -1,0 +1,52 @@
+diff --git a/tools/e2e/e2e.py b/tools/e2e/e2e.py
+index 520bb34..dcbc414 100644
+--- a/tools/e2e/e2e.py
++++ b/tools/e2e/e2e.py
+@@ -444,22 +444,37 @@ class Flow:
+                     warn = re.search(r"(isn.t commonly downloaded|can.t be downloaded securely|"
+                                      r"might be dangerous|download blocked|was blocked|unsafe|"
+                                      r"couldn.t verify)", names, re.I)
+-                    more = self.pick(els, r"^(More actions|See more|More options)", ("Button", "SplitButton", "MenuItem"))
++                    # The ITEM's "..." is "More actions" and shows only while
++                    # the pointer is on the item; the flyout's own "More
++                    # options" (top right) opens Open downloads page / Clear
++                    # all download history / Downloads settings, never Keep
++                    # (run 39896941765 pressed it four times, then waited).
++                    more = self.pick(els, r"^(More actions|See more)", ("Button", "SplitButton", "MenuItem"))
+                     if warn and more and pressed.count("more") < 4:
+                         self.click_el(more, "edge download item: more actions")
+                         pressed.append("more")
+                         time.sleep(3)
+                         continue
+-                    if warn and not more:
++                    item = next((e for e in els if e.get("type") in ("ListItem", "Text", "Button") and
++                                 re.search(warn.group(1), e.get("name") or "", re.I)), None) if warn else None
++                    if item and pressed.count("hover") < 4:
+                         # Edge shows an item's buttons when the pointer is on it
+-                        item = next((e for e in els if e.get("type") in ("ListItem", "Text", "Button") and
+-                                     re.search(warn.group(1), e.get("name") or "", re.I)), None)
+-                        if item and pressed.count("hover") < 6:
+-                            x, y, w, h = item["rect"]
+-                            self.m.move(x + w // 2, y + h // 2)
+-                            pressed.append("hover")
+-                            time.sleep(2)
+-                            continue
++                        if re.search(r"Open downloads page|Clear all download history", names):
++                            self.m.key("esc", label="close the flyout's own menu")
++                            time.sleep(1)
++                        x, y, w, h = item["rect"]
++                        self.m.move(x + w // 2, y + h // 2)
++                        pressed.append("hover")
++                        time.sleep(2)
++                        continue
++                    if item and pressed.count("rightclick") < 3:
++                        # what a person tries next: the item's own menu, which has Keep
++                        x, y, w, h = item["rect"]
++                        self.m.click(x + w // 2, y + h // 2, button="right",
++                                     label="edge download item: right-click")
++                        pressed.append("rightclick")
++                        time.sleep(3)
++                        continue
+                     if not warn and pressed.count("flyout") < 3:
+                         # the flyout went away: the toolbar's Downloads button
+                         tb = self.pick(els, r"^Downloads", ("Button", "SplitButton"))

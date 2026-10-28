@@ -1,0 +1,381 @@
+# Build AurOS on GitHub Actions, test it under KVM, and publish it.
+#
+# Why here and not in the development container: that container has no
+# KVM and its network refuses Mozilla, Flathub, Microsoft and Google, so
+# an image built there has no Firefox and cannot preconfigure Flathub,
+# and the QEMU tests crawl. Hosted runners have KVM and an open network,
+# and the repository is public, so the minutes are free
+# (docs/handoff/SESSION-2026-10-23.md, D6).
+#
+#   gate      decides whether this push needs a build at all: one of the
+#             build inputs changed, or the head commit says [build] or
+#             [release]. workflow_dispatch is not an option: it only
+#             works for workflows on the default branch.
+#   build     the desktop image (build/all, WITHOUT ALLOW_BROWSER_FALLBACK,
+#             so the Firefox route is exercised), the staging environment,
+#             the image in 90 MiB gzip pieces, and the installer with the
+#             piece list of the release it would be published as baked in.
+#   tests     tests.yml: the unit-ish suites and the end-to-end QEMU tests
+#             under KVM, against this run's artifacts.
+#   release   only when the head commit says [release]: release.yml
+#             publishes GitHub Release v<os_version>-<sha7> (a prerelease
+#             unless it also says [latest]), reads it back, and has the
+#             installer's own WinHTTP fetch the image from it on Windows.
+#             ([publish] promotes a build that already passed, without
+#             rebuilding: see release.yml.)
+#
+# docs/RELEASE.md has how to trigger each of these and what they prove.
+name: build
+
+on:
+  push:
+    branches: ['claude/**']
+
+permissions:
+  contents: read
+  actions: read
+
+# `bash` named explicitly is `bash -eo pipefail`; left to the default it
+# is `bash -e`, and `sh tools/x.sh | tee log` then passes whatever x
+# says.
+defaults:
+  run:
+    shell: bash
+
+# ONE BUILD AT A TIME PER BRANCH, QUEUED, NEVER CANCELLED -- and the
+# group is on the build JOB (below), not on the workflow. At workflow
+# level every push's run joins the group, including the many that only
+# change docs and build nothing; GitHub keeps one pending run per group,
+# so such a push would replace a queued build of the commit before it
+# (or a queued [release]) with a run that then decides not to build. A
+# job whose `if` is false never joins its group, so only real builds
+# queue there.
+
+jobs:
+  gate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      build: ${{ steps.g.outputs.build }}
+      release: ${{ steps.g.outputs.release }}
+      latest: ${{ steps.g.outputs.latest }}
+    steps:
+      - id: g
+        env:
+          MSG: ${{ github.event.head_commit.message }}
+          BEFORE: ${{ github.event.before }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          build=false; release=false; latest=false
+          # The words count in the SUBJECT line only: a body that explains
+          # what [release] does must not publish one.
+          SUBJ=${MSG%%$'\n'*}
+          case "$SUBJ" in *'[build]'*) build=true ;; esac
+          case "$SUBJ" in *'[release]'*) build=true; release=true ;; esac
+          case "$SUBJ" in *'[latest]'*) latest=true ;; esac
+          # The files this push changed; the push payload does not list them.
+          case "$BEFORE" in
+            ''|0000000000000000000000000000000000000000)
+              files=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA" --jq '.files[].filename' || true) ;;
+            *)
+              files=$(gh api "repos/$GITHUB_REPOSITORY/compare/$BEFORE...$GITHUB_SHA" --jq '.files[].filename' || true) ;;
+          esac
+          printf '%s\n' "$files" > /tmp/files.txt
+          sed -n '1,60p' /tmp/files.txt
+          if grep -qE '^(build/|src/|rootfs/|profiles/|themes/|shells/|\.github/workflows/(build|tests)\.yml$)' /tmp/files.txt; then
+            build=true
+          fi
+          { echo "build=$build"; echo "release=$release"; echo "latest=$latest"; } | tee -a "$GITHUB_OUTPUT"
+
+  build:
+    needs: gate
+    if: needs.gate.outputs.build == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    # One build at a time per branch, and only the newest waiting push
+    # gets built: several agents push here, and a queue of hour-long
+    # builds of commits nobody will publish helps nobody. A [release]
+    # commit gets a group of its own, so a later push cannot replace it.
+    concurrency:
+      group: build-${{ github.ref }}-${{ needs.gate.outputs.release == 'true' && github.sha || 'head' }}
+      cancel-in-progress: false
+    outputs:
+      tag: ${{ steps.id.outputs.tag }}
+      version: ${{ steps.id.outputs.version }}
+      image_sha256: ${{ steps.pieces.outputs.image_sha256 }}
+      image_bytes: ${{ steps.pieces.outputs.image_bytes }}
+      setup_sha256: ${{ steps.installer.outputs.setup_sha256 }}
+    env:
+      # 90 MiB: under any 100 MB limit, and a dropped connection costs
+      # one piece, not the image.
+      PIECE_BYTES: 94371840
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: what this build will be called
+        id: id
+        run: |
+          echo "T0=$(date +%s)" >> "$GITHUB_ENV"
+          v=$(sed -n 's/^os_version="\{0,1\}\([0-9A-Za-z.+-]*\)"\{0,1\}.*/\1/p' profiles/desktop.profile | head -1)
+          [ -n "$v" ] || { echo "no os_version in profiles/desktop.profile"; exit 1; }
+          tag="v$v-${GITHUB_SHA:0:7}"
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "TAG=$tag" >> "$GITHUB_ENV"
+          echo "BASE_URL=https://github.com/$GITHUB_REPOSITORY/releases/download/$tag/" >> "$GITHUB_ENV"
+          mkdir -p dist/installer dist/pieces
+          echo "tag $tag (os_version $v, commit $GITHUB_SHA, run $GITHUB_RUN_ID)" | tee dist/installer/build-info.txt
+          : > dist/installer/timings.txt
+
+      - name: room and tools
+        run: |
+          T=$(date +%s)
+          df -h / /mnt || true
+          # The big preinstalled SDKs this build never uses (~20 GB), in
+          # the background while apt runs. Swap stays: removing it makes
+          # jobs die without a word.
+          ( sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
+              /opt/hostedtoolcache/CodeQL /usr/local/share/boost /usr/share/swift \
+              /usr/local/share/chromium /usr/local/julia* 2>/dev/null; echo removed > /tmp/freed ) &
+          sudo apt-get update -q
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends \
+              debootstrap squashfs-tools zstd gdisk dosfstools mtools e2fsprogs \
+              sbsigntool mingw-w64 gcc libc6-dev make python3 cpio file binutils \
+              osslsigncode libxml2-utils pigz
+          while [ ! -f /tmp/freed ]; do sleep 2; done
+          df -h /
+          echo "tools $(( $(date +%s) - T )) s" >> dist/installer/timings.txt
+
+      # THE ONE CACHE, AND WHY IT IS SAFE. debootstrap reads only the
+      # release pocket of the suite (noble, not noble-updates), which
+      # does not change after release, so the base it makes is the same
+      # bytes every time; forge's stage 1 skips a tree that has its
+      # .forge-bootstrapped mark. The key is everything stage 1 reads:
+      # the profile's base_* lines, stage_bootstrap itself, and the
+      # debootstrap version. Nothing after stage 1 is cached: stage 2
+      # takes -updates and -security, which do change.
+      - name: cache key for the debootstrapped base
+        id: basekey
+        run: |
+          k=$( { grep -E '^base_(suite|mirror|components)=' profiles/desktop.profile
+                 sed -n '/^stage_bootstrap()/,/^}/p' build/forge
+                 dpkg-query -W debootstrap; } | sha256sum | cut -c1-16)
+          echo "key=debootstrap-desktop-$k" | tee -a "$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@v4
+        id: base
+        with:
+          path: dist/cache/base.tar.zst
+          key: ${{ steps.basekey.outputs.key }}
+      - name: the debootstrapped base, from the cache or made now
+        run: |
+          T=$(date +%s)
+          sudo mkdir -p work/forge/desktop
+          if [ -f dist/cache/base.tar.zst ]; then
+            zstd -dc dist/cache/base.tar.zst | sudo tar -C work/forge/desktop --numeric-owner -xf -
+            sudo test -f work/forge/desktop/rootfs/.forge-bootstrapped
+            echo "debootstrap-from-cache $(( $(date +%s) - T )) s" >> dist/installer/timings.txt
+          else
+            sudo ./build/forge stage desktop 1
+            mkdir -p dist/cache
+            sudo tar -C work/forge/desktop --numeric-owner -cf - rootfs | zstd -T0 -3 -q > dist/cache/base.tar.zst
+            echo "debootstrap $(( $(date +%s) - T )) s" >> dist/installer/timings.txt
+          fi
+          ls -la dist/cache
+      - uses: actions/cache/save@v4
+        if: steps.base.outputs.cache-hit != 'true'
+        continue-on-error: true
+        with:
+          path: dist/cache/base.tar.zst
+          key: ${{ steps.basekey.outputs.key }}
+
+      - name: build/all desktop (forge + mkimage), no browser fallback
+        run: |
+          T=$(date +%s)
+          # NOT ALLOW_BROWSER_FALLBACK: this network reaches Mozilla, so
+          # the profile's Firefox must arrive, or the build stops.
+          sudo env -u ALLOW_BROWSER_FALLBACK ./build/all desktop --keep=raw 2>&1 | tee /tmp/forge.log
+          echo "forge+mkimage $(( $(date +%s) - T )) s" >> dist/installer/timings.txt
+          ls -la out out/manifests
+          df -h /
+
+      - name: what the image says went wrong while building it
+        run: |
+          W=work/forge/desktop/rootfs/etc/auros/build-warnings
+          if sudo test -f "$W"; then sudo cat "$W" > dist/installer/build-warnings; else : > dist/installer/build-warnings; fi
+          echo "--- /etc/auros/build-warnings ($(wc -l < dist/installer/build-warnings) lines)"
+          cat dist/installer/build-warnings
+          # forge records the browser it installed on every build; only a
+          # missing one or a fallback is a problem.
+          if grep -qE '^browser=MISSING$|^browser=.*\(fallback;' dist/installer/build-warnings; then
+            echo "::warning::the image records a browser problem: $(grep '^browser=' dist/installer/build-warnings)"
+          fi
+          sudo cp out/manifests/desktop.json dist/installer/manifest-desktop.json
+          { echo "### build-warnings"; echo '```'; cat dist/installer/build-warnings; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: build/staging
+        run: |
+          T=$(date +%s)
+          sudo ./build/staging desktop
+          sudo chown -R "$(id -u):$(id -g)" out
+          echo "staging $(( $(date +%s) - T )) s" >> dist/installer/timings.txt
+
+      - name: the image, in gzip pieces, with the list the installer bakes in
+        id: pieces
+        run: |
+          T=$(date +%s)
+          IMG=out/auros-desktop.img
+          sha=$(sha256sum "$IMG" | cut -d' ' -f1)
+          bytes=$(stat -c %s "$IMG")
+          # The same digest build/all recorded, or something touched the
+          # image between the two.
+          grep -q "\"image_sha256\": \"$sha\"" dist/installer/manifest-desktop.json \
+            || { echo "the image does not hash to what build/all recorded"; exit 1; }
+          # pigz -9: one gzip member, the format every published image
+          # has used, four times faster than gzip -9. The installer's own
+          # inflater (src/aurbridge/inflate.c) reads it, and the getimage
+          # step below proves that on every build.
+          pigz -9 -p "$(nproc)" -c "$IMG" > dist/auros-desktop.img.gz
+          gzsha=$(sha256sum dist/auros-desktop.img.gz | cut -d' ' -f1)
+          ( cd dist/pieces && split -b "$PIECE_BYTES" -d -a 3 ../auros-desktop.img.gz auros-desktop.img.gz. )
+          rm -f dist/auros-desktop.img.gz
+          {
+            echo "# AurOS desktop $TAG, commit ${GITHUB_SHA:0:12}, Actions run $GITHUB_RUN_ID"
+            echo "base $BASE_URL"
+            for p in dist/pieces/auros-desktop.img.gz.*; do
+              echo "piece $(basename "$p") $(stat -c %s "$p") $(sha256sum "$p" | cut -d' ' -f1)"
+            done
+          } > dist/pieces/pieces.txt
+          cat dist/pieces/pieces.txt
+          echo "$sha" > dist/pieces/image.sha256
+          echo "$bytes" > dist/pieces/image.bytes
+          echo "$gzsha" > dist/pieces/image.gz.sha256
+          echo "image_sha256=$sha" >> "$GITHUB_OUTPUT"
+          echo "image_bytes=$bytes" >> "$GITHUB_OUTPUT"
+          n=$(grep -c '^piece ' dist/pieces/pieces.txt)
+          dl=$(du -cb dist/pieces/auros-desktop.img.gz.* | tail -1 | cut -f1)
+          echo "image $bytes bytes, sha256 $sha; gzip $dl bytes (sha256 $gzsha) in $n pieces" | tee -a dist/installer/build-info.txt
+          echo "pieces $(( $(date +%s) - T )) s" >> dist/installer/timings.txt
+
+      - name: build/aurbridge, pointed at this release
+        id: installer
+        run: |
+          T=$(date +%s)
+          export AUROS_IMAGE_PIECES="$PWD/dist/pieces/pieces.txt"
+          export AUROS_IMAGE_SHA256=$(cat dist/pieces/image.sha256)
+          export AUROS_IMAGE_BYTES=$(cat dist/pieces/image.bytes)
+          # A release build: it refuses an installer that carries no
+          # staging environment, no signed shim, or no image address.
+          # Unsigned by the owner's decision (docs/SIGNING.md).
+          AUROS_RELEASE=1 sh build/aurbridge
+          cp out/aurbridge-wizard.exe dist/installer/AurOS-Setup.exe
+          cp out/aurbridge.exe out/aurbridge-wizard.exe out/aurbridge-sim dist/installer/
+          cp out/auros-staging.img out/auros-staging-vmlinuz out/auros-staging-*.efi dist/installer/
+          cp dist/pieces/pieces.txt dist/pieces/image.sha256 dist/pieces/image.bytes dist/installer/
+          s=$(sha256sum dist/installer/AurOS-Setup.exe | cut -d' ' -f1)
+          echo "setup_sha256=$s" >> "$GITHUB_OUTPUT"
+          echo "AurOS-Setup.exe $(stat -c %s dist/installer/AurOS-Setup.exe) bytes, sha256 $s" | tee -a dist/installer/build-info.txt
+          echo "aurbridge $(( $(date +%s) - T )) s" >> dist/installer/timings.txt
+
+      - name: what the installer carries, asked of the file itself
+        run: |
+          # The release build's gates, asked again of the .exe rather
+          # than of the script that made it (docs/HANDOFF-RUNBOOK.md).
+          python3 tools/pe_payload.py list dist/installer/AurOS-Setup.exe | tee /tmp/res.txt
+          for id in 1 2 3 4 5; do
+            grep -q "^$id " /tmp/res.txt || { echo "resource $id is missing"; exit 1; }
+          done
+          # Into a file first: under pipefail, `strings | grep -q` fails
+          # when grep stops reading early and strings takes a SIGPIPE.
+          strings dist/installer/AurOS-Setup.exe > /tmp/strings.txt
+          grep -q "releases/download/$TAG/" /tmp/strings.txt \
+            || { echo "the release's address is not baked into the installer"; exit 1; }
+          grep -q 'Microsoft Corporation UEFI CA' /tmp/strings.txt \
+            || { echo "the installer does not know which Microsoft key the shim is signed with"; exit 1; }
+          sh tools/manifesttest.sh dist/installer/AurOS-Setup.exe
+          out/aurbridge-sim gzselftest
+          out/aurbridge-sim sbselftest
+
+      - name: the pieces, put back together by the installer's own code
+        run: |
+          T=$(date +%s)
+          # The simulation links the same phases.c and inflate.c as the
+          # Windows installer; served from here, it fetches every piece
+          # over HTTP with Range, checks each, unpacks and checks the image.
+          ( cd dist/pieces && exec python3 -m http.server 8731 --bind 127.0.0.1 ) > /tmp/http.log 2>&1 &
+          sleep 1
+          sed "s|^base .*|base http://127.0.0.1:8731/|" dist/pieces/pieces.txt > /tmp/local-pieces.txt
+          out/aurbridge-sim getimage /tmp/local-pieces.txt "$RUNNER_TEMP/back.img" \
+              "$(cat dist/pieces/image.sha256)" "$(cat dist/pieces/image.bytes)" | tee /tmp/getimage.log
+          grep -q 'verdict=ok' /tmp/getimage.log
+          rm -f "$RUNNER_TEMP/back.img"
+          kill %1 2>/dev/null || true
+          echo "getimage-local $(( $(date +%s) - T )) s" >> dist/installer/timings.txt
+
+      - name: the forged rootfs, for the tests that take tools out of it
+        run: |
+          T=$(date +%s)
+          sudo tar -C work/forge/desktop --numeric-owner -cf - rootfs | zstd -T0 -3 -q > dist/rootfs.tar.zst
+          # And build/staging's tree: tools/machine.sh puts its module
+          # tree into the synthetic AurOS the install tests hand over to.
+          sudo tar -C work --numeric-owner -cf - staging | zstd -T0 -3 -q > dist/installer/staging-work.tar.zst
+          ls -la dist/rootfs.tar.zst
+          echo "rootfs-tar $(( $(date +%s) - T )) s" >> dist/installer/timings.txt
+          echo "build-total $(( $(date +%s) - T0 )) s" >> dist/installer/timings.txt
+          cat dist/installer/timings.txt
+          { echo "### $TAG"; echo '```'; cat dist/installer/build-info.txt; echo; cat dist/installer/timings.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: auros-installer
+          path: dist/installer/
+          retention-days: 30
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: auros-pieces
+          path: dist/pieces/
+          retention-days: 14
+          compression-level: 0
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: auros-rootfs
+          path: dist/rootfs.tar.zst
+          retention-days: 14
+          compression-level: 0
+          if-no-files-found: error
+      # Last, so it is the end of the log: what the GitHub tools'
+      # tail of a job log shows (the uploads above print hundreds of
+      # progress lines, and artifacts cannot be fetched from the
+      # development container).
+      - name: summary
+        if: ${{ !cancelled() }}
+        run: |
+          echo "=== build-info"; cat dist/installer/build-info.txt 2>/dev/null || true
+          echo "=== timings"; cat dist/installer/timings.txt 2>/dev/null || true
+          echo "=== /etc/auros/build-warnings"; cat dist/installer/build-warnings 2>/dev/null || true
+          echo "=== the browser, as forge said it"
+          grep -aiE 'browser|firefox|mozilla|epiphany|flathub|flatpak' /tmp/forge.log 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' | tail -25 || true
+          echo "=== pieces.txt"; cat dist/pieces/pieces.txt 2>/dev/null || true
+          df -h / | tail -1
+
+  tests:
+    needs: build
+    uses: ./.github/workflows/tests.yml
+    with:
+      run-id: ${{ github.run_id }}
+
+  release:
+    needs: [gate, build, tests]
+    if: needs.gate.outputs.release == 'true'
+    uses: ./.github/workflows/release.yml
+    # What release.yml's jobs ask for; a called workflow cannot be
+    # given more than its caller has.
+    permissions:
+      contents: write
+      actions: read
+      pages: write
+      id-token: write
+    with:
+      run-id: ${{ github.run_id }}
+      latest: ${{ needs.gate.outputs.latest == 'true' }}

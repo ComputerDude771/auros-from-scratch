@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name=Does everything work?
+Exec=/usr/lib/auros-othersys/ask
+NoDisplay=true
+X-GNOME-Autostart-enabled=true

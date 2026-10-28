@@ -1,0 +1,3 @@
+wall_style=waves wall_intensity=nan wall_grain=inf wall_vignette=-1e308
+radius=2147483647 border=-5 blur_radius="64" shadow_radius=1e9
+margin=-2147483648 padding=0x7fffffff bar_height=40 opacity_panel=nan

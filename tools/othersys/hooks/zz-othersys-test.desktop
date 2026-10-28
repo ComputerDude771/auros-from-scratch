@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name=othersys test marker
+Exec=/bin/sh -c 'sleep 20; touch /var/tmp/othersys-session-up'
+NoDisplay=true
+X-GNOME-Autostart-enabled=true

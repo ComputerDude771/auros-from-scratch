@@ -1,0 +1,17 @@
+# AurOS: every boot of an Ubuntu that AurOS installed beside Windows.
+# The first time, removes the temporary ISO partition; until "does
+# everything work?" is answered, keeps Windows first in the firmware and
+# BootNext at Ubuntu; acts on an answer that is waiting.
+[Unit]
+Description=AurOS: Windows stays first until Ubuntu is confirmed
+After=local-fs.target sys-firmware-efi-efivars.mount
+Before=display-manager.service
+ConditionPathExists=/var/lib/auros-othersys/state.json
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/lib/auros-othersys/othersys.py boot
+
+[Install]
+WantedBy=multi-user.target

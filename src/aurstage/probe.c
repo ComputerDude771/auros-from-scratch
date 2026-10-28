@@ -1,6 +1,7 @@
 /* probe.c — see probe.h. Mounts read-only; writes nothing. */
 #define _GNU_SOURCE
 #include <dirent.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <string.h>
@@ -258,6 +259,41 @@ void probe_run_at(const char *disk_dev, uint64_t off, probe_result *out)
     loop_detach(dev, bf);
 }
 
+/* LET GO OF THE NEW ROOT, AND CHECK THAT IT HAPPENED.
+ *
+ * This used to be a bare umount() whose answer nobody read. A firmware
+ * load the poll above triggered can still be in flight -- a driver that
+ * asks for a second blob once the first is in -- and holding a file in
+ * PROBE_AT, umount() then fails with EBUSY and the new root stays
+ * mounted through the loop device. Nothing said so, and two steps later
+ * commit_settle() runs e2fsck and resize2fs on that same filesystem
+ * while it is still mounted. So: settle and retry for a few seconds, and
+ * only if it is still busy detach it lazily (it then vanishes from the
+ * namespace and is released when the last reference goes). And the
+ * /lib/firmware symlink this run made points into PROBE_AT, so it is
+ * removed afterwards -- restored to "not there" -- rather than left
+ * dangling into an empty directory for anything later to follow. */
+static void probe_letgo(int made_link, probe_result *out)
+{
+    out->unmounted = 0;
+    for (int t = 0; t < 40; t++) {            /* up to ~10 s            */
+        if (umount(PROBE_AT) == 0) { out->unmounted = 1; break; }
+        if (errno != EBUSY) break;
+        struct timespec ts = { 0, 250 * 1000 * 1000 };
+        nanosleep(&ts, NULL);
+    }
+    if (!out->unmounted && umount2(PROBE_AT, MNT_DETACH) == 0)
+        out->unmounted = 2;                   /* detached lazily        */
+    if (made_link) {
+        char tgt[64];
+        ssize_t k = readlink("/lib/firmware", tgt, sizeof tgt - 1);
+        if (k > 0) {
+            tgt[k] = 0;
+            if (!strcmp(tgt, PROBE_AT "/lib/firmware")) unlink("/lib/firmware");
+        }
+    }
+}
+
 void probe_run(const char *root_dev, probe_result *out)
 {
     memset(out, 0, sizeof *out);
@@ -288,10 +324,60 @@ void probe_run(const char *root_dev, probe_result *out)
         out->kernel_matches = (stat(mdir, &st) == 0 && S_ISDIR(st.st_mode));
     }
 
+    /* POINT THE KERNEL'S FIRMWARE LOADER AT THE NEW ROOT'S FIRMWARE.
+     *
+     * The initramfs carries none -- linux-firmware is 700 MB to 1.5 GB,
+     * against an OEM ESP commonly 100 MB and nearly full -- so the only
+     * firmware on this machine is at PROBE_AT "/lib/firmware", in the
+     * root we have just written and verified. Without pointing the
+     * loader there, iwlwifi / rtw88 / ath10k / mt76 and nearly every
+     * modern Wi-Fi chip load their .ko and then NEVER register a radio,
+     * because the firmware request that their probe() makes fails
+     * silently -- so phase 7 saw "no wireless" on a laptop that has it.
+     * That was the Wi-Fi-only blocker the 2026-10-23 audit found, and
+     * it is exactly the hardware this product exists for.
+     *
+     * The documented override is to write PROBE_AT "/lib/firmware" to
+     * /sys/module/firmware_class/parameters/path -- but that is a
+     * writable open, and build/staging's gate refuses any writable open
+     * in this directory but wr.c's and nvram.c's. Rather than widen a
+     * safety gate for a shippable build, this uses the mechanism that
+     * needs no writable open at all: a symlink at /lib/firmware, which
+     * is the kernel's default firmware search path and which this
+     * initramfs does not otherwise have. The loader's filp_open()
+     * follows it into the new root. A symlink is a tmpfs entry, not a
+     * disk write and not an open flag, so the gate is neither tripped
+     * nor weakened. If /lib/firmware already exists this is a harmless
+     * no-op, and a failure here only means a firmware-needing card is
+     * not tested -- which is recorded, never fatal. */
+    int made_link = symlink(PROBE_AT "/lib/firmware", "/lib/firmware") == 0;
+    /* EEXIST, or no permission: the default search still covers whatever
+     * is already at /lib/firmware, and it is not ours to remove later. */
+
     probe_modalias("/sys/devices", 0, &out->modules_loaded);
     probe_look(NULL, out);
-    umount(PROBE_AT);
+    /* WI-FI REGISTRATION IS ASYNCHRONOUS. A driver returns from probe()
+     * and then loads its firmware and registers a PHY a second or two
+     * later; asking /sys/class/ieee80211 once, the instant modprobe
+     * returns, misses it on real hardware. So poll for a few seconds --
+     * the network is recorded and never required (probe_judge), so a
+     * few seconds is the whole cost of knowing whether her Wi-Fi came
+     * up. Only the real /sys; a test drives probe_look/probe_judge
+     * directly against a synthetic one. */
+    for (int t = 0; t < 40 && out->wifi_devices == 0; t++) {
+        struct timespec ts = { 0, 200 * 1000 * 1000 };
+        nanosleep(&ts, NULL);
+        out->wifi_devices = count_class("/sys/class/ieee80211");
+    }
+    probe_letgo(made_link, out);
     probe_judge(out);
+    if (!out->unmounted) {
+        out->verdict = PROBE_UNMOUNTABLE;
+        snprintf(out->why, sizeof out->why,
+                 "AurOS could not let go of the system it had just checked.");
+        snprintf(out->remedy, sizeof out->remedy,
+                 "Nothing has been committed and Windows will start as usual.");
+    }
 }
 
 void probe_look(const char *sysroot, probe_result *out)
@@ -325,27 +411,35 @@ void probe_judge(probe_result *out)
         return;
     }
 
-    if (out->wifi_devices == 0 && !out->wired_up) {
-        /* THE ABORT THIS PHASE EXISTS FOR. */
-        out->verdict = PROBE_NO_NETWORK;
-        snprintf(out->why, sizeof out->why,
-                 "AurOS cannot get this computer online: it found no "
-                 "wireless and no network cable.");
-        snprintf(out->remedy, sizeof out->remedy,
-                 "Nothing has been changed and Windows will start as usual. "
-                 "Plug in a network cable and try again, or send us the "
-                 "support file.");
-        return;
-    }
-
+    /* NETWORK IS RECORDED, NEVER REQUIRED.
+     *
+     * This used to abort when there was no wireless and no cable -- and
+     * that abort came AFTER the shrink, so a Wi-Fi-only laptop with no
+     * firmware for its card (the case the symlink above now fixes) was
+     * left with a smaller Windows and no AurOS, told to "plug in a
+     * network cable". The 2026-10-23 audit found that strands most
+     * Wi-Fi-only laptops, which is the hardware this product is for.
+     *
+     * Two things changed it. The firmware loader is now pointed at the
+     * new root (above), so a card that has firmware actually comes up;
+     * and the installer carries her Wi-Fi across (docs/AURBRIDGE.md D2),
+     * so first boot is online with nothing typed. A machine with no
+     * network at all is still a machine she can use -- AurOS installs,
+     * starts, and sets the network up from what came across. So the
+     * network is measured and written into the record, and it never
+     * decides whether the install may go on. PROBE_NO_DRIVERS (above)
+     * stays fatal: that is OUR fault, not a limit of her machine. */
+    int online = out->wifi_devices > 0 || out->wired_up;
     out->verdict = PROBE_OK;
     snprintf(out->why, sizeof out->why,
-             "%d driver%s loaded; %s%s%s%s",
+             "%d driver%s loaded; %s%s%s",
              out->modules_loaded, out->modules_loaded == 1 ? "" : "s",
-             out->wifi_devices ? "wireless works" : "a network cable is in",
+             online ? (out->wifi_devices ? "wireless works"
+                                         : "a network cable is in")
+                    : "no network yet (recorded; AurOS sets it up from your "
+                      "Wi-Fi after it starts)",
              out->backlight   ? ", the screen brightness works" : "",
-             out->sound_cards ? ", sound works" : "",
-             (!out->backlight || !out->sound_cards) ? "" : "");
+             out->sound_cards ? ", sound works" : "");
 }
 
 const char *probe_verdict_name(probe_verdict v)

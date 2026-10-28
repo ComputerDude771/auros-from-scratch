@@ -1,0 +1,4 @@
+// AurOS: after every dpkg run, make sure the start-up menu lists the
+// kernels in /boot and AurOS's EFI partition has the newest shim and
+// grub this firmware will start. /usr/lib/auros/bootchain.
+DPkg::Post-Invoke { "/usr/lib/auros/bootchain-apt"; };

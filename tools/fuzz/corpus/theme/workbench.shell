@@ -1,0 +1,35 @@
+# AurOS Shell Archetype — Workbench
+#
+# The only archetype that is allowed to require learning. Everything else
+# in AurOS optimises for the first sixty seconds; this one optimises for
+# the ten-thousandth hour, and says so plainly in the chooser so nobody
+# picks it by accident.
+shell_id="workbench"
+shell_name="Panes and keyboard"
+shell_tagline="Windows tile automatically. Fast once learned."
+
+shell_plain="Windows never overlap — they divide the screen between them
+automatically, so everything open is visible at once. You move around
+mostly with the keyboard, and there are several separate screens you can
+flip between. It is quick once you know it, and confusing until you do."
+
+shell_best_for="Someone technical, or anyone who spends all day at the machine and will invest an afternoon in learning it."
+shell_tradeoff="It expects you to learn keyboard shortcuts. It will feel hostile on day one, and it is a poor choice for anyone who wanted the computer to be simpler."
+shell_familiar="Nothing, honestly. This one you learn."
+
+layout="workbench"
+window_mode="tiled"
+switcher="keyboard"
+home="none"
+launcher="search"
+minimise="no"
+overlap="no"
+workspaces="6"
+
+target_size="dense"
+pointer_first="no"         # the honest answer: the mouse is secondary here
+keyboard_optional="no"     # keyboard is REQUIRED, unlike every other archetype
+
+status_strip="full"
+show_clock="yes"
+show_positions="yes"

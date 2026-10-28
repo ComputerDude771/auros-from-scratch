@@ -45,13 +45,36 @@ char shell_key_char(int evdev_code)
     return 0;
 }
 
+/* See shell.h: off on every real machine, on in tools/storetest.c. */
+int            shell_text_log_on;
+int            shell_text_log_n;
+shell_text_rec shell_text_log[SHELL_TEXT_LOG_MAX];
+
+static void text_log(font *f, float x, float y, const char *t, float w)
+{
+    if (!shell_text_log_on || !f || !t || !*t) return;
+    if (shell_text_log_n >= SHELL_TEXT_LOG_MAX) return;
+    shell_text_rec *r = &shell_text_log[shell_text_log_n++];
+    snprintf(r->s, sizeof r->s, "%s", t);
+    float asc = font_ascent(f), des = font_descent(f);
+    r->x = (int)x;
+    r->y = (int)(y - asc);
+    r->w = (int)(w + 0.5f);
+    r->h = (int)(asc + des + 0.5f);
+}
+
 void shell_text(surface *s, font *f, float x, float y, const char *t, uint32_t c, float a)
 {
-    if (f && t && *t) font_draw(f, s->px, s->w, s->h, s->stride, x, y, t, c, a);
+    if (!f || !t || !*t) return;
+    font_draw(f, s->px, s->w, s->h, s->stride, x, y, t, c, a);
+    if (shell_text_log_on) text_log(f, x, y, t, shell_text_w(f, t));
 }
 void shell_text_centred(surface *s, font *f, float cx, float y, const char *t, uint32_t c, float a)
 {
-    if (f && t && *t) font_draw(f, s->px, s->w, s->h, s->stride, cx - shell_text_w(f, t)/2.f, y, t, c, a);
+    if (!f || !t || !*t) return;
+    float w = shell_text_w(f, t);
+    font_draw(f, s->px, s->w, s->h, s->stride, cx - w/2.f, y, t, c, a);
+    if (shell_text_log_on) text_log(f, cx - w/2.f, y, t, w);
 }
 float shell_baseline(font *f, float y, float h)
 {
@@ -262,6 +285,31 @@ void shell_icon_draw(surface *s, shell_icon ic, float cx, float cy, float sz,
      * the same portrait footprint as ICON_TEXT, told apart by what is
      * cut into it rather than by its outline, which is what a real
      * pictogram family does. */
+    /* Get more programs. A carrier bag -- the shop, not the shelf --
+     * with a plus cut through it: something is added. A solid body and
+     * an open handle, so at 17px it is still a bag and not a box. */
+    case ICON_STORE:
+        /* Wider than it is tall, with a handle nearly as wide as the
+         * bag and a thin one: a narrow, thick handle on a tall body is
+         * a padlock, which is the opposite of the promise. */
+        draw_rect(s, mk_box(cx, cy, -11.f, -3.0f, 22.f, 13.5f, u), ink, a);
+        draw_rect(s, mk_box(cx, cy, -7.5f, -10.5f, 15.f, 8.0f, u), ink, a);
+        draw_rect(s, mk_box(cx, cy, -5.9f, -8.9f, 11.8f, 5.9f, u), paper, a);
+        draw_rect(s, mk_box(cx, cy, -4.6f,  2.6f, 9.2f, 2.3f, u), paper, a);
+        draw_rect(s, mk_box(cx, cy, -1.15f, -0.9f, 2.3f, 9.3f, u), paper, a);
+        break;
+
+    /* All my programs. Three rows, each a mark and a line: the shape of
+     * the list it opens, which is the most literal promise a button can
+     * make. */
+    case ICON_LIST:
+        for (int r = 0; r < 3; r++) {
+            float y = -8.5f + (float)r * 7.0f;
+            draw_rect(s, mk_box(cx, cy, -11.f, y, 4.4f, 4.4f, u), ink, a);
+            draw_rect(s, mk_box(cx, cy, -4.5f, y + 0.6f, 15.5f, 3.2f, u), ink, a);
+        }
+        break;
+
     case ICON_CALC: {
         draw_rect(s, mk_box(cx, cy, -8.5f, -11.f, 17.f, 22.f, u), ink, a);
         draw_rect(s, mk_box(cx, cy, -5.8f, -8.2f, 11.6f, 4.4f, u), paper, a);
@@ -393,6 +441,7 @@ void shell_text_tracked(surface *s, font *f, float x, float y,
                         const char *t, uint32_t col, float a, float track)
 {
     if (!f || !t || !*t) return;
+    if (shell_text_log_on) text_log(f, x, y, t, shell_text_tracked_w(f, t, track));
     for (const char *p = t; *p; ) {
         int l = utf8_len((unsigned char)*p);
         char g[5] = {0};
@@ -403,19 +452,37 @@ void shell_text_tracked(surface *s, font *f, float x, float y,
     }
 }
 
+/* Theme numbers are clamped HERE, once, because every layout does its
+ * own arithmetic with them -- s->h - bar_h - 2 * margin and the like --
+ * and the theme the shell reads may be her own copy of shell.conf,
+ * which any program she runs can rewrite. radius=2147483647 used to
+ * reach draw.c as signed overflow (tools/fuzz/fuzz_theme). The ranges
+ * are several times what any shipped theme uses (radius <= 18,
+ * border 2, bar 38, blur and shadow 0), so no real theme changes. */
+static int theme_int_in(const theme_t *t, const char *k, int fb, int lo, int hi)
+{
+    int v = theme_int(t, k, fb);
+    return v < lo ? lo : v > hi ? hi : v;
+}
+static float theme_frac(const theme_t *t, const char *k, double fb)
+{
+    double v = theme_num(t, k, fb);         /* finite: theme_num refuses nan/inf */
+    return (float)(v < 0.0 ? 0.0 : v > 1.0 ? 1.0 : v);
+}
+
 void shell_theme_load(shell_ctx *c, const theme_t *t)
 {
     c->theme = *t;
-    c->radius    = theme_int(t, "radius", 14);
-    c->radius_sm = theme_int(t, "radius_sm", 8);
-    c->margin    = theme_int(t, "margin", 14);
-    c->padding   = theme_int(t, "padding", 14);
-    c->border    = theme_int(t, "border", 2);
-    c->bar_h     = theme_int(t, "bar_height", 38);
-    c->blur_r    = theme_int(t, "blur_radius", 20);
-    c->shadow_r  = theme_int(t, "shadow_radius", 28);
-    c->panel_a   = (float)theme_num(t, "opacity_panel", 0.88);
-    c->shadow_a  = (float)theme_num(t, "shadow_opacity", 0.50);
+    c->radius    = theme_int_in(t, "radius", 14, 0, 64);
+    c->radius_sm = theme_int_in(t, "radius_sm", 8, 0, 64);
+    c->margin    = theme_int_in(t, "margin", 14, 0, 128);
+    c->padding   = theme_int_in(t, "padding", 14, 0, 128);
+    c->border    = theme_int_in(t, "border", 2, 0, 16);
+    c->bar_h     = theme_int_in(t, "bar_height", 38, 0, 256);
+    c->blur_r    = theme_int_in(t, "blur_radius", 20, 0, 128);
+    c->shadow_r  = theme_int_in(t, "shadow_radius", 28, 0, 256);
+    c->panel_a   = theme_frac(t, "opacity_panel", 0.88);
+    c->shadow_a  = theme_frac(t, "shadow_opacity", 0.50);
     c->bg         = theme_color(t, "col_bg",          theme_color(t, "bg", 0x0B0E14));
     c->bg_alt     = theme_color(t, "col_bar_bg",      theme_color(t, "bg_alt", 0x10151F));
     c->surface_c  = theme_color(t, "col_surface",     theme_color(t, "surface", 0x161C28));
@@ -537,11 +604,14 @@ void shell_fonts_load(shell_fonts *f, const shell_ctx *c)
     if (!text || !*text) text = sans;
     if (!bold || !*bold) bold = text;
 
-    float base = (float)theme_int(&c->theme, "font_size", 14);
-    float sm   = (float)theme_int(&c->theme, "font_size_sm",
-                                  (int)(base * 0.85f + 0.5f));
-    float lg   = (float)theme_int(&c->theme, "font_size_lg",
-                                  (int)(base * 1.45f + 0.5f));
+    /* Clamped before the derived defaults are computed from them:
+     * (int)(base * 1.45f) is undefined once base is near INT_MAX, and a
+     * 2000px UI font is a few hundred megabytes of glyph bitmaps. */
+    float base = (float)theme_int_in(&c->theme, "font_size", 14, 6, 96);
+    float sm   = (float)theme_int_in(&c->theme, "font_size_sm",
+                                     (int)(base * 0.85f + 0.5f), 6, 96);
+    float lg   = (float)theme_int_in(&c->theme, "font_size_lg",
+                                     (int)(base * 1.45f + 0.5f), 6, 144);
 
     /* Her choice multiplies the theme's scale rather than replacing it,
      * so the RELATIONSHIPS the theme set up -- how much bigger a heading
@@ -557,7 +627,10 @@ void shell_fonts_load(shell_fonts *f, const shell_ctx *c)
     f->label = open_font(bold, sm);
     f->small = open_font(text, base);
     f->tiny  = open_font(text, sm);
-    f->lh    = (float)theme_num(&c->theme, "line_height", 1.45);
+    {
+        double lh = theme_num(&c->theme, "line_height", 1.45);
+        f->lh = (float)(lh < 0.8 ? 0.8 : lh > 3.0 ? 3.0 : lh);
+    }
 }
 void shell_fonts_free(shell_fonts *f)
 {
@@ -593,6 +666,20 @@ static void copy_str(char *dst, size_t n, const char *src)
 int shell_launch(shell_ctx *c, int app)
 {
     if (!c || app < 0 || app >= c->n_apps) return -1;
+
+    /* Settings is a panel, not a program. Pressing it on a home screen
+     * opened a card that said "Change how this computer looks and
+     * works" and nothing else, for ever: a slot with nothing behind
+     * it. It opens the panel the band's Settings button opens. */
+    if (c->apps[app].role == APP_ROLE_SETTINGS) {
+        /* Exactly one panel at a time, as foot_open_only() keeps it --
+         * which this file cannot call, since every harness links it
+         * without the band. */
+        c->help_open = c->net_open = c->bt_open = c->power_open = 0;
+        c->welcome_open = 0;
+        c->settings_open = 1;
+        return -1;
+    }
 
     /* Already running and not adopted-away: raise rather than start a
      * second copy. Most applications are single-instance anyway and
@@ -639,4 +726,55 @@ void shell_close_win(shell_ctx *c, int win)
     for (int i = win; i + 1 < c->n_wins; i++) c->wins[i] = c->wins[i + 1];
     c->n_wins--;
     if (c->focus >= c->n_wins) c->focus = c->n_wins - 1;
+}
+
+/* ── the store, on every home screen ─────────────────────────────── */
+
+int shell_store_app(const shell_ctx *c)
+{
+    if (!c) return -1;
+    for (int i = 0; i < c->n_apps; i++)
+        if (c->apps[i].role == APP_ROLE_STORE) return i;
+    return -1;
+}
+
+int shell_home_pick(const shell_ctx *c, int cap, int *out)
+{
+    if (!c || cap <= 0 || !out) return 0;
+    int store = shell_store_app(c);
+    int slots = cap - (store >= 0 ? 1 : 0);
+    int n = 0;
+    for (int i = 0; i < c->n_apps && n < slots; i++)
+        if (i != store) out[n++] = i;
+
+    /* The newest program she installed while the desktop was running,
+     * if the table order did not already put it on this screen. It
+     * takes the LAST of the ordinary places, so the first ones -- the
+     * browser, her files -- never move under her hand. */
+    int newest = -1;
+    for (int i = 0; i < c->n_apps; i++)
+        if (i != store && c->apps[i].fresh &&
+            (newest < 0 || c->apps[i].fresh > c->apps[newest].fresh)) newest = i;
+    if (newest >= 0 && slots > 0) {
+        int there = 0;
+        for (int k = 0; k < n; k++) if (out[k] == newest) there = 1;
+        if (!there) {
+            if (n < slots) out[n++] = newest;
+            else out[n - 1] = newest;
+        }
+    }
+    if (store >= 0) out[n++] = store;
+    return n;
+}
+
+int shell_display_order(const shell_ctx *c, int first_cap, int *out)
+{
+    if (!c || !out) return 0;
+    int n = shell_home_pick(c, first_cap, out);
+    for (int i = 0; i < c->n_apps; i++) {
+        int seen = 0;
+        for (int k = 0; k < n; k++) if (out[k] == i) { seen = 1; break; }
+        if (!seen) out[n++] = i;
+    }
+    return n;
 }

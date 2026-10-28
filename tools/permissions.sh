@@ -91,6 +91,10 @@ Install a downloaded program|com.ubuntu.pkexec.gdebi.gtk
 Get more programs (the store)|org.freedesktop.packagekit.package-install
 Remove a program|org.freedesktop.packagekit.package-remove
 Update this computer|org.freedesktop.packagekit.system-update
+Get a program from Flathub|org.freedesktop.Flatpak.app-install
+Get what a Flathub program needs|org.freedesktop.Flatpak.runtime-install
+Remove a Flathub program|org.freedesktop.Flatpak.app-uninstall
+Update Flathub programs|org.freedesktop.Flatpak.app-update
 Settings: where you are|org.freedesktop.timedate1.set-timezone'
 
 echo "can this computer do the things it offers to do?"

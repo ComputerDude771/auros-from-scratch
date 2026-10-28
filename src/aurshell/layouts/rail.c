@@ -11,6 +11,7 @@
  */
 #include "../shell.h"
 #include <string.h>
+#include <strings.h>
 #include <stdio.h>
 #include <math.h>
 
@@ -18,7 +19,22 @@
 #define CARD_GAP    28
 #define HOME_TILES  6
 
-typedef struct { tween slide; int hover_tile; } rail_priv;
+/* Rows on Home and in the list that are not a program. */
+#define ROW_ALL   (-2)     /* "All my programs"                      */
+#define ROW_BACK  (-3)     /* in the list: back to Home              */
+#define ROW_MORE  (-4)     /* in the list: the next page of it       */
+#define ROW_TOP   (-5)     /* in the list: from the last page, back to the first */
+#define LIST_MAX  (SHELL_MAX_APPS + 4)
+
+typedef struct {
+    tween slide;
+    int   hover_tile;
+    /* "All my programs" is showing in the Home card instead of Home.
+     * Not a seventh panel: it is Home's own second page, it belongs to
+     * this archetype only, and the way back is the first row of it. */
+    int   list;
+    int   list_first;      /* the entry at the top of the list's page */
+} rail_priv;
 
 static float clampf(float v, float a, float b) { return v < a ? a : (v > b ? b : v); }
 static rail_priv *P(shell_ctx *c) { return (rail_priv *)c->priv; }
@@ -107,6 +123,130 @@ static rect tile_rect(shell_ctx *c, rect a, int index)
     return t;
 }
 
+/* WHAT IS ON HOME, in order. Six rows: the programs she reaches for
+ * (shell_home_pick, which also puts a program she has just installed
+ * in the last of them), then "All my programs", then "Get more
+ * programs" -- always the last two, always in the same place, however
+ * many programs this computer has.
+ *
+ * It was the first six programs by rank, and nothing else. The store
+ * ranked seventh, so on the default desktop of this product there was
+ * no way to install anything, and no way to reach any program past
+ * the sixth either. */
+static int home_rows(const shell_ctx *c, int *rows)
+{
+    int pick[HOME_TILES];
+    int store = shell_store_app(c);
+    int n = shell_home_pick(c, HOME_TILES - 1, pick);
+    int k = 0;
+    for (int i = 0; i < n; i++) {
+        if (store >= 0 && pick[i] == store) rows[k++] = ROW_ALL;
+        rows[k++] = pick[i];
+    }
+    if (store < 0) rows[k++] = ROW_ALL;
+    return k;
+}
+
+/* The words and mark of any row, a program or not. */
+static void row_face(const shell_ctx *c, int r, const char **name,
+                     const char **hint, shell_icon *ic)
+{
+    switch (r) {
+    case ROW_ALL:  *name = "All my programs";
+                   *hint = "Everything on this computer, in one list";
+                   *ic = ICON_LIST; return;
+    case ROW_BACK: *name = "Back to Home";
+                   *hint = "";
+                   *ic = ICON_WINDOW; return;
+    case ROW_MORE: *name = "Show more";
+                   *hint = "The rest of the list";
+                   *ic = ICON_LIST; return;
+    case ROW_TOP:  *name = "Back to the start of the list";
+                   *hint = "";
+                   *ic = ICON_LIST; return;
+    }
+    *name = c->apps[r].name;
+    *hint = c->apps[r].hint;
+    *ic   = c->apps[r].icon;
+}
+
+/* ── "All my programs" ────────────────────────────────────────────
+ *
+ * Every program, by name, in rows as tall as Home's, a page at a time.
+ * Pages and not scrolling, because scrolling is a gesture (EASY rule
+ * 5): the last row says "Show more" and is pressed like any other.
+ * The store is first, because the person reading a list of everything
+ * she has and not finding the thing is the person who wants it next. */
+static int list_entries(const shell_ctx *c, int *out)
+{
+    int n = 0, store = shell_store_app(c);
+    if (store >= 0) out[n++] = store;
+    int first = n;
+    for (int i = 0; i < c->n_apps && n < LIST_MAX; i++) {
+        if (i == store) continue;
+        /* insertion by name: what she looks for is a name */
+        int k = n++;
+        while (k > first && strcasecmp(c->apps[out[k - 1]].name, c->apps[i].name) > 0) {
+            out[k] = out[k - 1]; k--;
+        }
+        out[k] = i;
+    }
+    return n;
+}
+
+/* Rows of the list: the same band under the headline that Home's rows
+ * use, cut into rows no shorter than the 44px floor. */
+static int list_slots(const shell_ctx *c, rect a, int *row_h)
+{
+    int top = a.y + home_head((shell_ctx *)c, a);
+    int bot = a.y + a.h - c->padding;
+    int avail = bot - top;
+    int rh = avail / 7;
+    if (rh > 64) rh = 64;
+    if (rh < 48) rh = 48;
+    int n = avail / rh;
+    if (n < 3) n = 3;
+    if (n > 12) n = 12;
+    *row_h = rh;
+    return n;
+}
+
+static rect list_rect(const shell_ctx *c, rect a, int i)
+{
+    int rh;
+    list_slots(c, a, &rh);
+    int top = a.y + home_head((shell_ctx *)c, a);
+    rect t = { a.x, top + i * rh, a.w, rh };
+    return t;
+}
+
+/* What each visible row of the list is. Returns how many. */
+static int list_rows(const shell_ctx *c, rect a, int first, int *rows)
+{
+    int ent[LIST_MAX];
+    int n = list_entries(c, ent);
+    int rh, slots = list_slots(c, a, &rh);
+    int k = 0;
+    rows[k++] = ROW_BACK;
+    int room = slots - 1;
+    if (n <= room) {
+        for (int i = 0; i < n; i++) rows[k++] = ent[i];
+        return k;
+    }
+    /* More than fits: the last row is the way on. */
+    if (first < 0 || first >= n) first = 0;
+    int per = room - 1;
+    for (int i = first; i < n && i < first + per; i++) rows[k++] = ent[i];
+    rows[k++] = (first + per >= n) ? ROW_TOP : ROW_MORE;
+    return k;
+}
+
+static int list_per_page(const shell_ctx *c, rect a)
+{
+    int rh, slots = list_slots(c, a, &rh);
+    return slots - 2;
+}
+
 static void l_init(shell_ctx *c)
 {
     static rail_priv priv;
@@ -159,14 +299,16 @@ static void paint_home(shell_ctx *c, surface *s, rect a, shell_fonts *f,
      * a step rather than shrinking continuously keeps the two display
      * sizes in the system the only two on screen. */
     font *tf = f->huge;
-    const char *Q = "What would you like to do?";
+    const char *Q = p->list ? "All my programs" : "What would you like to do?";
+    const char *SUB = p->list ? "Everything on this computer. Press one to open it."
+                              : "Pick one. You can always come back here.";
     if (shell_text_w(tf, Q) > innw) tf = f->big;
     if (shell_text_w(tf, Q) > innw) tf = f->dmid;
 
     float hy = (float)(a.y + pad) + fa(tf, 30.f);
     shell_text(s, tf, x, hy, Q, c->fg_hi, alpha * 0.98f);
     shell_text(s, f->small, x, hy + fdc(tf, 10.f) + 13.f + fa(f->small, 11.f),
-               "Pick one. You can always come back here.", c->subtle, alpha * 0.92f);
+               SUB, c->subtle, alpha * 0.92f);
 
     /* The rule that closes the headline. It stops at 46% of the measure
      * instead of running the full width: a rule that reaches both
@@ -175,10 +317,16 @@ static void paint_home(shell_ctx *c, surface *s, rect a, shell_fonts *f,
     draw_hrule(s, (int)x, a.y + home_head(c, a) - 22, (int)(innw * 0.46f), 2,
                c->fg_hi, alpha * 0.9f);
 
-    for (int i = 0; i < HOME_TILES && i < c->n_apps; i++) {
-        rect t = tile_rect(c, a, i);
+    int rows[LIST_MAX];
+    int nr = p->list ? list_rows(c, a, p->list_first, rows) : home_rows(c, rows);
+    for (int i = 0; i < nr; i++) {
+        rect t = p->list ? list_rect(c, a, i) : tile_rect(c, a, i);
         int hot = (p->hover_tile == i);
         uint32_t paper = c->surface_c;
+        const char *nm, *hn;
+        shell_icon ic;
+        row_face(c, rows[i], &nm, &hn, &ic);
+        int is_store = rows[i] >= 0 && c->apps[rows[i]].role == APP_ROLE_STORE;
 
         /* Hover is a fill plus a bar down the left edge — the GOV.UK
          * inset device. No shadow, no glow, no ring: the row simply
@@ -188,25 +336,38 @@ static void paint_home(shell_ctx *c, surface *s, rect a, shell_fonts *f,
             draw_rect(s, (rect){ t.x, t.y, 4, t.h }, c->accent, alpha);
             paper = c->surface_hi;
         }
-        if (i + 1 < HOME_TILES && i + 1 < c->n_apps)
-            draw_hrule(s, t.x + pad, t.y + t.h - 1, (int)innw, 1,
-                       c->overlay, alpha * 0.95f);
+        /* The two fixed rows at the foot of Home sit under a heavier
+         * rule: they are a different kind of thing from the programs
+         * above them -- ways to more programs -- and the eye should see
+         * the line before it reads the words. */
+        if (i + 1 < nr) {
+            int heavy = !p->list && rows[i + 1] == ROW_ALL;
+            draw_hrule(s, t.x + pad, t.y + t.h - 1, (int)innw, heavy ? 2 : 1,
+                       heavy ? c->fg : c->overlay, alpha * 0.95f);
+        }
 
-        font *nf = (i == 0) ? f->big : f->dmid;
+        font *nf = (!p->list && i == 0) ? f->big : f->dmid;
         float by  = shell_baseline(nf, (float)t.y, (float)t.h);
         float cy  = (float)t.y + (float)t.h * 0.5f;
         float isz = clampf((float)t.h * 0.44f, 17.f, 34.f);
 
         /* The entry number. An annual-report device, and it does real
          * work: it gives the eye a fixed left edge to run down, which
-         * is the thing a ragged list of names does not have. */
-        char num[8];
-        snprintf(num, sizeof num, "%02d", i + 1);
-        shell_text_tracked(s, f->label, x, by, num,
-                           hot ? c->accent : c->muted, alpha * 0.95f, 1.3f);
+         * is the thing a ragged list of names does not have. In the
+         * list the rows are not numbered: a number there would be a
+         * position on a page that changes when she presses Show more. */
+        if (!p->list) {
+            char num[8];
+            snprintf(num, sizeof num, "%02d", i + 1);
+            shell_text_tracked(s, f->label, x, by, num,
+                               hot ? c->accent : c->muted, alpha * 0.95f, 1.3f);
+        }
 
-        shell_icon_draw(s, c->apps[i].icon, x + 52.f, cy, isz,
-                        c->apps[i].tint, paper, alpha);
+        /* The store's mark is in the signal colour: it is the one row
+         * that leads somewhere new. */
+        shell_icon_draw(s, ic, x + 52.f, cy, isz,
+                        is_store ? c->accent : (rows[i] >= 0 ? c->apps[rows[i]].tint : c->fg),
+                        paper, alpha);
         /* Two columns, and the first one ends where the second begins.
          * The name column is measured rather than assumed, so a package
          * with a long name is cut instead of printing over the
@@ -220,14 +381,18 @@ static void paint_home(shell_ctx *c, surface *s, rect a, shell_fonts *f,
         float name_x = x + 52.f + isz * 0.5f + 20.f;
         float hint_x = x + innw * 0.42f;
         float name_w = hint_x - name_x - 16.f;
-        if (name_w < 110.f) {
+        /* The store's name is never the one that gets cut: "Get more
+         * prog..." is a row nobody can find. It takes the whole row if
+         * it has to. */
+        if (is_store && shell_text_w(nf, nm) > name_w) name_w = 0.f;
+        if (name_w < 110.f || !hn[0]) {
             shell_text_elided(s, nf, name_x, by, x + innw - name_x,
-                              c->apps[i].name, c->fg_hi, alpha * 0.98f);
+                              nm, c->fg_hi, alpha * 0.98f);
         } else {
             shell_text_elided(s, nf, name_x, by, name_w,
-                              c->apps[i].name, c->fg_hi, alpha * 0.98f);
+                              nm, c->fg_hi, alpha * 0.98f);
             shell_text_elided(s, f->small, hint_x, by, x + innw - hint_x,
-                              c->apps[i].hint, c->subtle, alpha * 0.92f);
+                              hn, c->subtle, alpha * 0.92f);
         }
     }
 }
@@ -421,13 +586,27 @@ static int l_click(shell_ctx *c, int x, int y)
      * clicks in this operating system silently failed. Found by
      * clicking one on a booted machine. */
     if ((int)(P(c)->slide.value + 0.5f) == 0) {
+        rail_priv *p = P(c);
         rect a = card_rect(c, c->screen_w, c->screen_h, 0);
-        for (int i = 0; i < HOME_TILES && i < c->n_apps; i++) {
-            rect t = tile_rect(c, a, i);
-            if (x >= t.x && x < t.x + t.w && y >= t.y && y < t.y + t.h) {
-                open_app(c, i);
-                return 1;
+        int rows[LIST_MAX];
+        int nr = p->list ? list_rows(c, a, p->list_first, rows) : home_rows(c, rows);
+        for (int i = 0; i < nr; i++) {
+            rect t = p->list ? list_rect(c, a, i) : tile_rect(c, a, i);
+            if (x < t.x || x >= t.x + t.w || y < t.y || y >= t.y + t.h) continue;
+            switch (rows[i]) {
+            case ROW_ALL:  p->list = 1; p->list_first = 0; break;
+            case ROW_BACK: p->list = 0; break;
+            case ROW_MORE: p->list_first += list_per_page(c, a); break;
+            case ROW_TOP:  p->list_first = 0; break;
+            default:
+                /* Opening something from the list puts the list away:
+                 * coming back to Home later finds Home. */
+                p->list = 0;
+                open_app(c, rows[i]);
+                break;
             }
+            p->hover_tile = -1;
+            return 1;
         }
     }
 
@@ -451,8 +630,10 @@ static void l_motion(shell_ctx *c, int x, int y)
     p->hover_tile = -1;
     if (c->focus != -1) return;
     rect a = card_rect(c, c->screen_w, c->screen_h, 0);
-    for (int i = 0; i < HOME_TILES && i < c->n_apps; i++) {
-        rect t = tile_rect(c, a, i);
+    int rows[LIST_MAX];
+    int nr = p->list ? list_rows(c, a, p->list_first, rows) : home_rows(c, rows);
+    for (int i = 0; i < nr; i++) {
+        rect t = p->list ? list_rect(c, a, i) : tile_rect(c, a, i);
         if (x >= t.x && x < t.x + t.w && y >= t.y && y < t.y + t.h) { p->hover_tile = i; return; }
     }
 }
@@ -463,7 +644,14 @@ static void l_key(shell_ctx *c, int k)
     switch (k) {
         case 105: focus_card(c, cur - 1, 0.30f); break;   /* KEY_LEFT  */
         case 106: focus_card(c, cur + 1, 0.30f); break;   /* KEY_RIGHT */
-        case 102: focus_card(c, 0, 0.36f); break;         /* KEY_HOME  */
+        case 102:                                         /* KEY_HOME  */
+            P(c)->list = 0;
+            focus_card(c, 0, 0.36f); break;
+        case 1:                                           /* KEY_ESC   */
+            /* Out of the list, back to Home: the way out of a page is
+             * the key that is the way out of everything. */
+            if (P(c)->list && cur == 0) { P(c)->list = 0; P(c)->hover_tile = -1; }
+            break;
         default: break;
     }
 }

@@ -1,0 +1,493 @@
+diff --git a/rootfs/etc/initramfs-tools/hooks/auros-lock b/rootfs/etc/initramfs-tools/hooks/auros-lock
+new file mode 100644
+index 0000000..4c1800b
+--- /dev/null
++++ b/rootfs/etc/initramfs-tools/hooks/auros-lock
+@@ -0,0 +1,49 @@
++#!/bin/sh
++# auros-lock — what the initramfs needs to open AurOS's encrypted root,
++# or to begin encrypting a plain one (docs/security/THEFT.md).
++#
++# NOT cryptsetup-initramfs. Its cryptroot script asks on the console
++# and knows nothing of a TPM; AurOS asks on its own full-screen page
++# (aurlock-pin) and unlocks through the TPM with her PIN.
++PREREQ=""
++prereqs() { echo "$PREREQ"; }
++case "$1" in prereqs) prereqs; exit 0 ;; esac
++
++. /usr/share/initramfs-tools/hook-functions
++
++# An image without cryptsetup has nothing to open and nothing to
++# encrypt with: build nothing rather than half of it.
++CS=$(command -v cryptsetup) || exit 0
++
++copy_exec "$CS" /sbin
++copy_exec /usr/lib/auros/lockctl /usr/lib/auros
++[ -x /usr/lib/auros/aurlock-pin ] && copy_exec /usr/lib/auros/aurlock-pin /usr/lib/auros
++for t in e2fsck resize2fs dumpe2fs blockdev blkid; do
++    p=$(command -v $t) && copy_exec "$p" /sbin
++done
++
++# libcryptsetup finds its token plugins in its own directory and the
++# plugin dlopens the TPM libraries by name, so copy_exec cannot see
++# any of them: they are named here.
++for d in /usr/lib/x86_64-linux-gnu /lib/x86_64-linux-gnu; do
++    [ -e "$d/cryptsetup/libcryptsetup-token-systemd-tpm2.so" ] || continue
++    copy_exec "$d/cryptsetup/libcryptsetup-token-systemd-tpm2.so"
++    for l in libtss2-esys.so.0 libtss2-rc.so.0 libtss2-mu.so.0 libtss2-tcti-device.so.0; do
++        [ -e "$d/$l" ] && copy_exec "$d/$l"
++    done
++    break
++done
++
++# The ciphers: AES-XTS with the CPU's instructions, or Adiantum where
++# there are none (THEFT.md section 7). dm-crypt itself is a module.
++manual_add_modules dm_crypt aesni_intel adiantum nhpoly1305 nhpoly1305_sse2 \
++    nhpoly1305_avx2 chacha_generic chacha_x86_64 poly1305_x86_64 libpoly1305 \
++    xts essiv
++
++# The PIN page draws its own text.
++for f in /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf \
++         /usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf \
++         /usr/share/auros/fonts/Inter.ttf; do
++    [ -e "$f" ] && copy_file font "$f"
++done
++exit 0
+diff --git a/rootfs/etc/initramfs-tools/scripts/local-top/auros-lock b/rootfs/etc/initramfs-tools/scripts/local-top/auros-lock
+new file mode 100644
+index 0000000..cb5d748
+--- /dev/null
++++ b/rootfs/etc/initramfs-tools/scripts/local-top/auros-lock
+@@ -0,0 +1,19 @@
++#!/bin/sh
++# auros-lock — open AurOS's encrypted root before it is mounted, or
++# begin encrypting a plain one that AurOS has asked to have locked.
++# The work is lockctl's (/usr/lib/auros/lockctl, THEFT.md); this only
++# runs it at the right moment. When the root is opened it writes
++# ROOT=/dev/mapper/auros-root to /conf/param.conf, which the initramfs
++# reads after every local-top script.
++#
++# It never stops the start: a failure leaves the root as it was (plain
++# stays plain), and lockctl says why in /run/auros-lock/log.
++PREREQ="udev"
++prereqs() { echo "$PREREQ"; }
++case "$1" in prereqs) prereqs; exit 0 ;; esac
++
++[ -x /usr/lib/auros/lockctl ] || exit 0
++# udev has started; let it finish naming disks before looking for ours.
++command -v udevadm >/dev/null 2>&1 && udevadm settle --timeout=10 2>/dev/null
++/usr/lib/auros/lockctl initramfs
++exit 0
+diff --git a/rootfs/usr/lib/auros/lockctl b/rootfs/usr/lib/auros/lockctl
+new file mode 100644
+index 0000000..30fe488
+--- /dev/null
++++ b/rootfs/usr/lib/auros/lockctl
+@@ -0,0 +1,407 @@
++#!/bin/sh
++# ═══════════════════════════════════════════════════════════════════
++#  lockctl — AurOS's encrypted disk (docs/security/THEFT.md)
++#
++#    lockctl initramfs        open the encrypted root, or begin
++#                             encrypting a plain one (from the
++#                             initramfs, scripts/local-top/auros-lock)
++#    lockctl encrypt-init DEV begin in-place encryption of DEV (plain
++#                             ext4, NOT mounted); activates auros-root
++#    lockctl encrypt-resume   finish it in the background, from AurOS
++#    lockctl request          ask for encryption at the next start
++#    lockctl set-pin          PIN on stdin (digits); enrol it (TPM 2.0 +
++#                             PIN, or a passphrase without a TPM), add a
++#                             rescue code (printed on stdout, once),
++#                             make it her password, wipe the temporary
++#                             empty keyslot
++#    lockctl reseal-begin     before an update that changes PCR 7
++#    lockctl reseal-finish    at every start: re-seal to today's PCR 7
++#    lockctl status           key=value lines
++#
++#  Runs as root, under busybox sh in the initramfs and dash in AurOS.
++#  It never prints, logs or passes on a command line a PIN or a key:
++#  systemd-cryptenroll reads $NEWPIN, cryptsetup reads key files kept
++#  on /run (tmpfs) with mode 0600 and removed straight after.
++#
++#  Exit codes: 0 done; 1 refused (said why on stderr); 2 nothing to do.
++# ═══════════════════════════════════════════════════════════════════
++set -u
++umask 077
++PATH=/usr/sbin:/usr/bin:/sbin:/bin
++
++NAME=auros-root                 # the dm-crypt mapping
++LABEL=auros-lock                # the LUKS2 label: how the root is found
++RUN=${AUROS_LOCK_RUN:-/run/auros-lock}
++CONF=${AUROS_LOCK_CONF:-/etc/auros/lock.conf}
++STATE=${AUROS_LOCK_STATE:-/var/lib/auros/lock}
++CRYPTSETUP=${CRYPTSETUP:-cryptsetup}
++ENROLL=${ENROLL:-systemd-cryptenroll}
++PINCHECK=${PINCHECK:-/usr/lib/auros/aurlock-pin}
++# LUKS2 keeps 16 MiB of header at the front; in-place encryption
++# moves the data along, so the filesystem must leave this much free at
++# the end first (cryptsetup-reencrypt(8), "Encrypt LUKS2 device").
++RESERVE_MIB=32
++
++say()  { printf 'lockctl: %s\n' "$*" >&2; }
++note() { mkdir -p "$RUN" 2>/dev/null; printf '%s %s\n' "$(date +%s 2>/dev/null)" "$*" >> "$RUN/log" 2>/dev/null; }
++die()  { say "$*"; note "refused: $*"; exit 1; }
++
++empty_key() {
++    mkdir -p "$RUN" && chmod 700 "$RUN" || return 1
++    : > "$RUN/empty.key" && chmod 600 "$RUN/empty.key" || return 1
++    printf '%s' "$RUN/empty.key"
++}
++
++cmdline_value() { # key  -> value of key= on the kernel command line
++    for w in $(cat "${AUROS_CMDLINE:-/proc/cmdline}" 2>/dev/null); do
++        case "$w" in "$1"=*) printf '%s' "${w#*=}"; return 0 ;; esac
++    done
++    return 1
++}
++
++# The encrypted root, found by its LUKS2 label. Not by udev's
++# by-label link alone: in the initramfs udev may not have finished.
++find_luks() {
++    if [ -n "${AUROS_LOCK_DEV:-}" ]; then
++        "$CRYPTSETUP" isLuks "$AUROS_LOCK_DEV" 2>/dev/null && printf '%s' "$AUROS_LOCK_DEV" && return 0
++        return 1
++    fi
++    [ -e "/dev/disk/by-label/$LABEL" ] && {
++        d=$(readlink -f "/dev/disk/by-label/$LABEL")
++        "$CRYPTSETUP" isLuks "$d" 2>/dev/null && printf '%s' "$d" && return 0
++    }
++    for d in $(blkid -o device -t TYPE=crypto_LUKS 2>/dev/null); do
++        [ "$(blkid -s LABEL -o value "$d" 2>/dev/null)" = "$LABEL" ] || continue
++        printf '%s' "$d"; return 0
++    done
++    return 1
++}
++
++# The plain root named by root= (UUID=, PARTUUID=, LABEL= or a path).
++plain_root() {
++    r=${AUROS_LOCK_PLAIN:-$(cmdline_value root)} || return 1
++    case "$r" in
++        UUID=*|PARTUUID=*|LABEL=*|PARTLABEL=*) d=$(blkid -l -o device -t "$r" 2>/dev/null) ;;
++        /dev/*) d=$(readlink -f "$r") ;;
++        *) return 1 ;;
++    esac
++    [ -b "${d:-}" ] || return 1
++    printf '%s' "$d"
++}
++
++active_dev() { # the device under the auros-root mapping, if it is open
++    [ -e "/dev/mapper/$NAME" ] || return 1
++    "$CRYPTSETUP" status "$NAME" 2>/dev/null | sed -n 's/^ *device: *//p' | head -n1
++}
++
++reencrypting() { # dev -> 0 while the in-place pass is not finished
++    "$CRYPTSETUP" luksDump "$1" 2>/dev/null | grep -q 'online-reencrypt'
++}
++
++opens_empty() { # dev -> 0 if the temporary empty keyslot is still there
++    k=$(empty_key) || return 1
++    "$CRYPTSETUP" open --test-passphrase --key-file "$k" "$1" >/dev/null 2>&1
++}
++
++has_tpm_token() { "$CRYPTSETUP" luksDump "$1" 2>/dev/null | grep -q 'systemd-tpm2'; }
++
++tpm2_present() {
++    [ -n "${AUROS_LOCK_NO_TPM:-}" ] && return 1
++    for v in /sys/class/tpm/tpm*/tpm_version_major; do
++        [ -r "$v" ] && [ "$(cat "$v")" = 2 ] && return 0
++    done
++    return 1
++}
++
++pick_cipher() { # -> "cipher keybits"
++    case "${AUROS_LOCK_CIPHER:-}" in
++        adiantum) echo "xchacha12,aes-adiantum-plain64 256"; return ;;
++        aes)      echo "aes-xts-plain64 512"; return ;;
++    esac
++    # The CPU's own AES instructions make AES-XTS nearly free. Without
++    # them (Atom, Celeron N, older Pentium, VIA) AES in software is the
++    # slowest thing on the machine; Adiantum was made for exactly these
++    # CPUs and is several times faster there.
++    if grep -qw aes /proc/cpuinfo 2>/dev/null; then
++        echo "aes-xts-plain64 512"
++    else
++        echo "xchacha12,aes-adiantum-plain64 256"
++    fi
++}
++
++# ── in-place encryption ───────────────────────────────────────────
++
++encrypt_init() { # dev
++    dev=$1
++    [ -b "$dev" ] || [ -f "$dev" ] || die "$dev is not a disk"
++    command -v "$CRYPTSETUP" >/dev/null || die "cryptsetup is missing"
++    [ "$(blkid -s TYPE -o value "$dev" 2>/dev/null)" = ext4 ] \
++        || die "$dev does not hold a plain ext4 filesystem"
++    grep -qs " $dev " /proc/mounts && die "$dev is mounted"
++    set -- $(pick_cipher); cipher=$1; bits=$2
++    modprobe dm_crypt 2>/dev/null || true
++    case "$cipher" in *adiantum*) modprobe adiantum 2>/dev/null; modprobe nhpoly1305 2>/dev/null
++                                  modprobe chacha_generic 2>/dev/null ;; esac
++
++    # 1. The filesystem must be clean before it can be made smaller.
++    #    e2fsck -p fixes what is safe to fix by itself; 0 and 1 mean
++    #    the filesystem is now clean, anything else means leave it be.
++    e2fsck -f -p "$dev" >"$RUN/fsck.out" 2>&1; rc=$?
++    [ "$rc" -le 1 ] || die "the filesystem needs a check first (e2fsck said $rc); left as it is"
++
++    # 2. Leave RESERVE_MIB free at the end. A freshly installed AurOS
++    #    fills its partition; the last 32 MiB of a fresh filesystem hold
++    #    at most the last group's tables, which resize2fs moves.
++    part=$(blockdev --getsize64 "$dev" 2>/dev/null || stat -c %s "$dev")
++    bs=$(dumpe2fs -h "$dev" 2>/dev/null | sed -n 's/^Block size: *//p')
++    bc=$(dumpe2fs -h "$dev" 2>/dev/null | sed -n 's/^Block count: *//p')
++    [ -n "$part" ] && [ -n "$bs" ] && [ -n "$bc" ] || die "could not measure $dev"
++    want=$(( (part - RESERVE_MIB * 1048576) / bs ))
++    [ "$want" -gt 0 ] || die "$dev is too small"
++    if [ "$bc" -gt "$want" ]; then
++        resize2fs "$dev" "$want" >"$RUN/resize.out" 2>&1 \
++            || die "could not make room at the end of $dev"
++    fi
++
++    # 3. Begin. --init-only writes the LUKS2 header and moves the first
++    #    16 MiB of data into the reserved end, both crash-safe, then
++    #    activates the mapping; the data are encrypted afterwards by
++    #    encrypt-resume while AurOS runs. The only keyslot is an EMPTY
++    #    passphrase until she chooses a PIN (THEFT.md section 1).
++    k=$(empty_key) || die "no room in $RUN"
++    note "encrypt-init $dev cipher=$cipher"
++    "$CRYPTSETUP" reencrypt --encrypt --type luks2 --init-only \
++        --reduce-device-size "${RESERVE_MIB}M" \
++        --cipher "$cipher" --key-size "$bits" --sector-size 4096 \
++        --label "$LABEL" --pbkdf pbkdf2 --pbkdf-force-iterations 1000 \
++        --key-file "$k" --batch-mode "$dev" "$NAME" >"$RUN/init.out" 2>&1 \
++        || { cat "$RUN/init.out" >&2; die "cryptsetup could not begin encrypting $dev"; }
++    note "encrypt-init done"
++    echo "$dev" > "$RUN/encrypting"
++    return 0
++}
++
++encrypt_resume() {
++    dev=$(active_dev) || { say "the root is not encrypted"; exit 2; }
++    reencrypting "$dev" || { mark_done "$dev"; exit 2; }
++    k=$(empty_key) || die "no room in $RUN"
++    opens_empty "$dev" || die "the pass cannot be resumed without the temporary key"
++    note "encrypt-resume $dev"
++    # --progress-json: one line every few seconds, read by the desktop
++    # for "Locking your drive: 40%".
++    "$CRYPTSETUP" reencrypt --resume-only --active-name "$NAME" \
++        --key-file "$k" --batch-mode --progress-json --progress-frequency 5 \
++        2>"$RUN/progress.json" || die "the encryption pass stopped; it will carry on at the next start"
++    mark_done "$dev"
++}
++
++mark_done() {
++    reencrypting "$1" && return 1
++    mkdir -p "$STATE" && echo "done $(date +%s)" > "$STATE/encrypted"
++    write_conf encrypt=done
++    note "encryption complete"
++    return 0
++}
++
++write_conf() { # key=value  (lock.conf is two lines at most; rewritten whole)
++    mkdir -p "$(dirname "$CONF")"
++    { grep -v "^${1%%=*}=" "$CONF" 2>/dev/null; echo "$1"; } > "$CONF.new" && mv "$CONF.new" "$CONF"
++}
++
++# ── from the initramfs ────────────────────────────────────────────
++
++initramfs() {
++    case "$(cmdline_value auros.lock 2>/dev/null)" in off) exit 2 ;; esac
++    mkdir -p "$RUN"
++    if dev=$(find_luks); then
++        unlock "$dev"
++        echo "ROOT=/dev/mapper/$NAME" >> "${AUROS_PARAMCONF:-/conf/param.conf}"
++        exit 0
++    fi
++    dev=$(plain_root) || exit 2
++    [ "$(blkid -s TYPE -o value "$dev" 2>/dev/null)" = ext4 ] || exit 2
++    wanted "$dev" || exit 2
++    if encrypt_init "$dev"; then
++        echo "ROOT=/dev/mapper/$NAME" >> "${AUROS_PARAMCONF:-/conf/param.conf}"
++    fi
++    exit 0
++}
++
++# Was encryption asked for? AurOS writes encrypt=next-start into
++# /etc/auros/lock.conf (lockctl request). The initramfs cannot see
++# /etc yet, so it looks: read-only, then let go.
++wanted() { # dev
++    [ "$(cmdline_value auros.lock 2>/dev/null)" = encrypt ] && return 0
++    m=$RUN/peek; mkdir -p "$m"
++    mount -t ext4 -o ro,noload "$1" "$m" 2>/dev/null || return 1
++    w=1; grep -qs '^encrypt=next-start' "$m/${CONF#/}" && w=0
++    umount "$m" 2>/dev/null || umount -l "$m"
++    return $w
++}
++
++unlock() { # dev
++    dev=$1
++    k=$(empty_key)
++    # No PIN chosen yet: the temporary empty keyslot opens it.
++    if "$CRYPTSETUP" open --allow-discards --key-file "$k" "$dev" "$NAME" 2>/dev/null; then
++        note "opened with the temporary key (no PIN yet)"
++        return 0
++    fi
++    # Her PIN, on AurOS's own full-screen page. It loops until the
++    # disk is open (PIN, or the rescue code), and only comes back with
++    # an error when it cannot draw at all.
++    if [ -x "$PINCHECK" ] && "$PINCHECK" --unlock "$dev" --name "$NAME"; then
++        return 0
++    fi
++    # No screen it can draw on: the console, through cryptsetup, which
++    # asks for the token PIN and then any passphrase (the rescue code).
++    note "PIN page unavailable; console prompt"
++    while ! "$CRYPTSETUP" open --allow-discards "$dev" "$NAME"; do
++        echo "That did not open AurOS. Type your PIN, or your rescue code." >&2
++    done
++}
++
++# ── enrolling her PIN ─────────────────────────────────────────────
++
++valid_pin() { # pin min
++    case "$1" in *[!0-9]*|'') return 1 ;; esac
++    [ "${#1}" -ge "$2" ] && [ "${#1}" -le 6 ]
++}
++
++rescue_code() { # 32 random bytes as 64 modhex letters (systemd's own format)
++    od -An -tx1 -N32 /dev/urandom | tr -d ' \n' | tr '0123456789abcdef' 'cbdefghijklnrtuv'
++}
++
++group8() { echo "$1" | sed 's/\(........\)/\1-/g; s/-$//'; }
++
++desktop_user() {
++    [ -n "${AUROS_LOCK_USER:-}" ] && { echo "$AUROS_LOCK_USER"; return; }
++    [ -r /etc/auros/user ] && { head -n1 /etc/auros/user; return; }
++    getent passwd 1000 | cut -d: -f1
++}
++
++set_pin() {
++    dev=$(active_dev) || dev=$(find_luks) || die "this computer's drive is not locked yet"
++    reencrypting "$dev" && die "the drive is still being locked; choose the PIN when it has finished"
++    opens_empty "$dev" || die "a PIN has already been chosen"
++    IFS= read -r pin || true
++    if tpm2_present; then min=4; else min=6; fi
++    valid_pin "$pin" "$min" || die "a PIN is $min to 6 numbers"
++    k=$(empty_key)
++
++    if tpm2_present; then
++        NEWPIN=$pin "$ENROLL" --unlock-key-file="$k" --tpm2-device="${AUROS_TPM2_DEVICE:-auto}" \
++            --tpm2-pcrs=7 --tpm2-with-pin=yes "$dev" >"$RUN/enroll.out" 2>&1 \
++            || { cat "$RUN/enroll.out" >&2; die "the security chip would not keep the PIN"; }
++        kind=tpm2+pin
++    else
++        # No TPM: the PIN is a passphrase, with argon2id at about two
++        # seconds a try on this machine (THEFT.md section 4).
++        printf '%s' "$pin" > "$RUN/new.key"
++        "$CRYPTSETUP" luksAddKey --batch-mode --key-file "$k" --pbkdf argon2id \
++            --iter-time 2000 "$dev" "$RUN/new.key" >"$RUN/enroll.out" 2>&1; rc=$?
++        rm -f "$RUN/new.key"
++        [ "$rc" = 0 ] || { cat "$RUN/enroll.out" >&2; die "could not add the PIN"; }
++        kind=pin
++    fi
++
++    code=$(rescue_code)
++    printf '%s' "$code" > "$RUN/rescue.key"
++    "$CRYPTSETUP" luksAddKey --batch-mode --key-file "$k" --pbkdf pbkdf2 \
++        --pbkdf-force-iterations 1000 "$dev" "$RUN/rescue.key" >>"$RUN/enroll.out" 2>&1; rc=$?
++    # The rescue code must open the disk before anything else is taken
++    # away; so must the PIN.
++    [ "$rc" = 0 ] && "$CRYPTSETUP" open --test-passphrase --key-file "$RUN/rescue.key" "$dev" \
++        || { rm -f "$RUN/rescue.key"; die "the rescue code could not be added"; }
++    rm -f "$RUN/rescue.key"
++    if [ "$kind" = tpm2+pin ]; then
++        if [ -x "$PINCHECK" ]; then
++            printf '%s' "$pin" | "$PINCHECK" --check "$dev" >/dev/null 2>&1 \
++                || die "the new PIN did not open the disk; nothing was taken away"
++        fi
++    else
++        printf '%s' "$pin" > "$RUN/new.key"
++        "$CRYPTSETUP" open --test-passphrase --key-file "$RUN/new.key" "$dev"; rc=$?
++        rm -f "$RUN/new.key"
++        [ "$rc" = 0 ] || die "the new PIN did not open the disk; nothing was taken away"
++    fi
++
++    # The same PIN wakes the computer up (THEFT.md section 8).
++    u=$(desktop_user)
++    if [ -n "$u" ] && [ -z "${AUROS_LOCK_NO_PASSWD:-}" ]; then
++        printf '%s:%s\n' "$u" "$pin" | chpasswd 2>/dev/null || say "could not set $u's password"
++    fi
++
++    # And now the temporary empty keyslot goes: from here a PIN or the
++    # rescue code is the only way in.
++    "$CRYPTSETUP" luksRemoveKey --batch-mode --key-file "$k" "$dev" >/dev/null 2>&1 \
++        || die "the temporary key could not be removed"
++    opens_empty "$dev" && die "the temporary key is still there"
++    mkdir -p "$STATE" && echo "$kind $(date +%s)" > "$STATE/pin"
++    note "pin enrolled ($kind)"
++    group8 "$code"
++}
++
++# ── PCR 7 changing (THEFT.md section 5) ───────────────────────────
++
++reseal_begin() {
++    dev=$(active_dev) || exit 2
++    has_tpm_token "$dev" || exit 2
++    # A second TPM keyslot bound to no PCR, opened by the same PIN, for
++    # the one start after an update that changes PCR 7. It needs a way
++    # in to add it: the PIN, given on stdin by the update hook's caller.
++    IFS= read -r pin || true
++    valid_pin "$pin" 4 || die "a PIN is needed"
++    printf '%s' "$pin" | "$PINCHECK" --add-temp "$dev" "$RUN/tmp.key" >/dev/null 2>&1 \
++        || die "the PIN did not open the disk"
++    NEWPIN=$pin "$ENROLL" --unlock-key-file="$RUN/tmp.key" --tpm2-device="${AUROS_TPM2_DEVICE:-auto}" \
++        --tpm2-pcrs= --tpm2-with-pin=yes "$dev" >"$RUN/reseal.out" 2>&1; rc=$?
++    "$CRYPTSETUP" luksRemoveKey --batch-mode --key-file "$RUN/tmp.key" "$dev" >/dev/null 2>&1
++    rm -f "$RUN/tmp.key"
++    [ "$rc" = 0 ] || die "could not prepare for the update"
++    mkdir -p "$STATE" && echo "pending $(date +%s)" > "$STATE/reseal"
++}
++
++reseal_finish() {
++    [ -f "$STATE/reseal" ] || exit 2
++    # Done by the desktop once she has typed her PIN at the next start
++    # (it hands it over the same way as set-pin); see S4.md next steps.
++    say "re-sealing waits for the PIN at the next start"
++    exit 2
++}
++
++# ── status ────────────────────────────────────────────────────────
++
++status() {
++    if dev=$(active_dev) || dev=$(find_luks); then
++        echo "device=$dev"
++        if reencrypting "$dev"; then echo "state=encrypting"
++        elif opens_empty "$dev"; then echo "state=open-no-pin"
++        elif has_tpm_token "$dev"; then echo "state=locked-tpm-pin"
++        else echo "state=locked-pin"; fi
++        "$CRYPTSETUP" luksDump "$dev" 2>/dev/null | sed -n 's/^\tcipher: */cipher=/p' | head -n1
++        if [ -s "$RUN/progress.json" ]; then
++            tail -n1 "$RUN/progress.json" | sed -n \
++                's/.*"device_bytes":"\{0,1\}\([0-9]*\)"\{0,1\}.*"device_size":"\{0,1\}\([0-9]*\)"\{0,1\}.*/progress_bytes=\1 size_bytes=\2/p'
++        fi
++    elif d=$(plain_root); then
++        echo "device=$d"; echo "state=plain"
++        grep -qs '^encrypt=next-start' "$CONF" && echo "requested=next-start"
++    else
++        echo "state=unknown"
++    fi
++    tpm2_present && echo "tpm=2.0" || echo "tpm=none"
++    grep -qw aes /proc/cpuinfo 2>/dev/null && echo "aes_ni=yes" || echo "aes_ni=no"
++}
++
++case "${1:-}" in
++    initramfs)      initramfs ;;
++    encrypt-init)   [ -n "${2:-}" ] || die "which device?"; mkdir -p "$RUN"; encrypt_init "$2" ;;
++    encrypt-resume) encrypt_resume ;;
++    request)        write_conf encrypt=next-start; note "encryption requested for the next start" ;;
++    set-pin)        set_pin ;;
++    reseal-begin)   reseal_begin ;;
++    reseal-finish)  reseal_finish ;;
++    status)         status ;;
++    *) echo "usage: lockctl initramfs|encrypt-init DEV|encrypt-resume|request|set-pin|reseal-begin|reseal-finish|status" >&2; exit 1 ;;
++esac

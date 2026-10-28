@@ -246,7 +246,7 @@ static void settings(const char *label)
     for (size_t r = 0; r < sizeof RES / sizeof RES[0]; r++)
      for (size_t k = 0; k < sizeof SCALES / sizeof SCALES[0]; k++)
       for (int page = 0; page < SET_PAGE_N; page++)
-       for (int hw = 0; hw < 8; hw++)        /* battery/backlight/sound */
+       for (int hw = 0; hw < 16; hw++)       /* battery/backlight/sound/windows */
         for (int first = 0; first < 2; first++) {
             shell_ctx c; memset(&c, 0, sizeof c);
             theme_t t = {0};
@@ -262,6 +262,7 @@ static void settings(const char *label)
             v.battery   = (hw >> 0) & 1;
             v.backlight = (hw >> 1) & 1;
             v.sound     = (hw >> 2) & 1;
+            v.windows   = (hw >> 3) & 1;     /* the Put Windows back row */
             /* A list page with forty places on it, and the same page
              * scrolled -- the paged view has its own geometry and the
              * wifi panel's harness never measured one. */

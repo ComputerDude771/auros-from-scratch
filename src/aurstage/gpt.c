@@ -1,10 +1,21 @@
-/* gpt.c — see gpt.h. */
+/* gpt.c — see gpt.h.
+ *
+ * SHARED WITH THE WINDOWS HALF. build/aurbridge compiles this file into
+ * AurBridge as well (the fast path plans the gap on Windows exactly as
+ * the commit here will lay it out), so the reader works through a
+ * read-at callback and the only things that are POSIX-only -- pread on
+ * a file descriptor and /dev/urandom -- are behind _WIN32. */
 #define _GNU_SOURCE
-#include <fcntl.h>
+#ifdef _WIN32
+#define _CRT_RAND_S             /* rand_s, for mkguid; before stdlib.h */
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifndef _WIN32
+#include <fcntl.h>
 #include <unistd.h>
+#endif
 
 #include "gpt.h"
 
@@ -61,6 +72,7 @@ int gpt_used(const gpt_entry *e)
 
 /* ── reading ─────────────────────────────────────────────────────── */
 
+#ifndef _WIN32
 static int read_at(int fd, void *buf, size_t n, uint64_t off)
 {
     size_t got = 0;
@@ -71,6 +83,18 @@ static int read_at(int fd, void *buf, size_t n, uint64_t off)
     }
     return 0;
 }
+
+static int fd_read_at(void *ud, uint64_t off, void *buf, size_t n)
+{ return read_at(*(int *)ud, buf, n, off); }
+#endif
+
+typedef struct {
+    int (*rd)(void *ud, uint64_t off, void *buf, size_t n);
+    void *ud;
+} gpt_src;
+
+static int src_read(const gpt_src *s, void *buf, size_t n, uint64_t off)
+{ return s->rd(s->ud, off, buf, n); }
 
 /* Parse one header block. 0 on success. */
 static int parse_header(const uint8_t *h, uint32_t sector, gpt_table *t)
@@ -108,14 +132,14 @@ static int parse_header(const uint8_t *h, uint32_t sector, gpt_table *t)
     return 0;
 }
 
-static int parse_entries(int fd, const uint8_t *h, gpt_table *t)
+static int parse_entries(const gpt_src *src, const uint8_t *h, gpt_table *t)
 {
     size_t bytes = (size_t)t->n_entries * t->entry_size;
     if (bytes > (size_t)GPT_MAX_ENT * 4096) return -1;
     uint8_t *arr = malloc(bytes);
     if (!arr) return -1;
     int rc = -1;
-    if (read_at(fd, arr, bytes, t->entry_lba * t->sector) != 0) goto out;
+    if (src_read(src, arr, bytes, t->entry_lba * t->sector) != 0) goto out;
     if (gpt_crc32(arr, bytes) != rd32(h + 88)) goto out;
 
     memset(t->ent, 0, sizeof t->ent);
@@ -135,8 +159,18 @@ out:
     return rc;
 }
 
+#ifndef _WIN32
 int gpt_read(int fd, uint32_t sector, uint64_t disk_bytes, gpt_table *t)
 {
+    return gpt_read_with(fd_read_at, &fd, sector, disk_bytes, t);
+}
+#endif
+
+int gpt_read_with(int (*rd)(void *ud, uint64_t off, void *buf, size_t n),
+                  void *ud, uint32_t sector, uint64_t disk_bytes,
+                  gpt_table *t)
+{
+    gpt_src src = { rd, ud };
     memset(t, 0, sizeof *t);
     if (sector < 512 || sector > 4096 || (sector & (sector - 1))) return -1;
     t->sector = sector;
@@ -145,9 +179,9 @@ int gpt_read(int fd, uint32_t sector, uint64_t disk_bytes, gpt_table *t)
     uint8_t h[4096];
 
     /* The primary first. */
-    if (read_at(fd, h, sector, sector) == 0 &&
+    if (src_read(&src, h, sector, sector) == 0 &&
         parse_header(h, sector, t) == 0 &&
-        parse_entries(fd, h, t) == 0) {
+        parse_entries(&src, h, t) == 0) {
         t->valid = 1;
         return 0;
     }
@@ -162,9 +196,9 @@ int gpt_read(int fd, uint32_t sector, uint64_t disk_bytes, gpt_table *t)
     t->sector = sector;
     t->disk_sectors = disk_bytes / sector;
     uint64_t alt = t->disk_sectors - 1;
-    if (read_at(fd, h, sector, alt * sector) != 0) return -1;
+    if (src_read(&src, h, sector, alt * sector) != 0) return -1;
     if (parse_header(h, sector, t) != 0) return -1;
-    if (parse_entries(fd, h, t) != 0) return -1;
+    if (parse_entries(&src, h, t) != 0) return -1;
     t->valid = 1;
     t->from_backup = 1;
     return 0;
@@ -219,6 +253,16 @@ int gpt_resize_entry(gpt_table *t, int idx, uint64_t new_last)
  * one, and this program has no business inventing entropy. */
 static int mkguid(uint8_t g[16])
 {
+#ifdef _WIN32
+    for (int i = 0; i < 16; i += 4) {
+        unsigned int r;
+        if (rand_s(&r) != 0) return -1;
+        memcpy(g + i, &r, 4);
+    }
+    g[7] = (uint8_t)((g[7] & 0x0F) | 0x40);
+    g[8] = (uint8_t)((g[8] & 0x3F) | 0x80);
+    return 0;
+#else
     int fd = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
     if (fd < 0) return -1;
     if (read_at(fd, g, 16, 0) != 0) {
@@ -231,6 +275,7 @@ static int mkguid(uint8_t g[16])
     g[7] = (uint8_t)((g[7] & 0x0F) | 0x40);      /* version 4        */
     g[8] = (uint8_t)((g[8] & 0x3F) | 0x80);      /* variant          */
     return 0;
+#endif
 }
 
 int gpt_add(gpt_table *t, const uint8_t type[16], const char *name_ascii,

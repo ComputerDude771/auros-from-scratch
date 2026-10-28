@@ -418,6 +418,389 @@ int plat_reread(int index, char *why, size_t wn)
     return 0;
 }
 
+/* ── the fast path: the gap fence ────────────────────────────────────
+ *
+ * Writes into the unallocated gap a shrink frees, on the system disk.
+ * It does NOT lock or dismount any volume: Windows' own refusal of raw
+ * writes inside a mounted volume's extents is kept as the second fence.
+ * The first fence is here -- a write may land only inside the armed
+ * window and only where the LIVE partition table says nothing is.
+ */
+static int    g_gap_disk = -1;
+static HANDLE g_gap_handle = INVALID_HANDLE_VALUE;
+static uint64_t g_gap_lo, g_gap_hi;
+static fmt_extent g_gap_parts[64];
+static int    g_gap_nparts;
+static int    g_gap_armed;
+
+static int gap_read_at(void *ud, uint64_t off, void *buf, size_t n)
+{
+    int idx = *(int *)ud;
+    char why[PLAT_WHY];
+    return plat_read(idx, off, buf, n, why, sizeof why);
+}
+
+static uint32_t disk_sector_of(int index)
+{
+    HANDLE h = open_disk(index, 0);
+    if (h == INVALID_HANDLE_VALUE) return 0;
+    uint32_t ss = disk_sector(h);
+    CloseHandle(h);
+    return ss;
+}
+
+int plat_disk_parts(int index, fmt_extent *out, int max, int *n_out,
+                    char *why, size_t wn)
+{
+    *n_out = 0;
+    uint32_t ss = disk_sector_of(index);
+    if (!ss) {
+        snprintf(why, wn, "this drive will not say how large its blocks are, "
+                          "and AurOS will not guess.");
+        return -1;
+    }
+    int idx = index;
+    return fmt_gpt_parts(gap_read_at, &idx, ss, out, max, n_out, why, wn);
+}
+
+static void gap_close(void)
+{
+    if (g_gap_handle != INVALID_HANDLE_VALUE) CloseHandle(g_gap_handle);
+    g_gap_handle = INVALID_HANDLE_VALUE;
+    g_gap_disk = -1; g_gap_nparts = 0; g_gap_armed = 0;
+}
+
+void plat_gap_forbid(void) { gap_close(); }
+
+int plat_gap_allow(int index, uint64_t lo, uint64_t hi, char *why, size_t wn)
+{
+    if (hi <= lo) { snprintf(why, wn, "the gap AurOS was given has no room"); return -1; }
+    gap_close();
+
+    /* THE LIVE TABLE, re-read now, immediately before the writes. */
+    fmt_extent parts[64];
+    int n = 0;
+    if (plat_disk_parts(index, parts, 64, &n, why, wn) != 0) return -1;
+    for (int k = 0; k < n; k++)
+        if (lo <= parts[k].last_byte && parts[k].first_byte < hi) {
+            snprintf(why, wn,
+                     "REFUSING: the gap AurOS was given overlaps a partition "
+                     "on this disk.");
+            return -1;
+        }
+
+    /* No lock, no dismount: Windows refuses a raw write inside a mounted
+     * volume by itself, and that is the second fence. WRITE_THROUGH and
+     * NO_BUFFERING so a flush means the platter and the read-back is not
+     * served from the cache. */
+    HANDLE h = open_disk_flags(index, 1,
+                               FILE_FLAG_NO_BUFFERING | FILE_FLAG_WRITE_THROUGH);
+    if (h == INVALID_HANDLE_VALUE) {
+        why_of(why, wn,
+               "the disk could not be opened to write AurOS into the free "
+               "space. AurBridge has to be run as an administrator", GetLastError());
+        return -1;
+    }
+    g_gap_handle = h;
+    g_gap_disk = index; g_gap_lo = lo; g_gap_hi = hi;
+    memcpy(g_gap_parts, parts, (size_t)n * sizeof parts[0]);
+    g_gap_nparts = n; g_gap_armed = 1;
+    return 0;
+}
+
+int plat_gap_write(int index, uint64_t off, const void *buf, size_t n,
+                   char *why, size_t wn)
+{
+    if (!g_gap_armed || index != g_gap_disk ||
+        g_gap_handle == INVALID_HANDLE_VALUE) {
+        snprintf(why, wn,
+                 "REFUSING to write to drive %d: AurOS only writes into the "
+                 "gap it was given, and no gap is armed on it.", index);
+        return -1;
+    }
+    if (n == 0) return 0;
+    if (off > UINT64_MAX - n) {
+        snprintf(why, wn, "a write was asked for at an impossible place");
+        return -1;
+    }
+    uint64_t last = off + n - 1;
+    if (off < g_gap_lo || last >= g_gap_hi) {
+        snprintf(why, wn,
+                 "REFUSING: a write would land outside the gap AurOS was "
+                 "given, and was refused.");
+        return -1;
+    }
+    for (int k = 0; k < g_gap_nparts; k++)
+        if (off <= g_gap_parts[k].last_byte && g_gap_parts[k].first_byte <= last) {
+            snprintf(why, wn,
+                     "REFUSING: a write would land on a partition on this "
+                     "disk, not in the gap, and was refused.");
+            return -1;
+        }
+
+    uint32_t ss = disk_sector(g_gap_handle);
+    if (!ss) { snprintf(why, wn, "this drive will not say its block size."); return -1; }
+    uint64_t alo = off - (off % ss);
+    uint64_t ahi = ((off + n + ss - 1) / ss) * ss;
+    size_t span = (size_t)(ahi - alo);
+    unsigned char *tmp = VirtualAlloc(NULL, span, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    if (!tmp) { snprintf(why, wn, "this computer ran out of memory"); return -1; }
+    int rc = 0;
+    if (alo != off || ahi != off + n) {
+        if (plat_read(index, alo, tmp, span, why, wn) != 0) { rc = -1; goto out; }
+    }
+    memcpy(tmp + (off - alo), buf, n);
+    {
+        LARGE_INTEGER li; li.QuadPart = (LONGLONG)alo;
+        if (!SetFilePointerEx(g_gap_handle, li, NULL, FILE_BEGIN)) {
+            why_of(why, wn, "the disk would not seek", GetLastError());
+            rc = -1; goto out;
+        }
+        size_t done = 0;
+        while (done < span) {
+            DWORD put = 0;
+            DWORD ask = (DWORD)((span - done) > (1u << 20) ? (1u << 20) : (span - done));
+            if (!WriteFile(g_gap_handle, tmp + done, ask, &put, NULL) || put == 0) {
+                /* ERROR_ACCESS_DENIED here is Windows' own second fence:
+                 * a write that reached a mounted volume's extent. The
+                 * first fence above should already have refused it, so
+                 * this is a belt-and-braces message, not the usual path. */
+                why_of(why, wn,
+                       "the disk would not accept a write into the free "
+                       "space (it may have landed on a partition)", GetLastError());
+                rc = -1; goto out;
+            }
+            done += put;
+        }
+    }
+out:
+    VirtualFree(tmp, 0, MEM_RELEASE);
+    return rc;
+}
+
+int plat_gap_flush(int index, char *why, size_t wn)
+{
+    if (index != g_gap_disk || g_gap_handle == INVALID_HANDLE_VALUE) return 0;
+    if (!FlushFileBuffers(g_gap_handle)) {
+        why_of(why, wn, "the disk would not confirm what was written", GetLastError());
+        return -1;
+    }
+    return 0;
+}
+
+/* TEST ONLY: is Windows' own fence there? See plat.h. The sector at
+ * `off` is read and THE SAME BYTES are written back through a raw disk
+ * handle, bypassing the first fence entirely -- so if Windows lets the
+ * write through, nothing on the disk has changed. */
+int plat_gap_os_fence_probe(int index, uint64_t off, char *why, size_t wn)
+{
+    HANDLE h = open_disk_flags(index, 1,
+                               FILE_FLAG_NO_BUFFERING | FILE_FLAG_WRITE_THROUGH);
+    if (h == INVALID_HANDLE_VALUE) {
+        why_of(why, wn, "the disk could not be opened for the probe", GetLastError());
+        return -1;
+    }
+    uint32_t ss = disk_sector(h);
+    if (!ss) { CloseHandle(h); snprintf(why, wn, "no sector size"); return -1; }
+    uint64_t at = off - (off % ss);
+    unsigned char *b = VirtualAlloc(NULL, ss, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    if (!b) { CloseHandle(h); snprintf(why, wn, "out of memory"); return -1; }
+    int rc = -1;
+    LARGE_INTEGER li; li.QuadPart = (LONGLONG)at;
+    DWORD got = 0;
+    if (!SetFilePointerEx(h, li, NULL, FILE_BEGIN) ||
+        !ReadFile(h, b, ss, &got, NULL) || got != ss) {
+        why_of(why, wn, "the probe could not read the sector", GetLastError());
+        goto out;
+    }
+    if (!SetFilePointerEx(h, li, NULL, FILE_BEGIN)) {
+        why_of(why, wn, "the probe could not seek", GetLastError());
+        goto out;
+    }
+    DWORD put = 0;
+    if (WriteFile(h, b, ss, &put, NULL) && put == ss) {
+        snprintf(why, wn, "Windows accepted a raw write at byte %llu",
+                 (unsigned long long)at);
+        rc = 0;
+    } else {
+        DWORD e = GetLastError();
+        why_of(why, wn, "Windows refused a raw write there", e);
+        rc = 1;
+    }
+out:
+    VirtualFree(b, 0, MEM_RELEASE);
+    CloseHandle(h);
+    return rc;
+}
+
+/* ── PowerShell, for the storage and BitLocker cmdlets ───────────────
+ *
+ * Every number comes back on a line of its own behind a marker the
+ * script prints ("AURMIN=123"), and only that is read: PowerShell's
+ * warnings and progress text contain digits too, and "the last number
+ * in the output" (what this used to read) is whatever a warning said. */
+static int ps_run(const char *script, char *tail, size_t tn)
+{
+    char sys[MAX_PATH], cmd[4096];
+    if (!GetSystemDirectoryA(sys, sizeof sys))
+        snprintf(sys, sizeof sys, "C:\\Windows\\System32");
+    if ((size_t)snprintf(cmd, sizeof cmd,
+             "\"%s\\WindowsPowerShell\\v1.0\\powershell.exe\" -NoProfile "
+             "-NonInteractive -ExecutionPolicy Bypass -Command "
+             "\"$ProgressPreference='SilentlyContinue'; "
+             "$ErrorActionPreference='Stop'; %s\"", sys, script) >= sizeof cmd) {
+        if (tail && tn) snprintf(tail, tn, "the command was too long");
+        return -1;
+    }
+    return plat_run(cmd, tail, tn);
+}
+
+/* The value after `key` ("AURMIN=") in a tail, or -1 when it is not
+ * there or is not a number. */
+static int tail_value(const char *tail, const char *key, uint64_t *out)
+{
+    const char *p = strstr(tail, key);
+    if (!p) return -1;
+    p += strlen(key);
+    if (*p < '0' || *p > '9') return -1;
+    uint64_t v = 0;
+    while (*p >= '0' && *p <= '9') {
+        if (v > (UINT64_MAX - 9) / 10) return -1;
+        v = v * 10 + (uint64_t)(*p++ - '0');
+    }
+    *out = v;
+    return 0;
+}
+
+/* ── Windows' own online shrink ──────────────────────────────────────
+ *
+ * Get-PartitionSupportedSize / Resize-Partition / Get-Partition, the
+ * cmdlets behind Disk Management's "Shrink Volume". They work with
+ * BitLocker on and decrypt nothing. Every size this reports is read
+ * back from the LIVE layout after the fact, because unmovable files can
+ * stop a shrink short and the plan must be made from what happened. */
+int plat_shrink_limits(int index, int part, uint64_t *now, uint64_t *smin,
+                       uint64_t *smax, char *why, size_t wn)
+{
+    char script[512], tail[1024];
+    snprintf(script, sizeof script,
+             "$p=Get-Partition -DiskNumber %d -PartitionNumber %d; "
+             "$s=Get-PartitionSupportedSize -DiskNumber %d -PartitionNumber %d; "
+             "'AURNOW='+$p.Size; 'AURMIN='+$s.SizeMin; 'AURMAX='+$s.SizeMax",
+             index, part, index, part);
+    uint64_t a = 0, b = 0, c = 0;
+    if (ps_run(script, tail, sizeof tail) != 0 ||
+        tail_value(tail, "AURNOW=", &a) != 0 ||
+        tail_value(tail, "AURMIN=", &b) != 0 ||
+        tail_value(tail, "AURMAX=", &c) != 0 || !a || !b || b > c) {
+        snprintf(why, wn, "Windows would not say how small or large drive C: "
+                          "can be made (%s).", tail[0] ? tail : "no answer");
+        return -1;
+    }
+    if (now) *now = a;
+    if (smin) *smin = b;
+    if (smax) *smax = c;
+    return 0;
+}
+
+static int part_size(int index, int part, uint64_t *out, char *tail, size_t tn)
+{
+    char script[256];
+    snprintf(script, sizeof script,
+             "'AURSIZE='+(Get-Partition -DiskNumber %d -PartitionNumber %d).Size",
+             index, part);
+    if (ps_run(script, tail, tn) != 0) return -1;
+    return tail_value(tail, "AURSIZE=", out);
+}
+
+static int resize_to(int index, int part, uint64_t bytes, char *tail, size_t tn)
+{
+    char script[256];
+    snprintf(script, sizeof script,
+             "Resize-Partition -DiskNumber %d -PartitionNumber %d -Size %llu",
+             index, part, (unsigned long long)bytes);
+    return ps_run(script, tail, tn);
+}
+
+int plat_shrink_system(int index, int part_number, uint64_t target,
+                       uint64_t *achieved, char *why, size_t wn)
+{
+    if (achieved) *achieved = 0;
+    uint64_t now = 0, smin = 0, smax = 0;
+    if (plat_shrink_limits(index, part_number, &now, &smin, &smax, why, wn) != 0)
+        return -1;
+    /* Never below what Windows allows, and to a whole megabyte, which is
+     * what Disk Management itself asks for. */
+    uint64_t want = target < smin ? smin : target;
+    want = (want + (1u << 20) - 1) / (1u << 20) * (1u << 20);
+    if (want >= now) {
+        snprintf(why, wn,
+                 "Windows can only make drive C: %llu MB smaller, which is not "
+                 "enough. Nothing on this computer has been changed.",
+                 (unsigned long long)((now - (smin < now ? smin : now)) >> 20));
+        return -1;
+    }
+    char tail[1024];
+    if (resize_to(index, part_number, want, tail, sizeof tail) != 0) {
+        uint64_t after = 0; char t2[256];
+        /* A refusal may still have moved the end; say what is true. */
+        if (part_size(index, part_number, &after, t2, sizeof t2) == 0 && after < now) {
+            if (achieved) *achieved = after;
+            snprintf(why, wn, "Windows stopped part-way through making drive C: "
+                              "smaller (%s).", tail[0] ? tail : "no reason given");
+            return -1;
+        }
+        snprintf(why, wn,
+                 "Windows could not make drive C: smaller (%s). Nothing on "
+                 "this computer has been changed.", tail[0] ? tail : "no reason given");
+        return -1;
+    }
+    uint64_t got = 0;
+    if (part_size(index, part_number, &got, tail, sizeof tail) != 0 || !got) {
+        snprintf(why, wn, "Windows made drive C: smaller but would not say how "
+                          "big it now is.");
+        return -1;
+    }
+    if (achieved) *achieved = got;
+    if (got >= now) {
+        snprintf(why, wn, "Windows said it made drive C: smaller, and it is not.");
+        return -1;
+    }
+    return 0;
+}
+
+int plat_grow_system(int index, int part_number, uint64_t to_bytes,
+                     uint64_t *achieved, char *why, size_t wn)
+{
+    if (achieved) *achieved = 0;
+    uint64_t now = 0, smin = 0, smax = 0;
+    if (plat_shrink_limits(index, part_number, &now, &smin, &smax, why, wn) != 0)
+        return -1;
+    /* UP TO WHAT IT WAS, never past it: the undo gives back what the
+     * install took and nothing that was unallocated before. */
+    uint64_t want = to_bytes && to_bytes < smax ? to_bytes : smax;
+    if (want > now) {
+        char tail[1024];
+        if (resize_to(index, part_number, want, tail, sizeof tail) != 0) {
+            snprintf(why, wn, "Windows could not make drive C: its full size "
+                              "again (%s).", tail[0] ? tail : "no reason given");
+            return -1;
+        }
+    }
+    uint64_t got = 0; char t2[256];
+    if (part_size(index, part_number, &got, t2, sizeof t2) != 0 || !got) {
+        snprintf(why, wn, "Windows would not say how big drive C: is now.");
+        return -1;
+    }
+    if (achieved) *achieved = got;
+    if (got < want) {
+        snprintf(why, wn, "drive C: is %llu MB short of its full size.",
+                 (unsigned long long)((want - got) >> 20));
+        return -1;
+    }
+    return 0;
+}
+
 /* ── ordinary files ──────────────────────────────────────────────── */
 
 /* MultiByteToWideChar returns 0 and leaves the destination PARTLY
@@ -778,6 +1161,54 @@ int plat_boot_next_clear(char *why, size_t wn)
     return 0;
 }
 
+/* ── Secure Boot ─────────────────────────────────────────────────── */
+
+int plat_secure_boot(void)
+{
+    HKEY k;
+    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE,
+                      "SYSTEM\\CurrentControlSet\\Control\\SecureBoot\\State",
+                      0, KEY_READ | KEY_WOW64_64KEY, &k) != ERROR_SUCCESS)
+        return -1;
+    DWORD v = 0, type = 0, sz = sizeof v;
+    LONG rc = RegQueryValueExA(k, "UEFISecureBootEnabled", NULL, &type,
+                               (BYTE *)&v, &sz);
+    RegCloseKey(k);
+    if (rc != ERROR_SUCCESS || type != REG_DWORD) return -1;
+    return v ? 1 : 0;
+}
+
+/* db and dbx live under EFI_IMAGE_SECURITY_DATABASE_GUID, not the
+ * global GUID the boot variables use: what Get-SecureBootUEFI db reads.
+ * A real one is a few kilobytes (dbx can reach twenty); the caller's
+ * buffer is 64. */
+int plat_efi_sigdb(const char *name, unsigned char *buf, size_t cap,
+                   size_t *got, char *why, size_t wn)
+{
+    *got = 0;
+    const wchar_t *wname = !strcmp(name, "db")  ? L"db"
+                         : !strcmp(name, "dbx") ? L"dbx" : NULL;
+    if (!wname) {
+        snprintf(why, wn, "no such list");
+        return -1;
+    }
+    if (enable_env_privilege() != 0) {
+        snprintf(why, wn, "Windows would not let the installer read the "
+                          "firmware's settings");
+        return -1;
+    }
+    DWORD k = GetFirmwareEnvironmentVariableW(
+        wname, L"{d719b2cb-3d3a-4596-a3bc-dad00e67656f}", buf,
+        cap > 0xFFFFFFFFu ? 0xFFFFFFFFu : (DWORD)cap);
+    if (k == 0) {
+        why_of(why, wn, "the firmware's list of trusted keys could not be "
+                        "read", GetLastError());
+        return -1;
+    }
+    *got = k;
+    return 0;
+}
+
 /* ── the EFI device path, built by hand ──────────────────────────── */
 /*
  * SHORT-FORM HARD DRIVE, THEN FILE, THEN END, which is what
@@ -856,8 +1287,8 @@ static size_t load_option(unsigned char *out, size_t n,
 int plat_run(const char *cmdline, char *tail, size_t n)
 {
     if (tail && n) tail[0] = 0;
-    wchar_t w[1024];
-    if (to_wide(cmdline, w, 1024) != 0) {
+    wchar_t w[8192];          /* 16 KB of stack: plat_run may run on two threads */
+    if (to_wide(cmdline, w, 8192) != 0) {
         if (tail && n) snprintf(tail, n, "the command could not be read");
         return -1;
     }
@@ -944,6 +1375,110 @@ int plat_file_append(const char *to, const void *buf, size_t n,
     return 0;
 }
 
+int plat_fast_startup_off(char *why, size_t wn)
+{
+    static const char *KEY =
+        "SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Power";
+    HKEY k;
+    DWORD zero = 0;
+    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, KEY, 0, KEY_SET_VALUE, &k) == ERROR_SUCCESS) {
+        RegSetValueExA(k, "HiberbootEnabled", 0, REG_DWORD, (const BYTE *)&zero,
+                       sizeof zero);
+        RegCloseKey(k);
+    }
+    char sys[MAX_PATH], cmd[MAX_PATH + 64], tail[256];
+    if (!GetSystemDirectoryA(sys, sizeof sys)) snprintf(sys, sizeof sys, "C:\\Windows\\System32");
+    snprintf(cmd, sizeof cmd, "\"%s\\powercfg.exe\" /hibernate off", sys);
+    plat_run(cmd, tail, sizeof tail);
+
+    /* READ BACK, not assumed: a policy can forbid either change, and
+     * the install must not go on believing it made one it did not. */
+    DWORD v = 1, sz = sizeof v, type = 0;
+    int reg_off = RegGetValueA(HKEY_LOCAL_MACHINE, KEY, "HiberbootEnabled",
+                               RRF_RT_REG_DWORD, &type, &v, &sz) != ERROR_SUCCESS || v == 0;
+    char sd[8] = "C:", hib[MAX_PATH];
+    GetEnvironmentVariableA("SystemDrive", sd, sizeof sd);
+    snprintf(hib, sizeof hib, "%s\\hiberfil.sys", sd);
+    int file_gone = GetFileAttributesA(hib) == INVALID_FILE_ATTRIBUTES;
+    if (reg_off && file_gone) return 0;
+    snprintf(why, wn,
+             "Windows would not switch Fast Startup off%s. Nothing has been "
+             "changed on the drive. Switch it off in Control Panel, Power "
+             "Options, \"Choose what the power buttons do\", then try again.",
+             tail[0] ? " (it said so)" : "");
+    return -1;
+}
+
+void plat_keep_awake(void)
+{
+    /* ES_SYSTEM_REQUIRED, not ES_DISPLAY_REQUIRED: the install does not
+     * need the screen lit, only the machine not asleep. ES_CONTINUOUS
+     * makes it a standing request for this thread rather than a one-off
+     * nudge. */
+    SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED);
+}
+
+void plat_let_sleep(void)
+{
+    /* ES_CONTINUOUS with no other flag clears the request, so the
+     * machine's own sleep timers come back. */
+    SetThreadExecutionState(ES_CONTINUOUS);
+}
+
+int plat_restart(char *why, size_t wn)
+{
+    HANDLE tok;
+    if (OpenProcessToken(GetCurrentProcess(),
+                         TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &tok)) {
+        TOKEN_PRIVILEGES tp;
+        memset(&tp, 0, sizeof tp);
+        tp.PrivilegeCount = 1;
+        tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+        if (LookupPrivilegeValueW(NULL, L"SeShutdownPrivilege",
+                                  &tp.Privileges[0].Luid))
+            AdjustTokenPrivileges(tok, FALSE, &tp, 0, NULL, NULL);
+        CloseHandle(tok);
+    }
+    if (!ExitWindowsEx(EWX_REBOOT | EWX_FORCEIFHUNG,
+                       SHTDN_REASON_MAJOR_APPLICATION |
+                       SHTDN_REASON_MINOR_INSTALLATION |
+                       SHTDN_REASON_FLAG_PLANNED)) {
+        why_of(why, wn, "this computer would not restart", GetLastError());
+        return -1;
+    }
+    return 0;
+}
+
+int plat_file_delete(const char *path, char *why, size_t wn)
+{
+    wchar_t w[1024];
+    if (to_wide(path, w, 1024) != 0) {
+        snprintf(why, wn, "a file path on this computer could not be read");
+        return -1;
+    }
+    if (DeleteFileW(w)) return 0;
+    DWORD e = GetLastError();
+    if (e == ERROR_FILE_NOT_FOUND || e == ERROR_PATH_NOT_FOUND) return 0;
+    why_of(why, wn, "a file the installer made could not be removed", e);
+    return -1;
+}
+
+int plat_file_rename(const char *from, const char *to, char *why, size_t wn)
+{
+    make_dirs(to);
+    wchar_t wf[1024], wt[1024];
+    if (to_wide(from, wf, 1024) != 0 || to_wide(to, wt, 1024) != 0) {
+        snprintf(why, wn, "a file path on this computer could not be read");
+        return -1;
+    }
+    if (!MoveFileExW(wf, wt, MOVEFILE_REPLACE_EXISTING | MOVEFILE_COPY_ALLOWED |
+                             MOVEFILE_WRITE_THROUGH)) {
+        why_of(why, wn, "a file could not be moved into place", GetLastError());
+        return -1;
+    }
+    return 0;
+}
+
 uint64_t plat_free_space(const char *path)
 {
     char dir[MAX_PATH * 4];
@@ -974,13 +1509,16 @@ uint64_t plat_free_space(const char *path)
  */
 #define RT_AUROS_PAYLOAD  10        /* RT_RCDATA */
 
-static char g_payload_tmp[2][MAX_PATH];
+static char g_payload_tmp[5][MAX_PATH];
 static int  g_payload_n;
 
 static int payload_id(const char *name)
 {
     if (!strcmp(name, PAYLOAD_KERNEL)) return 1;
     if (!strcmp(name, PAYLOAD_INITRD)) return 2;
+    if (!strcmp(name, PAYLOAD_SHIM))   return 3;
+    if (!strcmp(name, PAYLOAD_GRUB))   return 4;
+    if (!strcmp(name, PAYLOAD_MOKMGR)) return 5;
     return 0;
 }
 
@@ -994,6 +1532,17 @@ int plat_payload_embedded(void)
                            MAKEINTRESOURCEA(RT_AUROS_PAYLOAD)))
             return 0;
     return 1;
+}
+
+uint64_t plat_payload_bytes(void)
+{
+    uint64_t total = 0;
+    for (int i = 1; i <= 5; i++) {
+        HRSRC r = FindResourceA(NULL, MAKEINTRESOURCEA(i),
+                                MAKEINTRESOURCEA(RT_AUROS_PAYLOAD));
+        if (r) total += SizeofResource(NULL, r);
+    }
+    return total;
 }
 
 int plat_payload(const char *name, char *path, size_t pn, char *why, size_t wn)
@@ -1077,7 +1626,7 @@ int plat_payload(const char *name, char *path, size_t pn, char *why, size_t wn)
                           "where it needs them.");
         return -1;
     }
-    if (g_payload_n < 2) {
+    if (g_payload_n < 5) {
         _snprintf(g_payload_tmp[g_payload_n], MAX_PATH - 1, "%s", out);
         g_payload_tmp[g_payload_n][MAX_PATH - 1] = 0;
         g_payload_n++;

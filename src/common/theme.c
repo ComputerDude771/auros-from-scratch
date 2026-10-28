@@ -3,6 +3,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include <limits.h>
+#include <math.h>
 
 static void theme_put(theme_t *t, const char *k, const char *v)
 {
@@ -80,18 +82,35 @@ const char *theme_str(const theme_t *t, const char *key, const char *fb)
     return fb;
 }
 
+/* A theme is not only the file the build wrote: the shell prefers HER
+ * copy of shell.conf, and anything she runs can write that. So the two
+ * number readers return numbers every consumer can do arithmetic on.
+ *
+ * theme_int saturates instead of truncating: (int)strtol("9999999999")
+ * is an implementation-defined wrap to some unrelated value, and
+ * LONG_MAX narrowed to int is -1.
+ *
+ * theme_num refuses nan and inf -- strtod accepts both spellings, and no
+ * theme value means either. A NaN opacity reached draw.c and became an
+ * undefined float-to-int conversion in the compositor's own process
+ * (found by tools/fuzz/fuzz_theme). The fallback is what an absent key
+ * gives, which is the honest reading of a value that is not a number. */
 int theme_int(const theme_t *t, const char *key, int fb)
 {
     const char *v = theme_str(t, key, NULL);
     if (!v || !*v) return fb;
-    return (int)strtol(v, NULL, 0);
+    long n = strtol(v, NULL, 0);
+    if (n > INT_MAX) return INT_MAX;
+    if (n < INT_MIN) return INT_MIN;
+    return (int)n;
 }
 
 double theme_num(const theme_t *t, const char *key, double fb)
 {
     const char *v = theme_str(t, key, NULL);
     if (!v || !*v) return fb;
-    return strtod(v, NULL);
+    double d = strtod(v, NULL);
+    return isfinite(d) ? d : fb;
 }
 
 uint32_t theme_color(const theme_t *t, const char *key, uint32_t fb)
