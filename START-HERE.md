@@ -16,6 +16,10 @@ designed to be resumed exactly from here.
 - A stream with no `docs/handoff/streams/<ID>.md`: its brief is in
   `docs/handoff/STREAMS.md` or §5 below, its progress in the Progress log.
 
+- **Unfinished edits from the stopped agents are saved as patches in
+  `docs/handoff/wip/` (read its README).** Partial audit results:
+  `docs/security/FINDINGS-PARTIAL.md`, `docs/LAUNCH-READINESS-PARTIAL.md`.
+
 ## 1. What AurOS is, in one paragraph
 
 A free Linux desktop (Ubuntu 24.04 base, our own shell `aurshell`) that a

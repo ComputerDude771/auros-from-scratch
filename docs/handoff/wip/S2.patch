@@ -1,0 +1,1061 @@
+diff --git a/src/aurshell/foot.c b/src/aurshell/foot.c
+index 71dd4ed..37910dc 100644
+--- a/src/aurshell/foot.c
++++ b/src/aurshell/foot.c
+@@ -207,6 +207,26 @@ int foot_height(const shell_ctx *c)
+ 
+ int foot_help_open(const shell_ctx *c) { return c && c->help_open; }
+ 
++/* GET ME OUT OF THIS PAGE, at the top of Help.
++ *
++ * Help is the one thing she is told to press when she is stuck
++ * (docs/EASY.md rule 7), so the way out of a page that frightens her is
++ * the first and biggest thing on it -- whenever there is a page to get
++ * out of. Pressing it asks the host to stop that program and say she is
++ * safe (guard.h); the band only raises the flag. */
++int foot_getout_button(const shell_ctx *c, int sw, int sh, rect *out)
++{
++    if (!c || !c->help_open || c->kiosk || c->n_wins <= 0) return 0;
++    int top = sh - foot_height(c);
++    float k = (c->text_scale > 0.1f) ? c->text_scale : 1.f;
++    int x = sw / 12; if (x < 20) x = 20;
++    int w = sw - 2 * x; if (w > (int)(560.f * k)) w = (int)(560.f * k);
++    int h = (int)(44.f + 24.f * k); if (h < FOOT_TARGET) h = FOOT_TARGET;
++    int y = top / 14; if (y < 12) y = 12;
++    *out = (rect){ x, y, w, h };
++    return 1;
++}
++
+ /* ── her chosen size, kept where she can own it ─────────────────────
+  *
+  * Her own settings file, not the system theme: changing how big the
+@@ -272,6 +292,27 @@ void foot_paint(shell_ctx *c, surface *s, shell_fonts *f)
+         font *big = f->big ? f->big : f->mid;
+         font *body = f->small ? f->small : f->mid;
+         int x = s->w / 12, y = top / 6;
++        rect gb;
++        if (foot_getout_button(c, s->w, s->h, &gb)) {
++            draw_rect(s, gb, 0x7DD3C0u, 1.f);           /* 10.6:1 with its ink */
++            font *bf = f->mid ? f->mid : f->small;
++            if (bf)
++                shell_text_elided(s, bf, (float)gb.x + 18.f,
++                                  shell_baseline(bf, (float)gb.y, (float)gb.h),
++                                  (float)gb.w - 36.f, "Get me out of this page",
++                                  0x0B1F1Au, 1.f);
++            y = gb.y + gb.h + 10;
++            if (body) {
++                shell_text(s, body, (float)x, (float)y + font_ascent(body),
++                           "For a page that frightens you, says you have a virus,",
++                           FOOT_INK, 0.92f);
++                y += (int)(font_line_height(body) * 1.3f);
++                shell_text(s, body, (float)x, (float)y + font_ascent(body),
++                           "or will not let you leave. The sound goes off too.",
++                           FOOT_INK, 0.92f);
++                y += (int)(font_line_height(body) * 2.0f);
++            }
++        }
+         if (big) {
+             shell_text(s, big, (float)x, (float)y + font_ascent(big),
+                        "Where you are", FOOT_INK, 1.f);
+@@ -448,6 +489,10 @@ void foot_open_only(shell_ctx *c, int *flag)
+      * "Let me look first" does, and it is the right meaning for
+      * "she pressed Settings" too. */
+     c->welcome_open = 0;
++    /* And the guard's cards (guard.h), which the shell raises by itself
++     * too. guard_show() opens its card through here, so a card is never
++     * left on screen under something she opened over it. */
++    c->guard_open = 0;
+     c->power_sel = 0;          /* nothing is chosen until she chooses */
+     *flag = want;
+ }
+@@ -571,7 +616,14 @@ int foot_click(shell_ctx *c, int x, int y)
+     /* A press anywhere on the help panel closes it. Asking her to find
+      * the same small button again to get rid of the thing that exists
+      * to help her would be a joke at her expense. */
+-    if (c->help_open && y < c->screen_h) { c->help_open = 0; return 1; }
++    if (c->help_open && y < c->screen_h) {
++        rect gb;
++        if (foot_getout_button(c, c->screen_w, full_h, &gb) &&
++            x >= gb.x && x < gb.x + gb.w && y >= gb.y && y < gb.y + gb.h)
++            c->want_get_out = 1;
++        c->help_open = 0;
++        return 1;
++    }
+ 
+     /* Inside the band but not on a button: swallowed, so a near-miss
+      * does not fall through and press whatever the archetype has at the
+diff --git a/src/aurshell/foot.h b/src/aurshell/foot.h
+index b496545..05aec6f 100644
+--- a/src/aurshell/foot.h
++++ b/src/aurshell/foot.h
+@@ -101,6 +101,11 @@ void foot_motion(shell_ctx *c, int x, int y);
+  * archetype underneath it. */
+ int  foot_help_open(const shell_ctx *c);
+ 
++/* The "Get me out of this page" button at the top of Help, in full-screen
++ * coordinates, when there is a page to get out of. Returns 0 when it is
++ * not on screen. Pressing it sets c->want_get_out (see guard.h). */
++int  foot_getout_button(const shell_ctx *c, int sw, int sh, rect *out);
++
+ /* A key, while the band's own overlays are up. Returns 1 if it was
+  * taken -- which is EVERY key while one of them is showing, because
+  * they cover the screen and a key that fell through would land in an
+diff --git a/src/aurshell/guard.c b/src/aurshell/guard.c
+new file mode 100644
+index 0000000..ecd0b2d
+--- /dev/null
++++ b/src/aurshell/guard.c
+@@ -0,0 +1,642 @@
++/* guard.c — see guard.h. */
++#define _GNU_SOURCE
++#include <errno.h>
++#include <fcntl.h>
++#include <pwd.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <time.h>
++#include <unistd.h>
++#include <sys/stat.h>
++#include <linux/input.h>
++
++#include <dbus/dbus.h>
++
++#include "guard.h"
++#include "foot.h"
++#include "power.h"
++#include "draw.h"
++
++/* ── the fixed look ─────────────────────────────────────────────────
++ *
++ * Not from the theme, for the reason foot.h gives for the band: the
++ * screen that gets her out of trouble must not be styled by whatever
++ * got her into it. Ink on ground is 13.9:1; the teal button's dark ink
++ * on teal is 10.6:1. */
++#define G_BG      0x14171Bu
++#define G_INK     0xECEFF2u
++#define G_DIM     0xB8C0C8u
++#define G_RULE    0x6E7680u
++#define G_HOT     0x23272Du
++#define G_TEAL    0x7DD3C0u
++#define G_TEAL_HI 0x9BE3D3u
++#define G_ON_TEAL 0x0B1F1Au
++#define G_TARGET  44
++
++/* Escape three times inside this, or held this long, asks the question. */
++#define ESC_WINDOW_MS  2000u
++#define ESC_HOLD_MS    1500u
++/* The Windows key pressed and let go alone, inside this, is Home. */
++#define SUPER_TAP_MS   1000u
++
++/* ── what each card says ───────────────────────────────────────────
++ *
++ * docs/EASY.md rule 2 and rule 8: her words, what happened in terms of
++ * what she was doing, and what she can do next. tools/guardtest.c reads
++ * these through guard_card_text() and holds them to the same word list
++ * tools/plainwords.sh uses. */
++static const char *TITLE[] = {
++    [GUARD_ASK]       = "Get out of this page?",
++    [GUARD_SAFE]      = "You are safe.",
++    [GUARD_REMOTE]    = "Wait. Is someone on the phone with you?",
++    [GUARD_REMOTE_GO] = "All right.",
++};
++static const char *ASK_LINES[] = {
++    "The sound is off while you decide.",
++    "If a page says your computer has a virus, or tells you to call a "
++    "number, it is a trick. Do not call it.",
++    NULL
++};
++static const char *SAFE_LINES[] = {
++    "That page is closed, and the sound is off.",
++    "Pages like that are made to frighten people into calling a number. "
++    "Do not call it. AurOS will never ask you to call anyone.",
++    "The sound comes back when you press OK.",
++    NULL
++};
++/* The first line is the owner's sentence, word for word. */
++static const char *REMOTE_LINES[] = {
++    "Scammers ask people to install this. Only continue if YOU called "
++    "someone you know.",
++    "%s lets another person see and control this computer from far away.",
++    "Your bank, the police, Microsoft and AurOS will never ask you to "
++    "install it.",
++    NULL
++};
++static const char *REMOTE_GO_LINES[] = {
++    "Go back to Get more programs and press Install again.",
++    "If anyone asks you for bank details or a payment, put the phone down.",
++    NULL
++};
++
++static const char *BTN_LABEL[] = {
++    [GB_GET_OUT] = "Yes, get me out",
++    [GB_STAY]    = "No, go back",
++    [GB_OK]      = "OK",
++    [GB_DONT]    = "Don't install it",
++    [GB_CALLED]  = "I called someone I know",
++};
++
++/* For the harness: every sentence a card can show, NULL-terminated per
++ * card; i = 0 is the title. */
++const char *guard_card_text(int card, int i);
++const char *guard_card_text(int card, int i)
++{
++    const char **L = card == GUARD_ASK ? ASK_LINES :
++                     card == GUARD_SAFE ? SAFE_LINES :
++                     card == GUARD_REMOTE ? REMOTE_LINES :
++                     card == GUARD_REMOTE_GO ? REMOTE_GO_LINES : NULL;
++    if (!L) return NULL;
++    if (i == 0) return TITLE[card];
++    return L[i - 1];
++}
++const char *guard_button_label(int id);
++const char *guard_button_label(int id)
++{
++    return (id >= GB_GET_OUT && id <= GB_CALLED) ? BTN_LABEL[id] : NULL;
++}
++
++/* ── the gate's words, and the programs' own names ─────────────────
++ *
++ * The same words the polkit rule matches (rootfs/etc/polkit-1/rules.d/
++ * 40-auros-remote-access.rules); tools/scamtest checks the two lists
++ * agree. A word with no entry here is still shown, capitalised. */
++static const struct { const char *word, *name; } PRETTY[] = {
++    { "anydesk",               "AnyDesk" },
++    { "teamviewer",            "TeamViewer" },
++    { "rustdesk",              "RustDesk" },
++    { "hoptodesk",             "HopToDesk" },
++    { "todesk",                "ToDesk" },
++    { "sunlogin",              "Sunlogin" },
++    { "sunloginclient",        "Sunlogin" },
++    { "splashtop",             "Splashtop" },
++    { "screenconnect",         "ScreenConnect" },
++    { "connectwise",           "ConnectWise" },
++    { "connectwisecontrol",    "ConnectWise" },
++    { "nomachine",             "NoMachine" },
++    { "realvnc",               "RealVNC" },
++    { "x11vnc",                "x11vnc" },
++    { "tightvncserver",        "TightVNC" },
++    { "krfb",                  "Desktop Sharing" },
++    { "xrdp",                  "xrdp" },
++    { "getscreen",             "Getscreen" },
++    { "dwagent",               "DWService" },
++    { "dwservice",             "DWService" },
++    { "zohoassist",            "Zoho Assist" },
++    { "islonline",             "ISL Online" },
++    { "logmein",               "LogMeIn" },
++    { "gotoresolve",           "GoTo Resolve" },
++    { "supremo",               "Supremo" },
++    { "ultraviewer",           "UltraViewer" },
++    { "aeroadmin",             "AeroAdmin" },
++    { "chrome-remote-desktop", "Chrome Remote Desktop" },
++    { "tigervnc-server",       "TigerVNC" },
++};
++
++const char *guard_pretty(const char *name)
++{
++    static char cap[48];
++    if (!name || !*name) return "This program";
++    for (size_t i = 0; i < sizeof PRETTY / sizeof PRETTY[0]; i++)
++        if (!strcmp(PRETTY[i].word, name)) return PRETTY[i].name;
++    snprintf(cap, sizeof cap, "%s", name);
++    if (cap[0] >= 'a' && cap[0] <= 'z') cap[0] = (char)(cap[0] - 'a' + 'A');
++    return cap;
++}
++
++static int word_ok(const char *s)
++{
++    if (!s || !*s || strlen(s) > 40) return 0;
++    for (const char *p = s; *p; p++)
++        if (!((*p >= 'a' && *p <= 'z') || (*p >= '0' && *p <= '9') || *p == '-'))
++            return 0;
++    return 1;
++}
++
++/* ── the sound, held off while a card that says so is up ─────────── */
++
++static struct {
++    int held;          /* we muted, and owe the sound back */
++    int was_muted;     /* what it was before we did        */
++} S;
++
++static int card_mutes(int g) { return g == GUARD_ASK || g == GUARD_SAFE; }
++
++static void sound_hold(void)
++{
++    if (S.held) return;
++    S.was_muted = power_muted();
++    power_mute_set(1);
++    S.held = 1;
++}
++
++static void sound_release(void)
++{
++    if (!S.held) return;
++    S.held = 0;
++    if (!S.was_muted) power_mute_set(0);
++}
++
++/* ── cards ──────────────────────────────────────────────────────── */
++
++void guard_show(shell_ctx *c, int which)
++{
++    /* One thing covers the desktop at a time, by the band's own rule:
++     * foot_open_only() closes every panel (and any card of ours), and
++     * the throwaway flag it is handed stays shut. */
++    int none = 1;
++    foot_open_only(c, &none);
++    c->guard_open = which;
++    c->guard_sel  = which == GUARD_ASK    ? GB_GET_OUT :
++                    which == GUARD_REMOTE ? GB_DONT : GB_OK;
++    if (card_mutes(which)) sound_hold();
++}
++
++int guard_buttons(const shell_ctx *c, int sw, int sh, rect *out, int *which)
++{
++    if (!c || !c->guard_open) return 0;
++    int ids[GUARD_BTN_MAX], n = 0;
++    switch (c->guard_open) {
++    case GUARD_ASK:    ids[n++] = GB_GET_OUT; ids[n++] = GB_STAY;   break;
++    case GUARD_REMOTE: ids[n++] = GB_DONT;    ids[n++] = GB_CALLED; break;
++    default:           ids[n++] = GB_OK;                            break;
++    }
++    int body = sh - foot_height(c);
++    if (body <= 0) body = sh;
++    float k = (c->text_scale > 0.1f) ? c->text_scale : 1.f;
++
++    /* A column down the left measure, like the power question: read one
++     * at a time, the safe one first and biggest. Anchored to the bottom
++     * of the space above the band so the words above get whatever room
++     * the screen has. */
++    int gx = sw / 12; if (gx < 20) gx = 20;
++    int w = sw - 2 * gx; if (w > (int)(560.f * k)) w = (int)(560.f * k);
++    int h = (int)(44.f + 24.f * k); if (h < G_TARGET) h = G_TARGET;
++    int gap = (int)(12.f * k); if (gap < 8) gap = 8;
++    int total = n * h + (n - 1) * gap;
++    int top = body - total - (int)(28.f * k);
++    if (top < body / 2) top = body / 2;
++    if (top + total > body) top = body - total;
++    if (top < 0) top = 0;
++    for (int i = 0; i < n; i++) {
++        out[i] = (rect){ gx, top + i * (h + gap), w, h };
++        which[i] = ids[i];
++    }
++    return n;
++}
++
++void guard_press(shell_ctx *c, int id)
++{
++    switch (id) {
++    case GB_GET_OUT:
++        c->want_get_out = 1;           /* the host stops the program */
++        c->guard_open = GUARD_SAFE;
++        c->guard_sel = GB_OK;
++        break;
++    case GB_STAY:
++    case GB_OK:
++        c->guard_open = GUARD_NONE;
++        break;
++    case GB_DONT:
++        snprintf(c->say, sizeof c->say, "%s was not installed.",
++                 guard_pretty(c->guard_name));
++        c->guard_open = GUARD_NONE;
++        break;
++    case GB_CALLED:
++        if (guard_write_consent(c->guard_name) == 0) {
++            c->guard_open = GUARD_REMOTE_GO;
++            c->guard_sel = GB_OK;
++        } else {
++            snprintf(c->say, sizeof c->say,
++                     "That did not work. %s was not installed.",
++                     guard_pretty(c->guard_name));
++            c->guard_open = GUARD_NONE;
++        }
++        break;
++    }
++}
++
++int guard_click(shell_ctx *c, int x, int y)
++{
++    if (!c->guard_open) return 0;
++    rect b[GUARD_BTN_MAX]; int id[GUARD_BTN_MAX];
++    int n = guard_buttons(c, c->screen_w, c->screen_h + foot_height(c), b, id);
++    for (int i = 0; i < n; i++)
++        if (x >= b[i].x && x < b[i].x + b[i].w && y >= b[i].y && y < b[i].y + b[i].h) {
++            guard_press(c, id[i]);
++            return 1;
++        }
++    /* Anywhere else on the card is swallowed: what is underneath is the
++     * page she is trying to leave. */
++    return y < c->screen_h;
++}
++
++void guard_motion(shell_ctx *c, int x, int y)
++{
++    if (!c->guard_open) return;
++    rect b[GUARD_BTN_MAX]; int id[GUARD_BTN_MAX];
++    int n = guard_buttons(c, c->screen_w, c->screen_h + foot_height(c), b, id);
++    for (int i = 0; i < n; i++)
++        if (x >= b[i].x && x < b[i].x + b[i].w && y >= b[i].y && y < b[i].y + b[i].h)
++            c->guard_sel = id[i];
++}
++
++int guard_card_key(shell_ctx *c, int code)
++{
++    if (!c->guard_open) return 0;
++    rect b[GUARD_BTN_MAX]; int id[GUARD_BTN_MAX];
++    int n = guard_buttons(c, c->screen_w, c->screen_h + foot_height(c), b, id);
++    int at = 0;
++    for (int i = 0; i < n; i++) if (id[i] == c->guard_sel) at = i;
++    switch (code) {
++    case KEY_ENTER: case KEY_KPENTER: case KEY_SPACE:
++        guard_press(c, id[at]);
++        break;
++    case KEY_UP: case KEY_LEFT:
++        c->guard_sel = id[(at + n - 1) % n];
++        break;
++    case KEY_DOWN: case KEY_RIGHT: case KEY_TAB:
++        c->guard_sel = id[(at + 1) % n];
++        break;
++    case KEY_ESC:
++        /* On the question Escape opened, she may still be pressing it:
++         * it must not decide anything. On the remote-access question it
++         * is "Don't install it", the safe answer. On the others it is OK. */
++        if (c->guard_open == GUARD_REMOTE) guard_press(c, GB_DONT);
++        else if (c->guard_open != GUARD_ASK) guard_press(c, GB_OK);
++        break;
++    default:
++        break;
++    }
++    return 1;
++}
++
++/* ── keys, before anyone else sees them ─────────────────────────── */
++
++static struct {
++    uint32_t esc_at[3];
++    int      esc_n;
++    uint32_t esc_down;
++    int      esc_fired;
++    int      super_alone;
++    uint32_t super_at;
++    uint32_t taken[(KEY_MAX + 32) / 32];
++} K;
++
++static void take(int code)   { if (code >= 0 && code <= KEY_MAX) K.taken[code >> 5] |=  1u << (code & 31); }
++static int  taken(int code)  { return code >= 0 && code <= KEY_MAX && (K.taken[code >> 5] & (1u << (code & 31))); }
++static void untake(int code) { if (code >= 0 && code <= KEY_MAX) K.taken[code >> 5] &= ~(1u << (code & 31)); }
++
++int guard_key(shell_ctx *c, int code, int value, uint32_t now)
++{
++    /* A kiosk is one browser for a counter, set up by somebody else,
++     * and it swallows Escape on purpose. */
++    if (!c || c->kiosk) return GUARD_PASS;
++
++    /* A key taken on the way down is taken on the way up, or the
++     * program behind gets a release it never saw pressed. */
++    if (value == 0 && taken(code)) { untake(code); return GUARD_TAKEN; }
++
++    if (code == KEY_LEFTMETA || code == KEY_RIGHTMETA) {
++        if (value == 1) { K.super_alone = 1; K.super_at = now; }
++        else if (value == 0) {
++            int tap = K.super_alone && (uint32_t)(now - K.super_at) < SUPER_TAP_MS;
++            K.super_alone = 0;
++            if (tap && !SHELL_PANEL_OPEN(c)) return GUARD_HOME;
++        }
++        return GUARD_PASS;
++    }
++    if (value == 1) K.super_alone = 0;        /* a chord, not a tap */
++
++    /* With a panel up, Escape is that panel's way out. */
++    if (SHELL_PANEL_OPEN(c) || code != KEY_ESC) return GUARD_PASS;
++
++    if (value == 1) {
++        K.esc_down = now; K.esc_fired = 0;
++        int m = 0;
++        for (int i = 0; i < K.esc_n; i++)
++            if ((uint32_t)(now - K.esc_at[i]) < ESC_WINDOW_MS) K.esc_at[m++] = K.esc_at[i];
++        K.esc_n = m;
++        if (K.esc_n < 3) K.esc_at[K.esc_n++] = now;
++        if (K.esc_n >= 3) {
++            K.esc_n = 0; K.esc_fired = 1;
++            take(code);
++            guard_show(c, GUARD_ASK);
++            return GUARD_TAKEN;
++        }
++        return GUARD_PASS;
++    }
++    if (value == 2 && !K.esc_fired && (uint32_t)(now - K.esc_down) >= ESC_HOLD_MS) {
++        K.esc_fired = 1; K.esc_n = 0;
++        take(code);
++        guard_show(c, GUARD_ASK);
++        return GUARD_TAKEN;
++    }
++    return GUARD_PASS;
++}
++
++/* ── the remote-access question ─────────────────────────────────── */
++
++static const char *my_name(void)
++{
++    static char name[64];
++    if (!name[0]) {
++        struct passwd *pw = getpwuid(geteuid());
++        snprintf(name, sizeof name, "%s", pw && pw->pw_name ? pw->pw_name : "");
++    }
++    return name;
++}
++
++static int trusted_uid(long uid)
++{
++    if (uid == 0) return 1;
++    struct passwd *pw = getpwnam("polkitd");
++    return pw && (long)pw->pw_uid == uid;
++}
++
++int guard_remote_asked(shell_ctx *c, const char *name, const char *user,
++                       long sender_uid)
++{
++    if (!c || c->kiosk || !word_ok(name) || !user) return 0;
++    if (!trusted_uid(sender_uid)) {
++        fprintf(stderr, "aurshell: ignored a remote-access signal from uid %ld\n", sender_uid);
++        return 0;
++    }
++    if (strcmp(user, my_name()) != 0) return 0;      /* somebody else's install */
++    if (c->guard_open == GUARD_REMOTE && !strcmp(c->guard_name, name)) return 0;
++    snprintf(c->guard_name, sizeof c->guard_name, "%s", name);
++    guard_show(c, GUARD_REMOTE);
++    return 1;
++}
++
++int guard_write_consent(const char *name)
++{
++    if (!word_ok(name)) return -1;
++    const char *me = my_name();
++    if (!*me || strchr(me, '/')) return -1;
++    const char *dir = getenv("AUROS_CONSENT_DIR");
++    if (!dir || !*dir) dir = "/run/auros-remote-access";
++
++    char udir[512], path[600];
++    snprintf(udir, sizeof udir, "%s/%s", dir, me);
++    if (mkdir(udir, 0755) < 0 && errno != EEXIST) return -1;
++    struct stat st;
++    /* Her own directory, really a directory, really hers: the parent is
++     * shared by everyone, and a name somebody else made first is not
++     * somewhere to write. */
++    if (lstat(udir, &st) < 0 || !S_ISDIR(st.st_mode) || st.st_uid != geteuid()) return -1;
++    snprintf(path, sizeof path, "%s/%s", udir, name);
++    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, 0644);
++    if (fd < 0) return -1;
++    static const char yes[] = "she called someone she knows\n";
++    int ok = write(fd, yes, sizeof yes - 1) == (ssize_t)(sizeof yes - 1);
++    /* The gate trusts it for fifteen minutes from NOW, so the time is
++     * set even when the file was already there. */
++    ok = ok && futimens(fd, NULL) == 0;
++    close(fd);
++    return ok ? 0 : -1;
++}
++
++/* ── the system bus ─────────────────────────────────────────────── */
++
++#define GUARD_IFACE  "org.auros.Guard"
++#define GUARD_MEMBER "RemoteAccess"
++#define BUS_RETRY_MS 5000u
++
++static struct {
++    DBusConnection *bus;
++    uint32_t        next_try;
++} B;
++
++static uint32_t mono_now(void)
++{
++    struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
++    return (uint32_t)(ts.tv_sec * 1000u + ts.tv_nsec / 1000000u);
++}
++
++static void bus_close(void)
++{
++    if (!B.bus) return;
++    dbus_connection_close(B.bus);
++    dbus_connection_unref(B.bus);
++    B.bus = NULL;
++}
++
++static void bus_try(void)
++{
++    if (B.bus) return;
++    uint32_t t = mono_now();
++    if (B.next_try && (int32_t)(t - B.next_try) < 0) return;
++    B.next_try = t + BUS_RETRY_MS;
++    DBusError e; dbus_error_init(&e);
++    /* Private: a connection of our own that can be closed and reopened,
++     * not the process-wide singleton. The system bus is always up on a
++     * booted machine; when it is not (a harness, a broken boot) this
++     * fails at once and is tried again in a few seconds. */
++    DBusConnection *b = dbus_bus_get_private(DBUS_BUS_SYSTEM, &e);
++    if (!b) { dbus_error_free(&e); return; }
++    dbus_connection_set_exit_on_disconnect(b, FALSE);
++    dbus_bus_add_match(b, "type='signal',interface='" GUARD_IFACE
++                          "',member='" GUARD_MEMBER "'", NULL);
++    dbus_connection_flush(b);
++    B.bus = b;
++}
++
++static long sender_uid(const char *sender)
++{
++    if (!sender) return -1;
++    DBusMessage *m = dbus_message_new_method_call("org.freedesktop.DBus",
++        "/org/freedesktop/DBus", "org.freedesktop.DBus", "GetConnectionUnixUser");
++    if (!m) return -1;
++    dbus_message_append_args(m, DBUS_TYPE_STRING, &sender, DBUS_TYPE_INVALID);
++    DBusError e; dbus_error_init(&e);
++    DBusMessage *r = dbus_connection_send_with_reply_and_block(B.bus, m, 500, &e);
++    dbus_message_unref(m);
++    long uid = -1;
++    if (r) {
++        dbus_uint32_t u;
++        if (dbus_message_get_args(r, &e, DBUS_TYPE_UINT32, &u, DBUS_TYPE_INVALID)) uid = (long)u;
++        dbus_message_unref(r);
++    }
++    dbus_error_free(&e);
++    return uid;
++}
++
++static int bus_pump(shell_ctx *c)
++{
++    if (!B.bus) return 0;
++    if (!dbus_connection_read_write(B.bus, 0)) { bus_close(); return 0; }
++    int changed = 0;
++    DBusMessage *m;
++    while ((m = dbus_connection_pop_message(B.bus)) != NULL) {
++        if (dbus_message_is_signal(m, GUARD_IFACE, GUARD_MEMBER)) {
++            const char *name = NULL, *user = NULL;
++            DBusError e; dbus_error_init(&e);
++            if (dbus_message_get_args(m, &e, DBUS_TYPE_STRING, &name,
++                                      DBUS_TYPE_STRING, &user, DBUS_TYPE_INVALID))
++                changed |= guard_remote_asked(c, name, user,
++                                              sender_uid(dbus_message_get_sender(m)));
++            dbus_error_free(&e);
++        } else if (dbus_message_is_signal(m, DBUS_INTERFACE_LOCAL, "Disconnected")) {
++            dbus_message_unref(m);
++            bus_close();
++            return changed;
++        }
++        dbus_message_unref(m);
++    }
++    return changed;
++}
++
++int guard_step(shell_ctx *c)
++{
++    int changed = 0;
++    if (c && !c->kiosk) {
++        bus_try();
++        changed |= bus_pump(c);
++    }
++    /* The sound comes back when the card that took it goes, however it
++     * went -- its own button, Escape, or the band opening something
++     * over it. */
++    if (S.held && !(c && card_mutes(c->guard_open))) { sound_release(); changed = 1; }
++    return changed;
++}
++
++/* ── painting ───────────────────────────────────────────────────── */
++
++/* Greedy word wrap into the measure. Returns the y after the last line,
++ * and stops (without drawing) at `limit` so words never run under the
++ * buttons -- the most important sentence is always first. */
++static float wrap(surface *s, font *ft, float x, float y, float w, float limit,
++                  const char *text, uint32_t ink)
++{
++    if (!ft || !text) return y;
++    float lh = font_line_height(ft) * 1.25f;
++    char line[512];
++    const char *p = text;
++    while (*p) {
++        while (*p == ' ') p++;
++        size_t len = 0, fit = 0;
++        for (;;) {
++            size_t n = len;
++            while (p[n] == ' ') n++;
++            while (p[n] && p[n] != ' ') n++;
++            if (n >= sizeof line) break;
++            memcpy(line, p, n); line[n] = 0;
++            if (fit && font_text_width(ft, line) > w) break;
++            fit = n; len = n;
++            if (!p[n]) break;
++        }
++        if (!fit) {                         /* one word wider than the measure */
++            while (p[fit] && p[fit] != ' ' && fit + 1 < sizeof line) fit++;
++        }
++        if (y + lh > limit) return y;
++        memcpy(line, p, fit); line[fit] = 0;
++        shell_text(s, ft, x, y + font_ascent(ft), line, ink, 1.f);
++        y += lh;
++        p += fit;
++    }
++    return y;
++}
++
++void guard_paint(shell_ctx *c, surface *s, shell_fonts *f)
++{
++    if (!c->guard_open) return;
++    int band = foot_height(c);
++    int top = s->h - band;
++    float k = (c->text_scale > 0.1f) ? c->text_scale : 1.f;
++    draw_rect(s, (rect){ 0, 0, s->w, top }, G_BG, 0.97f);
++
++    rect b[GUARD_BTN_MAX]; int id[GUARD_BTN_MAX];
++    int n = guard_buttons(c, s->w, s->h, b, id);
++    float limit = n ? (float)b[0].y - 16.f * k : (float)top;
++
++    int gx = s->w / 12; if (gx < 20) gx = 20;
++    float w = (float)(s->w - 2 * gx);
++    if (w > 900.f * k) w = 900.f * k;
++    float y = 36.f * k;
++
++    font *big  = f->big ? f->big : f->mid;
++    font *lead = f->mid ? f->mid : f->small;
++    font *body = f->small ? f->small : f->mid;
++    y = wrap(s, big, (float)gx, y, w, limit, TITLE[c->guard_open], G_INK);
++    y += 14.f * k;
++
++    for (int i = 1; ; i++) {
++        const char *t = guard_card_text(c->guard_open, i);
++        if (!t) break;
++        char buf[256];
++        if (strstr(t, "%s")) { snprintf(buf, sizeof buf, t, guard_pretty(c->guard_name)); t = buf; }
++        /* The first sentence is the one that matters: in the bold face,
++         * full ink. The rest support it. */
++        y = wrap(s, i == 1 ? lead : body, (float)gx, y, w, limit, t,
++                 i == 1 ? G_INK : G_DIM);
++        y += 10.f * k;
++    }
++
++    for (int i = 0; i < n; i++) {
++        int primary = (i == 0);
++        int hot = (c->guard_sel == id[i]);
++        corners rr = { 8, 8, 8, 8 };
++        if (primary) draw_round_rect(s, b[i], rr, hot ? G_TEAL_HI : G_TEAL, 1.f);
++        else         draw_round_rect(s, b[i], rr, hot ? G_HOT : G_BG, 1.f);
++        if (hot)          draw_round_rect_border(s, b[i], rr, 3.f, G_INK, 1.f);
++        else if (!primary) draw_round_rect_border(s, b[i], rr, 1.5f, G_RULE, 1.f);
++        font *ft = lead;
++        if (ft) {
++            float by = shell_baseline(ft, (float)b[i].y, (float)b[i].h);
++            shell_text_elided(s, ft, (float)b[i].x + 18.f, by, (float)b[i].w - 36.f,
++                              BTN_LABEL[id[i]], primary ? G_ON_TEAL : G_INK, 1.f);
++        }
++    }
++}
+diff --git a/src/aurshell/guard.h b/src/aurshell/guard.h
+new file mode 100644
+index 0000000..f6b5b04
+--- /dev/null
++++ b/src/aurshell/guard.h
+@@ -0,0 +1,140 @@
++/* guard.h — the two moments a scammer counts on, answered by the shell.
++ *
++ * The number one real danger to the person this product is for is not
++ * a virus. It is a page that fills the screen, beeps, says her computer
++ * is infected and gives a number to call -- and then a stranger on the
++ * phone who talks her into installing a program that lets them control
++ * the machine. Both are social, not technical, so both are answered in
++ * the one place she is always looking: the screen the shell draws.
++ *
++ * 1. GET ME OUT OF THIS PAGE
++ *
++ *    Two things were already true and are relied on, not replaced:
++ *    the shell never grants a program's request to go full screen
++ *    (session.c configures every window with fullscreen=0), and nothing
++ *    a program draws can cover the band at the bottom (foot.h). What
++ *    was missing was a way out she can find in a panic:
++ *
++ *      - the band's Help shows a big "Get me out of this page" button
++ *        whenever something is open (foot.c paints it, sets want_get_out);
++ *      - Escape pressed three times in two seconds, or held down, asks
++ *        "Get out of this page?" -- Escape is the key a frightened
++ *        person presses, and the page cannot take it from the shell;
++ *      - the Windows key on its own always goes Home, in every look.
++ *
++ *    Getting out turns the sound off at once (the beeping is the panic),
++ *    stops the program she was looking at outright -- not politely: a
++ *    polite close is exactly what a trap page is built to refuse -- and
++ *    says, calmly, that she is safe and that the page was a trick.
++ *    Firefox's policy (rootfs/etc/firefox/policies) makes sure the page
++ *    does not come back when Firefox is opened again.
++ *
++ * 2. BEFORE A REMOTE-CONTROL PROGRAM IS INSTALLED
++ *
++ *    rootfs/etc/polkit-1/rules.d/40-auros-remote-access.rules refuses
++ *    to install AnyDesk, TeamViewer, RustDesk and the like until she has
++ *    said, here, that she called someone she knows. The refusal comes
++ *    with a signal on the system bus (sent by
++ *    /usr/lib/auros/remote-access-gate, as polkitd), and this file puts
++ *    the question on the screen:
++ *
++ *      "Scammers ask people to install this.
++ *       Only continue if YOU called someone you know."
++ *
++ *    "Don't install it" is the big button and the one Enter and Escape
++ *    press. "I called someone I know" leaves a note the gate reads (for
++ *    fifteen minutes), and tells her to press Install again.
++ *
++ * Nothing here is privileged. The shell runs as her; the note is a file
++ * in a sticky world-writable directory that only she can write HER note
++ * in; and the gate only ever says "not yet" -- it never grants anything
++ * the normal rules would not.
++ */
++#ifndef AUROS_GUARD_H
++#define AUROS_GUARD_H
++
++#include <stdint.h>
++#include "shell.h"
++
++/* What c->guard_open holds. 0 is "nothing on screen". */
++enum {
++    GUARD_NONE = 0,
++    GUARD_ASK,          /* "Get out of this page?" (after Escape)   */
++    GUARD_SAFE,         /* "You are safe." (after getting out)      */
++    GUARD_REMOTE,       /* "Scammers ask people to install this."   */
++    GUARD_REMOTE_GO     /* "Press Install again."                   */
++};
++
++/* What a card's buttons do, as ids for guard_buttons(). */
++enum {
++    GB_GET_OUT = 1,     /* ASK: yes, get me out          */
++    GB_STAY,            /* ASK: no, go back              */
++    GB_OK,              /* SAFE / REMOTE_GO: OK          */
++    GB_DONT,            /* REMOTE: don't install it      */
++    GB_CALLED           /* REMOTE: I called someone I know */
++};
++
++/* ── keys ──────────────────────────────────────────────────────────
++ *
++ * Every keyboard event goes through guard_key() first, while no panel
++ * is open, with evdev's value (1 press, 2 repeat, 0 release) and a
++ * millisecond clock. It returns one of these. */
++enum { GUARD_PASS = 0,   /* not ours; deliver it as usual          */
++       GUARD_TAKEN,      /* ours; deliver it to nobody             */
++       GUARD_HOME };     /* the Windows key, alone: go Home        */
++int  guard_key(shell_ctx *c, int code, int value, uint32_t now_ms);
++
++/* A key while a guard card is on screen. Returns 1 (every key is taken:
++ * the card covers the screen). Enter presses the chosen button; Escape
++ * does nothing on the Escape-opened question, because she may still be
++ * pressing it, and means "Don't install it" on the remote-access one. */
++int  guard_card_key(shell_ctx *c, int code);
++
++/* ── cards ──────────────────────────────────────────────────────── */
++
++/* Open one. Closes every other panel first (via foot_open_only's rule:
++ * one thing covers the desktop at a time). */
++void guard_show(shell_ctx *c, int which);
++
++/* Where the buttons of the card on screen are, in full-screen
++ * coordinates; ids from the GB_* list. ONE function for painting,
++ * clicking and the harness. Returns how many. */
++#define GUARD_BTN_MAX 2
++int  guard_buttons(const shell_ctx *c, int sw, int sh, rect *out, int *which);
++
++/* A press. Returns 1 if the card took it (anywhere on a card is taken). */
++int  guard_click(shell_ctx *c, int x, int y);
++void guard_motion(shell_ctx *c, int x, int y);
++void guard_paint(shell_ctx *c, surface *full, shell_fonts *f);
++
++/* A button, by id: what a click or Enter on it does. */
++void guard_press(shell_ctx *c, int id);
++
++/* ── the remote-access question ────────────────────────────────────
++ *
++ * `name` is the gate's word for the program ("anydesk"), `user` whose
++ * install it was, `sender_uid` who sent the signal. Shown only when the
++ * sender is root or polkitd and the user is the one running this shell
++ * -- any program can send a signal on the system bus, and a question
++ * that anything can raise is a question she learns to dismiss. Returns
++ * 1 if the question is now on screen. */
++int  guard_remote_asked(shell_ctx *c, const char *name, const char *user,
++                        long sender_uid);
++
++/* Her answer, written where the gate reads it:
++ * $AUROS_CONSENT_DIR (default /run/auros-remote-access)/<user>/<name>.
++ * Returns 0 on success. */
++int  guard_write_consent(const char *name);
++
++/* The program's own name for a gate word: "anydesk" -> "AnyDesk". */
++const char *guard_pretty(const char *name);
++
++/* ── the loop ───────────────────────────────────────────────────── */
++
++/* Once per pass of the main loop: listens on the system bus (connecting
++ * lazily and retrying), and turns the sound back on when a card that
++ * turned it off goes away -- by whatever route it went. Returns 1 when
++ * something changed and the screen needs painting. */
++int  guard_step(shell_ctx *c);
++
++#endif
+diff --git a/src/aurshell/main.c b/src/aurshell/main.c
+index 7795852..adaa14c 100644
+--- a/src/aurshell/main.c
++++ b/src/aurshell/main.c
+@@ -39,6 +39,7 @@
+ #include "settings.h"
+ #include "bt.h"
+ #include "welcome.h"
++#include "guard.h"
+ #include "watch.h"
+ #include "appwatch.h"
+ #include "run.h"
+@@ -1413,6 +1414,12 @@ int main(int argc, char **argv)
+         }
+         power_step();
+         if (settings_step(&c)) dirty = 1;
++        /* The guard: the system bus's word that a remote-control
++         * program was held back, and the sound given back when a card
++         * that took it goes (guard.h). */
++        if (guard_step(&c)) dirty = 1;
++        /* One line somebody asked to have said. */
++        if (c.say[0]) { osd_say(c.say); c.say[0] = 0; dirty = 1; }
+         /* The handful of things this computer should speak up about
+          * without being asked. Today that is the battery: reading it
+          * and warning about it are not the same feature, and a laptop
+@@ -1579,6 +1586,33 @@ int main(int argc, char **argv)
+             dirty = 1;
+         }
+ 
++        /* SHE ASKED TO GET OUT OF THE PAGE SHE IS LOOKING AT (guard.h).
++         *
++         * Not "Close this". A polite close is a question the program
++         * gets to answer, and a page built to trap her is built to
++         * answer it with "Leave this page?" or by opening itself again.
++         * So the program she is looking at is stopped outright -- the
++         * whole client, which for a browser is every one of its windows
++         * -- and Firefox's policy keeps it from bringing the page back
++         * when it is opened again. Whatever happens here, the card says
++         * she is safe: the sound is already off. */
++        if (c.want_get_out) {
++            c.want_get_out = 0;
++            int w = (c.focus >= 0 && c.focus < c.n_wins) ? c.focus
++                  : (c.n_wins == 1 ? 0 : -1);
++            if (w >= 0 && c.wins[w].wid && c.wl) {
++                aurwl_win *win = session_win(&c, c.wins[w].wid);
++                if (win) {
++                    fprintf(stderr, "aurshell: getting her out of '%s'\n", c.wins[w].title);
++                    aurwl_win_kill(win);
++                }
++            } else if (w >= 0) {
++                shell_close_win(&c, w);
++            }
++            if (c.guard_open != GUARD_SAFE) guard_show(&c, GUARD_SAFE);
++            dirty = 1;
++        }
++
+         if (c.want_power_off) {
+             int what = c.want_power_off;
+             c.want_power_off = 0;
+@@ -1681,6 +1715,9 @@ int main(int argc, char **argv)
+              * underneath one she did open -- and the band stays on top
+              * because the way out of everything is always the band. */
+             welcome_paint(&c, fb, &f);
++            /* Over every panel, under the band: the band is still the
++             * way out of everything, the guard included. */
++            guard_paint(&c, fb, &f);
+             foot_paint(&c, fb, &f);
+             /* Last, over everything including the band: it is the
+              * answer to a key that was just pressed, and an answer
+@@ -2019,8 +2056,11 @@ int main(int argc, char **argv)
+                             taken = notify_click(&c, c.mouse_x, c.mouse_y);
+                         if (!taken && ev.value) {
+                             /* Painted last, so asked first. See the
+-                             * note on the other click path. */
+-                            taken = welcome_click(&c, c.mouse_x, c.mouse_y);
++                             * note on the other click path. The guard's
++                             * card is painted over every panel. */
++                            taken = guard_click(&c, c.mouse_x, c.mouse_y);
++                            if (!taken)
++                                taken = welcome_click(&c, c.mouse_x, c.mouse_y);
+                             if (!taken)
+                                 taken = net_click(&c, c.mouse_x, c.mouse_y);
+                             if (!taken)
+@@ -2068,6 +2108,19 @@ int main(int argc, char **argv)
+ 
+                         if (ev.value && ev.code == KEY_ESC && c.kiosk) continue;
+ 
++                        /* THE WAY OUT IS ASKED FIRST (guard.h). Escape
++                         * three times, or held, asks "Get out of this
++                         * page?"; the Windows key alone goes Home in
++                         * every look. Before the program behind sees
++                         * the key, because the page is the thing she
++                         * is trying to leave. */
++                        {
++                            int gk = guard_key(&c, ev.code, ev.value,
++                                               (uint32_t)now_ms());
++                            if (gk == GUARD_TAKEN) { c.key_text[0] = 0; dirty = 1; continue; }
++                            if (gk == GUARD_HOME && L->key) { L->key(&c, KEY_HOME); dirty = 1; }
++                        }
++
+                         /* Super belongs to the desktop, always. Without
+                          * one chord the shell keeps for itself, a
+                          * full-screen application is a machine the user
+@@ -2168,7 +2221,8 @@ int main(int argc, char **argv)
+                              * second. Arrows still repeat: that is how a
+                              * slider is moved by holding a key. */
+                             if (ev.value == 1 || (ev.value == 2 && ev.code != 28)) {
+-                                if      (c.net_open)      net_key(&c, ev.code);
++                                if      (c.guard_open)    guard_card_key(&c, ev.code);
++                                else if (c.net_open)      net_key(&c, ev.code);
+                                 else if (c.settings_open) settings_key(&c, ev.code);
+                                 else if (c.bt_open)       bt_key(&c, ev.code);
+                                 else if (c.welcome_open)  welcome_key(&c, ev.code);
+@@ -2197,6 +2251,7 @@ int main(int argc, char **argv)
+             settings_motion(&c, c.mouse_x, c.mouse_y);
+             bt_motion(&c, c.mouse_x, c.mouse_y);
+             welcome_motion(&c, c.mouse_x, c.mouse_y);
++            guard_motion(&c, c.mouse_x, c.mouse_y);
+             session_motion(&c, c.mouse_x, c.mouse_y);
+             if (L->motion) L->motion(&c, c.mouse_x, c.mouse_y);
+         }
+diff --git a/src/aurshell/shell.h b/src/aurshell/shell.h
+index 534fde3..15e75f6 100644
+--- a/src/aurshell/shell.h
++++ b/src/aurshell/shell.h
+@@ -263,6 +263,17 @@ typedef struct shell_ctx_s {
+      * press -- including the one meant to confirm it. */
+     int   power_sel;
+ 
++    /* ── the guard (guard.h): a way out of a page that will not let
++     * her go, and a question before a remote-control program goes on.
++     * guard_open is which GUARD_* card is on screen, 0 for none. */
++    int   guard_open;
++    int   guard_sel;           /* the card's button the keyboard is on   */
++    /* She asked to get out of the page she is looking at (the band's
++     * Help, or the card Escape opens). The host stops that program,
++     * because which window is "this" is the session's business. */
++    int   want_get_out;
++    char  guard_name[48];      /* the program the question is about     */
++
+     /* She pressed "Close this". Only the band sets it; the host does
+      * the closing, because which window is "this" is the session's
+      * business and not the band's. */
+@@ -294,8 +305,9 @@ typedef struct shell_ctx_s {
+ 
+ /* ONE test for "something is covering the desktop".
+  *
+- * There are six of these now -- help, the wifi, Settings, headphones,
+- * the three power choices and the welcome question -- and every place
++ * There are seven of these now -- help, the wifi, Settings, headphones,
++ * the three power choices, the welcome question and the guard's cards
++ * (guard.h) -- and every place
+  * that has to behave
+  * differently while one is up was listing them by hand. Four such
+  * lists drifted apart: the scroll wheel knew about three of them, the
+@@ -310,7 +322,8 @@ typedef struct shell_ctx_s {
+  * updated in four. */
+ #define SHELL_PANEL_OPEN(c) \
+     ((c)->help_open || (c)->net_open || (c)->settings_open || \
+-     (c)->bt_open   || (c)->power_open || (c)->welcome_open)
++     (c)->bt_open   || (c)->power_open || (c)->welcome_open || \
++     (c)->guard_open)
+ 
+ typedef struct {
+     const char *id;

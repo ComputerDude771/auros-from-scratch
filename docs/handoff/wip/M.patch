@@ -1,0 +1,208 @@
+diff --git a/tools/portabilitytest.sh b/tools/portabilitytest.sh
+new file mode 100755
+index 0000000..355fe6d
+--- /dev/null
++++ b/tools/portabilitytest.sh
+@@ -0,0 +1,202 @@
++#!/bin/sh
++# portabilitytest.sh — the project can move to another GitHub repository
++# and nothing but the clone address changes (docs/MOVING.md).
++#
++#   sh tools/portabilitytest.sh
++#
++# 1. No file outside docs/ (and the Markdown documents at the top, where
++#    the clone address is the point) names the repository: neither the
++#    one this project started in nor the one it is in now, as owner/name,
++#    owner.github.io/name or raw.githubusercontent.com/owner/. Proved to
++#    catch a planted literal, and to let docs/ keep theirs.
++# 2. tools/repo.sh, the one place that says which repository this is:
++#    AUROS_REPO, GITHUB_REPOSITORY, every shape of origin address, the
++#    owner.github.io repository, and refusals of anything else.
++# 3. A different repository, AUROS_REPO=someone/other, followed through:
++#    the website as deployed (tools/site/stamp.sh), the wizard as built
++#    (build/aurbridge; skipped without mingw-w64), e2e.py's default, both
++#    evidence publishers' gh calls, and the workflow pins to published
++#    files. Optional: the browser check of the site (tools/site/check.mjs)
++#    when Playwright is there.
++set -u
++ROOT=$(cd "$(dirname "$0")/.." && pwd)
++T=$(mktemp -d "${TMPDIR:-/tmp}/portability.XXXXXX")
++trap 'rm -rf "$T"' EXIT
++fails=0; passes=0
++ok()   { passes=$((passes + 1)); echo "ok   $*"; }
++bad()  { fails=$((fails + 1)); echo "FAIL $*"; }
++skip() { echo "skip $*"; }
++check() { what=$1; shift; if "$@" >/dev/null 2>&1; then ok "$what"; else bad "$what"; fi; }
++refuse() { what=$1; shift; if "$@" >/dev/null 2>&1; then bad "$what"; else ok "$what"; fi; }
++REPO_SH="$ROOT/tools/repo.sh"
++# The tests below set AUROS_REPO / GITHUB_REPOSITORY themselves.
++unset AUROS_REPO
++
++# ── 1. the literal, outside docs ─────────────────────────────────────
++# Written in two halves so this file does not name it either.
++OLD_OWNER="Computer""Dude771"; OLD_NAME="auros-from""-scratch"
++forms() {   # owner name -> the ways a file can name that repository
++    lo=$(printf '%s' "$1" | tr 'A-Z' 'a-z')
++    printf '%s\n' "$1/$2" "$lo.github.io/$2" "raw.githubusercontent.com/$1/"
++}
++PATTERNS="$T/patterns"
++{
++    forms "$OLD_OWNER" "$OLD_NAME"
++    if cur=$(sh "$REPO_SH" 2>/dev/null); then forms "${cur%%/*}" "${cur#*/}"; fi
++} | sort -u > "$PATTERNS"
++# scan DIR: every file git knows of (tracked, or new and not ignored),
++# outside docs/ and the top-level *.md; prints what it finds.
++scan() {
++    git -C "$1" grep -n -I -i -F --untracked -f "$PATTERNS" -- . \
++        ':(exclude)docs' ':(top,exclude,glob)*.md' 2>/dev/null
++}
++if ! git -C "$ROOT" rev-parse --git-dir >/dev/null 2>&1; then
++    bad "not a git checkout, so the tree cannot be searched"
++elif found=$(scan "$ROOT"); then
++    bad "the repository is named outside docs/ (use tools/repo.sh, \${{ github.repository }}, or @AUROS_REPO@ in website/):"
++    printf '%s\n' "$found" | sed 's/^/       /' | head -20
++else
++    ok "no file outside docs/ names the repository ($(wc -l < "$PATTERNS") forms)"
++fi
++# The search itself, proved on a little tree of its own.
++P="$T/probe"; mkdir -p "$P/docs" "$P/tools/e2e"
++git -C "$P" init -q
++printf 'see %s/%s\n' "$OLD_OWNER" "$OLD_NAME" > "$P/docs/x.md"
++printf 'clone https://github.com/%s/%s.git\n' "$OLD_OWNER" "$OLD_NAME" > "$P/README.md"
++refuse "the search lets docs/ and README.md name it" scan "$P"
++printf 'url=https://%s.github.io/%s/\n' "$(printf '%s' "$OLD_OWNER" | tr 'A-Z' 'a-z')" "$OLD_NAME" > "$P/tools/x.sh"
++check "the search finds it in a new script" scan "$P"
++rm "$P/tools/x.sh"
++printf 'https://raw.githubusercontent.com/%s/branch/f\n' "$(printf '%s' "$OLD_OWNER" | tr 'a-z' 'A-Z')" > "$P/tools/e2e/README.md"
++check "the search finds it, in any case, in a README below the top" scan "$P"
++
++# ── 2. tools/repo.sh ────────────────────────────────────────────────
++is() { [ "$(env "$@" 2>/dev/null)" = "$want" ]; }
++want="someone/other";  check "AUROS_REPO=someone/other is someone/other" is AUROS_REPO=someone/other sh "$REPO_SH"
++want="someone/other";  check "AUROS_REPO wins over GITHUB_REPOSITORY" is AUROS_REPO=someone/other GITHUB_REPOSITORY=x/y sh "$REPO_SH"
++want="x/y";            check "GITHUB_REPOSITORY when AUROS_REPO is unset" is GITHUB_REPOSITORY=x/y sh "$REPO_SH"
++want="https://someone.github.io/other/"; check "its website" is AUROS_REPO=someone/other sh "$REPO_SH" site
++want="some-one.github.io/My.Repo/";     check "the website's host is in lower case, the name as it is" is AUROS_REPO=Some-One/My.Repo sh "$REPO_SH" host
++want="https://someone.github.io/";      check "the someone.github.io repository is the site at the top" is AUROS_REPO=someone/Someone.github.io sh "$REPO_SH" site
++want="https://github.com/someone/other/releases"; check "its releases" is AUROS_REPO=someone/other sh "$REPO_SH" releases
++for b in 'a/b"c' 'a/b c' 'a/b/c' 'ab' '/b' 'a/' 'a;b/c' 'a/..' 'a/$(x)'; do
++    refuse "refuses AUROS_REPO='$b'" env AUROS_REPO="$b" sh "$REPO_SH"
++done
++G="$T/remote"; mkdir -p "$G/tools"; cp "$REPO_SH" "$G/tools/"; git -C "$G" init -q
++refuse "refuses when nothing says which repository" env -u GITHUB_REPOSITORY sh "$G/tools/repo.sh"
++for url in https://github.com/someone/other https://github.com/someone/other.git \
++           https://github.com/someone/other/ git@github.com:someone/other.git \
++           ssh://git@github.com/someone/other.git http://proxy@127.0.0.1:8080/git/someone/other; do
++    git -C "$G" remote remove origin 2>/dev/null; git -C "$G" remote add origin "$url"
++    want="someone/other"; check "the origin remote $url" is -u GITHUB_REPOSITORY sh "$G/tools/repo.sh"
++done
++
++# ── 3. a different repository, followed through ───────────────────────
++NEW=someone/other; NEWHOST=someone.github.io/other
++export AUROS_REPO=$NEW
++# the current repository's forms, which must not survive into a build for NEW
++CUR="$T/current"; : > "$CUR"
++[ -n "${cur:-}" ] && [ "$cur" != "$NEW" ] && forms "${cur%%/*}" "${cur#*/}" > "$CUR"
++forms "$OLD_OWNER" "$OLD_NAME" >> "$CUR"
++none_of_current() { ! grep -r -I -i -F -q -f "$CUR" "$@"; }
++
++# 3a. the website, as pages.yml and release.yml publish it
++S="$T/site"
++if sh "$ROOT/tools/site/stamp.sh" "$ROOT/website" "$S" >/dev/null; then
++    ok "the website stamps for $NEW"
++    href=$(grep -o 'id="get" href="[^"]*"' "$S/index.html" | head -1 | sed 's/.*href="//; s/"$//')
++    want="https://github.com/$NEW/releases/latest/download/AurOS-Setup.exe"
++    check "the download button is $want" test "$href" = "$want"
++    check "the printed guide gives $NEWHOST" grep -q "$NEWHOST<" "$S/guide.html"
++    check "the source links go to github.com/$NEW" grep -q "href=\"https://github.com/$NEW\"" "$S/index.html"
++    check "no placeholder is left" sh -c '! grep -r -I -q "@AUROS_" "$1"' - "$S"
++    check "nothing in the deployed site names another repository" none_of_current "$S"
++else
++    bad "the website does not stamp"
++fi
++check "website/ in the tree holds only the placeholders stamp.sh fills" \
++    sh -c '! grep -r -I -o -h "@AUROS_[A-Z_]*@" "$1" | grep -v -x -e @AUROS_REPO@ -e @AUROS_ADDRESS@' - "$ROOT/website"
++check "door.js works the release out on GitHub Pages" grep -q 'github\\.io\$/i.exec(location.hostname)' "$ROOT/website/assets/door.js"
++
++# 3b. the wizard, built for NEW in a copy of the tree (build/aurbridge
++# writes out/, so never in this one)
++if command -v x86_64-w64-mingw32-gcc >/dev/null 2>&1; then
++    # The whole of build/, src/ and tools/ (a few MB): what build/aurbridge
++    # reads changes as the installer grows.
++    W="$T/wizard"; mkdir -p "$W"
++    cp -R "$ROOT/build" "$ROOT/src" "$ROOT/tools" "$W/"
++    if sh "$W/build/aurbridge" > "$T/wizard.log" 2>&1; then
++        ok "the installer builds for $NEW"
++        check "the baked header says $NEWHOST/" grep -qx "#define AUROS_SITE_W L\"$NEWHOST/\"" "$W/out/aurbridge-baked.h"
++        for exe in aurbridge-wizard.exe aurbridge.exe; do
++            strings -el "$W/out/$exe" > "$T/$exe.txt" 2>/dev/null
++            check "$exe names $NEWHOST/advanced.html" grep -q "$NEWHOST/advanced.html" "$T/$exe.txt"
++            check "$exe names no other repository's site" none_of_current "$T/$exe.txt"
++        done
++    else
++        bad "the installer does not build for $NEW:"; tail -5 "$T/wizard.log" | sed 's/^/       /'
++    fi
++    refuse "build/aurbridge refuses when it cannot tell which repository" \
++        env -u AUROS_REPO -u GITHUB_REPOSITORY sh "$W/build/aurbridge"
++else
++    skip "the wizard for $NEW (no x86_64-w64-mingw32-gcc)"
++fi
++check "fix_win.c takes the site from the build" grep -q 'define ADVANCED AUROS_SITE_W' "$ROOT/src/aurbridge/fix_win.c"
++
++# 3c. e2e.py's default installer address (its image modules stubbed:
++# only the address is asked for)
++e2e_url=$(INSTALLER_URL= python3 -I - "$ROOT/tools/e2e" <<'EOF' 2>/dev/null
++import sys, types
++for n in ("vision", "vm"):
++    m = types.ModuleType(n); m.__getattr__ = lambda a: object; sys.modules[n] = m
++sys.path.insert(0, sys.argv[1])
++import e2e
++print(e2e.INSTALLER_URL)
++EOF
++)
++want="https://github.com/$NEW/raw/image-desktop/AurOS-Installer-test.exe"
++check "e2e.py's default installer is $NEW's ($e2e_url)" test "$e2e_url" = "$want"
++
++# 3d. the evidence publishers hand gh the repository (a gh that only
++# writes down what it was given)
++B="$T/bin"; mkdir -p "$B"
++printf '#!/bin/sh\necho "$GH_REPO" >> "%s/gh.txt"\nexit 1\n' "$T" > "$B/gh"; chmod +x "$B/gh"
++for p in e2e othersys; do
++    : > "$T/gh.txt"
++    (cd "$T" && env -u GITHUB_REPOSITORY -u GH_REPO PATH="$B:$PATH" GH_TOKEN=x GITHUB_RUN_ID=1 GITHUB_SHA=0 \
++        RUNNER_TEMP="$T" E2E_PUBLISH_STATE="$T/$p.state" GITHUB_STEP_SUMMARY="$T/summary" \
++        bash "$ROOT/tools/$p/publish.sh" init) >/dev/null 2>&1
++    check "tools/$p/publish.sh publishes to $NEW" sh -c '[ -s "$1" ] && ! grep -v -x "$2" "$1"' - "$T/gh.txt" "$NEW"
++done
++
++# 3e. the workflows' pins to published files, rendered for NEW
++pins=$(grep -h -E '^  (INSTALLER_URL|PUBLISHED_URL|KNOWN_BAD_URL|IMAGE_PIECES_URL):' \
++           "$ROOT/.github/workflows/e2e.yml" "$ROOT/.github/workflows/windows.yml")
++check "the published-file pins are there to check" test -n "$pins"
++while IFS= read -r line; do
++    [ -n "$line" ] || continue
++    url=$(printf '%s\n' "$line" | sed 's/^ *[A-Z_]*: *//; s|\${{ *github\.repository *}}|'"$NEW"'|')
++    case "$url" in
++        https://github.com/$NEW/*|https://raw.githubusercontent.com/$NEW/*)
++            ok "the pin ${line%%:*} follows the repository: $url" ;;
++        *)  bad "the pin ${line%%:*} does not follow the repository: $url" ;;
++    esac
++done <<EOF
++$pins
++EOF
++
++# 3f. the browser check, when Playwright is here
++if node -e 'process.exit(0)' 2>/dev/null &&
++   { [ -n "${PLAYWRIGHT_DIR:-}" ] || [ -d "$(npm root -g 2>/dev/null)/playwright" ]; }; then
++    if node "$ROOT/tools/site/check.mjs" > "$T/check.txt" 2>&1; then
++        ok "tools/site/check.mjs passes for $NEW ($(tail -1 "$T/check.txt"))"
++    else
++        bad "tools/site/check.mjs for $NEW:"; grep FAIL "$T/check.txt" | head -10 | sed 's/^/       /'
++    fi
++else
++    skip "the browser check (no Playwright)"
++fi
++
++echo
++echo "$passes passed, $fails failed"
++[ "$fails" = 0 ]

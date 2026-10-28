@@ -1,0 +1,442 @@
+diff --git a/build/aptchannel b/build/aptchannel
+index 3874d08..8f2b37a 100755
+--- a/build/aptchannel
++++ b/build/aptchannel
+@@ -75,7 +75,7 @@ channel_url() {
+     fi
+     local slug=${GITHUB_REPOSITORY:-} server=${GITHUB_SERVER_URL:-https://github.com}
+     if [ -z "$slug" ]; then
+-        slug=$(git -C "$ROOT" remote get-url origin 2>/dev/null |
++        slug=$(git -c safe.directory="$ROOT" -C "$ROOT" remote get-url origin 2>/dev/null |
+                sed -n -e 's#\.git$##' -e 's#^.*github\.com[:/]\([^/]*/[^/]*\)/*$#\1#p') || true
+     fi
+     [ -n "$slug" ] || return 1
+@@ -102,7 +102,7 @@ EOF
+ # committer time, so the branch's newest build is always the highest.
+ channel_version() { # OS_VERSION
+     local ct
+-    ct=$(git -C "$ROOT" log -1 --format=%ct 2>/dev/null) || ct=""
++    ct=$(git -c safe.directory="$ROOT" -C "$ROOT" log -1 --format=%ct 2>/dev/null) || ct=""
+     [ -n "$ct" ] || ct=${SOURCE_DATE_EPOCH:-$(date +%s)}
+     printf '%s.%s\n' "$1" "$(date -u -d "@$ct" +%Y%m%d%H%M%S)"
+ }
+@@ -310,7 +310,7 @@ cmd_pack() { # RFS OUTDIR VERSION
+     sed 's/^/   /' "$work/notes"
+     # One timestamp for every file and archive member: the commit's, so
+     # packing the same tree twice gives the same .deb.
+-    sdeb=${SOURCE_DATE_EPOCH:-$(git -C "$ROOT" log -1 --format=%ct 2>/dev/null || date +%s)}
++    sdeb=${SOURCE_DATE_EPOCH:-$(git -c safe.directory="$ROOT" -C "$ROOT" log -1 --format=%ct 2>/dev/null || date +%s)}
+     export SOURCE_DATE_EPOCH=$sdeb
+     local built=""
+     for pkg in $PACKAGES; do
+@@ -416,7 +416,11 @@ $bad"
+         warn "(set AUROS_APT_URL, or build from a clone of the GitHub repository)"
+         printf 'update_channel=off (no address)\n' >> "$rfs/etc/auros/build-warnings"
+     else
+-        case "$url" in https://*/) ;; *) die "channel address '$url' is not an https:// directory" ;; esac
++        # https only; plain http just for a test's server on this machine.
++        case "$url" in
++            https://*/|http://127.0.0.1:*/) ;;
++            *) die "channel address '$url' is not an https:// directory" ;;
++        esac
+         mkdir -p "$rfs/etc/apt/sources.list.d"
+         source_entry "$url" > "$rfs$SOURCE_PATH"
+         chmod 0644 "$rfs$SOURCE_PATH"
+diff --git a/tools/updatetest.sh b/tools/updatetest.sh
+new file mode 100644
+index 0000000..12a3a11
+--- /dev/null
++++ b/tools/updatetest.sh
+@@ -0,0 +1,392 @@
++#!/bin/bash
++# ═══════════════════════════════════════════════════════════════════
++#  updatetest — AurOS's own update channel, proven (docs/security/UPDATES.md)
++#
++#    bash tools/updatetest.sh live --image=RFS [--break=WHAT]
++#        on a throwaway overlay of a built rootfs (RFS is never written)
++#    bash tools/updatetest.sh live --root=/   [--break=WHAT]
++#        on THIS system -- only inside a disposable container
++#    bash tools/updatetest.sh static RFS
++#        what an image must carry, checked on the rootfs
++#
++#  live, with a throwaway signing key and a local web server standing in
++#  for the GitHub release:
++#    - forge's hook (build/aptchannel image) registers AurOS's packages
++#      and pins the source to the key;
++#    - a SIGNED update installs by itself, through the real
++#      unattended-upgrade and its AurOS origin;
++#    - an UNSIGNED one, one signed by ANOTHER key, one whose .deb or
++#      whose Packages was TAMPERED with after signing, an OLDER version,
++#      and a FOREIGN package (gpgv 99) from our repository are refused,
++#      and nothing on the system changes.
++#
++#  --break=trusted  the source says Trusted: yes instead of Signed-By
++#  --break=pin      preferences.d/auros is removed
++#  Each must make this test FAIL (aptrepo.yml runs both and requires it):
++#  a check that passes with its protection removed is not a check.
++#
++#  Needs root, gpg, gpgv, dpkg-deb, python3 here; apt, dpkg and
++#  unattended-upgrades on the system under test.
++# ═══════════════════════════════════════════════════════════════════
++set -uo pipefail
++export LC_ALL=C
++
++HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
++CH="$HERE/build/aptchannel"
++pass=0 fail=0
++ok()  { pass=$((pass+1)); printf 'PASS  %s\n' "$*"; }
++bad() { fail=$((fail+1)); printf 'FAIL  %s\n' "$*"; }
++check() { local what=$1; shift; if "$@"; then ok "$what"; else bad "$what"; fi; }
++die() { printf 'updatetest: %s\n' "$*" >&2; exit 2; }
++
++mode=${1:-}; shift || true
++image="" root="" brk=none
++for a in "$@"; do
++    case "$a" in
++        --image=*) image=${a#--image=} ;;
++        --root=*)  root=${a#--root=} ;;
++        --break=*) brk=${a#--break=} ;;
++        *) [ "$mode" = static ] && [ -z "$image" ] && image=$a ;;
++    esac
++done
++
++# ═════ static ══════════════════════════════════════════════════════
++static() {
++    local R=$1
++    [ -d "$R/var/lib/dpkg" ] || die "no rootfs at $R"
++    local q="dpkg-query --admindir=$R/var/lib/dpkg"
++    local p v vers=""
++    for p in auros auros-desktop auros-first auros-bootchain auros-ferry auros-config; do
++        v=$($q -W -f='${db:Status-Abbrev}|${Version}' "$p" 2>/dev/null)
++        case "$v" in
++            ii*) vers="$vers ${v#*|}" ;;
++            *) bad "$p is installed as a package (dpkg says '${v:-nothing}')"; continue ;;
++        esac
++    done
++    [ "$(printf '%s\n' $vers | sort -u | wc -l)" = 1 ] &&
++        ok "every AurOS package is at one version ($(printf '%s\n' $vers | head -1))" ||
++        bad "AurOS's packages are at different versions:$vers"
++    # The files are what dpkg recorded (conffiles may legitimately change).
++    local d
++    d=$(chroot "$R" /usr/bin/dpkg --verify auros auros-desktop auros-first auros-bootchain auros-ferry auros-config 2>&1 | grep -v ' c /etc/')
++    [ -z "$d" ] && ok "dpkg --verify: AurOS's files are what its packages say" || bad "dpkg --verify:
++$d"
++    # The factory copies.
++    if [ -s "$R/var/lib/auros/debs/SHA256SUMS" ] && (cd "$R/var/lib/auros/debs" && sha256sum -c --quiet SHA256SUMS); then
++        local miss=""
++        for p in auros auros-desktop auros-first auros-bootchain auros-ferry auros-config; do
++            v=$($q -W -f='${Version}' "$p" 2>/dev/null)
++            [ -e "$R/var/lib/auros/debs/${p}_${v}_amd64.deb" ] || miss="$miss $p"
++        done
++        [ -z "$miss" ] && ok "/var/lib/auros/debs holds the installed version of each package" ||
++            bad "/var/lib/auros/debs lacks:$miss"
++    else
++        bad "/var/lib/auros/debs/SHA256SUMS missing or wrong"
++    fi
++    # Nothing of ours left out: an unowned file under an AurOS path is
++    # one no update can ever reach.
++    local owned unclaimed=""
++    owned=$(mktemp)
++    cat "$R"/var/lib/dpkg/info/*.list | sed 's#^/##' | sort -u > "$owned"
++    while IFS= read -r f; do
++        grep -qxF "$f" "$owned" && continue
++        case "$f" in
++            usr/share/auros/fonts/*|usr/share/auros/wallpaper.png|usr/sbin/update-grub|usr/sbin/grub-install) continue ;;
++        esac
++        unclaimed="$unclaimed /$f"
++    done < <({ (cd "$R" && find usr/lib/auros usr/lib/ferry usr/share/auros usr/share/ferry \( -type f -o -type l \) 2>/dev/null)
++               (cd "$R" && ls -d usr/bin/aur* usr/sbin/aur* usr/bin/ferry 2>/dev/null); } | sort -u)
++    rm -f "$owned"
++    [ -z "$unclaimed" ] && ok "every AurOS file under /usr belongs to a package" ||
++        bad "AurOS files no package owns (no update can reach them):$unclaimed"
++    # Never an unverifiable source, anywhere.
++    local ins
++    ins=$(grep -rniE 'trusted *[=:] *yes|allow-insecure|AllowUnauthenticated|allow-downgrade-to-insecure|AllowInsecureRepositories' \
++          "$R/etc/apt" 2>/dev/null | grep -v '^\s*//' || true)
++    [ -z "$ins" ] && ok "no source and no apt setting skips signature checks" || bad "signature checks switched off:
++$ins"
++    local src="$R/etc/apt/sources.list.d/auros.sources" kr="$R/usr/share/keyrings/auros-archive-keyring.asc"
++    if [ -s "$kr" ]; then
++        check "auros.sources exists (the image carries the key)" test -s "$src"
++        check "auros.sources: Signed-By pinned to /usr/share/keyrings/auros-archive-keyring.asc" \
++            grep -qx 'Signed-By: /usr/share/keyrings/auros-archive-keyring.asc' "$src"
++        check "auros.sources: https, a flat repository on the release tag" \
++            grep -qE '^URIs: https://[^ ]+/releases/download/[A-Za-z0-9._-]+/$' "$src"
++        check "auros.sources: Suites ./ and no Components" \
++            sh -c "grep -qx 'Suites: ./' '$src' && ! grep -q '^Components:' '$src'"
++        local G; G=$(mktemp -d)
++        local now exp n=0 soon=""
++        now=$(date +%s)
++        while IFS=: read -r t _ _ _ id _ e _; do
++            [ "$t" = pub ] || continue
++            n=$((n+1))
++            if [ -z "$e" ]; then soon="$soon $id:never-expires"
++            elif [ "$e" -lt "$now" ]; then soon="$soon $id:EXPIRED"
++            elif [ "$e" -lt $((now + 180*86400)) ]; then soon="$soon $id:expires-$(date -u -d "@$e" +%F)"; fi
++        done < <(GNUPGHOME=$G gpg --batch --with-colons --show-keys "$kr" 2>/dev/null)
++        rm -rf "$G"
++        [ "$n" -ge 1 ] && ok "the pinned keyring holds $n key(s)" || bad "the pinned keyring holds no key"
++        case "$soon" in
++            '') ok "every pinned key is valid for at least 180 more days" ;;
++            *EXPIRED*) bad "a pinned key has EXPIRED:$soon" ;;
++            *) bad "renew the update key (docs/security/UPDATES.md, Rotation):$soon" ;;
++        esac
++    else
++        check "no archive key in the image, so NO auros source either" test ! -e "$src"
++    fi
++    check "preferences.d/auros: AurOS's repository may supply only auros*" \
++        sh -c "grep -q '^Package: auros auros-\*' '$R/etc/apt/preferences.d/auros' &&
++               grep -q '^Pin-Priority: -1' '$R/etc/apt/preferences.d/auros'"
++    check "53auros-updates: unattended-upgrades takes AurOS's origin" \
++        grep -q '"origin=AurOS,label=AurOS,archive=stable"' "$R/etc/apt/apt.conf.d/53auros-updates"
++    check "update-grub is still AurOS's, behind the divert" grep -q /usr/lib/auros/bootchain "$R/usr/sbin/update-grub"
++}
++
++# ═════ live ════════════════════════════════════════════════════════
++W="" T="" SRV_PID="" OVL=0
++cleanup() {
++    [ -n "$SRV_PID" ] && kill "$SRV_PID" 2>/dev/null
++    if [ "$OVL" = 1 ]; then
++        umount "$T/proc" 2>/dev/null; umount "$T/dev/pts" 2>/dev/null; umount "$T/dev" 2>/dev/null
++        umount "$T" 2>/dev/null
++    fi
++    [ -n "${GNUPGHOME:-}" ] && gpgconf --kill all 2>/dev/null
++    if [ -n "${UPDATETEST_LOGS:-}" ] && [ -n "$W" ]; then
++        mkdir -p "$UPDATETEST_LOGS"; cp "$W"/*.log "$UPDATETEST_LOGS/" 2>/dev/null
++    fi
++    [ -n "$W" ] && rm -rf "$W"
++}
++
++R() { # run on the system under test
++    if [ "$T" = / ]; then env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C "$@"
++    else chroot "$T" /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C "$@"; fi
++}
++installed() { R dpkg-query -W -f='${Version}' "$1" 2>/dev/null; }
++candidate() { R apt-cache policy "$1" 2>/dev/null | sed -n 's/^ *Candidate: //p'; }
++marker()    { cat "$T/usr/share/auros/themes/updatetest.theme" 2>/dev/null || echo none; }
++
++# Serve DIR as the channel. Every scenario's files get a later mtime
++# than the last one's, so the server never answers "not modified".
++STAMP=0
++serve() { # DIR
++    rm -rf "$W/srv"; cp -a "$1" "$W/srv"
++    STAMP=$((STAMP+10))
++    find "$W/srv" -type f -exec touch -d "@$(( $(date +%s) - 100000 + STAMP ))" {} +
++}
++
++# A Release for an attacker-made directory (aptchannel repo itself
++# refuses to put anything but auros* in one).
++release_of() { # DIR
++    (cd "$1" && gzip -9n -c Packages > Packages.gz && {
++        printf 'Origin: AurOS\nLabel: AurOS\nSuite: stable\nCodename: stable\nDate: %s\nArchitectures: amd64\nSHA256:\n' "$(date -u -R)"
++        for f in Packages Packages.gz; do printf ' %s %s %s\n' "$(sha256sum $f | cut -d' ' -f1)" "$(stat -c %s $f)" "$f"; done
++    } > Release)
++}
++
++# A set of AurOS packages at VERSION: the files now on the system under
++# test, plus a marker theme saying WHO.
++make_version() { # VERSION WHO OUTDIR
++    local v=$1 who=$2 out=$3 s="$W/src-$2"
++    rm -rf "$s"; mkdir -p "$s"
++    "$CH" list "$T" 2>/dev/null | cut -f2 | while IFS= read -r f; do
++        mkdir -p "$s/$(dirname "$f")"; cp -a "$T/$f" "$s/$f"
++    done
++    mkdir -p "$s/usr/share/auros/themes"
++    printf 'name="updatetest"\nwho="%s"\n' "$who" > "$s/usr/share/auros/themes/updatetest.theme"
++    rm -rf "$out"; mkdir -p "$out"
++    "$CH" pack "$s" "$out" "$v" >/dev/null 2>&1 || die "could not pack version $v"
++}
++
++publish() { # DEBDIR REPODIR KEY|none
++    "$CH" repo "$1" "$2" >/dev/null || die "repo failed"
++    [ "$3" = none ] || "$CH" sign "$2" "$3" >/dev/null || die "sign failed"
++}
++
++UPN=0
++aptup() {
++    UPN=$((UPN+1))
++    R apt-get -q -o Acquire::Retries=0 update >"$W/update.log" 2>&1; local r=$?
++    { printf '=== update %d (exit %d)\n' "$UPN" "$r"; cat "$W/update.log"; } >> "$W/all-updates.log"
++    return $r
++}
++uu()    { R unattended-upgrade -v >"$W/uu.log" 2>&1; }
++
++live() {
++    [ "$(id -u)" = 0 ] || die "live needs root"
++    for t in gpg gpgv dpkg-deb python3; do command -v $t >/dev/null || die "$t is needed here"; done
++    W=$(mktemp -d "${TMPDIR:-/tmp}/aurupd.XXXXXX")
++    trap cleanup EXIT
++    if [ -n "$image" ]; then
++        [ -x "$image/usr/bin/apt-get" ] || die "$image is not a rootfs"
++        mkdir -p "$W/up" "$W/wk" "$W/root"
++        mount -t overlay overlay -o "lowerdir=$image,upperdir=$W/up,workdir=$W/wk" "$W/root" \
++            || die "cannot make an overlay of $image"
++        OVL=1; T=$W/root
++        # /proc for python-apt; /dev for apt's methods. NEVER /sys: the
++        # boot chain writes EFI variables, and these would be this host's.
++        mount -t proc proc "$T/proc"; mount --bind /dev "$T/dev"; mount -t devpts devpts "$T/dev/pts" 2>/dev/null
++    elif [ "$root" = / ]; then
++        [ -e /.dockerenv ] || [ -e /run/.containerenv ] || [ "${UPDATETEST_DISPOSABLE:-}" = 1 ] ||
++            die "--root=/ changes this system's apt; only inside a disposable container (or UPDATETEST_DISPOSABLE=1)"
++        T=/
++    else
++        die "say --image=RFS or --root=/"
++    fi
++    for t in apt-get dpkg unattended-upgrade gpgv; do
++        R sh -c "command -v $t" >/dev/null || die "the system under test has no $t"
++    done
++
++    # Keys: the throwaway one AurOS "has", and an attacker's.
++    export GNUPGHOME="$W/g"; mkdir -m 700 "$GNUPGHOME"
++    gpg --batch --quiet --passphrase '' --quick-gen-key 'AurOS updates (updatetest, throwaway)' ed25519 sign 1d 2>/dev/null
++    gpg --batch --quiet --passphrase '' --quick-gen-key 'Not AurOS' ed25519 sign 1d 2>/dev/null
++    local K E
++    K=$(gpg --with-colons --list-keys 'AurOS updates' | awk -F: '/^fpr:/{print $10; exit}')
++    E=$(gpg --with-colons --list-keys 'Not AurOS' | awk -F: '/^fpr:/{print $10; exit}')
++    [ -n "$K" ] && [ -n "$E" ] || die "gpg could not make the test keys"
++
++    # The local stand-in for releases/download/apt/.
++    local port=$(( 20000 + RANDOM % 20000 ))
++    mkdir -p "$W/srv"
++    python3 -m http.server --bind 127.0.0.1 --directory "$W/srv" "$port" >"$W/http.log" 2>&1 &
++    SRV_PID=$!
++    sleep 1
++    kill -0 "$SRV_PID" 2>/dev/null || die "the test web server did not start"
++    local URL="http://127.0.0.1:$port/"
++
++    # ── the image, as forge makes it ───────────────────────────────
++    # The overlay/system gets this checkout's rootfs/ (what forge lays
++    # down), the throwaway public key where the image pins it, and then
++    # forge's own hook.
++    if [ "$T" = / ]; then
++        cp -a --no-preserve=ownership "$HERE/rootfs/." / || die "cannot lay down rootfs/"
++        install -Dm755 "$HERE/src/aurora/aurora" /usr/bin/aurora
++        mkdir -p /usr/share/auros/themes /usr/share/auros/shells /usr/share/auros/templates
++        cp "$HERE"/themes/*.theme /usr/share/auros/themes/ 2>/dev/null
++        cp "$HERE"/shells/*.shell /usr/share/auros/shells/ 2>/dev/null
++        cp "$HERE"/themes/templates/*.tpl /usr/share/auros/templates/ 2>/dev/null
++    else
++        cp -a --no-preserve=ownership "$HERE/rootfs/etc/apt/." "$T/etc/apt/"
++    fi
++    install -d "$T/usr/share/keyrings"
++    gpg --armor --export "$K" > "$T/usr/share/keyrings/auros-archive-keyring.asc"
++    AUROS_APT_URL=$URL "$CH" image "$T" updatetest 0.1.0 >"$W/hook.log" 2>&1 \
++        || { cat "$W/hook.log"; die "forge's hook (build/aptchannel image) failed"; }
++    local V0; V0=$(installed auros)
++    check "the hook registered AurOS's packages ($V0)" test -n "$V0"
++    check "the hook pinned the source to the key" \
++        grep -qx 'Signed-By: /usr/share/keyrings/auros-archive-keyring.asc' "$T/etc/apt/sources.list.d/auros.sources"
++    check "the key is itself a package (rotation travels the channel)" test -n "$(installed auros-archive-keyring)"
++
++    # The system under test reads ONLY AurOS's source, and the boot
++    # chain's after-dpkg hook stays out of a test (it is no-op-safe,
++    # but it is no business of this one).
++    mkdir -p "$T/etc/apt/updatetest.d"
++    ln -sf /etc/apt/sources.list.d/auros.sources "$T/etc/apt/updatetest.d/auros.sources"
++    cat > "$T/etc/apt/apt.conf.d/99updatetest" <<'EOF'
++Dir::Etc::SourceList "/dev/null";
++Dir::Etc::SourceParts "/etc/apt/updatetest.d";
++Acquire::Languages "none";
++#clear DPkg::Post-Invoke;
++Unattended-Upgrade::OnlyOnACPower "false";
++Unattended-Upgrade::Skip-Updates-On-Metered-Connections "false";
++EOF
++    case "$brk" in
++        none) ;;
++        trusted) sed -i 's#^Signed-By: .*#Trusted: yes#' "$T/etc/apt/sources.list.d/auros.sources"
++                 echo "(broken on purpose: Trusted: yes)" ;;
++        pin)     rm -f "$T/etc/apt/preferences.d/auros"; echo "(broken on purpose: no pin)" ;;
++        *) die "--break=$brk: trusted or pin" ;;
++    esac
++
++    # ── 1. today's packages, published and signed ──────────────────
++    publish "$T/var/lib/auros/debs" "$W/r1" "$K"
++    check "aptchannel verify accepts what it signed, against the pinned key" \
++        "$CH" verify "$W/r1" "$T/usr/share/keyrings/auros-archive-keyring.asc"
++    serve "$W/r1"
++    check "apt reads the signed channel" aptup
++    check "nothing to do when the channel has what is installed (candidate $V0)" \
++        test "$(candidate auros)" = "$V0"
++
++    # ── 2. a signed update installs by itself ──────────────────────
++    local V2="$V0.2"
++    make_version "$V2" v2 "$W/d2"
++    publish "$W/d2" "$W/r2" "$K"; serve "$W/r2"
++    aptup
++    uu
++    check "unattended-upgrade installed the signed update (auros $(installed auros))" test "$(installed auros)" = "$V2"
++    check "...every part with it (auros-desktop $(installed auros-desktop))" test "$(installed auros-desktop)" = "$V2"
++    check "...and its files are on disk (marker: $(marker))" test "$(marker | sed -n 's/^who="\(.*\)"/\1/p')" = v2
++
++    # ── 3. what must be refused ────────────────────────────────────
++    local V3="$V0.3"
++    make_version "$V3" v3 "$W/d3"
++    refused() { # what
++        local what=$1
++        uu
++        R apt-get -y -q install auros >"$W/inst.log" 2>&1
++        if [ "$(installed auros)" = "$V2" ] && [ "$(installed auros-desktop)" = "$V2" ] &&
++           [ "$(marker | sed -n 's/^who="\(.*\)"/\1/p')" = v2 ]; then
++            ok "$what: refused, nothing changed"
++        else
++            bad "$what: INSTALLED (auros $(installed auros), marker $(marker | tr '\n' ' '))"
++        fi
++        # Put the good channel back between attacks, so each is judged alone.
++        serve "$W/r2"; aptup
++    }
++
++    publish "$W/d3" "$W/r3u" none; serve "$W/r3u"
++    aptup && bad "apt-get update accepted an UNSIGNED channel" || ok "apt-get update refuses an unsigned channel ($(grep -m1 -oE 'not signed|NO_PUBKEY|no longer signed|is not signed' "$W/update.log" || echo error))"
++    refused "an unsigned update"
++
++    publish "$W/d3" "$W/r3e" "$E"; serve "$W/r3e"
++    aptup && bad "apt-get update accepted a channel signed by ANOTHER key" || ok "apt-get update refuses another key's signature ($(grep -m1 -oE 'NO_PUBKEY [0-9A-F]+|not signed|BADSIG' "$W/update.log" || echo error))"
++    refused "an update signed by another key"
++
++    # Tampered .deb: metadata honestly signed, then the .deb swapped.
++    publish "$W/d3" "$W/r3t" "$K"
++    local deb; deb=$(ls "$W/r3t"/auros-desktop_*.deb)
++    make_version "$V3" evil "$W/d3evil"
++    cp "$W/d3evil"/auros-desktop_*.deb "$deb"
++    serve "$W/r3t"; aptup
++    refused "a .deb changed after signing"
++    grep -qiE 'hash sum mismatch|size mismatch|unexpected size' "$W/inst.log" "$W/uu.log" 2>/dev/null &&
++        ok "...apt said why (hash mismatch)" || bad "...apt did not report a hash mismatch"
++
++    # Tampered Packages: index rewritten after signing.
++    publish "$W/d3" "$W/r3p" "$K"
++    sed -i "s/^Version: $V3/Version: $V3.9/" "$W/r3p/Packages"; gzip -9n -c "$W/r3p/Packages" > "$W/r3p/Packages.gz"
++    serve "$W/r3p"
++    aptup && bad "apt-get update accepted a Packages file changed after signing" || ok "apt-get update refuses a Packages file changed after signing"
++    refused "an index changed after signing"
++
++    # Older: a correctly signed channel that offers what was there before.
++    publish "$T/var/lib/auros/debs" "$W/r4" "$K"; serve "$W/r4"; aptup
++    refused "an older version (rollback)"
++
++    # Foreign: our key, our origin, but somebody else's package.
++    rm -rf "$W/r5"; cp -a "$W/r2" "$W/r5"
++    local fk="$W/fake"; rm -rf "$fk"; mkdir -p "$fk/DEBIAN"
++    printf 'Package: gpgv\nVersion: 99.0\nArchitecture: amd64\nMaintainer: x <x@x.invalid>\nDescription: not gpgv\n x\n' > "$fk/DEBIAN/control"
++    dpkg-deb --root-owner-group --build "$fk" "$W/r5/gpgv_99.0_amd64.deb" >/dev/null
++    { printf '\n'; dpkg-deb -f "$W/r5/gpgv_99.0_amd64.deb"
++      printf 'Filename: ./gpgv_99.0_amd64.deb\nSize: %s\nSHA256: %s\n' "$(stat -c %s "$W/r5/gpgv_99.0_amd64.deb")" \
++          "$(sha256sum "$W/r5/gpgv_99.0_amd64.deb" | cut -d' ' -f1)"; } >> "$W/r5/Packages"
++    release_of "$W/r5"; rm -f "$W/r5/InRelease" "$W/r5/Release.gpg"; "$CH" sign "$W/r5" "$K" >/dev/null
++    serve "$W/r5"; aptup
++    local gc; gc=$(candidate gpgv)
++    [ "$gc" != "99.0" ] && ok "AurOS's repository cannot replace gpgv (candidate stays ${gc:-none})" ||
++        bad "AurOS's repository would REPLACE gpgv with its 99.0"
++    serve "$W/r2"; aptup
++
++    # And back to normal: the good channel still works after all that.
++    check "the good channel still reads after the attacks" aptup
++    printf '\n%d passed, %d failed\n' "$pass" "$fail"
++    [ "$fail" = 0 ]
++}
++
++case "$mode" in
++    static) [ -n "$image" ] || die "static RFS"; static "$image"; printf '\n%d passed, %d failed\n' "$pass" "$fail"; [ "$fail" = 0 ] ;;
++    live)   live ;;
++    *) sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
++esac

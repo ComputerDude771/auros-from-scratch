@@ -1,0 +1,320 @@
+diff --git a/src/aurshell/foot.c b/src/aurshell/foot.c
+index 71dd4ed..ef21253 100644
+--- a/src/aurshell/foot.c
++++ b/src/aurshell/foot.c
+@@ -207,6 +207,32 @@ int foot_height(const shell_ctx *c)
+ 
+ int foot_help_open(const shell_ctx *c) { return c && c->help_open; }
+ 
++/* "Show me how to do things": the step-by-step pages, from the one place
++ * docs/EASY.md rule 7 says help lives. Bottom-left of the panel, right
++ * above the Help button she has just pressed, so it is where her eyes
++ * and her hand already are. Its height grows with her text size like
++ * the band's does, and never drops under the 44px floor. */
++#define FOOT_HOVER_HELP_PAGES (-200)
++static const char HELP_PAGES_LABEL[] = "Show me how to do things";
++
++int foot_help_button(const shell_ctx *c, int sw, int sh, rect *out)
++{
++    if (!c || !out || !c->have_help_pages || c->kiosk) return 0;
++    int h = foot_height(c);
++    if (h <= 0) return 0;
++    int top = sh - h;
++    float k = c->text_scale < 1.f ? 1.f : c->text_scale;
++    int gx = sw / 12; if (gx < 20) gx = 20;
++    int bh = (int)(60.f * k); if (bh < FOOT_TARGET) bh = FOOT_TARGET;
++    int bw = (int)(440.f * k);
++    if (bw > sw - 2 * gx) bw = sw - 2 * gx;
++    if (bw < FOOT_TARGET) bw = FOOT_TARGET;
++    int by = top - bh - (int)(24.f * k);
++    if (by < 0) by = 0;
++    *out = (rect){ gx, by, bw, bh };
++    return 1;
++}
++
+ /* ── her chosen size, kept where she can own it ─────────────────────
+  *
+  * Her own settings file, not the system theme: changing how big the
+@@ -272,6 +298,9 @@ void foot_paint(shell_ctx *c, surface *s, shell_fonts *f)
+         font *big = f->big ? f->big : f->mid;
+         font *body = f->small ? f->small : f->mid;
+         int x = s->w / 12, y = top / 6;
++        rect hb;
++        int has_hb = foot_help_button(c, s->w, s->h, &hb);
++        int text_end = has_hb ? hb.y : top;
+         if (big) {
+             shell_text(s, big, (float)x, (float)y + font_ascent(big),
+                        "Where you are", FOOT_INK, 1.f);
+@@ -297,12 +326,26 @@ void foot_paint(shell_ctx *c, surface *s, shell_fonts *f)
+                 NULL
+             };
+             for (int i = 0; LINES[i]; i++) {
++                /* Nothing is drawn under the button: at the biggest
++                 * text the last lines give way to it, and the button
++                 * is the part that leads somewhere. */
++                if (y + (int)lh > text_end) break;
+                 if (LINES[i][0])
+                     shell_text(s, body, (float)x, (float)y + font_ascent(body),
+                                LINES[i], FOOT_INK, 0.92f);
+                 y += (int)lh;
+             }
+         }
++        if (has_hb) {
++            int hot = c->foot_hover == FOOT_HOVER_HELP_PAGES;
++            draw_rect(s, hb, hot ? 0xFFFFFFu : FOOT_INK, 1.f);
++            font *ft = f->mid ? f->mid : f->small;
++            if (ft)
++                shell_text_elided(s, ft, (float)hb.x + 20.f,
++                                  shell_baseline(ft, (float)hb.y, (float)hb.h),
++                                  (float)hb.w - 40.f, HELP_PAGES_LABEL,
++                                  FOOT_BG, 1.f);
++        }
+     }
+ 
+     /* The three choices, above the archetype and below the band --
+@@ -415,6 +458,14 @@ void foot_motion(shell_ctx *c, int x, int y)
+         if (c->power_sel) c->foot_hover = -100 - c->power_sel;
+         return;
+     }
++    if (c->help_open) {
++        rect hb;
++        if (foot_help_button(c, c->screen_w, c->screen_h + foot_height(c), &hb) &&
++            x >= hb.x && x < hb.x + hb.w && y >= hb.y && y < hb.y + hb.h) {
++            c->foot_hover = FOOT_HOVER_HELP_PAGES;
++            return;
++        }
++    }
+     rect r[B_N]; int which[B_N];
+     int n = foot_buttons(c, c->screen_w, c->screen_h + foot_height(c), r, which);
+     for (int i = 0; i < n; i++)
+@@ -506,7 +557,16 @@ int foot_key(shell_ctx *c, int k)
+     /* Any key closes help, for the same reason any click does: asking
+      * her to find one particular small button again, to get rid of the
+      * thing that exists to help her, would be a joke at her expense. */
+-    if (c->help_open) { c->help_open = 0; return 1; }
++    if (c->help_open) {
++        /* Return or Space is the panel's one button, the way it is on
++         * every other screen with one obvious thing to press. */
++        rect hb;
++        if ((k == 28 || k == 96 || k == 57) &&
++            foot_help_button(c, c->screen_w, c->screen_h + foot_height(c), &hb))
++            c->want_help_pages = 1;
++        c->help_open = 0;
++        return 1;
++    }
+     return 0;
+ }
+ 
+@@ -571,7 +631,14 @@ int foot_click(shell_ctx *c, int x, int y)
+     /* A press anywhere on the help panel closes it. Asking her to find
+      * the same small button again to get rid of the thing that exists
+      * to help her would be a joke at her expense. */
+-    if (c->help_open && y < c->screen_h) { c->help_open = 0; return 1; }
++    if (c->help_open && y < c->screen_h) {
++        rect hb;
++        if (foot_help_button(c, c->screen_w, full_h, &hb) &&
++            x >= hb.x && x < hb.x + hb.w && y >= hb.y && y < hb.y + hb.h)
++            c->want_help_pages = 1;
++        c->help_open = 0;
++        return 1;
++    }
+ 
+     /* Inside the band but not on a button: swallowed, so a near-miss
+      * does not fall through and press whatever the archetype has at the
+diff --git a/src/aurshell/foot.h b/src/aurshell/foot.h
+index b496545..bf76d28 100644
+--- a/src/aurshell/foot.h
++++ b/src/aurshell/foot.h
+@@ -101,6 +101,15 @@ void foot_motion(shell_ctx *c, int x, int y);
+  * archetype underneath it. */
+ int  foot_help_open(const shell_ctx *c);
+ 
++/* The one button on the help panel: "Show me how to do things", which
++ * opens the step-by-step help pages (sets c->want_help_pages; the host
++ * opens them). Returns 1 and its rectangle when the panel would show
++ * it -- c->have_help_pages, at any text size -- whether or not the
++ * panel is open now, so tools/targets.c can measure it. ONE function,
++ * for painting, pressing and measuring. Return or Space on the open
++ * panel presses it too; any other key still just closes the panel. */
++int  foot_help_button(const shell_ctx *c, int sw, int sh, rect *out);
++
+ /* A key, while the band's own overlays are up. Returns 1 if it was
+  * taken -- which is EVERY key while one of them is showing, because
+  * they cover the screen and a key that fell through would land in an
+diff --git a/src/aurshell/main.c b/src/aurshell/main.c
+index 7795852..43f7652 100644
+--- a/src/aurshell/main.c
++++ b/src/aurshell/main.c
+@@ -664,6 +664,14 @@ static void flatpak_data_dirs(void)
+     setenv("XDG_DATA_DIRS", out, 1);
+ }
+ 
++/* Where the help pages' front page is: /usr/share/auros/help/index.html,
++ * or AUROS_HELP_DIR's for a test. */
++static void help_index(char *out, size_t n)
++{
++    const char *d = getenv("AUROS_HELP_DIR");
++    snprintf(out, n, "%s/index.html", d && *d ? d : "/usr/share/auros/help");
++}
++
+ int main(int argc, char **argv)
+ {
+     flatpak_data_dirs();
+@@ -786,6 +794,14 @@ int main(int argc, char **argv)
+      * in the band, and an empty band is furniture. Help alone still
+      * earns it everywhere else. */
+     c.no_foot = 0;
++    /* The step-by-step help pages, offered by the Help panel when they
++     * are on this machine. Never in a kiosk: a browser opened from Help
++     * would be a way round its list of allowed programs. */
++    {
++        char hp[512];
++        help_index(hp, sizeof hp);
++        c.have_help_pages = !c.kiosk && access(hp, R_OK) == 0;
++    }
+ 
+     shell_seed_apps(&c);
+     int scanned = shell_scan_apps(&c);
+@@ -1411,6 +1427,21 @@ int main(int argc, char **argv)
+             }
+             c.want_launch = 0;
+         }
++        /* The Help panel asked for the step-by-step pages. They are web
++         * pages kept on this computer, so they open in her browser and
++         * work with no internet. Started here, not in the panel, because
++         * only the host starts programs -- and no shell: run_detached
++         * is a fork and an exec. */
++        if (c.want_help_pages) {
++            c.want_help_pages = 0;
++            char hp[512];
++            help_index(hp, sizeof hp);
++            const char *av[] = { "xdg-open", hp, NULL };
++            if (run_detached(av) < 0)
++                notify_local("The help pages could not be opened just now",
++                             "Try pressing Help again in a moment.");
++            dirty = 1;
++        }
+         power_step();
+         if (settings_step(&c)) dirty = 1;
+         /* The handful of things this computer should speak up about
+diff --git a/src/aurshell/shell.h b/src/aurshell/shell.h
+index 534fde3..33e92c3 100644
+--- a/src/aurshell/shell.h
++++ b/src/aurshell/shell.h
+@@ -245,6 +245,14 @@ typedef struct shell_ctx_s {
+      * present(), and starting a program without it leaves the rail
+      * looking at Home while the program opens off to the side. */
+     int   want_launch;
++    /* The step-by-step help pages (/usr/share/auros/help, rootfs/ in the
++     * source). have_help_pages: they are on this machine, so the Help
++     * panel offers them -- set by the host at start, never in a kiosk,
++     * where a browser opened from Help would be a way round the
++     * allow-list. want_help_pages: the panel's button was pressed; the
++     * host opens them, because only the host may start programs. */
++    int   have_help_pages;
++    int   want_help_pages;
+     /* Set by a panel that has changed something the shell reads from a
+      * file -- the archetype, the theme. The host notices it, rereads
+      * everything and rebuilds, which is the same path a SIGHUP takes.
+diff --git a/tools/modaltest.c b/tools/modaltest.c
+index 9600631..233c5ed 100644
+--- a/tools/modaltest.c
++++ b/tools/modaltest.c
+@@ -427,12 +427,59 @@ static void nothing_behind(void)
+     }
+ }
+ 
++/* ── 4. the way on, to the step-by-step pages ───────────────────── */
++
++/* The help panel's one button opens the help pages (the host does the
++ * opening; the panel only asks). It must still be a way OUT as well:
++ * the press closes the panel, and every other press or key still just
++ * closes it, asking for nothing. */
++static void help_pages(void)
++{
++    printf("\n  help leads to the step-by-step pages, and still closes\n");
++    shell_ctx c; fresh(&c);
++    c.have_help_pages = 1;
++    rect hb;
++    int full_h = c.screen_h + foot_height(&c);
++    ok("the help panel has the pages button",
++       foot_help_button(&c, c.screen_w, full_h, &hb) == 1);
++
++    foot_open_only(&c, &c.help_open);
++    ok("pressing it asks for the pages and closes help",
++       foot_click(&c, hb.x + hb.w / 2, hb.y + hb.h / 2) &&
++       c.want_help_pages == 1 && !c.help_open);
++
++    fresh(&c); c.have_help_pages = 1;
++    foot_open_only(&c, &c.help_open);
++    ok("a press anywhere else closes help and asks for nothing",
++       foot_click(&c, c.screen_w - 5, 5) && !c.help_open && !c.want_help_pages);
++
++    fresh(&c); c.have_help_pages = 1;
++    foot_open_only(&c, &c.help_open);
++    ok("Return presses it", foot_key(&c, K_RET) && c.want_help_pages && !c.help_open);
++
++    fresh(&c); c.have_help_pages = 1;
++    foot_open_only(&c, &c.help_open);
++    ok("any other key closes help and asks for nothing",
++       foot_key(&c, 30 /* 'a' */) && !c.help_open && !c.want_help_pages);
++
++    fresh(&c); c.have_help_pages = 1; c.kiosk = 1;
++    ok("a kiosk never offers it (a browser would get round its list)",
++       foot_help_button(&c, c.screen_w, full_h, &hb) == 0);
++
++    fresh(&c); c.have_help_pages = 0;
++    foot_open_only(&c, &c.help_open);
++    ok("no pages on the machine: no button, and Return just closes help",
++       foot_help_button(&c, c.screen_w, full_h, &hb) == 0 &&
++       foot_key(&c, K_RET) && !c.help_open && !c.want_help_pages);
++}
++
+ int main(void)
+ {
+     printf("\nIs a panel actually modal?\n\n");
+     one_at_a_time();
+     a_way_out();
+     nothing_behind();
++    help_pages();
+ 
+     printf("\n");
+     if (fail) {
+diff --git a/tools/targets.c b/tools/targets.c
+index a054f31..e958230 100644
+--- a/tools/targets.c
++++ b/tools/targets.c
+@@ -123,6 +123,33 @@ static void band(const char *label, int kiosk, int allow_settings,
+                     fail++;
+                 }
+ 
++            /* And the help panel's one button, "Show me how to do
++             * things", wherever the pages are on the machine: big
++             * enough, on the screen, and clear of the band it sits
++             * above. A kiosk never has it (its own test, modaltest). */
++            {
++                shell_ctx hc = c;
++                hc.have_help_pages = 1;
++                rect hb;
++                if (foot_help_button(&hc, RES[r].w, RES[r].h, &hb)) {
++                    char nm[64];
++                    snprintf(nm, sizeof nm, "help pages button (text %.0f%%)",
++                             (double)(SCALES[k] * 100.f));
++                    measure(nm, hb, RES[r].w, RES[r].h);
++                    if (hb.x < 0 || hb.y < 0 || hb.x + hb.w > RES[r].w ||
++                        hb.y + hb.h > RES[r].h - foot_height(&hc)) {
++                        printf("    FAIL the help pages button is off the screen "
++                               "or on the band at %dx%d text %.0f%%\n",
++                               RES[r].w, RES[r].h, (double)(SCALES[k] * 100.f));
++                        fail++;
++                    }
++                } else if (!kiosk) {
++                    printf("    FAIL no help pages button at %dx%d text %.0f%%\n",
++                           RES[r].w, RES[r].h, (double)(SCALES[k] * 100.f));
++                    fail++;
++                }
++            }
++
+             /* And the three things Turn off asks before it does
+              * anything. That screen is reached by a person who may
+              * have pressed the wrong thing, so the way back off it has

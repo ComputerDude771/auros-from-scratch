@@ -1,0 +1,1630 @@
+diff --git a/src/ferry/Makefile b/src/ferry/Makefile
+index 4eb6891..cad4842 100644
+--- a/src/ferry/Makefile
++++ b/src/ferry/Makefile
+@@ -10,7 +10,7 @@
+ CC      ?= cc
+ CFLAGS  ?= -O2 -std=gnu11 -Wall -Wextra
+ BUILD   := build
+-HELPERS := $(BUILD)/ferry-hivepeek $(BUILD)/ferry-winattr
++HELPERS := $(BUILD)/ferry-hivepeek $(BUILD)/ferry-winattr $(BUILD)/ferry-copy
+ 
+ SCRIPTS := ferry ferry-detect ferry-wifi ferry-files ferry-firefox \
+            ferry-settings ferry-report ferry-hive ferry-common.sh install.sh
+@@ -29,7 +29,10 @@ $(BUILD):
+ $(BUILD)/ferry-hivepeek: hivepeek.c | $(BUILD)
+ 	$(CC) $(CFLAGS) -o $@ $<
+ 
+-$(BUILD)/ferry-winattr: winattr.c | $(BUILD)
++$(BUILD)/ferry-winattr: winattr.c ntfsattr.h | $(BUILD)
++	$(CC) $(CFLAGS) -o $@ $<
++
++$(BUILD)/ferry-copy: copy.c ntfsattr.h | $(BUILD)
+ 	$(CC) $(CFLAGS) -o $@ $<
+ 
+ # Every script must parse under a strict POSIX shell, not just bash.
+diff --git a/src/ferry/copy.c b/src/ferry/copy.c
+new file mode 100644
+index 0000000..d957782
+--- /dev/null
++++ b/src/ferry/copy.c
+@@ -0,0 +1,894 @@
++/* ═══════════════════════════════════════════════════════════════════
++ *  ferry-copy — the one thing that writes her files.
++ *
++ *  Every file Ferry brings into her home goes through here, in one
++ *  process for the whole import. It replaced a shell loop that cost
++ *  about 26 ms of process starts per file -- 17 minutes of nothing on a
++ *  40 000-photo library, on the 2013 laptop this has to be fast on --
++ *  and it closes a hole the shell loop had: root wrote into her home
++ *  through paths she controls, so a link she (or anything running as
++ *  her) left at ~/Pictures pointed root's writes wherever she liked.
++ *
++ *  THE RULES, each one tested in tests/run.sh:
++ *
++ *    1. Her files are written AS HER. The state files Ferry keeps
++ *       (manifest, report ledger, progress) are opened first, as root;
++ *       then this process becomes --owner, and every read of Windows
++ *       and every write into the home happens with her rights and no
++ *       more. A link in her home can only lead somewhere she could
++ *       write anyway.
++ *    2. Never follow a link on the Windows side. Junctions and links
++ *       are reported, not walked (a junction loop would never end, and
++ *       one into another profile is somebody else's files).
++ *    3. Never copy a file the classifier has not called real data
++ *       (ntfsattr.h). OneDrive online-only files are listed by name,
++ *       never copied as an empty stub.
++ *    4. Never overwrite. If something is already where a file would
++ *       go, the Windows copy lands beside it as "name (from
++ *       Windows).ext" (then "(from Windows 2)", ...), and the final
++ *       rename refuses to replace anything that appeared meanwhile
++ *       (renameat2 RENAME_NOREPLACE, or link+unlink where that is not
++ *       supported). The one exception is our own interrupted copy: a
++ *       file with the source's exact time and FEWER bytes is what a
++ *       power cut leaves of a copy, and is finished, not duplicated.
++ *    5. Never leave half a file under a real name: bytes go to a
++ *       hidden ".ferrypart-..." beside it, and are renamed when whole.
++ *       The source's times are kept, which is what lets a second run
++ *       see "already here" and copy only what is missing.
++ *    6. Progress is honest: everything is classified and counted
++ *       BEFORE the first byte is copied, so the total is real; the bar
++ *       is weighted by bytes and files together (one big video is not
++ *       "1 file"); the time left is the measured rate, shown only once
++ *       there is enough to measure it.
++ *
++ *    ferry-copy [options] --job LABEL SRC DEST [--job LABEL SRC DEST]...
++ *      --state DIR        Ferry's state: appends manifest.tsv and
++ *                         report.d/STAGE.tsv, rewrites state/STAGE.progress
++ *      --stage NAME       the stage these rows belong to (files)
++ *      --progress-log F   also append every progress line to F
++ *      --owner USER       become USER after opening the state files
++ *      --plain            a line for her on stdout, at most once a second
++ *      --dry-run          classify, count and report; write nothing
++ *      --junk             leave out desktop.ini, Thumbs.db and the like
++ *      --skip-dir NAME    never go into a folder of this name (repeatable)
++ *      --skip-file NAME   never copy a file of this name (repeatable)
++ *      --if-missing       leave an existing destination alone: no second copy
++ *      --as ACTION        the manifest action word (copy)
++ *      --quiet            no summary rows, no plain lines (for settings files)
++ *
++ *  exit 0 done (what did not come is in the ledger) · 1 could not start
++ * ═══════════════════════════════════════════════════════════════════ */
++#define _GNU_SOURCE
++#include <dirent.h>
++#include <errno.h>
++#include <fcntl.h>
++#include <grp.h>
++#include <limits.h>
++#include <pwd.h>
++#include <stdarg.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/stat.h>
++#include <sys/syscall.h>
++#include <sys/types.h>
++#include <time.h>
++#include <unistd.h>
++
++#include "ntfsattr.h"
++
++#ifndef RENAME_NOREPLACE
++#define RENAME_NOREPLACE (1 << 0)
++#endif
++
++#define MAX_JOBS     16
++#define MAX_SKIPS    64
++#define MAX_DEPTH    200
++#define COPY_BUF     (1 << 20)
++#define FILE_WEIGHT  32768ull       /* what one file costs, in bytes   */
++#define SYNC_BYTES   (256ull << 20) /* make what we have durable every */
++#define SYNC_FILES   2000           /* this much, so a power cut costs  */
++                                    /* at most this much re-copying     */
++
++/* ── options ─────────────────────────────────────────────────────── */
++
++struct job { const char *label, *src, *dest; };
++static struct job jobs[MAX_JOBS];
++static int  njobs;
++static const char *opt_state, *opt_stage = "files", *opt_progress_log;
++static const char *opt_owner, *opt_as = "copy", *map_path;
++static int  opt_plain, opt_dry, opt_junk, opt_if_missing, opt_quiet;
++static const char *skip_dirs[MAX_SKIPS], *skip_files[MAX_SKIPS];
++static int  nskip_dirs, nskip_files;
++
++static int fd_manifest = -1, fd_notes = -1, fd_prog = -1, fd_proglog = -1;
++
++/* ── small things ────────────────────────────────────────────────── */
++
++static void die(const char *fmt, ...)
++{
++    va_list ap;
++    va_start(ap, fmt);
++    fputs("ferry-copy: ", stderr);
++    vfprintf(stderr, fmt, ap);
++    fputc('\n', stderr);
++    va_end(ap);
++    exit(1);
++}
++
++static int ieq(const char *a, const char *b)
++{
++    for (; *a && *b; a++, b++) {
++        unsigned char x = (unsigned char)*a, y = (unsigned char)*b;
++        if (x >= 'A' && x <= 'Z') x += 32;
++        if (y >= 'A' && y <= 'Z') y += 32;
++        if (x != y) return 0;
++    }
++    return *a == *b;
++}
++
++static uint64_t fnv64(const char *s, size_t n)
++{
++    uint64_t h = 1469598103934665603ull;
++    for (size_t i = 0; i < n; i++) { h ^= (unsigned char)s[i]; h *= 1099511628211ull; }
++    return h;
++}
++
++static double mono(void)
++{
++    struct timespec t;
++    clock_gettime(CLOCK_MONOTONIC, &t);
++    return (double)t.tv_sec + (double)t.tv_nsec / 1e9;
++}
++
++/* "2026-10-23T05:01:02Z", recomputed at most once a second. */
++static const char *stamp(void)
++{
++    static char buf[32];
++    static time_t last = -1;
++    time_t now = time(NULL);
++    if (now != last) {
++        struct tm tm;
++        gmtime_r(&now, &tm);
++        strftime(buf, sizeof buf, "%Y-%m-%dT%H:%M:%SZ", &tm);
++        last = now;
++    }
++    return buf;
++}
++
++/* Write all of it or say so. Short writes to a regular file happen
++ * (a full disk), and a ledger row cut in half is a lie in the report. */
++static int write_all(int fd, const void *buf, size_t n)
++{
++    const char *p = buf;
++    while (n) {
++        ssize_t k = write(fd, p, n);
++        if (k < 0) { if (errno == EINTR) continue; return -1; }
++        p += k; n -= (size_t)k;
++    }
++    return 0;
++}
++
++/* A field for a TSV row: tabs and line breaks become spaces, so a file
++ * name can never forge a second row. */
++static void tsv_field(char *out, size_t n, const char *s)
++{
++    size_t o = 0;
++    for (; *s && o + 1 < n; s++)
++        out[o++] = (*s == '\t' || *s == '\n' || *s == '\r') ? ' ' : *s;
++    out[o] = 0;
++}
++
++/* The same field for JSON. */
++static void json_field(char *out, size_t n, const char *s)
++{
++    size_t o = 0;
++    for (; *s && o + 7 < n; s++) {
++        unsigned char c = (unsigned char)*s;
++        if (c == '"' || c == '\\') { out[o++] = '\\'; out[o++] = (char)c; }
++        else if (c < 0x20) o += (size_t)snprintf(out + o, n - o, "\\u%04x", c);
++        else out[o++] = (char)c;
++    }
++    out[o] = 0;
++}
++
++/* ── the ledger and the manifest ─────────────────────────────────── */
++
++/* Rows already in the ledger, so a resumed run does not say each thing
++ * twice. 64-bit hashes of whole rows; a false "seen" needs a 1 in 2^64
++ * collision. */
++static uint64_t *seen;
++static size_t    seen_cap, seen_n;
++
++static int seen_add(uint64_t h)
++{
++    if (!h) h = 1;
++    if (seen_n * 2 >= seen_cap) {
++        size_t nc = seen_cap ? seen_cap * 2 : 1024;
++        uint64_t *ns = calloc(nc, sizeof *ns);
++        if (!ns) return 1;                     /* cannot dedup: write it */
++        for (size_t i = 0; i < seen_cap; i++)
++            if (seen[i]) {
++                size_t j = seen[i] & (nc - 1);
++                while (ns[j]) j = (j + 1) & (nc - 1);
++                ns[j] = seen[i];
++            }
++        free(seen); seen = ns; seen_cap = nc;
++    }
++    size_t j = h & (seen_cap - 1);
++    while (seen[j]) { if (seen[j] == h) return 0; j = (j + 1) & (seen_cap - 1); }
++    seen[j] = h; seen_n++;
++    return 1;
++}
++
++static void load_seen(const char *path)
++{
++    FILE *f = fopen(path, "r");
++    char line[8192];
++    if (!f) return;
++    while (fgets(line, sizeof line, f)) {
++        size_t n = strlen(line);
++        while (n && (line[n - 1] == '\n' || line[n - 1] == '\r')) line[--n] = 0;
++        seen_add(fnv64(line, n));
++    }
++    fclose(f);
++}
++
++/* category severity item detail -- exactly ferry-common.sh's note(). */
++static void note(const char *kind, const char *sev, const char *item,
++                 const char *fmt, ...)
++{
++    char detail[2048], d2[2048], i2[4096], row[8192];
++    va_list ap;
++    if (fd_notes < 0) return;
++    va_start(ap, fmt);
++    vsnprintf(detail, sizeof detail, fmt, ap);
++    va_end(ap);
++    tsv_field(d2, sizeof d2, detail);
++    tsv_field(i2, sizeof i2, item);
++    int n = snprintf(row, sizeof row, "%s/%s\t%s\t%s\t%s", opt_stage, kind, sev, i2, d2);
++    if (n < 0) return;
++    if ((size_t)n >= sizeof row) n = (int)sizeof row - 1;
++    if (!seen_add(fnv64(row, (size_t)n))) return;
++    row[n] = '\n';
++    write_all(fd_notes, row, (size_t)n + 1);
++}
++
++/* time stage action size src dest -- exactly ferry-common.sh's record(). */
++static void record(const char *action, unsigned long long size,
++                   const char *src, const char *dest)
++{
++    char s2[4096], d2[4096], row[9000];
++    if (fd_manifest < 0 || opt_dry) return;
++    tsv_field(s2, sizeof s2, src);
++    tsv_field(d2, sizeof d2, dest);
++    int n = snprintf(row, sizeof row, "%s\t%s\t%s\t%llu\t%s\t%s\n",
++                     stamp(), opt_stage, action, size, s2, d2);
++    if (n > 0) write_all(fd_manifest, row, (size_t)n < sizeof row ? (size_t)n : sizeof row - 1);
++}
++
++/* ── what she reads ──────────────────────────────────────────────── */
++
++/* The folder, in her words. Anything we do not know is "your files". */
++static const char *noun(const char *label)
++{
++    static const char *map[][2] = {
++        { "Desktop", "the things on your desktop" }, { "Documents", "your documents" },
++        { "Downloads", "your downloads" }, { "Pictures", "your pictures" },
++        { "Music", "your music" }, { "Videos", "your videos" },
++        { "OneDrive", "your OneDrive files" }, { "Firefox", "your Firefox" },
++    };
++    for (size_t i = 0; i < sizeof map / sizeof map[0]; i++)
++        if (!strcmp(label, map[i][0])) return map[i][1];
++    return "your files";
++}
++
++/* "About 4 minutes left." Whole minutes, rounded up past a minute: a
++ * person reads "about 1 minute" as a promise, so it is never said for
++ * 1 minute 50. */
++static void time_left(double secs, char *out, size_t n)
++{
++    if (secs < 0)          snprintf(out, n, "Working out how long this will take.");
++    else if (secs < 60)    snprintf(out, n, "Less than a minute left.");
++    else if (secs < 120)   snprintf(out, n, "About 2 minutes left.");
++    else if (secs < 5400)  snprintf(out, n, "About %d minutes left.", (int)((secs + 59) / 60));
++    else                   snprintf(out, n, "About %d hours left.", (int)((secs + 1800) / 3600));
++}
++
++static struct {
++    unsigned long long files_total, bytes_total, files_done, bytes_done;
++    double t_start, t_last_prog, t_last_plain;
++    const char *label;
++    int planning;
++    unsigned long long seen_planning;
++} P;
++
++static double eta(void)
++{
++    unsigned long long wt = P.bytes_total + P.files_total * FILE_WEIGHT;
++    unsigned long long wd = P.bytes_done + P.files_done * FILE_WEIGHT;
++    double el = mono() - P.t_start;
++    /* Not before there is something to measure: a guess in the first
++     * seconds is the number that makes people stop trusting the bar. */
++    if (el < 5.0 || wd == 0 || wt == 0 || wd * 100 < wt) return -1;
++    if (wd >= wt) return 0;
++    return (double)(wt - wd) * el / (double)wd;
++}
++
++static void progress(int force)
++{
++    double now = mono();
++    if (!force && now - P.t_last_prog < 0.25 && now - P.t_last_plain < 1.0) return;
++
++    unsigned long long wt = P.bytes_total + P.files_total * FILE_WEIGHT;
++    unsigned long long wd = P.bytes_done + P.files_done * FILE_WEIGHT;
++    int pct = P.planning ? 0 : (wt ? (int)(wd * 100 / wt) : 100);
++    double e = P.planning ? -1 : eta();
++    char msg[512], left[96];
++
++    time_left(e, left, sizeof left);
++    if (P.planning)
++        snprintf(msg, sizeof msg, "Looking at what is on Windows: %llu files so far.",
++                 P.seen_planning);
++    else if (P.files_total == 0)
++        snprintf(msg, sizeof msg, "There was nothing to copy.");
++    else if (P.files_done >= P.files_total)
++        snprintf(msg, sizeof msg, "Copied %llu files.", P.files_done);
++    else
++        snprintf(msg, sizeof msg, "Copying %s. %llu of %llu files done. %s",
++                 noun(P.label ? P.label : ""), P.files_done, P.files_total, left);
++
++    if (force || now - P.t_last_prog >= 0.25) {
++        char js[640], line[1024];
++        json_field(js, sizeof js, msg);
++        int n = snprintf(line, sizeof line,
++            "{\"type\":\"progress\",\"stage\":\"%s\",\"pct\":%d,\"done\":%llu,"
++            "\"total\":%llu,\"bytes_done\":%llu,\"bytes_total\":%llu,"
++            "\"eta_s\":%d,\"planning\":%s,\"message\":\"%s\",\"at\":\"%s\"}\n",
++            opt_stage, pct, P.files_done, P.files_total, P.bytes_done,
++            P.bytes_total, e < 0 ? -1 : (int)e, P.planning ? "true" : "false",
++            js, stamp());
++        if (n > 0 && (size_t)n < sizeof line) {
++            if (fd_prog >= 0) {
++                if (ftruncate(fd_prog, 0) == 0) {
++                    ssize_t k = pwrite(fd_prog, line, (size_t)n, 0);
++                    (void)k;
++                }
++            }
++            if (fd_proglog >= 0) write_all(fd_proglog, line, (size_t)n);
++        }
++        P.t_last_prog = now;
++    }
++    if (opt_plain && !opt_quiet && (force || now - P.t_last_plain >= 1.0)) {
++        printf("%s\n", msg);
++        fflush(stdout);
++        P.t_last_plain = now;
++    }
++}
++
++/* ── the plan: every file, classified, before a byte is copied ───── */
++
++enum cls { C_COPY, C_SUSPECT };
++struct entry {
++    char *rel;
++    int job;
++    unsigned long long size;
++    struct timespec atime, mtime;
++    int cls;
++};
++static struct entry *ents;
++static size_t nents, ents_cap;
++
++struct tally {
++    unsigned long long copied, already, kept, collisions, placeholders,
++                       placeholder_bytes, suspect, reparse, encrypted,
++                       unknown, failed, junk, left_out, repaired;
++};
++static struct tally T[MAX_JOBS];
++
++static int is_junk(const char *name)
++{
++    static const char *junk[] = { "desktop.ini", "thumbs.db", "ehthumbs.db",
++                                  "ehthumbs_vista.db", ".ds_store" };
++    for (size_t i = 0; i < sizeof junk / sizeof junk[0]; i++)
++        if (ieq(name, junk[i])) return 1;
++    return 0;
++}
++static int in_list(const char *name, const char **list, int n)
++{
++    for (int i = 0; i < n; i++) if (ieq(name, list[i])) return 1;
++    return 0;
++}
++
++static void add_entry(int job, const char *rel, const struct stat *st, int cls)
++{
++    if (nents == ents_cap) {
++        size_t nc = ents_cap ? ents_cap * 2 : 4096;
++        struct entry *ne = realloc(ents, nc * sizeof *ne);
++        if (!ne) die("out of memory planning the copy");
++        ents = ne; ents_cap = nc;
++    }
++    struct entry *e = &ents[nents++];
++    e->rel = strdup(rel);
++    if (!e->rel) die("out of memory planning the copy");
++    e->job = job;
++    e->size = (unsigned long long)st->st_size;
++    e->atime = st->st_atim;
++    e->mtime = st->st_mtim;
++    e->cls = cls;
++    P.files_total++;
++    P.bytes_total += e->size;
++}
++
++/* item names in the ledger read "Pictures/2019/holiday.jpg" */
++static void item_of(char *out, size_t n, int job, const char *rel)
++{
++    if (rel && *rel) snprintf(out, n, "%s/%s", jobs[job].label, rel);
++    else             snprintf(out, n, "%s", jobs[job].label);
++}
++
++static void walk(int job, int dfd, char *rel, size_t rlen, int depth)
++{
++    DIR *d = fdopendir(dfd);
++    struct dirent *de;
++    char item[PATH_MAX + 64];
++    if (!d) { close(dfd); return; }
++
++    while ((de = readdir(d))) {
++        const char *nm = de->d_name;
++        struct stat st;
++        if (!strcmp(nm, ".") || !strcmp(nm, "..")) continue;
++        size_t nl = strlen(nm);
++        if (rlen + 1 + nl + 1 > PATH_MAX - strlen(jobs[job].src) - 2) {
++            item_of(item, sizeof item, job, rel);
++            note("too-deep", "skipped", item,
++                 "a name inside this folder is too long to copy; copy it across by hand");
++            T[job].unknown++;
++            continue;
++        }
++        size_t save = rlen;
++        if (rlen) rel[rlen++] = '/';
++        memcpy(rel + rlen, nm, nl + 1);
++        rlen += nl;
++
++        P.seen_planning++;
++        progress(0);
++
++        if (fstatat(dirfd(d), nm, &st, AT_SYMLINK_NOFOLLOW) != 0) {
++            item_of(item, sizeof item, job, rel);
++            note("unreadable", "skipped", item, "could not be looked at (%s); not copied", strerror(errno));
++            T[job].unknown++;
++        } else if (S_ISDIR(st.st_mode)) {
++            if (nskip_dirs && in_list(nm, skip_dirs, nskip_dirs)) {
++                /* a cache: regenerated on the other side, not hers */
++            } else if (depth >= MAX_DEPTH) {
++                item_of(item, sizeof item, job, rel);
++                note("too-deep", "skipped", item, "folders nested too deep to copy; copy it across by hand");
++                T[job].unknown++;
++            } else {
++                int sfd = openat(dirfd(d), nm, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
++                if (sfd >= 0) walk(job, sfd, rel, rlen, depth + 1);
++                else {
++                    item_of(item, sizeof item, job, rel);
++                    note("unreadable", "skipped", item, "folder could not be opened (%s); not copied", strerror(errno));
++                    T[job].unknown++;
++                }
++            }
++        } else if (S_ISLNK(st.st_mode)) {
++            item_of(item, sizeof item, job, rel);
++            note("reparse", "skipped", item,
++                 "a shortcut-like link (junction or symbolic link), not a real file; not followed");
++            T[job].reparse++;
++        } else if (!S_ISREG(st.st_mode)) {
++            item_of(item, sizeof item, job, rel);
++            note("unknown", "skipped", item, "not an ordinary file; not copied");
++            T[job].unknown++;
++        } else if (opt_junk && is_junk(nm)) {
++            T[job].junk++;
++        } else if (nskip_files && in_list(nm, skip_files, nskip_files)) {
++            T[job].left_out++;
++        } else {
++            char full[PATH_MAX + 2];
++            uint32_t attrib = 0, tag = 0;
++            snprintf(full, sizeof full, "%s/%s", jobs[job].src, rel);
++            int have = ntfs_read_attrs(map_path, full, &attrib, &tag);
++            const char *c = classify(&st, attrib, tag, have);
++            item_of(item, sizeof item, job, rel);
++            if (!strcmp(c, "hydrated")) add_entry(job, rel, &st, C_COPY);
++            else if (!strcmp(c, "suspect")) add_entry(job, rel, &st, C_SUSPECT);
++            else if (!strcmp(c, "placeholder")) {
++                note("placeholder", "skipped", item,
++                     "OneDrive online-only file (%llu bytes on the server, nothing on this computer); not copied, because copying it would make an empty file",
++                     (unsigned long long)st.st_size);
++                T[job].placeholders++;
++                T[job].placeholder_bytes += (unsigned long long)st.st_size;
++            } else if (!strcmp(c, "encrypted")) {
++                note("encrypted", "blocked", item,
++                     "locked with Windows file encryption (EFS); unreadable without her Windows encryption certificate");
++                T[job].encrypted++;
++            } else if (!strcmp(c, "reparse")) {
++                note("reparse", "skipped", item,
++                     "NTFS reparse point (tag 0x%08x), not a real file; not followed", tag);
++                T[job].reparse++;
++            } else {
++                note("unknown", "skipped", item,
++                     "could not be classified (%s); not copied, so nothing was assumed about it", c);
++                T[job].unknown++;
++            }
++        }
++        rlen = save;
++        rel[rlen] = 0;
++    }
++    closedir(d);
++}
++
++/* ── the copy ────────────────────────────────────────────────────── */
++
++/* mkdir -p, as her. Remembers the last folder made, because files
++ * arrive folder by folder and stat-ing every parent of every one of
++ * 40 000 photos is most of a slow disk's time. */
++static char last_dir[PATH_MAX];
++
++static int make_dirs(const char *path)
++{
++    char buf[PATH_MAX];
++    struct stat st;
++    if (!strcmp(path, last_dir)) return 0;
++    if (strlen(path) >= sizeof buf) return -1;
++    strcpy(buf, path);
++    for (char *p = buf + 1; ; p++) {
++        if (*p == '/' || !*p) {
++            char c = *p;
++            *p = 0;
++            if (mkdir(buf, 0755) != 0 && errno != EEXIST) return -1;
++            /* As her, a link she made (Pictures on a second disk) is
++             * hers to follow: she can write there anyway. As root,
++             * nothing is followed. */
++            int r = geteuid() != 0 ? stat(buf, &st) : lstat(buf, &st);
++            if (r != 0 || !S_ISDIR(st.st_mode)) { errno = ENOTDIR; return -1; }
++            *p = c;
++            if (!c) break;
++        }
++    }
++    snprintf(last_dir, sizeof last_dir, "%s", path);
++    return 0;
++}
++
++/* "dir/name.ext" -> "dir/name (from Windows).ext", or "(from Windows N)".
++ * The extension is taken from the NAME, never from the path: a folder
++ * called "v2.0" must not split. A leading dot is part of the name
++ * (".profile"). Kept under NAME_MAX by shortening the name, at a UTF-8
++ * character boundary. */
++static int collision_name(const char *path, int n, char *out, size_t outsz)
++{
++    const char *slash = strrchr(path, '/');
++    const char *name = slash ? slash + 1 : path;
++    size_t dirlen = (size_t)(name - path);
++    const char *dot = strrchr(name, '.');
++    if (!dot || dot == name) dot = name + strlen(name);
++    size_t baselen = (size_t)(dot - name);
++    char tagbuf[32];
++    if (n <= 1) snprintf(tagbuf, sizeof tagbuf, " (from Windows)");
++    else        snprintf(tagbuf, sizeof tagbuf, " (from Windows %d)", n);
++    size_t extlen = strlen(dot), taglen = strlen(tagbuf);
++    if (taglen + extlen >= NAME_MAX) return -1;
++    while (baselen + taglen + extlen > NAME_MAX && baselen) {
++        baselen--;
++        while (baselen && ((unsigned char)name[baselen] & 0xC0) == 0x80) baselen--;
++    }
++    int k = snprintf(out, outsz, "%.*s%.*s%s%s", (int)dirlen, path,
++                     (int)baselen, name, tagbuf, dot);
++    return (k < 0 || (size_t)k >= outsz) ? -1 : 0;
++}
++
++static int same_file(const struct stat *d, const struct entry *e)
++{
++    long long dt = (long long)d->st_mtim.tv_sec - (long long)e->mtime.tv_sec;
++    if (dt < 0) dt = -dt;
++    return S_ISREG(d->st_mode) && (unsigned long long)d->st_size == e->size && dt <= 2;
++}
++/* What a power cut leaves of OUR copy: the time we set, fewer bytes. */
++static int our_interrupted(const struct stat *d, const struct entry *e)
++{
++    long long dt = (long long)d->st_mtim.tv_sec - (long long)e->mtime.tv_sec;
++    if (dt < 0) dt = -dt;
++    return S_ISREG(d->st_mode) && (unsigned long long)d->st_size < e->size && dt <= 2;
++}
++
++static int no_replace_rename(const char *from, const char *to)
++{
++    if (syscall(SYS_renameat2, AT_FDCWD, from, AT_FDCWD, to, RENAME_NOREPLACE) == 0) return 0;
++    if (errno != EINVAL && errno != ENOSYS) return -1;
++    /* No renameat2 on this filesystem: link() refuses an existing name
++     * just as atomically. */
++    if (link(from, to) != 0) return -1;
++    unlink(from);
++    return 0;
++}
++
++static char *buf;
++
++/* 0 copied · 1 destination appeared meanwhile · -1 failed (errno) */
++static int copy_one(const char *src, const char *dest, const struct entry *e,
++                    int replace, unsigned long long *got)
++{
++    char tmp[PATH_MAX + 32];
++    const char *slash = strrchr(dest, '/');
++    const char *name = slash ? slash + 1 : dest;
++    int dirlen = (int)(name - dest);
++    *got = 0;
++    snprintf(tmp, sizeof tmp, "%.*s.ferrypart-%016llx", dirlen, dest,
++             (unsigned long long)fnv64(name, strlen(name)));
++
++    int s = open(src, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NOCTTY);
++    if (s < 0) return -1;
++    struct stat st;
++    if (fstat(s, &st) != 0 || !S_ISREG(st.st_mode)) { close(s); errno = EINVAL; return -1; }
++#ifdef POSIX_FADV_SEQUENTIAL
++    posix_fadvise(s, 0, 0, POSIX_FADV_SEQUENTIAL);
++#endif
++    unlink(tmp);                           /* ours, from an earlier run */
++    int d = open(tmp, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0644);
++    if (d < 0) { int er = errno; close(s); errno = er; return -1; }
++
++    int bad = 0, er = 0;
++    for (;;) {
++        ssize_t k = read(s, buf, COPY_BUF);
++        if (k < 0) { if (errno == EINTR) continue; bad = 1; er = errno; break; }
++        if (k == 0) break;
++        if (write_all(d, buf, (size_t)k) != 0) { bad = 1; er = errno; break; }
++        *got += (unsigned long long)k;
++        P.bytes_done += (unsigned long long)k;
++        progress(0);
++    }
++    close(s);
++    if (!bad) {
++        struct timespec ts[2] = { e->atime, e->mtime };
++        if (futimens(d, ts) != 0) { bad = 1; er = errno; }
++    }
++    if (close(d) != 0 && !bad) { bad = 1; er = errno; }
++    if (!bad) {
++        int r = replace ? rename(tmp, dest) : no_replace_rename(tmp, dest);
++        if (r == 0) return 0;
++        er = errno;
++        unlink(tmp);
++        if (er == EEXIST) return 1;
++        errno = er;
++        return -1;
++    }
++    unlink(tmp);
++    errno = er;
++    return -1;
++}
++
++static void sync_now(void)
++{
++    /* syncfs needs a descriptor on the filesystem, not a path. */
++    int fd = open(last_dir[0] ? last_dir : ".", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
++    if (fd >= 0) { syncfs(fd); close(fd); }
++    if (fd_manifest >= 0) fdatasync(fd_manifest);
++    if (fd_notes >= 0) fdatasync(fd_notes);
++}
++
++static void copy_all(void)
++{
++    unsigned long long since_bytes = 0, since_files = 0;
++    char dest[PATH_MAX + 2], alt[PATH_MAX + 2], src[PATH_MAX + 2], item[PATH_MAX + 64];
++    buf = malloc(COPY_BUF);
++    if (!buf) die("out of memory");
++
++    for (size_t i = 0; i < nents; i++) {
++        struct entry *e = &ents[i];
++        struct job *j = &jobs[e->job];
++        struct stat dst;
++        unsigned long long got = 0;
++        int replace = 0, r;
++        const char *target = dest;
++
++        P.label = j->label;
++        snprintf(src, sizeof src, "%s/%s", j->src, e->rel);
++        snprintf(dest, sizeof dest, "%s/%s", j->dest, e->rel);
++        item_of(item, sizeof item, e->job, e->rel);
++
++        unsigned long long before = P.bytes_done;
++        if (lstat(dest, &dst) == 0) {
++            if (same_file(&dst, e)) { T[e->job].already++; goto next; }
++            if (our_interrupted(&dst, e)) { replace = 1; T[e->job].repaired++; }
++            else if (opt_if_missing) { T[e->job].kept++; goto next; }
++            else {
++                /* Keep both. Find the first free "(from Windows N)" --
++                 * or the one that already holds this very file. */
++                int n, found = 0;
++                for (n = 1; n <= 50; n++) {
++                    if (collision_name(dest, n, alt, sizeof alt) != 0) break;
++                    if (lstat(alt, &dst) != 0) { found = 1; break; }
++                    if (same_file(&dst, e)) { found = 2; break; }
++                }
++                if (found == 2) { T[e->job].already++; goto next; }
++                if (!found) {
++                    note("failed", "skipped", item, "a file of this name was already here and no second name was free; not copied");
++                    T[e->job].failed++;
++                    goto next;
++                }
++                target = alt;
++            }
++        }
++        if (opt_dry) {
++            if (target == alt) T[e->job].collisions++;
++            T[e->job].copied++;
++            P.bytes_done += e->size;
++            goto next;
++        }
++        {
++            char parent[PATH_MAX + 2];
++            snprintf(parent, sizeof parent, "%s", target);
++            char *sl = strrchr(parent, '/');
++            if (sl) *sl = 0;
++            if (make_dirs(parent) != 0) {
++                note("failed", "skipped", item, "the folder for it could not be made (%s); not copied", strerror(errno));
++                T[e->job].failed++;
++                goto next;
++            }
++        }
++        r = copy_one(src, target, e, replace, &got);
++        if (r == 1 && target == dest) {
++            /* Something took the name while we copied: keep both. */
++            if (collision_name(dest, 1, alt, sizeof alt) == 0 &&
++                (r = copy_one(src, alt, e, 0, &got)) == 0)
++                target = alt;
++        }
++        if (r == 0) {
++            if (target == alt) {
++                const char *b = strrchr(alt, '/');
++                note("collision", "partial", item,
++                     "a different file was already here; the Windows copy is beside it as \"%s\"", b ? b + 1 : alt);
++                record("collision", got, src, alt);
++                T[e->job].collisions++;
++            } else {
++                record(opt_as, got, src, dest);
++            }
++            if (replace)
++                note("repaired", "info", item, "an earlier copy had been cut short; finished it");
++            if (e->cls == C_SUSPECT) {
++                note("suspect", "partial", item,
++                     "claims %llu bytes but takes no room on the disk; copied what was there, but open it to check (it may have been an online-only file)",
++                     e->size);
++                T[e->job].suspect++;
++            }
++            T[e->job].copied++;
++            since_bytes += got;
++            since_files++;
++        } else {
++            note("failed", "skipped", item, "could not be read or written (%s); not copied",
++                 strerror(errno));
++            record("failed", 0, src, target);
++            T[e->job].failed++;
++        }
++    next:
++        /* The bar counts the whole file, even one skipped as already
++         * here: the work it stood for is done. */
++        P.bytes_done = before + e->size;
++        P.files_done++;
++        progress(0);
++        if (since_bytes >= SYNC_BYTES || since_files >= SYNC_FILES) {
++            sync_now();
++            since_bytes = since_files = 0;
++        }
++    }
++    if (!opt_dry) sync_now();
++    free(buf);
++}
++
++/* ── setup ───────────────────────────────────────────────────────── */
++
++static int open_state(const char *rel, int flags)
++{
++    char p[PATH_MAX];
++    snprintf(p, sizeof p, "%s/%s", opt_state, rel);
++    int fd = open(p, flags | O_CLOEXEC | O_NOFOLLOW, 0644);
++    if (fd < 0) die("cannot open %s: %s", p, strerror(errno));
++    return fd;
++}
++
++/* Become her: no groups but her own, her gid, her uid, and proof that
++ * the way back to root is gone. Done after the state files are open,
++ * so the ledger and the manifest stay root's and the rest is hers. */
++static void become(const char *user)
++{
++    struct passwd *pw = getpwnam(user);
++    if (!pw) die("no such user '%s'", user);
++    if (geteuid() != 0 || pw->pw_uid == 0) return;
++    gid_t g = pw->pw_gid;
++    if (setgroups(1, &g) != 0 || setgid(pw->pw_gid) != 0 || setuid(pw->pw_uid) != 0)
++        die("could not become '%s': %s", user, strerror(errno));
++    if (setuid(0) == 0 || geteuid() == 0) die("still root after becoming '%s'", user);
++}
++
++static void usage(void)
++{
++    fputs("usage: ferry-copy [--state DIR] [--stage NAME] [--owner USER] [--plain]\n"
++          "                  [--dry-run] [--junk] [--skip-dir N] [--skip-file N]\n"
++          "                  [--if-missing] [--as ACTION] [--quiet]\n"
++          "                  --job LABEL SRC DEST [--job LABEL SRC DEST]...\n", stderr);
++    exit(1);
++}
++
++int main(int argc, char **argv)
++{
++    for (int a = 1; a < argc; a++) {
++        const char *o = argv[a];
++#define NEED(k) do { if (a + (k) >= argc) usage(); } while (0)
++        if (!strcmp(o, "--job")) {
++            NEED(3);
++            if (njobs == MAX_JOBS) die("too many jobs");
++            jobs[njobs].label = argv[a + 1];
++            jobs[njobs].src = argv[a + 2];
++            jobs[njobs].dest = argv[a + 3];
++            if (jobs[njobs].src[0] != '/' || jobs[njobs].dest[0] != '/')
++                die("job paths must be absolute");
++            njobs++; a += 3;
++        }
++        else if (!strcmp(o, "--state"))        { NEED(1); opt_state = argv[++a]; }
++        else if (!strcmp(o, "--stage"))        { NEED(1); opt_stage = argv[++a]; }
++        else if (!strcmp(o, "--progress-log")) { NEED(1); opt_progress_log = argv[++a]; }
++        else if (!strcmp(o, "--owner"))        { NEED(1); opt_owner = argv[++a]; }
++        else if (!strcmp(o, "--as"))           { NEED(1); opt_as = argv[++a]; }
++        else if (!strcmp(o, "--skip-dir"))     { NEED(1); if (nskip_dirs < MAX_SKIPS) skip_dirs[nskip_dirs++] = argv[++a]; else a++; }
++        else if (!strcmp(o, "--skip-file"))    { NEED(1); if (nskip_files < MAX_SKIPS) skip_files[nskip_files++] = argv[++a]; else a++; }
++        else if (!strcmp(o, "--plain"))        opt_plain = 1;
++        else if (!strcmp(o, "--dry-run"))      opt_dry = 1;
++        else if (!strcmp(o, "--junk"))         opt_junk = 1;
++        else if (!strcmp(o, "--if-missing"))   opt_if_missing = 1;
++        else if (!strcmp(o, "--quiet"))        opt_quiet = 1;
++        else usage();
++    }
++    if (!njobs) usage();
++    map_path = getenv("FERRY_WINATTR_MAP");
++    if (map_path && !*map_path) map_path = NULL;
++
++    if (opt_state) {
++        char p[PATH_MAX];
++        snprintf(p, sizeof p, "%s/report.d/%s.tsv", opt_state, opt_stage);
++        load_seen(p);
++        snprintf(p, sizeof p, "report.d/%s.tsv", opt_stage);
++        fd_notes = open_state(p, O_WRONLY | O_CREAT | O_APPEND);
++        fd_manifest = open_state("manifest.tsv", O_WRONLY | O_CREAT | O_APPEND);
++        snprintf(p, sizeof p, "state/%s.progress", opt_stage);
++        fd_prog = open_state(p, O_WRONLY | O_CREAT);
++    }
++    if (opt_progress_log) {
++        fd_proglog = open(opt_progress_log, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0644);
++    }
++    if (opt_owner) become(opt_owner);
++    umask(022);
++
++    P.t_start = mono();
++    P.planning = 1;
++    progress(1);
++    for (int j = 0; j < njobs; j++) {
++        char rel[PATH_MAX] = "";
++        int fd = open(jobs[j].src, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
++        if (fd < 0) {
++            note("unreadable", "skipped", jobs[j].label, "the folder could not be opened (%s); nothing copied from it", strerror(errno));
++            continue;
++        }
++        walk(j, fd, rel, 0, 0);
++    }
++    P.planning = 0;
++    P.t_start = mono();          /* the rate is the copy's, not the count's */
++    progress(1);
++    copy_all();
++    progress(1);
++
++    if (!opt_quiet)
++        for (int j = 0; j < njobs; j++) {
++            struct tally *t = &T[j];
++            note("summary", "info", jobs[j].label,
++                 "%llu copied, %llu already here, %llu kept both, %llu only online (OneDrive), "
++                 "%llu to check, %llu links not followed, %llu encrypted, %llu could not be read",
++                 t->copied, t->already, t->collisions, t->placeholders, t->suspect,
++                 t->reparse, t->encrypted, t->failed + t->unknown);
++        }
++    return 0;
++}
+diff --git a/src/ferry/ferry-common.sh b/src/ferry/ferry-common.sh
+index b5e5dbd..1473cfd 100644
+--- a/src/ferry/ferry-common.sh
++++ b/src/ferry/ferry-common.sh
+@@ -34,6 +34,7 @@ FERRY_VERSION="0.1.0"
+ : "${FERRY_QUIET:=0}"
+ : "${FERRY_JSON:=0}"
+ : "${FERRY_FORCE:=0}"
++: "${FERRY_PLAIN:=0}"          # 1: lines for her on stdout (ferry run --plain)
+ : "${FERRY_PROGRESS:=}"      # optional file the UI tails, JSON lines
+ : "${FERRY_STAGE:=ferry}"
+ 
+@@ -180,6 +181,7 @@ common_opt() {
+         --quiet)    FERRY_QUIET=1;  _consumed=1 ;;
+         --json)     FERRY_JSON=1;   _consumed=1 ;;
+         --force)    FERRY_FORCE=1;  _consumed=1 ;;
++        --plain)    FERRY_PLAIN=1;  export FERRY_PLAIN; _consumed=1 ;;
+         *)          _consumed=0 ;;
+     esac
+ }
+diff --git a/src/ferry/ferry-files b/src/ferry/ferry-files
+index 8e58db8..1a0ba78 100755
+--- a/src/ferry/ferry-files
++++ b/src/ferry/ferry-files
+@@ -57,117 +57,15 @@ resolve_target
+ select_profile || die "could not identify which Windows profile to import (pass --user NAME)"
+ say "importing files for '$_WIN_USERNAME' -> $FERRY_HOME"
+ 
+-# ── Names Windows scatters through user folders that are never the
+-#    user's data. Copying them is not harmful, but it clutters the new
+-#    home and makes the "what came across" count untrustworthy.
+-is_junk() {
+-    case "$(basename "$1")" in
+-        desktop.ini|Thumbs.db|ehthumbs.db|.DS_Store|Desktop.ini) return 0 ;;
+-        *) return 1 ;;
+-    esac
+-}
+-
+-# ── The classifier, run over a whole folder in one process. We feed it
+-#    NUL-separated paths so a newline in a filename cannot split one,
+-#    and read back its TSV: CLASS attrib tag size blocks flags PATH.
+-#    This is the ONLY thing allowed to decide a file holds real bytes.
+-classify_folder() {
+-    _dir=$1
+-    find "$_dir" -type f -print0 2>/dev/null | ferry-winattr -0
+-}
+-
+-import_folder() {
+-    _label=$1 _srcdir=$2 _destdir=$3
+-
+-    _copied=0 _already=0 _placeholder=0 _reparse=0 _encrypted=0
+-    _suspect=0 _unknown=0 _junk=0 _failed=0 _bytes=0
+-    _total=$(find "$_srcdir" -type f 2>/dev/null | wc -l | tr -d ' ')
+-    _seen=0
+-    say "$_label: $_total item(s) under $(printf '%s' "$_srcdir" | sed "s|$FERRY_ROOT||")"
+-
+-    # A temp ledger for this folder, so the (subshell) loop can hand its
+-    # counts back — a piped while cannot mutate the parent's variables.
+-    _tally="$FERRY_STATE/plan/files.$_label.tally"
+-    : > "$_tally"
+-
+-    classify_folder "$_srcdir" | while IFS='	' read -r _class _attr _tag _sz _blk _flags _path; do
+-        [ -n "$_path" ] || continue
+-        _seen=$((_seen+1))
+-        progress files "$_seen" "$_total" "$_label: $(basename "$_path")"
+-
+-        if is_junk "$_path"; then echo junk >> "$_tally"; continue; fi
+-
+-        _rel=${_path#"$_srcdir"/}
+-        _dest="$_destdir/$_rel"
+-
+-        case "$_class" in
+-            hydrated)
+-                _act=$(safe_copy "$_path" "$_dest")
+-                case "$_act" in
+-                    copied)    echo "copied $_sz" >> "$_tally" ;;
+-                    already)   echo already >> "$_tally" ;;
+-                    collision) echo "copied $_sz" >> "$_tally" ;;
+-                    *)         echo failed >> "$_tally" ;;
+-                esac ;;
+-            placeholder)
+-                # The whole point. A cloud-only file: name known, bytes
+-                # absent. Reported by name so the user can hydrate it.
+-                note files skipped "$_label/$_rel" \
+-                    "OneDrive online-only placeholder ($(printf '%s' "$_sz" | awk '{printf "%.0f", $1}') bytes on the server, nothing on disk) — right-click it in OneDrive and choose 'Always keep on this device', then re-run"
+-                echo placeholder >> "$_tally" ;;
+-            encrypted)
+-                note files blocked "$_label/$_rel" \
+-                    "EFS-encrypted; the file's contents are unreadable without the user's Windows encryption certificate and cannot be migrated offline"
+-                echo encrypted >> "$_tally" ;;
+-            reparse)
+-                note files skipped "$_label/$_rel" \
+-                    "NTFS reparse point (junction/symlink, tag $_tag) — not a real file; skipped rather than followed"
+-                echo reparse >> "$_tally" ;;
+-            suspect)
+-                # size but no blocks, and not a known-good compressed
+-                # file. Might be a placeholder our attribute read missed,
+-                # might be a genuine sparse file. We do not guess: copy
+-                # what is there AND flag it so the user can check.
+-                _act=$(safe_copy "$_path" "$_dest")
+-                note files partial "$_label/$_rel" \
+-                    "claims $_sz bytes but occupies no disk blocks — copied what was present, but verify this file opened correctly (it may have been a cloud placeholder)"
+-                echo "suspect $_sz" >> "$_tally" ;;
+-            unknown|dir|link|special|missing)
+-                note files skipped "$_label/$_rel" \
+-                    "could not classify (state '$_class'); not copied, so nothing was silently assumed about it"
+-                echo unknown >> "$_tally" ;;
+-            *)
+-                echo unknown >> "$_tally" ;;
+-        esac
+-    done
+-
+-    # Fold the tally back into the report and the return summary.
+-    # grep -c always PRINTS a count (0 when nothing matches) and exits 1
+-    # on no match; a `|| echo 0` would print a second 0 and poison the
+-    # arithmetic below. So take grep's number and only default an empty.
+-    # grep -c prints a count and exits 1 when nothing matched. Under
+-    # set -e a failing assignment aborts the (subshell) loop, and a
+-    # `|| echo 0` would print a second 0 — so use `|| _x=0`, which keeps
+-    # the matched count and cleanly zeroes the no-match case.
+-    _copied=$(grep -c '^copied' "$_tally" 2>/dev/null) || _copied=0
+-    _already=$(grep -c '^already' "$_tally" 2>/dev/null) || _already=0
+-    _placeholder=$(grep -c '^placeholder' "$_tally" 2>/dev/null) || _placeholder=0
+-    _suspect=$(grep -c '^suspect' "$_tally" 2>/dev/null) || _suspect=0
+-    _reparse=$(grep -c '^reparse' "$_tally" 2>/dev/null) || _reparse=0
+-    _encrypted=$(grep -c '^encrypted' "$_tally" 2>/dev/null) || _encrypted=0
+-    _bytes=$(awk '/^copied|^suspect/ { s += $2 } END { print s+0 }' "$_tally")
+-    rm -f "$_tally"
++# ── The copy itself is ferry-copy (copy.c): one process for every
++#    folder, which classifies everything first (so the total is real),
++#    never copies a file the classifier has not called real data,
++#    never overwrites, and -- when Ferry runs as root -- does every read
++#    and write as the person whose home it is. This script only works
++#    out WHERE each folder is; that needs the registry, which is shell.
++JOBS="$FERRY_STATE/plan/files.jobs"
++: > "$JOBS"
+ 
+-    say "$_label: $_copied copied, $_already already present, $_placeholder cloud-only, $_suspect to verify, $((_reparse+_encrypted)) skipped"
+-    note files info "$_label" \
+-        "$_copied copied, $_already already present, $_placeholder OneDrive placeholders, $_suspect to verify, $_reparse reparse points, $_encrypted encrypted"
+-}
+-
+-# Ensure the XDG dirs exist, and a user-dirs.dirs mapping too, so the
+-# desktop's file manager shows the folders we just filled.
+-[ "$FERRY_DRYRUN" = 1 ] || mkdir -p "$FERRY_HOME/.config"
+-
+-_imported_any=0
+ printf '%s\n' "$FERRY_FOLDERS" | while IFS='|' read -r _label _val _xdg _def; do
+     [ -n "$_label" ] || continue
+     [ -z "$ONLY" ] || [ "$ONLY" = "$_label" ] || continue
+@@ -175,71 +73,86 @@ printf '%s\n' "$FERRY_FOLDERS" | while IFS='|' read -r _label _val _xdg _def; do
+     _r=$(resolve_known_folder "$_val" "$_def")
+     _status=$(printf '%s' "$_r" | cut -f1)
+     _src=$(printf '%s' "$_r" | cut -f2)
+-    _how=$(printf '%s' "$_r" | cut -f3)
+     _raw=$(printf '%s' "$_r" | cut -f4)
+ 
+     case "$_status" in
+         ok) : ;;
+         off-volume)
+-            note files skipped "$_label" \
++            note files/off-volume skipped "$_label" \
+                 "redirected to '$_raw', which is on a drive that is not part of this migration — copy it across by hand"
+             continue ;;
+         unc)
+-            note files skipped "$_label" \
++            note files/network skipped "$_label" \
+                 "redirected to a network location '$_raw' — reconnect the share and copy it across"
+             continue ;;
+         unresolved)
+-            note files skipped "$_label" \
++            note files/unresolved skipped "$_label" \
+                 "the registry points it at '$_raw', which Ferry could not turn into a real path — reported rather than guessed"
+             continue ;;
+         missing)
+-            note files info "$_label" \
++            note files/missing info "$_label" \
+                 "the folder the registry names ('$_raw') does not exist on the volume; nothing to import"
+             continue ;;
+     esac
+-
+-    _dest=$(xdg_dir "$_xdg" "$_def")
+-    [ "$FERRY_DRYRUN" = 1 ] || mkdir -p "$_dest"
+-    import_folder "$_label" "$_src" "$_dest"
+-    own "$_dest"
+-    _imported_any=1
++    printf '%s\t%s\t%s\n' "$_label" "$_src" "$(xdg_dir "$_xdg" "$_def")" >> "$JOBS"
+ done
+ 
+-# ── OneDrive is opt-in (spec §8, "ask first"), because it can be huge
+-#    and much of it is placeholders. When asked, traverse the sync root
+-#    and classify everything — the placeholder reporting is identical,
+-#    which is the whole reason placeholder handling lives in one place.
++# OneDrive is opt-in (spec §8, "ask first"), because it can be huge and
++# much of it is placeholders. The classification is identical, which is
++# the whole reason it lives in one place.
+ if [ "$INCLUDE_ONEDRIVE" = 1 ] && [ -n "$_WIN_ONEDRIVE" ]; then
+-    _odrel=$(win_to_rel "$_WIN_ONEDRIVE")
+-    _od=$(path_ci "$FERRY_ROOT" "$_odrel" 2>/dev/null || true)
+-    if [ -n "$_od" ] && [ -d "$_od" ]; then
+-        _dest="$FERRY_HOME/OneDrive"
+-        [ "$FERRY_DRYRUN" = 1 ] || mkdir -p "$_dest"
+-        import_folder "OneDrive" "$_od" "$_dest"
+-        own "$_dest"
+-    fi
+-elif [ -n "$_WIN_ONEDRIVE" ]; then
++    _od=$(path_ci "$FERRY_ROOT" "$(win_to_rel "$_WIN_ONEDRIVE")" 2>/dev/null || true)
++    [ -n "$_od" ] && [ -d "$_od" ] && \
++        printf 'OneDrive\t%s\t%s\n' "$_od" "$FERRY_HOME/OneDrive" >> "$JOBS"
++fi
++
++# Known: with --include-onedrive, a Documents folder redirected into
++# OneDrive comes twice (in Documents and in OneDrive). `ferry run` never
++# passes --include-onedrive.
++set --
++while IFS='	' read -r _l _s _d; do
++    [ -n "$_l" ] && set -- "$@" --job "$_l" "$_s" "$_d"
++done < "$JOBS"
++
++if [ $# -gt 0 ]; then
++    _who=""
++    # Root writes nothing into her home: ferry-copy becomes her first.
++    [ "$(id -u)" = 0 ] && [ -n "$FERRY_OWNER" ] && _who=$FERRY_OWNER
++    ferry-copy --state "$FERRY_STATE" --stage files --junk \
++        ${_who:+--owner "$_who"} \
++        ${FERRY_PROGRESS:+--progress-log "$FERRY_PROGRESS"} \
++        $([ "${FERRY_PLAIN:-0}" = 1 ] && echo --plain) \
++        $([ "$FERRY_DRYRUN" = 1 ] && echo --dry-run) \
++        "$@" || die "copying the files did not start"
++fi
++
++if [ "$INCLUDE_ONEDRIVE" = 0 ] && [ -n "$_WIN_ONEDRIVE" ]; then
+     _od=$(path_ci "$FERRY_ROOT" "$(win_to_rel "$_WIN_ONEDRIVE")" 2>/dev/null || true)
+     if [ -n "$_od" ]; then
+-        _ph=$(find "$_od" -type f -print0 2>/dev/null | ferry-winattr -0 | grep -c '^placeholder' || echo 0)
+-        note files manual "OneDrive" \
+-            "a OneDrive folder is present with $_ph online-only file(s); re-run with --include-onedrive to import the downloaded ones, or sign in to OneDrive on Linux to get everything"
++        _ph=$(find "$_od" -type f -print0 2>/dev/null | ferry-winattr -0 | grep -c '^placeholder') || _ph=0
++        note files/onedrive manual "OneDrive" \
++            "a OneDrive folder is present with $_ph online-only file(s); re-run with --include-onedrive to import the downloaded ones, or sign in to OneDrive in Firefox to get everything"
+     fi
+ fi
+ 
+-# Write user-dirs.dirs so the desktop honours the same folders.
++# user-dirs.dirs, so the desktop shows the folders we just filled.
++# Only if she has none, and written as her like everything else.
+ if [ "$FERRY_DRYRUN" = 0 ]; then
+-    _ud="$FERRY_HOME/.config/user-dirs.dirs"
+-    if [ ! -f "$_ud" ]; then
+-        {
+-            echo '# Written by Ferry. XDG user directories.'
+-            printf '%s\n' "$FERRY_FOLDERS" | while IFS='|' read -r _l _v _x _d; do
+-                [ -n "$_l" ] || continue
+-                printf '%s="$HOME/%s"\n' "$_x" "$_d"
+-            done
+-        } > "$_ud"
+-        own "$_ud"
+-    fi
++    _ud="$FERRY_STATE/plan/home/.config"
++    mkdir -p "$_ud"
++    {
++        echo '# Written by Ferry. XDG user directories.'
++        printf '%s\n' "$FERRY_FOLDERS" | while IFS='|' read -r _l _v _x _d; do
++            [ -n "$_l" ] || continue
++            printf '%s="$HOME/%s"\n' "$_x" "$_d"
++        done
++    } > "$_ud/user-dirs.dirs"
++    _who=""
++    [ "$(id -u)" = 0 ] && [ -n "$FERRY_OWNER" ] && _who=$FERRY_OWNER
++    ferry-copy --state "$FERRY_STATE" --stage files --if-missing --quiet --as setting \
++        ${_who:+--owner "$_who"} --job settings "$FERRY_STATE/plan/home" "$FERRY_HOME" \
++        >/dev/null || warn "could not write the folder names file"
++    rm -rf "$FERRY_STATE/plan/home"
+ fi
+ 
+ _copied=$(awk -F'\t' -v s=files '$2==s && ($3=="copy"||$3=="collision")' "$FERRY_STATE/manifest.tsv" 2>/dev/null | wc -l | tr -d ' ')
+diff --git a/src/ferry/install.sh b/src/ferry/install.sh
+index 7b336ca..43d3624 100644
+--- a/src/ferry/install.sh
++++ b/src/ferry/install.sh
+@@ -24,7 +24,7 @@ HERE=$(cd "$(dirname "$0")" && pwd)
+ SCRIPTS="ferry ferry-detect ferry-wifi ferry-files ferry-firefox \
+ ferry-settings ferry-report ferry-hive ferry-common.sh"
+ # name:source
+-HELPERS="ferry-hivepeek:hivepeek.c ferry-winattr:winattr.c"
++HELPERS="ferry-hivepeek:hivepeek.c ferry-winattr:winattr.c ferry-copy:copy.c"
+ 
+ HARDEN="-O2 -D_FORTIFY_SOURCE=3 -fstack-protector-strong \
+ -fstack-clash-protection -fcf-protection=full -fPIE -pie \
+diff --git a/src/ferry/ntfsattr.h b/src/ferry/ntfsattr.h
+new file mode 100644
+index 0000000..2225f18
+--- /dev/null
++++ b/src/ferry/ntfsattr.h
+@@ -0,0 +1,201 @@
++/* ═══════════════════════════════════════════════════════════════════
++ *  ntfsattr.h — is this file real data, or a cloud placeholder?
++ *
++ *  The decision ferry-winattr prints and ferry-copy acts on. One copy
++ *  of it, included by both, because two classifiers that disagree are
++ *  a file that one tool calls a photo and the other calls a stub. See
++ *  winattr.c for why this is the most important code in Ferry.
++ * ═══════════════════════════════════════════════════════════════════ */
++#ifndef FERRY_NTFSATTR_H
++#define FERRY_NTFSATTR_H
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <stdint.h>
++#include <sys/stat.h>
++#include <sys/xattr.h>
++
++/* Windows file attributes (winnt.h). Only the ones that change a
++ * decision are named; the rest are reported as raw hex. */
++#define FA_READONLY            0x00000001u
++#define FA_HIDDEN              0x00000002u
++#define FA_SYSTEM              0x00000004u
++#define FA_DIRECTORY           0x00000010u
++#define FA_SPARSE_FILE         0x00000200u
++#define FA_REPARSE_POINT       0x00000400u
++#define FA_COMPRESSED          0x00000800u
++#define FA_OFFLINE             0x00001000u
++#define FA_ENCRYPTED           0x00004000u   /* EFS: unreadable offline  */
++#define FA_RECALL_ON_OPEN      0x00040000u
++#define FA_PINNED              0x00080000u
++#define FA_UNPINNED            0x00100000u
++#define FA_RECALL_ON_DATA_ACCESS 0x00400000u
++
++/* Reparse tags (ntifs.h). The cloud family is 0x9000_?01A for ? = 0..F
++ * — one tag per sync-root registration — so match on the masked value
++ * rather than listing sixteen constants that would still miss one. */
++#define TAG_CLOUD_MASK   0xFFFF0FFFu
++#define TAG_CLOUD_BASE   0x9000001Au
++#define TAG_MOUNT_POINT  0xA0000003u
++#define TAG_SYMLINK      0xA000000Cu
++#define TAG_ONEDRIVE     0x80000021u
++#define TAG_DEDUP        0x80000013u
++#define TAG_WCI          0x80000018u
++#define TAG_APPEXECLINK  0x8000001Bu
++#define TAG_PROJFS       0x9000001Cu
++#define TAG_LX_SYMLINK   0xA000001Du
++
++/* Attribute sources, in the order we trust them. The user.* names are a
++ * test seam: they let the test suite build a fake Windows tree on any
++ * filesystem that supports extended attributes, because nobody is going
++ * to mount a real NTFS image in a unit test. Production reads the
++ * system.* names that ntfs-3g and ntfs3 actually publish. */
++static const struct { const char *name; int big_endian; } ATTR_XATTRS[] = {
++    { "system.ntfs_attrib_be", 1 },
++    { "system.ntfs_attrib",    0 },
++    { "user.ntfs_attrib_be",   1 },
++    { "user.ntfs_attrib",      0 },
++};
++static const char *REPARSE_XATTRS[] = {
++    "system.ntfs_reparse_data",
++    "user.ntfs_reparse_data",
++};
++
++static int read_u32_xattr(const char *path, const char *name, int be, uint32_t *out)
++{
++    unsigned char b[8];
++    ssize_t n = lgetxattr(path, name, b, sizeof b);
++    if (n < 4) return 0;
++    *out = be ? ((uint32_t)b[0] << 24 | (uint32_t)b[1] << 16 |
++                 (uint32_t)b[2] << 8  | b[3])
++              : ((uint32_t)b[3] << 24 | (uint32_t)b[2] << 16 |
++                 (uint32_t)b[1] << 8  | b[0]);
++    return 1;
++}
++
++/* The test seam again: a TSV of `path <tab> attrib <tab> tag`, consulted
++ * before the filesystem. Only active when FERRY_WINATTR_MAP is set, and
++ * Ferry never sets it outside its own test suite. */
++static int map_lookup(const char *map_path, const char *path,
++                      uint32_t *attrib, uint32_t *tag)
++{
++    FILE *f;
++    char line[8192];
++    int hit = 0;
++    if (!map_path) return 0;
++    f = fopen(map_path, "r");
++    if (!f) return 0;
++    while (fgets(line, sizeof line, f)) {
++        char *t1, *t2;
++        size_t n = strlen(line);
++        while (n && (line[n-1] == '\n' || line[n-1] == '\r')) line[--n] = '\0';
++        t1 = strchr(line, '\t');
++        if (!t1) continue;
++        *t1++ = '\0';
++        if (strcmp(line, path) != 0) continue;
++        t2 = strchr(t1, '\t');
++        if (t2) *t2++ = '\0';
++        *attrib = (uint32_t)strtoul(t1, NULL, 0);
++        *tag    = t2 ? (uint32_t)strtoul(t2, NULL, 0) : 0;
++        hit = 1;
++        break;
++    }
++    fclose(f);
++    return hit;
++}
++
++static int is_cloud_tag(uint32_t tag)
++{
++    return tag && ((tag & TAG_CLOUD_MASK) == TAG_CLOUD_BASE ||
++                   tag == TAG_ONEDRIVE || tag == TAG_PROJFS);
++}
++
++__attribute__((unused))
++static const char *tag_name(uint32_t tag)
++{
++    if (!tag) return "";
++    if ((tag & TAG_CLOUD_MASK) == TAG_CLOUD_BASE) return "cloud";
++    switch (tag) {
++        case TAG_ONEDRIVE:   return "onedrive";
++        case TAG_PROJFS:     return "projfs";
++        case TAG_MOUNT_POINT:return "junction";
++        case TAG_SYMLINK:    return "symlink";
++        case TAG_DEDUP:      return "dedup";
++        case TAG_WCI:        return "wci";
++        case TAG_APPEXECLINK:return "appexeclink";
++        case TAG_LX_SYMLINK: return "wsl-symlink";
++        default:             return "other";
++    }
++}
++
++/* The decision. Ordered so that every path that might not hold data is
++ * caught before the one line that says "hydrated". */
++static const char *classify(const struct stat *st, uint32_t attrib, uint32_t tag,
++                            int have_attrib)
++{
++    if (S_ISDIR(st->st_mode))  return "dir";
++    if (S_ISLNK(st->st_mode))  return "link";      /* junction or symlink */
++    if (!S_ISREG(st->st_mode)) return "special";
++
++    if (have_attrib) {
++        if (attrib & FA_ENCRYPTED) return "encrypted";       /* EFS */
++        if (is_cloud_tag(tag))     return "placeholder";
++        if (attrib & (FA_OFFLINE | FA_RECALL_ON_DATA_ACCESS |
++                      FA_RECALL_ON_OPEN | FA_UNPINNED))
++            return "placeholder";
++        if (attrib & FA_REPARSE_POINT)
++            return tag ? "reparse" : "reparse";   /* not ours to copy */
++    }
++
++    /* No attribute source (an exotic driver, or a test tree on ext4),
++     * or a clean one. Fall back to one physical fact that cannot lie: a
++     * file that claims bytes but owns zero disk blocks is holding none.
++     * That is exactly the shape of a cloud placeholder, so we say
++     * `suspect` and let the caller report it rather than copy a hole and
++     * call it a photo. NTFS-compressed and genuinely sparse files also
++     * take zero-or-few blocks, so when the attribute flags say so we
++     * trust them over the heuristic.
++     *
++     * An empty file is legitimately empty — copy it. A file with blocks
++     * allocated has its bytes physically present on this disk and cannot
++     * be an online-only placeholder, so it is real data even when no
++     * attribute was readable. This is the one place the optimistic
++     * answer is defensible: blocks are ground truth, not a guess. */
++    if (st->st_size == 0)     return "hydrated";
++    if (st->st_blocks == 0)
++        return have_attrib && (attrib & (FA_COMPRESSED | FA_SPARSE_FILE))
++               ? "hydrated" : "suspect";
++    return "hydrated";
++}
++
++/* Everything one file's attributes say, from the test map first (only
++ * when FERRY_WINATTR_MAP is set) and then the NTFS extended attributes.
++ * Returns whether any attribute source answered: without one, the
++ * classifier falls back to the block count and will not say "hydrated"
++ * for a file that owns no blocks. */
++static int ntfs_read_attrs(const char *map_path, const char *path,
++                           uint32_t *attrib, uint32_t *tag)
++{
++    int have = 0;
++    size_t i;
++    *attrib = 0; *tag = 0;
++    if (map_lookup(map_path, path, attrib, tag)) return 1;
++    for (i = 0; i < sizeof ATTR_XATTRS / sizeof ATTR_XATTRS[0]; i++)
++        if (read_u32_xattr(path, ATTR_XATTRS[i].name,
++                           ATTR_XATTRS[i].big_endian, attrib)) {
++            have = 1;
++            break;
++        }
++    for (i = 0; i < sizeof REPARSE_XATTRS / sizeof REPARSE_XATTRS[0]; i++) {
++        unsigned char b[16];
++        ssize_t n = lgetxattr(path, REPARSE_XATTRS[i], b, sizeof b);
++        if (n >= 4) {
++            *tag = (uint32_t)b[0] | ((uint32_t)b[1] << 8) |
++                   ((uint32_t)b[2] << 16) | ((uint32_t)b[3] << 24);
++            break;
++        }
++    }
++    return have;
++}
++
++#endif
+diff --git a/src/ferry/winattr.c b/src/ferry/winattr.c
+index 731a929..589fe70 100644
+--- a/src/ferry/winattr.c
++++ b/src/ferry/winattr.c
+@@ -49,121 +49,12 @@
+ #include <sys/stat.h>
+ #include <sys/xattr.h>
+ 
+-/* Windows file attributes (winnt.h). Only the ones that change a
+- * decision are named; the rest are reported as raw hex. */
+-#define FA_READONLY            0x00000001u
+-#define FA_HIDDEN              0x00000002u
+-#define FA_SYSTEM              0x00000004u
+-#define FA_DIRECTORY           0x00000010u
+-#define FA_SPARSE_FILE         0x00000200u
+-#define FA_REPARSE_POINT       0x00000400u
+-#define FA_COMPRESSED          0x00000800u
+-#define FA_OFFLINE             0x00001000u
+-#define FA_ENCRYPTED           0x00004000u   /* EFS: unreadable offline  */
+-#define FA_RECALL_ON_OPEN      0x00040000u
+-#define FA_PINNED              0x00080000u
+-#define FA_UNPINNED            0x00100000u
+-#define FA_RECALL_ON_DATA_ACCESS 0x00400000u
+-
+-/* Reparse tags (ntifs.h). The cloud family is 0x9000_?01A for ? = 0..F
+- * — one tag per sync-root registration — so match on the masked value
+- * rather than listing sixteen constants that would still miss one. */
+-#define TAG_CLOUD_MASK   0xFFFF0FFFu
+-#define TAG_CLOUD_BASE   0x9000001Au
+-#define TAG_MOUNT_POINT  0xA0000003u
+-#define TAG_SYMLINK      0xA000000Cu
+-#define TAG_ONEDRIVE     0x80000021u
+-#define TAG_DEDUP        0x80000013u
+-#define TAG_WCI          0x80000018u
+-#define TAG_APPEXECLINK  0x8000001Bu
+-#define TAG_PROJFS       0x9000001Cu
+-#define TAG_LX_SYMLINK   0xA000001Du
+-
+-/* Attribute sources, in the order we trust them. The user.* names are a
+- * test seam: they let the test suite build a fake Windows tree on any
+- * filesystem that supports extended attributes, because nobody is going
+- * to mount a real NTFS image in a unit test. Production reads the
+- * system.* names that ntfs-3g and ntfs3 actually publish. */
+-static const struct { const char *name; int big_endian; } ATTR_XATTRS[] = {
+-    { "system.ntfs_attrib_be", 1 },
+-    { "system.ntfs_attrib",    0 },
+-    { "user.ntfs_attrib_be",   1 },
+-    { "user.ntfs_attrib",      0 },
+-};
+-static const char *REPARSE_XATTRS[] = {
+-    "system.ntfs_reparse_data",
+-    "user.ntfs_reparse_data",
+-};
++#include "ntfsattr.h"
+ 
+ static int   opt_json = 0, opt_nul = 0;
+ static int   exit_code = 0;
+ static char *map_path;                  /* FERRY_WINATTR_MAP, test seam */
+ 
+-static int read_u32_xattr(const char *path, const char *name, int be, uint32_t *out)
+-{
+-    unsigned char b[8];
+-    ssize_t n = lgetxattr(path, name, b, sizeof b);
+-    if (n < 4) return 0;
+-    *out = be ? ((uint32_t)b[0] << 24 | (uint32_t)b[1] << 16 |
+-                 (uint32_t)b[2] << 8  | b[3])
+-              : ((uint32_t)b[3] << 24 | (uint32_t)b[2] << 16 |
+-                 (uint32_t)b[1] << 8  | b[0]);
+-    return 1;
+-}
+-
+-/* The test seam again: a TSV of `path <tab> attrib <tab> tag`, consulted
+- * before the filesystem. Only active when FERRY_WINATTR_MAP is set, and
+- * Ferry never sets it outside its own test suite. */
+-static int map_lookup(const char *path, uint32_t *attrib, uint32_t *tag)
+-{
+-    FILE *f;
+-    char line[8192];
+-    int hit = 0;
+-    if (!map_path) return 0;
+-    f = fopen(map_path, "r");
+-    if (!f) return 0;
+-    while (fgets(line, sizeof line, f)) {
+-        char *t1, *t2;
+-        size_t n = strlen(line);
+-        while (n && (line[n-1] == '\n' || line[n-1] == '\r')) line[--n] = '\0';
+-        t1 = strchr(line, '\t');
+-        if (!t1) continue;
+-        *t1++ = '\0';
+-        if (strcmp(line, path) != 0) continue;
+-        t2 = strchr(t1, '\t');
+-        if (t2) *t2++ = '\0';
+-        *attrib = (uint32_t)strtoul(t1, NULL, 0);
+-        *tag    = t2 ? (uint32_t)strtoul(t2, NULL, 0) : 0;
+-        hit = 1;
+-        break;
+-    }
+-    fclose(f);
+-    return hit;
+-}
+-
+-static int is_cloud_tag(uint32_t tag)
+-{
+-    return tag && ((tag & TAG_CLOUD_MASK) == TAG_CLOUD_BASE ||
+-                   tag == TAG_ONEDRIVE || tag == TAG_PROJFS);
+-}
+-
+-static const char *tag_name(uint32_t tag)
+-{
+-    if (!tag) return "";
+-    if ((tag & TAG_CLOUD_MASK) == TAG_CLOUD_BASE) return "cloud";
+-    switch (tag) {
+-        case TAG_ONEDRIVE:   return "onedrive";
+-        case TAG_PROJFS:     return "projfs";
+-        case TAG_MOUNT_POINT:return "junction";
+-        case TAG_SYMLINK:    return "symlink";
+-        case TAG_DEDUP:      return "dedup";
+-        case TAG_WCI:        return "wci";
+-        case TAG_APPEXECLINK:return "appexeclink";
+-        case TAG_LX_SYMLINK: return "wsl-symlink";
+-        default:             return "other";
+-    }
+-}
+-
+ static void flag_names(uint32_t a, char *out, size_t n)
+ {
+     struct { uint32_t bit; const char *nm; } t[] = {
+@@ -184,46 +75,6 @@ static void flag_names(uint32_t a, char *out, size_t n)
+     if (!out[0]) snprintf(out, n, "-");
+ }
+ 
+-/* The decision. Ordered so that every path that might not hold data is
+- * caught before the one line that says "hydrated". */
+-static const char *classify(const struct stat *st, uint32_t attrib, uint32_t tag,
+-                            int have_attrib)
+-{
+-    if (S_ISDIR(st->st_mode))  return "dir";
+-    if (S_ISLNK(st->st_mode))  return "link";      /* junction or symlink */
+-    if (!S_ISREG(st->st_mode)) return "special";
+-
+-    if (have_attrib) {
+-        if (attrib & FA_ENCRYPTED) return "encrypted";       /* EFS */
+-        if (is_cloud_tag(tag))     return "placeholder";
+-        if (attrib & (FA_OFFLINE | FA_RECALL_ON_DATA_ACCESS |
+-                      FA_RECALL_ON_OPEN | FA_UNPINNED))
+-            return "placeholder";
+-        if (attrib & FA_REPARSE_POINT)
+-            return tag ? "reparse" : "reparse";   /* not ours to copy */
+-    }
+-
+-    /* No attribute source (an exotic driver, or a test tree on ext4),
+-     * or a clean one. Fall back to one physical fact that cannot lie: a
+-     * file that claims bytes but owns zero disk blocks is holding none.
+-     * That is exactly the shape of a cloud placeholder, so we say
+-     * `suspect` and let the caller report it rather than copy a hole and
+-     * call it a photo. NTFS-compressed and genuinely sparse files also
+-     * take zero-or-few blocks, so when the attribute flags say so we
+-     * trust them over the heuristic.
+-     *
+-     * An empty file is legitimately empty — copy it. A file with blocks
+-     * allocated has its bytes physically present on this disk and cannot
+-     * be an online-only placeholder, so it is real data even when no
+-     * attribute was readable. This is the one place the optimistic
+-     * answer is defensible: blocks are ground truth, not a guess. */
+-    if (st->st_size == 0)     return "hydrated";
+-    if (st->st_blocks == 0)
+-        return have_attrib && (attrib & (FA_COMPRESSED | FA_SPARSE_FILE))
+-               ? "hydrated" : "suspect";
+-    return "hydrated";
+-}
+-
+ static void esc(const char *s)
+ {
+     for (; *s; s++) {
+@@ -251,7 +102,6 @@ static void report(const char *path)
+     struct stat st;
+     uint32_t attrib = 0, tag = 0;
+     int have_attrib = 0;
+-    size_t i;
+     char flags[256];
+     const char *class;
+ 
+@@ -261,25 +111,7 @@ static void report(const char *path)
+         class = "missing";
+         flags[0] = '-'; flags[1] = '\0';
+     } else {
+-        if (map_lookup(path, &attrib, &tag)) {
+-            have_attrib = 1;
+-        } else {
+-            for (i = 0; i < sizeof ATTR_XATTRS / sizeof ATTR_XATTRS[0]; i++)
+-                if (read_u32_xattr(path, ATTR_XATTRS[i].name,
+-                                   ATTR_XATTRS[i].big_endian, &attrib)) {
+-                    have_attrib = 1;
+-                    break;
+-                }
+-            for (i = 0; i < sizeof REPARSE_XATTRS / sizeof REPARSE_XATTRS[0]; i++) {
+-                unsigned char b[16];
+-                ssize_t n = lgetxattr(path, REPARSE_XATTRS[i], b, sizeof b);
+-                if (n >= 4) {
+-                    tag = (uint32_t)b[0] | ((uint32_t)b[1] << 8) |
+-                          ((uint32_t)b[2] << 16) | ((uint32_t)b[3] << 24);
+-                    break;
+-                }
+-            }
+-        }
++        have_attrib = ntfs_read_attrs(map_path, path, &attrib, &tag);
+         class = classify(&st, attrib, tag, have_attrib);
+         flag_names(attrib, flags, sizeof flags);
+     }
